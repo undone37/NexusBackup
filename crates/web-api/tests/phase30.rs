@@ -500,3 +500,51 @@ async fn role_elevation() {
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(t.get("/api/v1/auth/me", &otto).await.status, StatusCode::UNAUTHORIZED);
 }
+
+/// Instant rollback: an option of "replace original" for VM restores, so the
+/// approval `restore.replace` carries it; refused without replace and for containers.
+#[tokio::test]
+async fn rollback_is_a_replace_option() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    t.exec(
+        "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', 'ct-120', 1000, 5, 1, 0);",
+    );
+    let job = |source: &str, extra: Value| {
+        let mut p = json!({"source": source, "time": 1000, "node": "pve1", "target": 900, "storage": "local-lvm"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let kind = if source.starts_with("ct-") {
+            "restore_ct"
+        } else {
+            "restore"
+        };
+        json!({"kind": kind, "tenant": "acme", "params": p})
+    };
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            job("vm-100", json!({"replace": true, "rollback": true})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    let (action, params): (String, String) =
+        t.st.cat
+            .conn()
+            .query_row("SELECT action, params FROM quorum WHERE id = ?1", [q], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+    let params: Value = serde_json::from_str(&params).unwrap();
+    assert_eq!(action, "restore.replace");
+    assert_eq!(params["params"]["rollback"], true);
+    for bad in [
+        job("vm-100", json!({"rollback": true})),
+        job("ct-120", json!({"replace": true, "rollback": true})),
+    ] {
+        let r = t.post("/api/v1/jobs", &alice, bad).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+        assert!(r.body["error"].as_str().unwrap().contains("rollback"), "{:?}", r.body);
+    }
+}

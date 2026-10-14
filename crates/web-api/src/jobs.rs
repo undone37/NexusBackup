@@ -146,6 +146,10 @@ pub(crate) struct RestoreP {
     /// replace: leave the original's NICs connected
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_original_links: Option<bool>,
+    /// Phase 30: replace by rolling the original VM back in place (changed chunks
+    /// only; the full replace is the fallback); VMs, only with replace
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback: Option<bool>,
 }
 
 /// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a VM
@@ -419,6 +423,9 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 }
             } else if r.keep_original_links.is_some() {
                 return Err(ApiError::bad("keep_original_links: only with replace"));
+            }
+            if r.rollback == Some(true) && (!r.replace || kind != "restore") {
+                return Err(ApiError::bad("rollback: only a VM restore that replaces the original"));
             }
             snapshot_exists(st, tenant, &r.source, r.time)?;
             let mut v = json!(r);

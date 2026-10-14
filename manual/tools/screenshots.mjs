@@ -1574,6 +1574,19 @@ async function main() {
       await settle();
       await login('admin');
     }],
+    // Phase 30: replace original by rolling the VM back in place
+    ['p30-rollback', async () => {
+      await go(`/snapshots?source=vm-100`);
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
+      await ev(`$fill('#r-target', '9100'); $fill('#r-storage', 'local-lvm'); $check('#r-start'); $check('#r-replace'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-rollback')`, 'rollback option');
+      await ev(`$check('#r-rollback'); document.querySelector('dialog[open] #r-rollback').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('restore-rollback', { height: 1400, scrolled: true });
+      await closeDialogs();
+    }],
   ];
 
   let failed = 0;

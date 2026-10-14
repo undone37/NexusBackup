@@ -528,6 +528,19 @@ function planFor(kind: string, p: Json): string[] {
     case 'restore_ct': {
       const ct = kind === 'restore_ct';
       const vmid = String(src).slice(3);
+      // Phase 30: replace by rolling back in place (changed chunks only)
+      if (p.rollback && !ct) {
+        const pre = now() - 60;
+        return [
+          `VM ${vmid} paused: backing up its current state (pre-rollback snapshot)`,
+          `committed vm-${vmid}/${pre}`,
+          `pre-rollback snapshot vm-${vmid}/${pre} committed`,
+          `node ${p.node}: ok locked`,
+          `rolled back drive-scsi0: 412 of 8192 chunks written (1728053248 bytes)`,
+          `node ${p.node}: ok unlocked`,
+          `rolled-back {"vmid":${vmid},"snapshot":${p.time},"pre_snapshot":${pre},"resumed":false,"disks":[{"device":"drive-scsi0","chunks":8192,"changed":412,"bytes_written":1728053248}],"untouched":[],"started":${!!p.start},"link_down":${!!p.link_down}}`,
+        ];
+      }
       const name = p.name ?? `${p.name_prefix ?? ''}${ct ? 'ct' : 'vm'}${vmid}${p.name_prefix ? '' : '-restore'}`;
       return [
         `restoring ${src} @ ${p.time} as ${ct ? 'CT' : 'VM'} ${p.target} (${name}) on ${p.node}, storage ${p.storage}${p.pool ? `, pool ${p.pool}` : ''}`,
@@ -4390,6 +4403,7 @@ function checkRestore(kind: string, tenant: string, p: Json) {
   if (p.replace && kind === 'instant_recover') throw new HttpError(400, 'replace: only a full restore can replace the original');
   if (p.replace && String(p.source).slice(3) === String(p.target)) throw new HttpError(400, 'target: replace restores to a new VMID');
   if (!p.replace && p.keep_original_links !== undefined) throw new HttpError(400, 'keep_original_links: only with replace');
+  if (p.rollback && (!p.replace || kind !== 'restore')) throw new HttpError(400, 'rollback: only a VM restore that replaces the original');
   if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
 }
 function checkJob(u: User, kind: string, tenant: string, p: Json) {

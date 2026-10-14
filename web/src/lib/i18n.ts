@@ -4258,6 +4258,11 @@ export const en = {
   },
   // Phase 30: NetBackup Tier 2
   p30: {
+    rollback: {
+      label: "Roll back in place (changed blocks only)",
+      hint: (vmid: string) =>
+        `Instead of restoring a new VM, guest ${vmid} is paused, its current state is backed up, then it is stopped and only the blocks that differ from this snapshot are written back onto its disks. Minutes instead of hours when little changed. Its configuration stays as it is now. If that is not possible (the VM is stopped, another VM uses the VMID, disks were added, removed or resized, or Proxmox VE lost the change tracking) the full replace below runs instead.`,
+    },
     elev: {
       title: "Elevate just in time",
       open: (role: string) => `Elevate to ${role}`,

@@ -37,10 +37,13 @@ pub struct RestoreOpts {
     pub replace: bool,
     /// replace: leave the original's NICs connected (default: link_down on all)
     pub keep_original_links: bool,
+    /// Phase 30: replace by rolling the original back in place (changed chunks
+    /// only, `crate::rollback`); the full replace is the fallback
+    pub rollback: bool,
 }
 
 impl RestoreOpts {
-    /// `--name <n> --name-prefix <p> --pool <p> --start --link-down --replace --keep-original-links`
+    /// `--name <n> --name-prefix <p> --pool <p> --start --link-down --replace --keep-original-links --rollback`
     pub fn parse(args: &[String]) -> Result<Self> {
         let mut o = RestoreOpts::default();
         let mut it = args.iter();
@@ -60,6 +63,7 @@ impl RestoreOpts {
                 "--link-down" => o.link_down = true,
                 "--replace" => o.replace = true,
                 "--keep-original-links" => o.keep_original_links = true,
+                "--rollback" => o.rollback = true,
                 _ => bail!("unknown restore option {a:?}"),
             }
         }
@@ -422,6 +426,8 @@ mod tests {
         assert!(RestoreOpts::parse(&s(&["--name", "a b"])).is_err());
         assert!(RestoreOpts::parse(&s(&["--force"])).is_err());
         assert_eq!(RestoreOpts::parse(&[]).unwrap(), RestoreOpts::default());
+        let r = RestoreOpts::parse(&s(&["--replace", "--rollback"])).unwrap();
+        assert!(r.replace && r.rollback);
     }
 
     #[test]

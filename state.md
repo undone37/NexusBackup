@@ -603,6 +603,21 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   `/auth/me` `elevation`, `/users` `eligible_role` + `elevated_until`; posture check `posture.standing_admins`
   (nexus-diag, > 2 standing admins); UI: Elevate button + dialog, banner with End now, Users page eligible role,
   Settings → Security "Role elevation"; mock; manual 09/11/15, docs/control-plane.md "Role elevation", T66
-- [ ] 3 instant rollback of a PVE VM
+- [x] 3 instant rollback of a PVE VM: option `rollback` of "replace original" (VM restores, approval
+  `restore.replace`, `--rollback`), `pve::rollback`: identity / disk layout check, pause, pre-rollback incremental
+  backup that must reuse every dirty bitmap (`BitmapGone` otherwise: VM resumed, full replace), stop, tag
+  `nexus-rollback`, `rollback-begin` (PVE lock `rollback`), changed chunks by fixed-index chunk ID, all disk
+  sessions opened and size-checked first, pipelined NBD writes + flush (`nbd::Client::write_many`/`flush`),
+  `rollback-end`, untag, start; interrupted rollbacks resume; full replace as the fallback. Node: helper commands
+  `rollback-begin|nbd|end` forward to the new root service `pve-plugin/rollback` (socket-activated,
+  `nexusbackup-rollback.socket`, qemu-nbd with the storage's format, config lock, tag + lock checks, one writer
+  per disk); deb package with units. Tests: crates/pve/tests/rollback.rs (orchestration against an in-memory
+  node: changed chunks only, fallbacks, resume; the real helper + root service (stub PVE modules) + qemu-nbd +
+  NBD client end to end), crates/nbd/tests/qemu.rs (writes), pve-plugin/t/rollback.t, scheduler + web-api
+  tests; UI restore dialog option, mock, manual 06, docs/pve-connector.md "Instant rollback", T67
+- [ ] lab (3): on a PVE host with a running VM: `nexus-pve <cfg> restore <vmid> <time> <node> <new id> <storage>
+  --replace --rollback` (vzdump of a paused VM with bitmap reuse, the real PVE module calls of the root service,
+  qemu-nbd on LVM-thin / ZFS / dir qcow2 / RBD, socket unit after `apt install ./nexusbackup-pve_*.deb`); compare
+  the rolled-back disk with `nexus-pve dump` of the snapshot
 - [ ] 4 hybrid post-quantum key wrapping
 - [ ] 5 second offsite copy with its own retention

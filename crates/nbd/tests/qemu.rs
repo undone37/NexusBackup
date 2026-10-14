@@ -237,3 +237,65 @@ fn read_many_matches_read_at() {
         assert!(got == want, "depth {depth}");
     }
 }
+
+fn connect_qemu(args: &[&str], sock: &std::path::Path, img: &str) -> (Kill, UnixStream) {
+    let mut a: Vec<&str> = args.to_vec();
+    a.extend(["-k", sock.to_str().unwrap(), img]);
+    let srv = Kill(Command::new("qemu-nbd").args(&a).spawn().unwrap());
+    let s = (0..100)
+        .find_map(|_| {
+            UnixStream::connect(sock).ok().or_else(|| {
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            })
+        })
+        .expect("qemu-nbd socket");
+    (srv, s)
+}
+
+/// Phase 30 (in-place rollback): pipelined writes and a flush land in a qcow2 image
+/// through a writable qemu-nbd; a read-only export refuses before sending anything.
+#[test]
+fn writes_and_flushes() {
+    if Command::new("qemu-nbd").arg("--version").output().is_err() {
+        eprintln!("qemu-nbd missing, skipping");
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let img = d.path().join("w.qcow2");
+    let img = img.to_str().unwrap();
+    run("qemu-img", &["create", "-q", "-f", "qcow2", img, "80M"]);
+    {
+        let (_srv, s) = connect_qemu(&["-f", "qcow2"], &d.path().join("w.sock"), img);
+        let mut c = nbd::Client::connect(s.try_clone().unwrap(), s, "", &[]).unwrap();
+        assert!(!c.read_only());
+        let writes: Vec<(u64, Vec<u8>)> = (0..6u64).map(|i| (i * (4 << 20), vec![i as u8 + 1; 1 << 20])).collect();
+        let mut acked = Vec::new();
+        c.write_many(writes.iter().cloned().map(Ok), 4, |i, n| acked.push((i, n)))
+            .unwrap();
+        acked.sort();
+        assert_eq!(acked, (0..6).map(|i| (i, 1 << 20)).collect::<Vec<_>>());
+        // one large write split into several requests
+        c.write_at(40 << 20, &vec![0x77; nbd::MAX_REQUEST as usize + 5])
+            .unwrap();
+        // outside the export: refused locally
+        assert!(c.write_at((80 << 20) - 1, &[1, 2]).is_err());
+        c.flush().unwrap();
+        c.disconnect().unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let (_srv, s) = connect_qemu(&["-r", "-f", "qcow2"], &d.path().join("r.sock"), img);
+    let mut c = nbd::Client::connect(s.try_clone().unwrap(), s, "", &[]).unwrap();
+    assert!(c.read_only());
+    let mut buf = vec![0u8; 1 << 20];
+    for i in 0..6u64 {
+        c.read_at(i * (4 << 20), &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == i as u8 + 1), "write {i}");
+    }
+    c.read_at((40 << 20) + nbd::MAX_REQUEST as u64 - 8, &mut buf[..16])
+        .unwrap();
+    assert_eq!(&buf[..13], &[0x77; 13]);
+    assert_eq!(&buf[13..16], &[0; 3]);
+    let err = c.write_at(0, &[1]).unwrap_err();
+    assert!(err.to_string().contains("read-only"), "{err}");
+}

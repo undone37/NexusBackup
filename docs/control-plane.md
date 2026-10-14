@@ -491,6 +491,13 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   changes.
 - Results: `restore` / `restore_ct` jobs get `result` from the `restored {json}` line:
   `{target, name, started, link_down, replaced?, original_renamed_to?}`.
+- **Rollback in place** (Phase 30): `restore` (VM) params with `replace` may carry `rollback: true` (refused
+  without replace and for containers); it travels inside the `restore.replace` request, the scheduler passes
+  `--rollback`. `nexus-pve` then rolls the original back in place (`crates/pve/src/rollback.rs`,
+  docs/pve-connector.md "Instant rollback") under the backup lock files of its node and guest and falls back to
+  the full replace when that is impossible (the reason is logged). Result from the `rolled-back {json}` line:
+  `{rolled_back: true, vmid, snapshot, pre_snapshot, resumed, disks: [{device, chunks, changed, bytes_written}],
+  untouched, started, link_down}`. Flagged snapshots: a rollback is a production restore (Phase 29 rules).
 
 ## Consistency (Phase 15d, catalog v20, `crates/scheduler/src/consistency.rs`)
 - `snapshots.consistency`: `application` (quiesced: guest-agent fs-freeze + fs-thaw, VSS writers, hooks, plugin

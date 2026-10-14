@@ -14,6 +14,8 @@ Status: v1 (2026-10-08). PVE 9.x only. API facts: `docs/pve-backup-provider-api.
 | `/var/tmp/nexusbackup/<archive>/` | container restore staging dir (root only, parent `0700`), removed by `restore_container_cleanup` |
 | `/run/nexusbackup/ir/` | instant recovery: the helper's listening NBD sockets `<vmid>.<archive>.<device>.sock`, `1770 root:nexusbackup` (tmpfiles.d) |
 | `/var/lib/nexusbackup/ir/<storeid>/<vmid>/<archive>.<device>.qcow2` | instant recovery overlays (guest writes), created by the plugin as root; every level `0700 root` (checked before use) |
+| `/usr/lib/nexusbackup/rollback` | in-place rollback, root side (Perl, PVE modules), started per connection by `nexusbackup-rollback.socket` (`/run/nexusbackup/rollback.sock`, `0660 root:nexusbackup`, `Accept=yes`) |
+| `/run/nexusbackup/rollback/` | its qemu-nbd sockets and per-disk lock files, `0700 root` (tmpfiles.d) |
 
 `authorized_keys` of `nexusbackup`:
 `restrict,command="/usr/lib/nexusbackup/helper" ssh-ed25519 AAAA… nexus-appliance`
@@ -187,6 +189,8 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 | `ct-stream <vmid>` | container backup: requires a job with `type` `lxc`; connect to `/run/nexusbackup/jobs/<vmid>.ct.sock` (path derived, not read from the job) and pipe stdio ⇄ socket |
 | `ct-restore-serve <archive>` | container restore: requires a request with `type` `lxc`; listen on `/run/nexusbackup/restore/<archive>.ct.sock` (tmp name + rename, `0660`), accept one connection (600 s), pipe it ⇄ stdio |
 | `ir-serve <vmid> <archive> <device>` | instant recovery: listen on `/run/nexusbackup/ir/<vmid>.<archive>.<device>.sock` (tmp name + `0660` + rename over any older socket), print `listening`, wait for one connection without timeout (ends with exit 0 on stdin EOF, exit 1 if the appliance sends data first), close the listener, print `accepted`, pipe the connection ⇄ stdio. Removes the path only while it is still its own socket |
+| `rollback-begin <vmid>` / `rollback-end <vmid>` | in-place rollback (Phase 30): one request line to the root service on `/run/nexusbackup/rollback.sock`; prints its `ok …` answer (exit 0) or its error on stderr (exit 1) |
+| `rollback-nbd <vmid> <device>` | asks the root service to serve the device's volume writable (qemu-nbd on the node) and, after its `ok <format>` line, pipes that NBD connection ⇄ stdio; device `drive-(ide|sata|scsi|virtio)N`, `drive-efidisk0` or `drive-tpmstate0` |
 | anything else | exit 2, log to syslog |
 Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`, archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
@@ -347,6 +351,44 @@ hence it is never sent. `startup` (boot / shutdown order) is kept and needs `Sys
 `check_vm_modify_config_perm`; without it: 403 "Permission check failed (/, Sys.Modify)"): role
 `NexusSysModify`, manual 04. Lab token: PVEVMAdmin + PVEDatastoreAdmin + PVEAuditor + NexusSysModify on `/`, PVESDNUser on
 `/sdn/zones/localnetwork`.
+
+## Instant rollback (Phase 30, `crates/pve/src/rollback.rs`, `pve-plugin/rollback`)
+"Replace original" with `--rollback` writes only the changed chunks back onto the original VM's disks.
+Appliance side (`nexus-pve <cfg> restore <vmid> <time> <node> <target> <storage> --replace --rollback`):
+1. Checks against the live config: the VM exists and runs; vmgenid / SMBIOS UUID equal the snapshot's
+   (`Identity`); the disk keys (data disks, `efidisk0`, `tpmstate0`; not CD-ROMs, `none`, cloud-init) and their
+   `size=` equal the snapshot's `qemu-server.conf`. Otherwise: fallback to the full replace (`restore_vm`).
+2. `POST …/status/suspend` (pause), then the pre-rollback backup: an ordinary vzdump backup of the paused VM that
+   is refused before reading (`BitmapGone`, `done <vmid> fail`, nothing committed, VM resumed, fallback) unless
+   PVE reuses the dirty bitmap of every disk that has a base. It reads exactly the bitmap's regions and keeps the
+   current state as a normal snapshot; the catalog is pushed to every node.
+3. `POST …/status/stop`, `PUT …/config tags=<tags>;nexus-rollback`, then `rollback-begin <vmid>`.
+4. Per disk: chunk IDs of the target's fixed index vs. the pre-rollback snapshot's (a disk missing there: every
+   chunk). All `rollback-nbd` sessions are opened and their export sizes checked before the first write; then
+   `NBD_CMD_WRITE` per changed chunk (8 in flight), `NBD_CMD_FLUSH`, disconnect.
+5. `rollback-end <vmid>`, tag removed (with `link_down`: every `netN` `link_down=1` in the same update), start
+   if asked. Result line `rolled-back {json}`.
+6. A failure after step 3 leaves the VM stopped, tagged and locked; a new run sees tag + lock `rollback`, skips 1–3
+   and takes the newest snapshot after the target as the pre-rollback state.
+The nexus-pve process holds the backup lock files of the VM's node and guest (`pve::parallel`) throughout.
+
+Node side: the helper (user `nexusbackup`) only forwards validated arguments to the root service; the root service
+(`pve-plugin/rollback`, one process per connection) does every check under the VM's config lock
+(`PVE::QemuConfig->lock_config`): `begin` needs the VM stopped, tagged `nexus-rollback` and unlocked (or locked
+`rollback` with the tag: resume) and sets `lock: rollback` (PVE refuses to start a locked VM); `nbd` needs stopped,
+tagged and locked `rollback`, resolves the device to its config key (`drive-scsi0` → `scsi0`; CD-ROMs, `none` and
+absolute paths refused), takes the format from the storage (`PVE::Storage::parse_volname`; raw and qcow2 only,
+never probed), activates the volume, holds a per-disk lock file and runs
+`qemu-nbd --format=<fmt> --cache=writeback --shared=1 --export-name=<device> --socket=<private> <path>`
+(SIGTERM after 5 s if it does not end with its client); `end` removes `lock: rollback`. A stolen appliance SSH key
+alone therefore cannot write any disk: it needs a VM that an API token holder stopped and tagged.
+
+Token privileges in addition to replace: `VM.PowerMgmt` (suspend, resume, stop, start) and `VM.Config.Options`
+(tags) on the VM; the pre-rollback backup needs what a backup needs.
+
+Not lab-verified yet (lab steps in state.md, Phase 30): vzdump of a paused VM in snapshot mode with bitmap reuse,
+the stub-free PVE module calls (`lock_config`, `parse_drive`, `parse_volname`, `path`, `activate_volumes`), qemu-nbd
+on LVM-thin, ZFS, directory (qcow2) and Ceph RBD volumes, the socket unit.
 
 ## Restore tests (Phase 25, `restoretest.rs`)
 `nexus-pve <cfg> restore-test <spec.json>` boots VMs with the IR flow above, but never moves a disk: the VM

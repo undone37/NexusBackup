@@ -875,6 +875,14 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   (`role.elevate`) is a setting, off by default (the proposal: "optionally"); switching it off is itself an approval.
   The passkey policy of the eligible role applies to the elevation. Possible approvers stay the standing admins and
   security officers. Posture check `posture.standing_admins` warns above two standing admins (break-glass + one).
+- **Instant rollback** (open question 6 had no proposal; the maintainer's task decided "a new helper write
+  command"): an option of replace original, approval `restore.replace`. The helper stays unprivileged and only
+  forwards to a new socket-activated **root service** on the node (`pve-plugin/rollback`): it writes only disks of a
+  VM that is stopped, tagged `nexus-rollback` through the API and locked `rollback` by itself, through qemu-nbd with
+  the storage's format (no `sudo`, no paths from the appliance). The VM's "current dirty bitmap" is read by a
+  pre-rollback incremental backup of the paused VM (which also keeps the old state in the store, instead of a PVE
+  snapshot); the VM's configuration is not rolled back. Fallback to the full replace when the VM is stopped, its
+  identity or disk layout changed, or a bitmap cannot be reused.
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed

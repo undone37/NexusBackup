@@ -1800,6 +1800,12 @@ impl Scheduler {
                 Some(r)
             }
             // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
+            // Phase 30: an in-place rollback reports `rolled-back {json}` instead
+            "restore" if log.lines().any(|l| l.starts_with("rolled-back {")) => log.lines().find_map(|l| {
+                let mut v = serde_json::from_str::<Value>(l.strip_prefix("rolled-back ")?).ok()?;
+                v["rolled_back"] = json!(true);
+                Some(v)
+            }),
             "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct"
             | "instant_disk" => {
                 let pfx = match job.kind.as_str() {

@@ -32,15 +32,25 @@
 #                               (backing file of the VM's qcow2 overlay), print
 #                               "listening", accept one connection (no timeout;
 #                               ends on stdin EOF), print "accepted", pipe it <-> stdio
+#   rollback-begin <vmid>       in-place rollback (Phase 30): ask the root service
+#   rollback-end <vmid>         behind /run/nexusbackup/rollback.sock (pve-plugin/rollback,
+#                               socket-activated) to lock / unlock the stopped VM; prints
+#                               its "ok …" line
+#   rollback-nbd <vmid> <device>
+#                               ask it to serve the device's volume writable (qemu-nbd on
+#                               the node) and pipe that NBD connection <-> stdio; the
+#                               service refuses unless the VM is stopped, tagged
+#                               nexus-rollback by the appliance and locked by rollback-begin
 # Anything else: exit 2 and log to syslog.
 #
 # Exit codes: 0 ok, 1 runtime failure, 2 invalid command or arguments.
 #
-# TEST-ONLY: NEXUSBACKUP_RUNDIR, NEXUSBACKUP_RESTOREDIR, NEXUSBACKUP_IRDIR and
-# NEXUSBACKUP_STATEDIR override /run/nexusbackup/jobs, /run/nexusbackup/restore,
-# /run/nexusbackup/ir and /var/lib/nexusbackup for pve-plugin/t/helper.t. They are ignored when running
-# under sshd (SSH_CONNECTION set), and sshd does not pass client environment by
-# default.
+# TEST-ONLY: NEXUSBACKUP_RUNDIR, NEXUSBACKUP_RESTOREDIR, NEXUSBACKUP_IRDIR,
+# NEXUSBACKUP_STATEDIR and NEXUSBACKUP_ROLLBACK_SOCK override /run/nexusbackup/jobs,
+# /run/nexusbackup/restore, /run/nexusbackup/ir, /var/lib/nexusbackup and
+# /run/nexusbackup/rollback.sock for pve-plugin/t/helper.t and
+# crates/pve/tests/rollback.rs. They are ignored when running under sshd
+# (SSH_CONNECTION set), and sshd does not pass client environment by default.
 
 use strict;
 use warnings;
@@ -60,6 +70,7 @@ my $RUNDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RUNDIR}) || '/run/nexusbackup/job
 my $STATEDIR = (!$under_sshd && $ENV{NEXUSBACKUP_STATEDIR}) || '/var/lib/nexusbackup';
 my $RESTOREDIR = (!$under_sshd && $ENV{NEXUSBACKUP_RESTOREDIR}) || '/run/nexusbackup/restore';
 my $IRDIR = (!$under_sshd && $ENV{NEXUSBACKUP_IRDIR}) || '/run/nexusbackup/ir';
+my $ROLLBACK_SOCK = (!$under_sshd && $ENV{NEXUSBACKUP_ROLLBACK_SOCK}) || '/run/nexusbackup/rollback.sock';
 
 my $INDEX_MAX = 64 * 1024 * 1024;
 my $BUFSIZE = 1024 * 1024;
@@ -473,6 +484,35 @@ sub cmd_ir_serve {
     pipe_stdio($conn, $label);
 }
 
+# In-place rollback (Phase 30): one request to the root service, its answer line;
+# `nbd` then pipes the connection. The service does every check (VM stopped,
+# tagged, locked) itself: this side only forwards validated arguments.
+sub cmd_rollback {
+    my ($what, @args) = @_;
+    my $label = join(' ', "rollback-$what", @args);
+    my $sock = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $ROLLBACK_SOCK)
+        or fail(1, "$label: connect to $ROLLBACK_SOCK failed: $! (is nexusbackup-rollback.socket enabled?)");
+    binmode($sock);
+    my $req = join(' ', $what, @args) . "\n";
+    syswrite($sock, $req) == length($req) or fail(1, "$label: write failed: $!");
+    my $line = '';
+    while (1) {
+        my $n = sysread($sock, my $c, 1);
+        next if !defined($n) && $!{EINTR};
+        fail(1, "$label: no answer") if !$n;
+        last if $c eq "\n";
+        $line .= $c;
+        fail(1, "$label: answer too long") if length($line) > 1024;
+    }
+    fail(1, "$label: " . ($line =~ s/^error //r)) if $line !~ m/^ok\b/;
+    slog('info', "$label: $line");
+    if ($what ne 'nbd') {
+        print STDOUT "$line\n";
+        exit(0);
+    }
+    pipe_stdio($sock, $label);
+}
+
 sub cmd_done {
     my ($vmid, $status, @msg) = @_;
 
@@ -582,6 +622,13 @@ if ($cmd eq 'job' || $cmd eq 'nbd') {
 } elsif ($cmd eq 'ct-restore-serve') {
     usage_error($printable) if @args != 1 || $args[0] !~ $ARCHIVE_RE;
     cmd_ct_restore_serve($args[0]);
+} elsif ($cmd eq 'rollback-begin' || $cmd eq 'rollback-end') {
+    usage_error($printable) if @args != 1 || $args[0] !~ $VMID_RE;
+    cmd_rollback($cmd =~ s/^rollback-//r, @args);
+} elsif ($cmd eq 'rollback-nbd') {
+    usage_error($printable)
+        if @args != 2 || $args[0] !~ $VMID_RE || $args[1] !~ m/^drive-(?:(?:ide|sata|scsi|virtio)\d{1,2}|efidisk0)\z/;
+    cmd_rollback('nbd', @args);
 } elsif ($cmd eq 'ir-serve') {
     usage_error($printable)
         if @args != 3 || $args[0] !~ $VMID_RE || $args[1] !~ $ARCHIVE_RE || $args[2] !~ $DEVICE_RE;

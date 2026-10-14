@@ -212,6 +212,33 @@ fn main() -> Result<()> {
         }
         ("restore", [vmid, time, node, target, storage, opts @ ..]) => {
             let opts = pve::restore::RestoreOpts::parse(opts)?;
+            // Phase 30: replace original by rolling back in place; the full replace is the fallback
+            if opts.rollback {
+                if !opts.replace {
+                    bail!("--rollback needs --replace (the full replace is its fallback)");
+                }
+                let vmid: u32 = vmid.parse()?;
+                // the pre-rollback backup runs a vzdump on the VM's node: the backup locks
+                let locks = lock_dir()?;
+                let mut held = vec![locks.join(format!("guest-{cluster_key}-{vmid}"))];
+                if let Some((vnode, _)) = cluster.guest_nodes()?.get(&vmid) {
+                    held.push(locks.join(format!("node-{cluster_key}-{vnode}")));
+                }
+                let _held = pve::parallel::lock_wait(&held, "the rollback");
+                let ro = pve::rollback::RollbackOpts {
+                    start: opts.start,
+                    link_down: opts.link_down,
+                };
+                match pve::rollback::rollback(&cluster, &store, vmid, time.parse()?, &ro)? {
+                    pve::rollback::Outcome::RolledBack(r) => {
+                        println!("rolled-back {}", serde_json::to_string(&r)?);
+                        return Ok(());
+                    }
+                    pve::rollback::Outcome::Fallback(why) => {
+                        println!("rollback in place impossible: {why}; restoring in full with replace original");
+                    }
+                }
+            }
             let r = cluster.restore_vm(
                 &store,
                 vmid.parse()?,

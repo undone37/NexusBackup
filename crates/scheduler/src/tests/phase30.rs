@@ -139,3 +139,80 @@ fn ended_elevations_resolve_their_alert() {
         .collect();
     assert_eq!(open, vec!["role_elevation:50:1".to_owned()]);
 }
+
+/// Instant rollback: an approved `restore.replace` with `rollback` runs
+/// `nexus-pve restore … --replace --rollback`; its `rolled-back` line is the job
+/// result.
+#[test]
+fn rollback_restore_flags_and_result() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let d = e.d.path();
+    fs::remove_file(&e.cfg.pve_bin).unwrap();
+    script(
+        &e.cfg.pve_bin,
+        &format!(
+            "echo \"$@\" >> {0}/calls\necho 'committed vm-100/9'\n\
+             echo 'rolled-back {{\"vmid\":100,\"snapshot\":4,\"pre_snapshot\":9,\"disks\":[{{\"device\":\"drive-scsi0\",\"chunks\":8,\"changed\":2,\"bytes_written\":8388608}}]}}'",
+            d.display()
+        ),
+    );
+    s.db.conn()
+        .execute_batch(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES ('t1','vm-100',4,1,1,0,0);",
+        )
+        .unwrap();
+    let p = json!({"source": "vm-100", "time": 4, "node": "n1", "target": 900, "storage": "local", "rollback": true});
+    let q = {
+        let c = s.db.conn();
+        c.execute(
+            "INSERT INTO quorum (action, params, requested_by, created, decided_by, decided_at, state)
+             VALUES ('restore.replace', ?1, 'otto', 1, 'sam', 2, 'approved')",
+            [json!({"tenant": "t1", "kind": "restore", "params": p}).to_string()],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    };
+    s.queue_restore_replaces().unwrap();
+    for _ in 0..4 {
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+    }
+    let (id, st, result): (i64, String, Option<String>) =
+        s.db.conn()
+            .query_row(
+                "SELECT id, state, result FROM jobs WHERE json_extract(params, '$.quorum_id') = ?1",
+                [q],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(st, "ok", "job {id}");
+    let calls = fs::read_to_string(d.join("calls")).unwrap();
+    assert!(
+        calls
+            .lines()
+            .any(|l| l.ends_with("restore 100 4 n1 900 local --replace --rollback")),
+        "{calls}"
+    );
+    let r: Value = serde_json::from_str(&result.unwrap()).unwrap();
+    assert_eq!(
+        (r["rolled_back"].clone(), r["pre_snapshot"].clone()),
+        (json!(true), json!(9))
+    );
+    // a container restore never rolls back in place
+    let mut ct = p.clone();
+    ct["source"] = json!("ct-100");
+    let job = Job {
+        id: 0,
+        kind: "restore_ct".into(),
+        tenant: "t1".into(),
+        params: {
+            let mut x = ct;
+            x["replace"] = json!(true);
+            x["quorum_id"] = json!(1);
+            x
+        },
+    };
+    let flags = crate::restore::restore_flags(&job).unwrap();
+    assert!(flags.contains(&"--replace".to_owned()) && !flags.contains(&"--rollback".to_owned()));
+}

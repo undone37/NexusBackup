@@ -139,6 +139,22 @@ pub fn run<T: Sync, R: Send>(
         .collect()
 }
 
+/// Holds all of `paths` once they are free (Phase 30: a rollback waits for the
+/// node and guest locks of running backups); a note when it has to wait.
+pub fn lock_wait(paths: &[PathBuf], what: &str) -> Vec<File> {
+    let mut noted = false;
+    loop {
+        if let Some(held) = try_lock_all(paths) {
+            return held;
+        }
+        if !noted {
+            println!("note: {what} waits for a backup of the same node or guest to finish");
+            noted = true;
+        }
+        std::thread::sleep(RETRY);
+    }
+}
+
 /// PVE storages of a guest config (`/nodes/<n>/qemu|lxc/<id>/config`): the
 /// storage of every disk volume (VM disks, container rootfs / mount points);
 /// CD-ROMs, `none` and bind mounts (absolute paths) are not storages.

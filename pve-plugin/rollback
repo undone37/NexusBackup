@@ -1,0 +1,273 @@
+#!/usr/bin/perl
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# NexusBackup in-place rollback, root side (Phase 30, docs/pve-connector.md
+# "Instant rollback"). Started by systemd for each connection to
+# /run/nexusbackup/rollback.sock (nexusbackup-rollback.socket, Accept=yes,
+# SocketGroup=nexusbackup): the connection is stdin/stdout. Only the SSH helper
+# (user nexusbackup) connects, with one request line:
+#
+#   begin <vmid>            the VM must be stopped, tagged `nexus-rollback`
+#                           (set by the appliance through the PVE API) and not
+#                           locked; sets the PVE lock `rollback` so it cannot be
+#                           started meanwhile (a VM already locked `rollback` with
+#                           the tag resumes an interrupted rollback)
+#   nbd <vmid> <device>     the VM must be stopped, locked `rollback` and tagged;
+#                           serves the device's volume (`drive-scsi0` = config
+#                           key `scsi0`; data disks and efidisk0 only) writable
+#                           with qemu-nbd (format from the storage, never probed)
+#                           and pipes the NBD connection <-> stdin/stdout
+#   end <vmid>              removes the lock `rollback`
+#
+# Answer: one line, `ok …` or `error <message>`; after `ok` of `nbd` the NBD
+# stream follows. Every request is logged to syslog.
+#
+# TEST-ONLY: NEXUSBACKUP_ROLLBACK_RUNDIR and NEXUSBACKUP_QEMU_NBD override
+# /run/nexusbackup/rollback and qemu-nbd for pve-plugin/t/rollback.t and
+# crates/pve/tests/rollback.rs. systemd never passes the client's environment to
+# a socket-activated service.
+
+use strict;
+use warnings;
+
+use Fcntl qw(:flock O_RDWR O_CREAT);
+use IO::Handle;
+use IO::Socket::UNIX;
+use POSIX ();
+use Socket qw(SOCK_STREAM SHUT_WR);
+use Sys::Syslog ();
+
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::QemuServer::Drive;
+use PVE::Storage;
+
+my $RUNDIR = $ENV{NEXUSBACKUP_ROLLBACK_RUNDIR} || '/run/nexusbackup/rollback';
+my $QEMU_NBD = $ENV{NEXUSBACKUP_QEMU_NBD} || '/usr/bin/qemu-nbd';
+my $TAG = 'nexus-rollback';
+my $VMID_RE = qr/^\d{1,9}\z/;
+my $DEVICE_RE = qr/^drive-((?:ide|sata|scsi|virtio)\d{1,2}|efidisk0)\z/;
+my $BUFSIZE = 1024 * 1024;
+
+$ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
+
+sub slog {
+    my ($prio, $msg) = @_;
+    eval {
+        Sys::Syslog::openlog('nexusbackup-rollback', 'pid', 'auth');
+        $msg =~ s/[^\x20-\x7e]/?/g;
+        Sys::Syslog::syslog($prio, '%s', $msg);
+    };
+}
+
+STDOUT->autoflush(1);
+binmode(STDIN);
+binmode(STDOUT);
+
+sub answer_error {
+    my ($msg) = @_;
+    $msg =~ s/\s+\z//;
+    $msg =~ s/[^\x20-\x7e]/?/g;
+    print STDOUT "error $msg\n";
+    slog('warning', $msg);
+    exit(1);
+}
+
+# One request line (at most 256 bytes), read byte by byte so nothing of the NBD
+# stream behind it is consumed.
+sub request_line {
+    my $line = '';
+    while (length($line) < 256) {
+        my $n = sysread(STDIN, my $c, 1);
+        next if !defined($n) && $!{EINTR};
+        answer_error('no request') if !$n;
+        return $line if $c eq "\n";
+        $line .= $c;
+    }
+    answer_error('request too long');
+}
+
+sub tagged {
+    my ($conf) = @_;
+    return grep { $_ eq $TAG } split(/[;,\s]+/, $conf->{tags} // '');
+}
+
+sub running {
+    my ($vmid) = @_;
+    if (eval { require PVE::QemuServer::Helpers; 1 } && defined(&PVE::QemuServer::Helpers::vm_running_locally)) {
+        return PVE::QemuServer::Helpers::vm_running_locally($vmid);
+    }
+    return PVE::QemuServer::check_running($vmid);
+}
+
+# The checks every request shares; dies with the reason.
+sub checked_conf {
+    my ($vmid, $want_lock) = @_;
+    my $conf = PVE::QemuConfig->load_config($vmid);
+    die "VM $vmid is running: stop it first\n" if running($vmid);
+    die "VM $vmid is not marked for a rollback (tag $TAG)\n" if !tagged($conf);
+    my $lock = $conf->{lock} // '';
+    if (defined($want_lock)) {
+        die "VM $vmid is not locked for a rollback\n" if $lock ne $want_lock;
+    } elsif ($lock ne '' && $lock ne 'rollback') {
+        die "VM $vmid is locked ($lock)\n";
+    }
+    return $conf;
+}
+
+sub cmd_begin {
+    my ($vmid) = @_;
+    my $resumed = 0;
+    eval {
+        PVE::QemuConfig->lock_config($vmid, sub {
+            my $conf = checked_conf($vmid, undef);
+            $resumed = ($conf->{lock} // '') eq 'rollback';
+            $conf->{lock} = 'rollback';
+            PVE::QemuConfig->write_config($vmid, $conf);
+        });
+    };
+    answer_error("begin $vmid: $@") if $@;
+    slog('info', "begin $vmid" . ($resumed ? ' (resumed)' : ''));
+    print STDOUT ($resumed ? "ok resumed\n" : "ok locked\n");
+    exit(0);
+}
+
+sub cmd_end {
+    my ($vmid) = @_;
+    eval {
+        PVE::QemuConfig->lock_config($vmid, sub {
+            my $conf = PVE::QemuConfig->load_config($vmid);
+            if (($conf->{lock} // '') eq 'rollback') {
+                delete $conf->{lock};
+                PVE::QemuConfig->write_config($vmid, $conf);
+            }
+        });
+    };
+    answer_error("end $vmid: $@") if $@;
+    slog('info', "end $vmid");
+    print STDOUT "ok unlocked\n";
+    exit(0);
+}
+
+# Copy $in -> $out until EOF; 1 on EOF, 0 on error.
+sub pump {
+    my ($in, $out) = @_;
+    while (1) {
+        my $n = sysread($in, my $buf, $BUFSIZE);
+        if (!defined($n)) {
+            next if $!{EINTR};
+            return 0;
+        }
+        return 1 if $n == 0;
+        my $off = 0;
+        while ($off < $n) {
+            my $w = syswrite($out, $buf, $n - $off, $off);
+            if (!defined($w)) {
+                next if $!{EINTR};
+                return 0;
+            }
+            $off += $w;
+        }
+    }
+}
+
+sub cmd_nbd {
+    my ($vmid, $device) = @_;
+    my ($key) = $device =~ $DEVICE_RE;
+    my ($volid, $fmt);
+    eval {
+        PVE::QemuConfig->lock_config($vmid, sub {
+            my $conf = checked_conf($vmid, 'rollback');
+            my $value = $conf->{$key} // die "VM $vmid has no disk $key\n";
+            my $drive = PVE::QemuServer::Drive::parse_drive($key, $value)
+                // die "VM $vmid: cannot parse disk $key\n";
+            die "$key is a CD-ROM\n" if ($drive->{media} // '') eq 'cdrom';
+            $volid = $drive->{file};
+            die "$key has no volume\n" if !defined($volid) || $volid eq 'none' || $volid =~ m!^/!;
+        });
+    };
+    answer_error("nbd $vmid $device: $@") if $@;
+
+    my $storecfg = PVE::Storage::config();
+    my @vn = eval { PVE::Storage::parse_volname($storecfg, $volid) };
+    answer_error("nbd $vmid $device: volume $volid: $@") if $@;
+    $fmt = $vn[6] // 'raw';
+    answer_error("nbd $vmid $device: format $fmt is not supported") if $fmt !~ m/^(raw|qcow2)\z/;
+    eval { PVE::Storage::activate_volumes($storecfg, [$volid]) };
+    answer_error("nbd $vmid $device: activate $volid: $@") if $@;
+    my $path = eval { scalar(PVE::Storage::path($storecfg, $volid)) };
+    answer_error("nbd $vmid $device: path of $volid: " . ($@ || 'none')) if !$path;
+
+    # one writer per device at a time
+    mkdir($RUNDIR, 0700) if !-d $RUNDIR;
+    sysopen(my $lockfh, "$RUNDIR/$vmid.$key.lock", O_RDWR | O_CREAT, 0600)
+        or answer_error("nbd $vmid $device: lock file: $!");
+    flock($lockfh, LOCK_EX | LOCK_NB) or answer_error("nbd $vmid $device: another rollback writes this disk");
+
+    my $sock = "$RUNDIR/$vmid.$key.$$.sock";
+    unlink($sock);
+    my $pid = fork() // answer_error("nbd $vmid $device: fork: $!");
+    if ($pid == 0) {
+        open(STDIN, '<', '/dev/null');
+        open(STDOUT, '>', '/dev/null');
+        exec($QEMU_NBD, "--format=$fmt", '--cache=writeback', '--shared=1', "--export-name=$device",
+            "--socket=$sock", $path) or POSIX::_exit(127);
+    }
+    my $conn;
+    for (1 .. 300) {    # 30 s for qemu-nbd to listen
+        $conn = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $sock) and last;
+        last if waitpid($pid, POSIX::WNOHANG()) == $pid;
+        select(undef, undef, undef, 0.1);
+    }
+    if (!$conn) {
+        kill('TERM', $pid);
+        waitpid($pid, 0);
+        unlink($sock);
+        answer_error("nbd $vmid $device: qemu-nbd did not start for $volid");
+    }
+    unlink($sock);    # connected: nobody else gets in
+    slog('info', "nbd $vmid $device: serving $volid ($fmt) writable");
+    print STDOUT "ok $fmt\n";
+
+    binmode($conn);
+    $SIG{PIPE} = 'IGNORE';
+    my $child = fork() // die;
+    if ($child == 0) {
+        close(STDOUT);
+        my $ok = pump(\*STDIN, $conn);
+        shutdown($conn, SHUT_WR);
+        POSIX::_exit($ok ? 0 : 1);
+    }
+    close(STDIN);
+    my $ok = pump($conn, \*STDOUT);
+    close(STDOUT);
+    close($conn);
+    kill('TERM', $child);
+    waitpid($child, 0);
+    # qemu-nbd exits when its only client is gone; one that never finished the
+    # handshake stays: SIGTERM (it closes the image cleanly, flushing first)
+    my $gone = 0;
+    for (1 .. 50) {
+        $gone = waitpid($pid, POSIX::WNOHANG()) == $pid and last;
+        select(undef, undef, undef, 0.1);
+    }
+    if (!$gone) {
+        kill('TERM', $pid);
+        waitpid($pid, 0);
+    }
+    slog('info', "nbd $vmid $device: done" . ($ok ? '' : ' (connection error)'));
+    exit($ok ? 0 : 1);
+}
+
+my $line = request_line();
+my @a = split(/ /, $line);
+my $cmd = shift(@a) // '';
+if ($cmd eq 'begin' && @a == 1 && $a[0] =~ $VMID_RE) {
+    cmd_begin($a[0]);
+} elsif ($cmd eq 'end' && @a == 1 && $a[0] =~ $VMID_RE) {
+    cmd_end($a[0]);
+} elsif ($cmd eq 'nbd' && @a == 2 && $a[0] =~ $VMID_RE && $a[1] =~ $DEVICE_RE) {
+    cmd_nbd(@a);
+} else {
+    answer_error("rejected request: $line");
+}

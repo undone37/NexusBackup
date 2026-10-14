@@ -225,6 +225,42 @@ Keep in mind:
   network) and starts it again if it was running. The restored guest stays, switched off, under its
   `-restore` name. The job log lists every step, including a rollback that did not complete.
 
+### Roll back in place (VMs, changed blocks only)
+
+After ransomware or a failed update, a large VM often differs from its last good snapshot in only a few percent
+of its blocks. **Roll back in place (changed blocks only)** under **Replace the original guest** writes exactly
+those blocks back onto the original VM's disks instead of restoring all of it to a new VM: minutes instead of
+hours for a 2 TB VM with 5 % changed, and the VM keeps its ID, MAC addresses and everything that refers to it.
+It needs the same approval as a replace.
+
+The job runs these steps:
+
+1. The VM is **paused** and its **current state is backed up** (an ordinary incremental snapshot that reads only
+   what changed since the newest backup). That snapshot keeps the state before the rollback, so nothing is lost
+   if the rollback was a mistake.
+2. The VM is **stopped**, marked with the tag `nexus-rollback` and locked (`rollback`): Proxmox VE refuses to
+   start it until the rollback is done.
+3. For each disk the snapshot you chose and the state just backed up are compared block by block (4 MiB chunks,
+   by their checksums, without reading data); only the differing blocks are written back.
+4. The lock and the tag go away; with **Power on after the restore** ticked the VM starts (with **Disconnect
+   the network** ticked, its interfaces are disconnected first).
+
+The VM's **configuration stays as it is now** (CPU, memory, network); only disk contents are rolled back.
+Disks that are not in the snapshot (`backup=0` or excluded from the group) are left as they are.
+
+When a rollback in place is not possible, the job does the **full replace** described above instead and says
+why in its log: the VM is switched off (Proxmox VE keeps its change tracking only while the VM runs), its VMID now
+belongs to another VM, disks were added, removed or resized since the snapshot, or Proxmox VE lost the change
+tracking (the VM was restarted since the last backup). If a rollback is interrupted while it writes (the
+appliance or the node restarted), the VM stays stopped and locked: run the same rollback again, it continues
+from the state backed up in step 1.
+
+![Roll back in place in the restore dialog](images/restore-rollback.png)
+
+> **Status:** Implemented in Phase 30 and tested against the node helper, the root service and qemu-nbd without
+> Proxmox VE; not yet run on a Proxmox VE host. Needs version 0.1.x of the `nexusbackup-pve` package on every node
+> (it adds the `nexusbackup-rollback.socket` service).
+
 ### Restore several guests at once
 
 **Restore several** (top right on the Snapshots page) restores many guests of one tenant in one step, for

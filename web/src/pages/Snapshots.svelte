@@ -275,6 +275,8 @@
   let rLinkDown = $state(false);
   let rReplace = $state(false);
   let rKeepLinks = $state(false);
+  // Phase 30: replace by rolling the VM back in place (changed chunks only)
+  let rRollback = $state(false);
   let rScan: ScanFirstOpt | '' = $state('');
 
   // Phase 21e: YARA scan of a snapshot (results in ScanResults)
@@ -309,6 +311,7 @@
     rLinkDown = m === 'instant';
     rReplace = false;
     rKeepLinks = false;
+    rRollback = false;
     rScan = '';
     dlgOpen = true;
   }
@@ -346,6 +349,7 @@
     if (rReplace && mode === 'restore') {
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
+      if (rRollback && kind === 'restore') params.rollback = true;
     }
     const r = await act(post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }), (d) =>
       d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued,
@@ -830,6 +834,12 @@
             <label class="inline-check"><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label>
           </div>
           {#if rReplace}
+            {#if sel?.source.startsWith('vm-')}
+              <div class="field">
+                <label class="inline-check"><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{t.p30.rollback.label}</label>
+                <div class="hint">{t.p30.rollback.hint(origVmid(sel))}</div>
+              </div>
+            {/if}
             <p class="banner warn">{t.ropts.replaceHint(origVmid(sel))}</p>
             <div class="field">
               <label class="inline-check"><input id="r-keeplinks" type="checkbox" bind:checked={rKeepLinks} />{t.ropts.keepLinks}</label>
