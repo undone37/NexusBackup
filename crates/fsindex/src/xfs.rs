@@ -263,7 +263,7 @@ impl Xfs {
                 if n * 16 > ino.fork.len() {
                     return Err("xfs: extent list larger than the inode".into());
                 }
-                out.extend(ino.fork.chunks_exact(16).take(n).map(ext));
+                out.extend(ino.fork.as_chunks::<16>().0.iter().take(n).map(|c| ext(c)));
             }
             3 => {
                 // root in the inode: level, records; keys, then pointers at the fork's maxrecs

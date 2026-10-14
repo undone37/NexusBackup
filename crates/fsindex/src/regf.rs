@@ -235,7 +235,7 @@ fn name(raw: &[u8], compressed: bool) -> String {
     if compressed {
         raw.iter().map(|&b| b as char).collect()
     } else {
-        let u: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let u: Vec<u16> = raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         String::from_utf16_lossy(&u)
     }
 }
