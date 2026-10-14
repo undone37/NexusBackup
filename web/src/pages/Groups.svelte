@@ -5,7 +5,8 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { href } from '../lib/router.svelte';
-  import { fmtAgo, fmtBytes, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtBytes, fmtIn, fmtTime } from '../lib/format';
+  import JobState from '../components/JobState.svelte';
   import { t } from '../lib/i18n';
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds } from '../lib/plugins';
@@ -447,6 +448,7 @@
             <th scope="col">{t.groups.source}</th>
             <th scope="col">{t.groups.policy}</th>
             <th scope="col">{t.groups.guestsShort}</th>
+            <th scope="col">{t.groups.lastBackup}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
@@ -482,6 +484,21 @@
                     ? x.guests.map(guestText).join(', ')
                     : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}{/if}</td
               >
+              <td class="nowrap">
+                {#if x.last_backup}
+                  <a href={href(`/jobs/${x.last_backup.id}`)} class="plain-link"
+                    ><JobState state={x.last_backup.state} /></a
+                  >
+                  {#if x.last_backup.finished}<span class="muted small" title={fmtTime(x.last_backup.finished)}
+                      >{fmtAgo(x.last_backup.finished)}</span
+                    >{/if}
+                {:else}
+                  <span class="muted small">{t.groups.neverBackedUp}</span>
+                {/if}
+                {#if x.next_backup && !isPaused(x.paused_until)}<div class="muted small" title={fmtTime(x.next_backup)}>
+                    {t.groups.nextBackup(fmtIn(x.next_backup))}
+                  </div>{/if}
+              </td>
               <td class="actions">
                 {#if can.backup(session.user)}
                   <button

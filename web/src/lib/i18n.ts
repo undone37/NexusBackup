@@ -48,6 +48,12 @@ export const en = {
     tenant_user: "Tenant user",
     viewer: "Viewer",
   } as Record<string, string>,
+  inTime: {
+    now: "now",
+    min: (n: number) => `in ${n} min`,
+    h: (n: number) => `in ${n} h`,
+    d: (n: number) => `in ${n} d`,
+  },
   ago: {
     never: "never",
     now: "just now",
@@ -1641,6 +1647,9 @@ export const en = {
     tierHint: "Shown in the SLA report and on the Tenants page.",
   },
   groups: {
+    lastBackup: "Last backup",
+    neverBackedUp: "never backed up",
+    nextBackup: (when: string) => `next ${when}`,
     title: "Protection groups",
     lede: "What is backed up, from which source and under which policy.",
     new: "New group",

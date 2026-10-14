@@ -716,6 +716,9 @@ export interface FileFilters {
 }
 
 export interface Group {
+  /** GET /groups: the newest backup job of the group (null: never) and the next scheduled start (null: none) */
+  last_backup?: { id: number; state: JobState; started: number | null; finished: number | null } | null;
+  next_backup?: number | null;
   id: number;
   tenant: string;
   source_id: number;

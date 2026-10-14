@@ -1833,11 +1833,28 @@ function checkTz(tz: unknown): string {
 }
 
 /** GET /groups: run state (paused, source maintenance, active blackout window). */
+/** The next start of a policy schedule (demo: exact for `daily HH:MM` in UTC, else one period ahead). */
+function nextStart(schedule: string | undefined): number | null {
+  if (!schedule || !parseSchedule(schedule)) return null;
+  const d = /^daily (\d\d):(\d\d)$/.exec(schedule);
+  if (d) {
+    const day = Math.floor(now() / DAY) * DAY + Number(d[1]) * 3600 + Number(d[2]) * 60;
+    return day > now() ? day : day + DAY;
+  }
+  return now() + Math.max(300, schedulePeriod(schedule));
+}
+
 function groupState(g: (typeof db.groups)[number]) {
   const pol = db.policies.find((p) => p.id === g.policy_id);
   const src = db.sources.find((s) => s.id === g.source_id);
+  // like the API: the newest backup job of the group and the next scheduled start
+  const lastJob = db.jobs
+    .filter((j) => (j.kind === 'backup' || j.kind === 'plugin_backup') && j.params.group_id === g.id)
+    .sort((a, b) => b.id - a.id)[0];
   return {
     ...g,
+    last_backup: lastJob ? { id: lastJob.id, state: lastJob.state, started: lastJob.started, finished: lastJob.finished } : null,
+    next_backup: nextStart(pol?.schedule),
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
     index_files: g.index_files ?? false,

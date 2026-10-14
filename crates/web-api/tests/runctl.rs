@@ -537,3 +537,25 @@ async fn job_detail_lists_its_follow_ups() {
         2
     );
 }
+
+/// The groups list says how the last backup went and when the next one starts.
+#[tokio::test]
+async fn groups_show_last_and_next_backup() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created, started, finished) VALUES
+               (60, 'backup', 'acme', '{\"group_id\":1}', 'failed', 'scheduler', 10, 11, 20),
+               (61, 'backup', 'acme', '{\"group_id\":1}', 'ok', 'scheduler', 30, 31, 40),
+               (62, 'retention', 'acme', '{\"group_id\":1,\"chain\":true}', 'ok', 'scheduler', 41, 41, 42);",
+        )
+        .unwrap();
+    let list = t.get("/api/v1/groups", &alice).await.body;
+    let g = |id: i64| list.as_array().unwrap().iter().find(|g| g["id"] == id).unwrap().clone();
+    assert_eq!((g(1)["last_backup"]["id"].clone(), g(1)["last_backup"]["state"].clone()), (json!(61), json!("ok")));
+    assert!(g(2)["last_backup"].is_null(), "never backed up");
+    let next = g(1)["next_backup"].as_i64().unwrap();
+    assert!(next > catalog::now() && next <= catalog::now() + 86400, "daily 22:00: within a day");
+}

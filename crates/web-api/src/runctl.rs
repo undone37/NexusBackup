@@ -50,13 +50,38 @@ fn resolved_guests(c: &Connection, group_id: i64) -> ApiResult<Vec<Value>> {
 /// `resolved_guests` (what a backup of the group covers now).
 pub fn group_states(c: &Connection, mut rows: Vec<Value>) -> ApiResult<Vec<Value>> {
     let now = catalog::now();
+    // the newest backup job of every group (one pass over the jobs), for "last backup"
+    let mut last: std::collections::HashMap<i64, Value> = std::collections::HashMap::new();
+    let mut st = c.prepare(
+        "SELECT j.id, j.state, j.started, j.finished, json_extract(j.params, '$.group_id') FROM jobs j
+         JOIN (SELECT MAX(id) AS id FROM jobs WHERE kind IN ('backup', 'plugin_backup')
+               AND json_extract(params, '$.group_id') IS NOT NULL
+               GROUP BY json_extract(params, '$.group_id')) m ON m.id = j.id",
+    )?;
+    for r in st.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(4)?,
+            json!({"id": r.get::<_, i64>(0)?, "state": r.get::<_, String>(1)?,
+                   "started": r.get::<_, Option<i64>>(2)?, "finished": r.get::<_, Option<i64>>(3)?}),
+        ))
+    })? {
+        let (g, j) = r?;
+        last.insert(g, j);
+    }
     for g in rows.iter_mut() {
-        let (paused, maint, blackout): (Option<i64>, Option<i64>, String) = c.query_row(
-            "SELECT g.paused_until, s.maintenance_until, p.blackout FROM groups g
+        let (paused, maint, blackout, schedule): (Option<i64>, Option<i64>, String, String) = c.query_row(
+            "SELECT g.paused_until, s.maintenance_until, p.blackout, p.schedule FROM groups g
              JOIN sources s ON s.id = g.source_id JOIN policies p ON p.id = g.policy_id WHERE g.id = ?1",
             [g["id"].as_i64()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
+        let id = g["id"].as_i64().unwrap_or_default();
+        g["last_backup"] = last.remove(&id).unwrap_or(Value::Null);
+        // when the policy's schedule next starts a backup (in the group's time zone)
+        g["next_backup"] = json!(schedule::Schedule::parse(&schedule)
+            .and_then(|s| s.in_tz(g["timezone"].as_str().unwrap_or("UTC")))
+            .ok()
+            .and_then(|s| s.next_slot(now)));
         let windows: Vec<Window> = serde_json::from_str(&blackout).unwrap_or_default();
         let active = schedule::tz(g["timezone"].as_str().unwrap_or("UTC"))
             .ok()

@@ -15,6 +15,16 @@ export function fmtAgo(ts: number | null | undefined, now = Date.now() / 1000): 
   return t.ago.d(Math.round(d / 86400));
 }
 
+/** A time ahead as "in 25 min", "in 3 h", "in 2 d" ("now" when due). */
+export function fmtIn(ts: number | null | undefined, now = Date.now() / 1000): string {
+  if (!ts) return '—';
+  const d = ts - now;
+  if (d < 90) return t.inTime.now;
+  if (d < 5400) return t.inTime.min(Math.round(d / 60));
+  if (d < 129600) return t.inTime.h(Math.round(d / 3600));
+  return t.inTime.d(Math.round(d / 86400));
+}
+
 export function fmtBytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
   const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
