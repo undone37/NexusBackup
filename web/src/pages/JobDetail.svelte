@@ -167,7 +167,9 @@
             <dd class="tabular">{t.jobs.bytesOf(fmtBytes(prog.done ?? 0), fmtBytes(prog.total))}</dd>
           {:else if prog.entries}
             <dt>{t.jobs.part}</dt>
-            <dd class="tabular">{t.jobs.entries(prog.entries)}</dd>
+            <dd class="tabular">
+              {prog.entries_total ? t.jobs.entriesOf(prog.entries, prog.entries_total) : t.jobs.entries(prog.entries)}
+            </dd>
           {/if}
           <dt>{t.jobs.transferred}</dt>
           <dd class="tabular">{fmtBytes(prog.bytes ?? 0)}</dd>

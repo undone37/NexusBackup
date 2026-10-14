@@ -179,19 +179,43 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         })
         .unwrap_or_default();
     let helper = Helper::new(&helper_bin());
-    // live progress (docs/control-plane.md "Live progress"): the volume being listed
+    // live progress (docs/control-plane.md "Live progress"): the volume being listed, its
+    // entries so far and an estimate of all (the previous snapshot's count of the same
+    // volume, else the walker's from the file system metadata), at most every EVERY
+    let before: HashMap<String, u64> = prev
+        .as_ref()
+        .map(|(_, r)| {
+            r.volumes
+                .iter()
+                .map(|v| (v.volume.key.clone(), v.volume.entries))
+                .collect()
+        })
+        .unwrap_or_default();
     let mut n = 0u32;
-    let mut listed = parent::list(&mut src, &helper, limits, &mut |v: &Volume| {
-        n += 1;
-        chunkstore::progress::Line {
-            item: Some(m.source.clone()),
-            part: Some(v.browse.clone()),
-            part_index: Some(n),
-            ..Default::default()
-        }
-        .print();
-        reusable.contains_key(&v.key)
-    })
+    let mut last: Option<std::time::Instant> = None;
+    let mut listed = parent::list_with_progress(
+        &mut src,
+        &helper,
+        limits,
+        &mut |v: &Volume| reusable.contains_key(&v.key),
+        &mut |v: &Volume, entries, expect| {
+            if entries == 0 && expect.is_none() {
+                n += 1; // a volume starts
+            } else if last.is_some_and(|t| t.elapsed() < chunkstore::progress::EVERY) {
+                return;
+            }
+            last = Some(std::time::Instant::now());
+            chunkstore::progress::Line {
+                item: Some(m.source.clone()),
+                part: Some(format!("{} ({})", v.browse, v.fs)),
+                part_index: Some(n),
+                entries: Some(entries),
+                entries_total: before.get(&v.key).copied().filter(|&e| e > 0).or(expect),
+                ..Default::default()
+            }
+            .print();
+        },
+    )
     .context("guest file systems")?;
     // fill the reused volumes from the previous snapshot's name index
     let mut reused = 0;

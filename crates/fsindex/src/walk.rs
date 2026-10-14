@@ -17,6 +17,10 @@ pub trait Driver {
     /// The volume is done (`state` set); also called for volumes that are
     /// not parsed (unsupported, skipped, reused).
     fn end(&mut self, v: &Volume) -> io::Result<()>;
+    /// Estimated entries of the volume being walked (live progress only; may be off).
+    fn expect(&mut self, _entries: u64) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Limits and bookkeeping of one walk, handed to the file system walkers.
@@ -50,6 +54,13 @@ impl Out<'_> {
         self.total += 1;
         info.entries += 1;
         Ok(true)
+    }
+
+    /// The walker's estimate of the volume's entries (live progress only).
+    pub fn expect(&mut self, entries: u64) {
+        if let Err(e) = self.driver.expect(entries) {
+            self.fatal = Some(e);
+        }
     }
 
     /// A directory that could not be read (the volume becomes `partial`).

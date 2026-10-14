@@ -4150,6 +4150,18 @@ function progressItems(j: Job): ProgressItem[] {
 /** Like the scheduler's aggregate of the connectors' `progress {json}` lines (crates/scheduler/src/progress.rs). */
 function mockProgress(j: Job): Json | null {
   if (j.state !== 'running' || j.started === null) return null;
+  if (j.kind === 'file_index') {
+    // like nexus-pve's file index walk: entries of the volume and an estimate (no bytes)
+    const elapsed = Math.max(0, now() - j.started);
+    const f = Math.min(0.99, elapsed / j.duration);
+    const total = 391_000;
+    return {
+      item: j.params.source, label: null, item_index: null, items: null, items_done: 0,
+      part: 'vdb3 (ntfs)', part_index: 2, parts: null, done: null, total: null,
+      entries: Math.round(f * total), entries_total: total, item_percent: Math.round(f * 1000) / 10,
+      percent: null, bytes: 0, rate: null, eta: null, item_eta: null, elapsed, updated: now(),
+    };
+  }
   const items = j.items ?? progressItems(j);
   if (!items.length) return null;
   const t = now();

@@ -36,9 +36,11 @@ struct Cur {
 }
 
 fn frac(l: &Line) -> Option<f64> {
-    let part = match (l.done, l.total) {
-        (Some(d), Some(t)) if t > 0 => (d as f64 / t as f64).min(1.0),
-        (_, Some(0)) => 1.0,
+    let part = match (l.done, l.total, l.entries, l.entries_total) {
+        (Some(d), Some(t), ..) if t > 0 => (d as f64 / t as f64).min(1.0),
+        (_, Some(0), ..) => 1.0,
+        // an estimate: 99 % until the part ends
+        (None, None, Some(e), Some(t)) if t > 0 => (e as f64 / t as f64).min(0.99),
         _ => return None,
     };
     Some(match (l.part_index, l.parts) {
@@ -146,6 +148,7 @@ impl Tracker {
             v["done"] = json!(l.done);
             v["total"] = json!(l.total);
             v["entries"] = json!(l.entries);
+            v["entries_total"] = json!(l.entries_total);
             v["item_percent"] = json!(frac(l).map(pct));
         }
         if self.active.len() > 1 {
@@ -169,6 +172,27 @@ mod tests {
 
     fn l(s: &str) -> Line {
         Line::parse(&format!("progress {s}")).unwrap()
+    }
+
+    #[test]
+    fn estimated_entries_give_a_percentage_below_100() {
+        let mut t = Tracker::default();
+        let now = Instant::now();
+        t.line(
+            l(r#"{"item":"vm-101","part":"vdb3 (ntfs)","entries":150,"entries_total":600}"#),
+            now,
+        );
+        assert_eq!(t.snapshot(now).unwrap()["item_percent"], 25.0);
+        t.line(
+            l(r#"{"item":"vm-101","part":"vdb3 (ntfs)","entries":700,"entries_total":600}"#),
+            now,
+        );
+        let s = t.snapshot(now).unwrap();
+        assert_eq!(s["item_percent"], 99.0, "an estimate never shows 100 %");
+        assert_eq!(
+            (s["entries"].clone(), s["entries_total"].clone(), s["bytes"].clone()),
+            (700.into(), 600.into(), 0.into())
+        );
     }
 
     #[test]

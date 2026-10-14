@@ -353,8 +353,9 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   is optional; a line is the current state, not a delta:
   `item` (snapshot source, e.g. `vm-101`), `label` (guest / agent / dataset name), `item_index` (1-based), `items`,
   `part` (disk `scsi0`, `tar stream`, `scan`, `transfer`), `part_index` (1-based), `parts`, `done` / `total` (bytes of
-  the part; `total` absent = unknown), `entries` (count for a part without a byte total), `end` (`ok` | `failed`: the
-  item ended). Example:
+  the part; `total` absent = unknown), `entries` (count for a part without a byte total), `entries_total` (an
+  estimate of `entries`: the item fraction then uses `entries / entries_total`, at most 99 % until the part ends),
+  `end` (`ok` | `failed`: the item ended). Example:
   `progress {"item":"vm-101","label":"dc1dev","item_index":2,"items":3,"part":"scsi0","part_index":1,"parts":2,"done":1048576,"total":4294967296}`.
   The helpers in `chunkstore::progress` (`item` / `start_item` / `end_item`, `Meter`, `Reader`) emit them; a `Meter`
   prints at most every 2 s (plus at the start and end of a part), so the data path pays one clock read per call. An
@@ -363,7 +364,10 @@ mapped, setuid/setgid/sticky cleared, devices/sockets skipped, only xattrs the t
   bytes to read: dirty extents below the previous size plus any grown area, `Store::image_extents_bytes`; container
   tar stream without a total; full VM restores per served disk), nexus-agentctl `backup` (item `host-<id>` named by
   the agent's name, part `scan` counting entries, then `transfer` with the requested bytes as total; the scheduler
-  numbers the items by CLI step, one per agent), nexus-truenas (one item per dataset, no bytes). nexus-nas and the
+  numbers the items by CLI step, one per agent), nexus-truenas (one item per dataset, no bytes), nexus-pve `files …
+  index` (item = the snapshot source, part = each parsed volume `vdb3 (ntfs)`, `entries` from the helper's batches
+  with `entries_total` = the same volume's count in the previous snapshot, else the walker's estimate: ext4 used
+  inodes from the superblock, NTFS MFT records; helper frame `P`; FAT/exFAT count only). nexus-nas and the
   plugin host report nothing yet (log only).
 - **Scheduler**: the output pumps split stdout/stderr into lines; `progress` lines (also malformed ones) never reach
   the log, the tracker keeps the newest line per item and aggregates: current item (newest line), items done (`end`

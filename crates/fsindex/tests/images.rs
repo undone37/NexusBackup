@@ -120,7 +120,34 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
     let mut src = Files {
         disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
     };
-    parent::list(&mut src, &helper(), Limits::default(), &mut |_| false).unwrap()
+    // live progress: (entries so far, the walker's estimate) per volume
+    let mut seen: std::collections::HashMap<String, (u64, Option<u64>)> = Default::default();
+    let l = parent::list_with_progress(
+        &mut src,
+        &helper(),
+        Limits::default(),
+        &mut |_| false,
+        &mut |v, n, e| {
+            let s = seen.entry(v.key.clone()).or_default();
+            s.0 = n;
+            s.1 = e.or(s.1);
+        },
+    )
+    .unwrap();
+    for x in l.iter().filter(|x| x.volume.state == "indexed") {
+        let (n, e) = seen[&x.volume.key];
+        assert_eq!(
+            n,
+            x.entries.len() as u64,
+            "{}: last progress = all entries",
+            x.volume.browse
+        );
+        if matches!(x.volume.fs.as_str(), "ext4" | "ntfs") {
+            let e = e.unwrap_or_else(|| panic!("{}: no estimate", x.volume.browse));
+            assert!(e >= n / 2, "{}: estimate {e} for {n} entries", x.volume.browse);
+        }
+    }
+    l
 }
 
 fn vol<'a>(l: &'a [Listed], browse: &str) -> &'a Listed {

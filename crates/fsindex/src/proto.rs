@@ -283,6 +283,10 @@ impl<R: Read, W: Write> Driver for HelperDriver<R, W> {
         write_frame(&mut c.w, b'Z', &serde_json::to_vec(v)?)?;
         c.w.flush()
     }
+
+    fn expect(&mut self, entries: u64) -> io::Result<()> {
+        write_frame(&mut self.chan.borrow_mut().w, b'P', &entries.to_le_bytes())
+    }
 }
 
 /// The helper's main loop: config, walk, `Q` (or `X` with the error).

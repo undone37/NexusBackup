@@ -66,11 +66,24 @@ pub fn list(
     limits: Limits,
     reuse: &mut dyn FnMut(&Volume) -> bool,
 ) -> io::Result<Vec<Listed>> {
+    list_with_progress(src, helper, limits, reuse, &mut |_, _, _| {})
+}
+
+/// [`list`] with live progress: `progress(volume, entries so far, the walker's
+/// estimate)` while a volume is parsed (after each batch of entries; the
+/// caller throttles).
+pub fn list_with_progress(
+    src: &mut dyn Source,
+    helper: &Helper,
+    limits: Limits,
+    reuse: &mut dyn FnMut(&Volume) -> bool,
+    progress: &mut dyn FnMut(&Volume, u64, Option<u64>),
+) -> io::Result<Vec<Listed>> {
     let mut out: Vec<Listed> = Vec::new();
     let mut known: HashMap<String, usize> = HashMap::new();
     let mut crashed: BTreeSet<String> = BTreeSet::new();
     for attempt in 0..=MAX_RESTARTS {
-        match run_once(src, helper, limits, reuse, &mut out, &mut known, &crashed)? {
+        match run_once(src, helper, limits, reuse, progress, &mut out, &mut known, &crashed)? {
             Run::Done => return Ok(out),
             Run::Crashed(key, why) => {
                 eprintln!(
@@ -92,11 +105,13 @@ pub fn list(
     Err(io::Error::other("the file system helper failed repeatedly"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_once(
     src: &mut dyn Source,
     helper: &Helper,
     limits: Limits,
     reuse: &mut dyn FnMut(&Volume) -> bool,
+    progress: &mut dyn FnMut(&Volume, u64, Option<u64>),
     out: &mut Vec<Listed>,
     known: &mut HashMap<String, usize>,
     crashed: &BTreeSet<String>,
@@ -126,6 +141,7 @@ fn run_once(
         cache_bytes: 128 << 20,
     };
     let mut current: Option<usize> = None;
+    let mut expect: Option<u64> = None;
     let mut total = 0u64;
     let result = (|| -> io::Result<Run> {
         write_frame(&mut w, b'C', &serde_json::to_vec(&cfg)?)?;
@@ -193,9 +209,11 @@ fn run_once(
                     write_frame(&mut w, b'A', &[u8::from(!skip)])?;
                     w.flush()?;
                     current = (!skip).then_some(i);
+                    expect = None;
                     if !skip {
                         out[i].entries.clear();
                         out[i].reads.clear();
+                        progress(&out[i].volume, 0, None);
                     }
                 }
                 b'E' => {
@@ -206,6 +224,12 @@ fn run_once(
                     if total > limits.max_entries + 1 {
                         return Err(io::Error::other("the helper sent more entries than allowed"));
                     }
+                    progress(&out[i].volume, out[i].entries.len() as u64, expect);
+                }
+                b'P' if p.len() == 8 => {
+                    let i = current.ok_or_else(|| io::Error::other("estimate outside a volume"))?;
+                    expect = Some(u64::from_le_bytes(p[..8].try_into().unwrap()));
+                    progress(&out[i].volume, out[i].entries.len() as u64, expect);
                 }
                 b'Z' => {
                     let v: Volume = crate::proto::parse_volume(&p)?;

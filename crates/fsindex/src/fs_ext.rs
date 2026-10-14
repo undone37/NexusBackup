@@ -10,6 +10,10 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // needs_recovery (incompat 0x4): mounted when the snapshot was taken
     let sb = v.read_vec(1024, 1024).map_err(|e| e.to_string())?;
     info.dirty = le32(&sb, 0x60) & 0x4 != 0;
+    // used inodes (s_inodes_count - s_free_inodes_count) less the reserved ones below
+    // s_first_ino: about one entry each
+    let used = le32(&sb, 0).saturating_sub(le32(&sb, 0x10));
+    out.expect(u64::from(used.saturating_sub(le32(&sb, 0x54).saturating_sub(1))));
     let fs = Ext4::load(Box::new(v.clone())).map_err(|e| format!("ext4: {e}"))?;
     info.label = fs.label().to_str().ok().filter(|s| !s.is_empty()).map(str::to_owned);
     info.uuid = Some(fs.uuid().to_string().to_lowercase());

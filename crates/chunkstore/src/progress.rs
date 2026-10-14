@@ -11,8 +11,9 @@
 //!
 //! `done`/`total` are bytes of the current `part` (a disk, the tar stream, the
 //! chunk transfer), `entries` counts items of a part without a byte total (an
-//! agent's scan). [`start_item`] also prints the human line `item 2/3: vm-101
-//! dc1dev` (it stays in the log). Several items may run at once (parallel
+//! agent's scan, a file index walk) and `entries_total` estimates them.
+//! [`start_item`] also prints the human line `item 2/3: vm-101 dc1dev` (it
+//! stays in the log). Several items may run at once (parallel
 //! guests): the item context is per thread. A [`Meter`] prints at most every
 //! [`EVERY`], so the data path pays one `Instant::now()` per call.
 
@@ -51,6 +52,9 @@ pub struct Line {
     pub total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<u64>,
+    /// estimated `entries` of the part (a percentage without byte totals; may be off)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries_total: Option<u64>,
     /// the item ended: `ok` | `failed`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<String>,

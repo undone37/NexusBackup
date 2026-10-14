@@ -584,6 +584,8 @@ export const en = {
     itemsDone: (d: number, n: number) => `${d} of ${n} ${n === 1 ? "item" : "items"} done`,
     bytesOf: (done: string, total: string) => `${done} of ${total}`,
     entries: (n: number) => `${n.toLocaleString("en-US")} entries scanned`,
+    entriesOf: (n: number, total: number) =>
+      `${n.toLocaleString("en-US")} of about ${total.toLocaleString("en-US")} entries`,
     transferred: "Read so far",
     rate: "Current rate",
     eta: "Time remaining",

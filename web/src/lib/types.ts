@@ -1088,6 +1088,8 @@ export interface JobProgress {
   done?: number | null;
   total?: number | null;
   entries?: number | null;
+  /** Estimated entries of the part (file index walk), null = unknown */
+  entries_total?: number | null;
   item_percent?: number | null;
   percent?: number | null;
   /** bytes moved so far over all items */

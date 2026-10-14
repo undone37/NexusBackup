@@ -42,6 +42,13 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     if let Ok(vi) = ntfs.volume_info(&mut fs) {
         info.dirty = vi.flags().contains(NtfsVolumeFlags::IS_DIRTY);
     }
+    // MFT records (in use or free): an upper estimate of the entries
+    if let Some(Ok(d)) = ntfs.file(&mut fs, 0).ok().as_ref().and_then(|m| m.data(&mut fs, "")) {
+        if let Ok(a) = d.to_attribute() {
+            let records = a.value_length() / u64::from(ntfs.file_record_size().max(1));
+            out.expect(records.saturating_sub(FIRST_USER_RECORD));
+        }
+    }
     let mut stack: Vec<(u64, String, usize)> = vec![(ROOT, String::new(), 0)];
     // NTFS has no directory hard links: a directory seen twice is a loop
     let mut visited = std::collections::HashSet::from([ROOT]);

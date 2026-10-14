@@ -411,7 +411,11 @@ parameters. While the job runs, the page refreshes every 2 seconds (**Live — r
 
 - **Progress**: the **Overall** bar (items done of all items, plus the share of the current item), and a bar for
   the current item with the guest (or agent, dataset) and its name, and the part being read: the disk of a VM
-  (`scsi0`, 1 of 2), the tar stream of a container, the scan and then the chunk transfer of an agent.
+  (`scsi0`, 1 of 2), the tar stream of a container, the scan and then the chunk transfer of an agent. A **File
+  index** job shows the guest volume being listed (`vdb3 (ntfs)`) and its files and folders so far of about how many
+  there are: the count of the previous snapshot, or for the first one an estimate from the file system. Because it is
+  an estimate, the bar waits at 99 % when the volume has more files than expected and ends below 100 % when it has
+  fewer.
 - **Item** (2 of 3), **Part** (bytes read of the bytes to read; for an incremental VM backup only the changed
   areas count, so 41 GiB of a 200 GiB disk can be the whole work), **Read so far** (all items), **Current rate**
   (MB/s over the last 10 seconds), **Time remaining** (estimated from the progress so far, so it settles after a
