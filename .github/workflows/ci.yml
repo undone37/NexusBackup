@@ -3,7 +3,8 @@ on: [push, pull_request]
 # a newer push to the same branch makes the older run pointless
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # main: a running check finishes (only the newest pending run waits); branches: the newest wins
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   rust:
     runs-on: self-hosted
