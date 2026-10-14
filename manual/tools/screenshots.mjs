@@ -1585,6 +1585,42 @@ async function main() {
       await settle();
       await login('admin');
     }],
+    // Phase 30: just-in-time elevation of the operator "lead" (eligible for admin)
+    ['p30-elevation', async () => {
+      await login('lead');
+      await ev(`document.querySelector('header button[aria-label^="Elevate to"]').click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #el-reason')`, 'elevate dialog');
+      await ev(`$fill('#el-min', '60'); $fill('#el-reason', 'CHG-2231: rotate the web certificate'); $fill('#el-pw', 'nexus'); $fill('#el-totp', '492039'); return true;`);
+      await shot('elevate-dialog');
+      await ev(`$click('Elevate'); return true;`);
+      await until(`return !document.querySelector('dialog[open]') && document.body.innerText.includes('Elevated to Administrator')`, 'elevated banner');
+      await settle();
+      await shot('elevated-banner');
+      await ev(`$click('End now'); return true;`);
+      await settle();
+      await login('admin');
+    }],
+    // Phase 30: replace original by rolling the VM back in place
+    ['p30-rollback', async () => {
+      await go(`/snapshots?source=vm-100`);
+      await ev(`$rowClick('vm-100', 'Restore'); return true;`);
+      await until(`return !!$button('Full restore')`, 'restore menu');
+      await ev(`$click('Full restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-target')`, 'restore dialog');
+      await ev(`$fill('#r-target', '9100'); $fill('#r-storage', 'local-lvm'); $check('#r-start'); $check('#r-replace'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-rollback')`, 'rollback option');
+      await ev(`$check('#r-rollback'); document.querySelector('dialog[open] #r-rollback').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('restore-rollback', { height: 1400, scrolled: true });
+      await closeDialogs();
+    }],
+    // Phase 30: the second offsite target of acme (a Storage Box keeping monthly snapshots for 7 years)
+    ['p30-second-offsite', async () => {
+      await go('/tenants');
+      await ev(`$rowMenu('acme', 'Second target'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #o2-gfs-monthly')`, 'second target dialog');
+      await shot('tenant-second-offsite', { height: 1200 });
+      await closeDialogs();
+    }],
   ];
 
   let failed = 0;

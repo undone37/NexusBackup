@@ -179,6 +179,25 @@ lab runs pending). Deviations from the proposals above:
   high) instead of raw thresholds. A ransomware-encrypted guest shows up as "same size, nothing deduplicates, takes
   three times as long". Effort S–M; `crates/scheduler` anomaly.rs, `backup_stats`. [17]
 
+**Status (Phase 30): all five Tier 2 items are implemented** (API, scheduler, node helper and keyd tests, demo
+backend; lab runs pending). Deviations from the proposals above:
+
+- **Rollback:** an option of "replace original" (approval `restore.replace`). The VM's current dirty bitmap is read
+  by a pre-rollback incremental backup of the paused VM (the bitmap is only reachable through a backup job; the
+  backup also keeps the current state, instead of a PVE snapshot), then the VM is stopped, tagged `nexus-rollback`
+  and locked. The node's write path is a new socket-activated root service behind the helper's
+  `rollback-begin|nbd|end` commands (qemu-nbd with the storage's format, no paths from the appliance); the helper
+  itself stays unprivileged. Only disk contents are rolled back, the VM configuration stays. Fallback to the full
+  replace when the VM is stopped, its identity or disk layout changed or a bitmap cannot be reused.
+- **Second offsite target:** a target plus its own `gfs` per tenant (`PUT /tenants/{name}/offsite2`); the first
+  target got its own `gfs` too. No per-policy offsite GFS (the per-target retention covers "local 30 days, offsite
+  monthly for 7 years"). Offsite retention is `max(policies, target)` per class (decision 5).
+- **Role elevation:** per session, appliance-wide local operators and viewers only; the approval per elevation is a
+  setting (off by default); posture check `posture.standing_admins` (more than two standing admins).
+- **Post-quantum:** ADR-014; ML-KEM keys derived from the existing X25519 secrets; existing tenant recovery keys and
+  replication peers stay X25519-only until replaced or enrolled again.
+- **Anomalies:** the dedup rate is new data / data read (not unique / logical); duration alone is a warning.
+
 ### Tier 3: later or niche
 
 - **Job priority:** a priority per protection group (high/normal/low) used when caps or the queue are full, and
@@ -229,13 +248,17 @@ lab runs pending). Deviations from the proposals above:
 4. **Freeze configuration (#4).** *Phase 29: a frozen configuration refuses updates like any change; lift the
    freeze (approval) to update.* Should a frozen appliance still accept updates (security fixes during an incident)?
    Proposal: OS updates allowed only through an approval; agent rollouts (Phase 27) frozen.
-5. **Second offsite target (Tier 2).** This revisits plan §2 "Offsite retention identical to local". Proposal: keep
+5. **Second offsite target (Tier 2).** *Decided in Phase 30 (proposal taken): identical by default, longer per target
+   only; the scheduler keeps the larger of the policies' and the target's value per class.* This revisits plan §2 "Offsite retention identical to local". Proposal: keep
    "identical" as the default and allow *longer* offsite retention only (never shorter), so the original customer
    requirement still holds.
-6. **Instant rollback (Tier 2).** Writing into a stopped production VM's disks needs a new write command in the PVE
+6. **Instant rollback (Tier 2).** *Decided in Phase 30 (maintainer: a new helper write command): the helper forwards
+   to a socket-activated root service on the node that writes only a stopped, tagged and locked VM's disks through
+   qemu-nbd; lab spike still pending.* Writing into a stopped production VM's disks needs a new write command in the PVE
    helper (today restores create new volumes or swap). Accept the larger helper surface, or keep rollback as "restore
    to new volumes, then swap" (slower, existing code)? Needs a lab spike.
-7. **Post-quantum (Tier 2).** Which ML-KEM implementation (RustCrypto `ml-kem` vs. a vetted alternative) and whether
+7. **Post-quantum (Tier 2).** *Decided in Phase 30 (proposal taken): keyd hybrid wrapping with RustCrypto `ml-kem`
+   (already in the tree through russh), TLS later (docs/adr.md ADR-014).* Which ML-KEM implementation (RustCrypto `ml-kem` vs. a vetted alternative) and whether
    to move rustls to `aws-lc-rs` for PQ TLS; the latter conflicts with the pure-Rust preference (plan §2, SFTP and
    S3 client decisions). Proposal: keyd hybrid wrapping first (pure Rust), TLS later when a pure-Rust provider offers
    the hybrid group.

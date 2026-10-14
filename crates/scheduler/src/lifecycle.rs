@@ -145,6 +145,8 @@ impl Scheduler {
         let t = &job.tenant;
         match job.kind.as_str() {
             "verify" => self.resolve(&format!("verify:{t}")),
+            // Phase 30: the second offsite target has its own inventory alert
+            "offsite" if job.params["target"].as_u64() == Some(2) => self.resolve(&format!("inventory:{t}:2")),
             "offsite" => self.resolve(&format!("inventory:{t}")),
             "gc" if job.params["approved"] == json!(true) => {
                 self.resolve(&format!("gc_quorum:{t}"))?;

@@ -1,6 +1,7 @@
 //! Minimal NBD client (fixed newstyle, structured replies, block status) for
-//! reading PVE/QEMU exports and their dirty bitmaps. Transport-agnostic: works
-//! over a Unix socket or the stdio of an `ssh` process.
+//! reading PVE/QEMU exports and their dirty bitmaps, and (Phase 30, in-place
+//! rollback) writing to a writable export. Transport-agnostic: works over a
+//! Unix socket or the stdio of an `ssh` process.
 //! Spec: https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md
 
 pub mod server;
@@ -26,7 +27,11 @@ const REP_META_CONTEXT: u32 = 4;
 const INFO_EXPORT: u16 = 0;
 
 const CMD_READ: u16 = 0;
+const CMD_WRITE: u16 = 1;
 const CMD_DISC: u16 = 2;
+const CMD_FLUSH: u16 = 3;
+/// transmission flags (INFO_EXPORT)
+const TFLAG_READ_ONLY: u16 = 1 << 1;
 const CMD_BLOCK_STATUS: u16 = 7;
 
 const REPLY_FLAG_DONE: u16 = 1;
@@ -50,6 +55,8 @@ pub struct Client<R, W> {
     cookie: u64,
     /// meta context name -> id, as acknowledged by the server
     contexts: Vec<(String, u32)>,
+    /// transmission flags of the export
+    tflags: u16,
 }
 
 fn rd<const N: usize>(r: &mut impl Read) -> io::Result<[u8; N]> {
@@ -100,6 +107,7 @@ impl<R: Read, W: Write> Client<R, W> {
             pos: 0,
             cookie: 0,
             contexts: vec![],
+            tflags: 0,
         };
 
         // structured replies are required for block status only; plain reads fall back to simple replies
@@ -144,6 +152,7 @@ impl<R: Read, W: Write> Client<R, W> {
                 REP_ACK => break,
                 REP_INFO if data.len() >= 12 && u16::from_be_bytes([data[0], data[1]]) == INFO_EXPORT => {
                     c.size = u64::from_be_bytes(data[2..10].try_into().unwrap());
+                    c.tflags = u16::from_be_bytes([data[10], data[11]]);
                 }
                 REP_INFO => {}
                 _ => return Err(proto(format!("unexpected GO reply {ty}"))),
@@ -154,6 +163,11 @@ impl<R: Read, W: Write> Client<R, W> {
 
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    /// The export refuses writes.
+    pub fn read_only(&self) -> bool {
+        self.tflags & TFLAG_READ_ONLY != 0
     }
 
     pub fn context_id(&self, name: &str) -> Option<u32> {
@@ -424,6 +438,115 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(())
     }
 
+    /// Writes `writes` (`(offset, data)`, each at most [`MAX_REQUEST`] bytes and inside
+    /// the export) with up to `depth` requests in flight; `done(index)` is called once
+    /// the server acknowledged a write (in any order). Writes are not durable before
+    /// [`Client::flush`].
+    pub fn write_many(
+        &mut self,
+        writes: impl IntoIterator<Item = io::Result<(u64, Vec<u8>)>>,
+        depth: usize,
+        mut done: impl FnMut(usize, u64),
+    ) -> io::Result<()> {
+        use std::collections::HashMap;
+        if self.read_only() {
+            return Err(proto("the export is read-only"));
+        }
+        let depth = depth.max(1);
+        // cookie -> (index, bytes)
+        let mut pending: HashMap<u64, (usize, u64)> = HashMap::new();
+        let mut it = writes.into_iter().enumerate();
+        let mut more = true;
+        while more || !pending.is_empty() {
+            let mut sent = false;
+            while more && pending.len() < depth {
+                let Some((i, w)) = it.next() else {
+                    more = false;
+                    break;
+                };
+                let (off, data) = w?;
+                if data.len() > MAX_REQUEST as usize || off.checked_add(data.len() as u64).is_none_or(|e| e > self.size)
+                {
+                    return Err(proto(format!(
+                        "write of {} bytes at {off} outside the export",
+                        data.len()
+                    )));
+                }
+                self.cookie += 1;
+                let mut m = Vec::with_capacity(28);
+                m.extend(REQUEST_MAGIC.to_be_bytes());
+                m.extend(0u16.to_be_bytes());
+                m.extend(CMD_WRITE.to_be_bytes());
+                m.extend(self.cookie.to_be_bytes());
+                m.extend(off.to_be_bytes());
+                m.extend((data.len() as u32).to_be_bytes());
+                self.w.write_all(&m)?;
+                self.w.write_all(&data)?;
+                pending.insert(self.cookie, (i, data.len() as u64));
+                sent = true;
+            }
+            if sent {
+                self.w.flush()?;
+            }
+            if pending.is_empty() {
+                continue;
+            }
+            let (cookie, err) = match u32_(&mut self.r)? {
+                SIMPLE_REPLY_MAGIC => {
+                    let err = u32_(&mut self.r)?;
+                    (u64_(&mut self.r)?, (err != 0).then(|| format!("server error {err}")))
+                }
+                STRUCTURED_REPLY_MAGIC => {
+                    let flags = u16_(&mut self.r)?;
+                    let ty = u16_(&mut self.r)?;
+                    let cookie = u64_(&mut self.r)?;
+                    let len = u32_(&mut self.r)?;
+                    if len > 1 << 16 {
+                        return Err(proto("write reply too large"));
+                    }
+                    let payload = bytes(&mut self.r, len as usize)?;
+                    if ty & 0x8000 != 0 {
+                        (
+                            cookie,
+                            Some(format!(
+                                "write error: {}",
+                                String::from_utf8_lossy(payload.get(6..).unwrap_or(&[]))
+                            )),
+                        )
+                    } else if flags & REPLY_FLAG_DONE == 0 {
+                        continue;
+                    } else {
+                        (cookie, None)
+                    }
+                }
+                m => return Err(proto(format!("bad reply magic {m:#x}"))),
+            };
+            let (i, n) = pending
+                .remove(&cookie)
+                .ok_or_else(|| proto("reply for an unknown cookie"))?;
+            if let Some(e) = err {
+                return Err(proto(e));
+            }
+            done(i, n);
+        }
+        Ok(())
+    }
+
+    /// Writes `data` at `offset` (one request per [`MAX_REQUEST`] piece).
+    pub fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
+        let pieces = data
+            .chunks(MAX_REQUEST as usize)
+            .enumerate()
+            .map(|(i, p)| Ok((offset + i as u64 * MAX_REQUEST as u64, p.to_vec())));
+        self.write_many(pieces, 1, |_, _| {})
+    }
+
+    /// Makes every acknowledged write durable (NBD_CMD_FLUSH).
+    pub fn flush(&mut self) -> io::Result<()> {
+        let cookie = self.request(CMD_FLUSH, 0, 0)?;
+        self.replies(cookie, None, |_, _| Ok(()))
+    }
+
     /// Extents `(offset, length, flags)` of meta context `ctx` over the whole export.
     pub fn block_status(&mut self, ctx: &str) -> io::Result<Vec<(u64, u64, u32)>> {
         let id = self
@@ -541,6 +664,7 @@ mod tests {
             pos: 0,
             cookie: 0,
             contexts: vec![],
+            tflags: 0,
         };
         let mut got = Vec::new();
         c.read_many(&[(0, 8), (100, 8), (200, 8)], 3, |i, b| {

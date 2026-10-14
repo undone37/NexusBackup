@@ -16,4 +16,5 @@ pub mod parallel;
 pub mod restore;
 pub mod restoretest;
 pub mod restorevm;
+pub mod rollback;
 pub mod scan;

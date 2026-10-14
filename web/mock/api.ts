@@ -133,6 +133,8 @@ interface User {
   risk_since?: number | null;
   risk_until?: number | null;
   risk_reason?: string | null;
+  /** Phase 30: role this operator / viewer may elevate to just in time */
+  eligible_role?: Role | null;
 }
 interface Agent {
   id: string;
@@ -293,7 +295,7 @@ const db = {
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number }>(),
+  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number; elev?: { role: Role; until: number } }>(),
   /** Phase 19b: policies assigned to tenants (tenant admins use only these), deleted tenant names */
   tenantPolicies: {} as Record<string, number[]>,
   tombstones: [] as { name: string; uid: string | null; deleted_at: number; deleted_by: string }[],
@@ -320,6 +322,10 @@ const db = {
   cfgBackup: { appliance_id: null as string | null, latest: null as Json | null },
   /** Phase 13e setting `anomaly` */
   anomaly: { enabled: true, factor: 3, history: 14, floor_bytes: 2 ** 30, ransom_notes: [] } as Json,
+  /** Phase 30: role elevation needs a second person */
+  elevation: { approval: false },
+  /** Phase 30: per-source anomaly sensitivity (`tenant/source` -> level; missing = medium) */
+  sensitivity: { 'initech/vm-102': 'high' } as Record<string, string>,
   /** Phase 21e: admin-supplied YARA rule files and finished snapshot scans */
   yaraRules: [] as Json[],
   scans: [] as Json[],
@@ -522,6 +528,19 @@ function planFor(kind: string, p: Json): string[] {
     case 'restore_ct': {
       const ct = kind === 'restore_ct';
       const vmid = String(src).slice(3);
+      // Phase 30: replace by rolling back in place (changed chunks only)
+      if (p.rollback && !ct) {
+        const pre = now() - 60;
+        return [
+          `VM ${vmid} paused: backing up its current state (pre-rollback snapshot)`,
+          `committed vm-${vmid}/${pre}`,
+          `pre-rollback snapshot vm-${vmid}/${pre} committed`,
+          `node ${p.node}: ok locked`,
+          `rolled back drive-scsi0: 412 of 8192 chunks written (1728053248 bytes)`,
+          `node ${p.node}: ok unlocked`,
+          `rolled-back {"vmid":${vmid},"snapshot":${p.time},"pre_snapshot":${pre},"resumed":false,"disks":[{"device":"drive-scsi0","chunks":8192,"changed":412,"bytes_written":1728053248}],"untouched":[],"started":${!!p.start},"link_down":${!!p.link_down}}`,
+        ];
+      }
       const name = p.name ?? `${p.name_prefix ?? ''}${ct ? 'ct' : 'vm'}${vmid}${p.name_prefix ? '' : '-restore'}`;
       return [
         `restoring ${src} @ ${p.time} as ${ct ? 'CT' : 'VM'} ${p.target} (${name}) on ${p.node}, storage ${p.storage}${p.pool ? `, pool ${p.pool}` : ''}`,
@@ -678,8 +697,10 @@ function repairDone(j: Job, t: number) {
 /** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
 function offsiteResult(j: Job, t: number) {
   if (j.kind === 'offsite_list') {
+    // Phase 30: `target` 2 lists the second offsite target
+    const second = j.params.target === 2;
     const snaps = db.snapshots
-      .filter((s) => s.tenant === j.tenant && s.offsite)
+      .filter((s) => s.tenant === j.tenant && (second ? s.offsite2 : s.offsite))
       .sort((a, b) => a.source.localeCompare(b.source) || a.time - b.time);
     // the demo target lost one manifest (initech): "missing on the target"
     const lost = j.tenant === 'initech' ? snaps.find((s) => s.source === 'vm-100' && s.local) : undefined;
@@ -1121,6 +1142,10 @@ function seed() {
   const contractor = mk('contractor', 'operator', null, t - 86400 * 20);
   Object.assign(contractor, { can_download: false, expires: day(-30, 0), last_login: t - 86400 * 5 });
   db.users.push(contractor);
+  // Phase 30: a team lead who administers just in time (operator, eligible for admin)
+  const lead = mk('lead', 'operator', null, t - 86400 * 40);
+  Object.assign(lead, { eligible_role: 'admin', last_login: t - 86400 });
+  db.users.push(lead);
   // the admin's other sessions (Account → Sessions)
   const admin0 = db.users[0];
   db.sessions.set('a1'.repeat(32), { id: 1, userId: admin0.id, csrf: 'x', created: t - 3 * 3600, last: t - 1200, ip: '198.51.100.23', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0' });
@@ -1684,8 +1709,8 @@ function seed() {
   db.replPeers.push({
     id: peerId, name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: rand(32),
     keyd_fingerprint: peerKeyd, token_expires: null, enrolled_at: t - 86400 * 20, last_seen: t - 1800,
-    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20 } },
-    enroll_failures: 0,
+    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20, post_quantum: true } },
+    enroll_failures: 0, post_quantum: true,
   });
   db.replSources.push({
     id: 1, name: 'hq-primary', url: 'backup-hq.example.com:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: rand(32),
@@ -1722,6 +1747,24 @@ function seed() {
 
   seedPhase28(t);
   seedPhase29(t);
+  seedPhase30();
+}
+
+/** Phase 30: acme copies to a second offsite target (a Storage Box keeping monthly snapshots for 7 years). */
+function seedPhase30() {
+  const acme = db.tenants.find((x) => x.name === 'acme');
+  if (acme) {
+    acme.offsite = {
+      ...acme.offsite,
+      second: {
+        remote: { type: 'sftp', host: 'u-acme2.your-storagebox.de', port: 23, user: 'u-acme2', key_file: '/etc/nexus/ssh/offsite-acme2', host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoSecondBoxKey' },
+        gfs: { monthly: 84, yearly: 7 },
+        uploaders: 2,
+        bwlimit: null,
+      },
+    };
+  }
+  for (const s of db.snapshots) if (s.tenant === 'acme') s.offsite2 = !!s.offsite;
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -1947,6 +1990,7 @@ const pub = (u: User) => ({
   can_download: canDownload(u),
   expires: u.expires ?? null,
   last_login: u.last_login ?? null,
+  eligible_role: u.eligible_role ?? null,
 });
 const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role);
 const PRIV: Role[] = ['admin', 'security_officer'];
@@ -2146,9 +2190,12 @@ function tenantOffsite(body: Json, old?: Json): Json {
 }
 
 function publicOffsite(o: Json): Json {
-  if (!o?.remote?.secret_key) return o;
-  const { secret_key: _s, ...r } = o.remote;
-  return { ...o, remote: { ...r, secret_key_set: true } };
+  // Phase 30: the second target's secret is write-only as well
+  const second = o?.second ? publicOffsite(o.second) : undefined;
+  const out = second ? { ...o, second } : o;
+  if (!out?.remote?.secret_key) return out;
+  const { secret_key: _s, ...r } = out.remote;
+  return { ...out, remote: { ...r, secret_key_set: true } };
 }
 
 function execute(qid: number, action: string, p: Json, by = '', decider = ''): Json | void {
@@ -2229,6 +2276,19 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'settings.anomaly':
       db.anomaly = structuredClone(p.anomaly);
       break;
+    case 'role.elevate':
+      return startElevation(p);
+    case 'security.elevation':
+      db.elevation = structuredClone(p.elevation);
+      break;
+    case 'anomaly.sensitivity': {
+      const k = `${p.tenant}/${p.source}`;
+      if ((db.sensitivity[k] ?? 'medium') !== p.old)
+        throw new HttpError(409, 'the object changed since this request was made; reject it and request the change again');
+      if (p.level === 'medium') delete db.sensitivity[k];
+      else db.sensitivity[k] = p.level;
+      break;
+    }
     case 'security.passkeys':
       pk.policy = structuredClone(p.passkeys);
       break;
@@ -2423,6 +2483,8 @@ on('POST', '/auth/login', async (c) => {
   return [200, { csrf, user: pub(u) }];
 });
 on('POST', '/auth/logout', (c) => {
+  const s = c.sid ? db.sessions.get(c.sid) : undefined;
+  if (s?.elev) resolveElevation(s.userId, s.id);
   if (c.sid) db.sessions.delete(c.sid);
   c.res.setHeader('Set-Cookie', 'nx_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
   return [200, { ok: true }];
@@ -2440,8 +2502,80 @@ on('GET', '/auth/me', (c) => {
       incident: incidentBanner(u),
       freeze: freezeBanner(u),
       step_up: stepUpState(u, c.sid),
+      elevation: elevationOf(u, c.sid),
     },
   ];
+});
+
+// Phase 30: just-in-time role elevation
+function elevationOf(u: User, sid: string | null): Json | null {
+  const e = sid ? db.sessions.get(sid)?.elev : undefined;
+  if (!e) return null;
+  const standing = db.users.find((x) => x.id === u.id)?.role ?? u.role;
+  return { role: e.role, until: e.until, standing_role: standing };
+}
+function resolveElevation(userId: number, sessionId: number) {
+  for (const a of db.alerts.filter((x) => x.key === `role_elevation:${userId}:${sessionId}` && !x.resolved_at))
+    Object.assign(a, { resolved_at: now(), resolved_by: 'web-api', auto: true });
+}
+function startElevation(p: Json): Json {
+  const s = [...db.sessions.values()].find((x) => x.id === p.session && x.userId === p.user_id);
+  const x = db.users.find((y) => y.id === p.user_id && y.eligible_role === p.role && !y.disabled);
+  if (!s || !x) throw new HttpError(409, 'the requesting session has ended or the account is no longer eligible: reject this request and ask again');
+  const until = now() + p.minutes * 60;
+  s.elev = { role: p.role, until };
+  const hm = new Date(until * 1000).toISOString().slice(11, 16);
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: 'info', kind: 'role_elevation', key: `role_elevation:${x.id}:${s.id}`, tenant: null,
+      message: `account ${x.name} (${x.role}) elevated to ${p.role} for ${p.minutes} min (until ${hm} UTC): ${p.reason}`,
+    }),
+  );
+  return { elevated: { role: p.role, until } };
+}
+on('POST', '/auth/elevate', async (c) => {
+  const u = need(c.user);
+  const sess = db.sessions.get(c.sid!)!;
+  if (sess.imp) throw new HttpError(403, 'forbidden');
+  if (sess.elev) throw new HttpError(409, 'this session is elevated already: end the elevation first');
+  const real = db.users.find((x) => x.id === u.id)!;
+  const { role, minutes, reason, current_password, current_totp } = c.body ?? {};
+  if (real.eligible_role !== role || !['operator', 'viewer'].includes(real.role) || real.tenant || real.auth === 'oidc')
+    throw new HttpError(403, `this account is not eligible for the role ${role}`);
+  if (!(Number.isInteger(minutes) && minutes >= 15 && minutes <= 480)) throw new HttpError(400, 'minutes: 15..=480');
+  const why = String(reason ?? '').trim();
+  if (!why || why.length > 200) throw new HttpError(400, 'reason: 1 to 200 characters, one line');
+  if (current_password !== real.password || !secondOk(real, current_totp)) {
+    await audit(u.name, 'auth.reauth_failed', `user/${u.name}`, { for: 'role elevation' });
+    throw new HttpError(403, 're-authentication failed: wrong current password, TOTP code or passkey');
+  }
+  const p = { user: u.name, user_id: u.id, session: sess.id, role, minutes, reason: why };
+  if (db.elevation.approval) return quorum(u, 'role.elevate', p);
+  const out = startElevation(p);
+  await audit(u.name, 'role.elevate', `user/${u.name}`, { params: p });
+  return [200, out];
+});
+on('POST', '/auth/elevate/end', async (c) => {
+  const u = need(c.user);
+  const sess = db.sessions.get(c.sid!)!;
+  if (!sess.elev) throw new HttpError(409, 'this session is not elevated');
+  const role = sess.elev.role;
+  delete sess.elev;
+  resolveElevation(u.id, sess.id);
+  const standing = db.users.find((x) => x.id === u.id)!.role;
+  await audit(u.name, 'role.elevate_end', `user/${u.name}`, { role, standing_role: standing, reason: 'ended' });
+  return [200, { role: standing }];
+});
+on('PUT', '/settings/elevation', async (c) => {
+  const u = need(c.user, 'admin');
+  const { approval, ...rest } = c.body ?? {};
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (typeof approval !== 'boolean') throw new HttpError(400, 'approval: boolean required');
+  const p = { elevation: { approval }, old: structuredClone(db.elevation) };
+  if (db.elevation.approval && !approval) return quorum(u, 'security.elevation', p);
+  db.elevation = { approval } as typeof db.elevation;
+  await audit(u.name, 'security.elevation', 'settings/elevation', p);
+  return [200, { approval }];
 });
 // Phase 19b: "view as tenant" (read-only at once) / "act as tenant admin" (approval `tenant.impersonate`)
 on('POST', '/tenants/:name/impersonate', async (c, [name]) => {
@@ -2503,8 +2637,15 @@ on('POST', '/tenants', async (c) => {
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  if (c.body.offsite?.second !== undefined) throw new HttpError(400, 'offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2');
   const next = tenantOffsite(c.body.offsite, t.offsite);
   checkWindows(next.windows ?? []);
+  checkOffsiteGfs(next.gfs);
+  // Phase 30: the second target stays as stored
+  if (t.offsite?.second) {
+    if (!next.remote) throw new HttpError(409, 'the tenant has a second offsite target: remove it first');
+    next.second = t.offsite.second;
+  }
   // Phase 17a: only the bandwidth part tightened (bwlimit, windows, timezone): direct
   const rest = ({ bwlimit: _b, windows: _w, timezone: _z, ...r }: Json) => JSON.stringify(r);
   const bw = (o: Json) => ({ windows: o.windows ?? [], base: o.bwlimit, tz: o.timezone ?? 'UTC' });
@@ -2514,6 +2655,35 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   t.offsite = next;
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
+});
+// Phase 30: the second offsite target (own retention and lock); a change or removal needs approval
+function checkOffsiteGfs(g: Json | undefined) {
+  if (g == null) return;
+  for (const [k, v] of Object.entries(g)) {
+    if (!['daily', 'weekly', 'monthly', 'yearly'].includes(k)) throw new HttpError(400, `offsite.gfs.${k}: unknown class (daily, weekly, monthly, yearly)`);
+    if (v != null && !(Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 10000)) throw new HttpError(400, `offsite.gfs.${k}: 0..=10000 or null`);
+  }
+}
+on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  const target = c.body.target;
+  const before = t.offsite?.second ?? null;
+  let second: Json | null = null;
+  if (target != null) {
+    if (!t.offsite?.remote) throw new HttpError(400, 'target: the tenant has no offsite target yet: set up the first one');
+    if (!target.remote) throw new HttpError(400, 'target.remote: required (sftp or s3)');
+    second = tenantOffsite(target, before ?? undefined);
+    checkOffsiteGfs(second.gfs);
+  }
+  const next = { ...t.offsite };
+  if (second) next.second = second;
+  else delete next.second;
+  if (before && JSON.stringify(before) !== JSON.stringify(second))
+    return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
+  t.offsite = next;
+  await audit(u.name, 'tenant.offsite2', `tenant/${t.name}`, { second: second ? publicOffsite(second) : null });
+  return [200, { name: t.name, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
 // Phase 17d: attach an existing offsite copy (web-api offsite.rs): request → approval → recovery key once
@@ -3513,7 +3683,9 @@ on('POST', '/agents/:id/p2v', async (c, [id]) => {
 // users
 on('GET', '/users', (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
-  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map(pub)];
+  const elevated = (id: number) =>
+    Math.max(0, ...[...db.sessions.values()].filter((s) => s.userId === id && s.elev && s.elev.until > now()).map((s) => s.elev!.until)) || null;
+  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map((x) => ({ ...pub(x), elevated_until: elevated(x.id) }))];
 });
 on('POST', '/users', async (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -3575,6 +3747,17 @@ on('PUT', '/users/:id', async (c, [id]) => {
     if (b.expires && (p.role ?? x.role) === 'admin' && !others.length) throw new HttpError(409, 'expires: the last admin without an expiry date cannot get one');
     p.expires = b.expires ?? null;
   }
+  // Phase 30: an eligible role for appliance-wide local operators and viewers
+  const role1 = p.role ?? x.role;
+  const tenant1 = p.tenant !== undefined ? p.tenant : x.tenant;
+  const holds = ['operator', 'viewer'].includes(role1) && !tenant1 && x.auth !== 'oidc';
+  if (b.eligible_role !== undefined && b.eligible_role !== null) {
+    if (!PRIV.includes(b.eligible_role)) throw new HttpError(400, 'eligible_role: admin, security_officer or null');
+    if (!holds) throw new HttpError(400, 'eligible_role: only appliance-wide local operators and viewers can be eligible for a role');
+    if (u.role === 'tenant_admin') throw new HttpError(403, 'forbidden');
+  }
+  const eligible = holds ? (b.eligible_role !== undefined ? b.eligible_role : (x.eligible_role ?? null)) : null;
+  if (eligible !== (x.eligible_role ?? null)) p.eligible_role = eligible;
   if (b.password) p.password = b.password;
   const extra: Json = {};
   if (b.reset_totp) {
@@ -3590,7 +3773,8 @@ on('PUT', '/users/:id', async (c, [id]) => {
     db.approvals &&
     ((p.role && PRIV.includes(p.role)) || // granting
       (isPriv && x.disabled && p.disabled === false) || // re-enabling
-      (isPriv && b.new_activation)); // new credentials for another privileged user
+      (isPriv && b.new_activation) || // new credentials for another privileged user
+      (p.eligible_role && !(p.disabled ?? x.disabled))); // an eligible role is a deferred grant
   if (gated) {
     // Credentials are applied on approval but never shown in the quorum params.
     const { password, totp_secret, ...shown } = p;
@@ -3797,6 +3981,7 @@ const securityState = () => {
     client_ip: CLIENT_IP,
     client_allowed: !allow.length || allow.some((c) => inCidr(CLIENT_IP, c)),
     pending: { session: pend('security.session'), mgmt_allow: fwPending('web') },
+    elevation: { settings: structuredClone(db.elevation), pending: pend('security.elevation'), min_minutes: 15, max_minutes: 480 },
   };
 };
 on('GET', '/auth/banner', () => [200, { banner: db.security.login_banner }]);
@@ -4308,14 +4493,17 @@ function checkRestore(kind: string, tenant: string, p: Json) {
   if (p.replace && kind === 'instant_recover') throw new HttpError(400, 'replace: only a full restore can replace the original');
   if (p.replace && String(p.source).slice(3) === String(p.target)) throw new HttpError(400, 'target: replace restores to a new VMID');
   if (!p.replace && p.keep_original_links !== undefined) throw new HttpError(400, 'keep_original_links: only with replace');
+  if (p.rollback && (!p.replace || kind !== 'restore')) throw new HttpError(400, 'rollback: only a VM restore that replaces the original');
   if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
 }
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
   // Phase 17d: browse the offsite copy, fetch an offsite-only snapshot back (web-api jobs.rs)
   if (kind === 'offsite_list' || kind === 'offsite_restore') {
     if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote) throw new HttpError(400, 'tenant: has no offsite target');
+    // Phase 30: the second offsite target
+    if (p.target === 2 && !db.tenants.find((x) => x.name === tenant)?.offsite?.second?.remote) throw new HttpError(400, 'tenant: has no second offsite target');
     if (kind === 'offsite_restore') {
-      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && x.offsite);
+      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && (p.target === 2 ? x.offsite2 : x.offsite));
       if (!s) throw new HttpError(404, 'no such offsite snapshot');
       if (s.local) throw new HttpError(409, 'the snapshot is in the local store already');
     }
@@ -4937,7 +5125,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
-  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', change_tracking: 'backup',
+  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', role_elevation: 'security', change_tracking: 'backup',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   vmid_reused: 'backup', restore_priority: 'backup', index_backlog: 'backup', index_space: 'system',
@@ -6973,6 +7161,14 @@ async function handle(req: Req, res: Res) {
         user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
       }
     }
+    // Phase 30: just-in-time elevation of this session (ends at expiry or when the account changed)
+    if (user && sess?.elev) {
+      if (sess.elev.until > now() && user.eligible_role === sess.elev.role && ['operator', 'viewer'].includes(user.role)) user = { ...user, role: sess.elev.role };
+      else {
+        delete sess.elev;
+        resolveElevation(user.id, sess.id);
+      }
+    }
     // Phase 19b: "view as tenant" — the admin acts with the role intersection inside that tenant
     impersonator = null;
     if (user && sess?.imp) {
@@ -7685,7 +7881,7 @@ function seedHolds(t: number) {
 // The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
 
 const TKEY_TTL = 24 * 3600;
-const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string }>();
+const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum: boolean }>();
 function tkeyStatus(q: Json, t = now()): string {
   if (q.state === 'pending' || q.state === 'rejected') return q.state;
   if (q.state === 'approved') return q.decided_at && q.decided_at + TKEY_TTL > t ? 'approved' : 'expired';
@@ -7707,7 +7903,8 @@ function seedTenantKeys(t: number) {
     requested_by: 'admin', created: t - 86400 * 21, decided_by: 'so', decided_at: t - 86400 * 21 + 900, state: 'executed',
   };
   db.quorum.push(q);
-  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so' });
+  // set before Phase 30: X25519-only escrow
+  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so', post_quantum: false });
 }
 on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
   const tenant = decodeURIComponent(tn);
@@ -7744,7 +7941,8 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   const kid = rand(8);
   const replaced = tenantKeys.get(tenant)?.kid ?? null;
   q.state = 'executed';
-  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by });
+  // Phase 30: new keys seal the escrow X25519 + ML-KEM-768
+  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by, post_quantum: true });
   await audit(u.name, 'tenant.recovery_key_shown', `tenant/${tenant}/recovery-key`, {
     kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
   });
@@ -7826,6 +8024,10 @@ function postureChecks(): [string, string, boolean, string][] {
   const failing = sinks.filter((k) => db.forwardErr[k]);
   const unlocked = db.tenants.filter((x) => !(x.offsite?.remote?.type === 's3' && x.offsite.remote.lock)).map((x) => x.name);
   const allow = db.firewall.web.allow;
+  // Phase 30: standing administrators vs. just-in-time elevation
+  const standing = db.users.filter((u) => u.role === 'admin' && !u.disabled && !u.act && !u.tenant).map((u) => u.name);
+  const jit = db.users.filter((u) => u.eligible_role && !u.disabled).length;
+  const jitTail = jit ? `; ${jit} account(s) elevate just in time` : '';
   return [
     ['posture.approvals', 'Security posture: approvals', db.approvals && approvers.length >= 3,
       `approvals ${db.approvals ? 'on' : 'off'}, ${approvers.length} possible approver(s) (active admins and security officers)`],
@@ -7838,6 +8040,10 @@ function postureChecks(): [string, string, boolean, string][] {
     ['posture.certificate', 'Security posture: own web certificate', !!p14.cert.web, p14.cert.web ? 'imported certificate CN=backup.example.com' : 'the self-signed certificate is in use; import one signed by your CA'],
     ['posture.dormant_admins', 'Security posture: dormant administrators', !dormant.length,
       dormant.length ? `no login for ${dormantDays} days: ${dormant.join(', ')}` : `every admin and security officer logged in within ${dormantDays} days`],
+    ['posture.standing_admins', 'Security posture: standing administrators', standing.length <= 2,
+      standing.length > 2
+        ? `${standing.length} standing administrators (${standing.join(', ')}); keep at most 2 (break-glass and one more) and give the others an eligible role${jitTail}`
+        : `${standing.length} standing administrator(s)${jitTail}`],
     ['posture.totp', 'Security posture: second factor', true, `${db.users.filter((u) => !u.disabled).length} local account(s) with password + TOTP`],
     ['posture.grub', 'Security posture: boot menu password', true, 'boot menu password set'],
   ];
@@ -8153,14 +8359,37 @@ on('GET', '/stats/trends', (c) => {
         const r = noise(`${source}/${s.time}`);
         const bad = !!s.anomaly;
         const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
+        // Phase 30: bytes read and duration (an anomalous run reads about as much, nothing deduplicates, takes longer)
+        const read = Math.round(s.size * (0.02 + r * 0.01));
+        const secs = Math.round((/^vm-/.test(source) ? 240 : 90) * (0.8 + r * 0.4) * (bad ? 3.4 : 1));
         return {
           time: s.time, new_plain: plain, new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
           files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null, anomalous: anomalous(s),
+          read, secs,
         };
       });
-    return { tenant, source, runs };
+    return { tenant, source, sensitivity: db.sensitivity[`${tenant}/${source}`] ?? 'medium', runs };
   });
   return [200, out];
+});
+
+// Phase 30: per-source sensitivity; raising applies at once, lowering needs approval
+const LEVELS = ['low', 'medium', 'high'];
+on('PUT', '/stats/sensitivity', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
+  const { tenant, source, level, ...rest } = c.body;
+  if (Object.keys(rest).length) throw new HttpError(400, `unknown field \`${Object.keys(rest)[0]}\``);
+  if (!LEVELS.includes(level)) throw new HttpError(400, 'level: low, medium or high');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  if (!db.tenants.some((t) => t.name === tenant)) throw new HttpError(404, 'not found');
+  const k = `${tenant}/${source}`;
+  const old = db.sensitivity[k] ?? 'medium';
+  const p = { tenant, source, level, old };
+  if (LEVELS.indexOf(level) < LEVELS.indexOf(old)) return quorum(u, 'anomaly.sensitivity', p);
+  if (level === 'medium') delete db.sensitivity[k];
+  else db.sensitivity[k] = level;
+  await audit(u.name, 'anomaly.sensitivity', `stats/${k}`, p);
+  return [200, p];
 });
 
 /** Phase 21d: verify found two bad chunks in initech's store; two snapshots of vm-102 reference them. */

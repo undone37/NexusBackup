@@ -60,7 +60,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 
 | Category | Kinds |
 |---|---|
-| security | `anomaly`, `malware`, `scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, `user_risk`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
+| security | `anomaly`, `malware`, `scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, `user_risk`, `role_elevation`, `console_unlock`, `console_root_shell`, `break_glass`, `firewall_reset`, `mgmt_allow_reset`, `legal_hold_advisory`, `cert_expiry`, `account_dormant`, `inventory`, `clock_skew`, `gc_quorum`, `gc_confirm`, `vault_disabled`, `incident`, `dek_rotation` |
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `change_tracking`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority`, `index_backlog` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
@@ -74,9 +74,9 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `paused` | warning | a group was paused, or a source put into maintenance, for more than 7 days or indefinitely (one alert per pause) | the group is resumed / the maintenance ends (next scheduler tick) | make sure the pause is intended; **Resume** the group / **End maintenance** when the work is done |
 | `verify` | critical | the daily verification found missing or corrupt chunks (locally or in the offsite sample) | the tenant's next verification succeeds | see [15 Troubleshooting](15-troubleshooting-faq.md#verification-failed); do not run GC until it is understood |
 | `snapshot_damaged` | critical | snapshots reference chunks that failed verification; the message names up to 10 of them (one alert per tenant) | no snapshot of the tenant is damaged any more (after **Repair**, or after a verification that finds the data stored again) | run **Repair** on **Snapshots**, see [Verification and repair](#verification-and-repair); do not delete the damaged snapshots |
-| `inventory` | critical | the offsite inventory check found packs missing on the target or unknown packs there; or a locked snapshot disappeared from the local store | the tenant's next offsite job (with its inventory check) succeeds | treat as a possible attack or storage fault; check the offsite target, see [07 Offsite copies](07-offsite.md) |
+| `inventory` | critical | the offsite inventory check found packs missing on the target or unknown packs there (one alert per tenant and offsite target); or a locked snapshot disappeared from the local store | the tenant's next offsite job (with its inventory check) succeeds | treat as a possible attack or storage fault; check the offsite target, see [07 Offsite copies](07-offsite.md) |
 | `capacity` | warning | the chunk store is more than 75 % full | usage is back under 75 % | add storage, or review retention; GC only frees chunks no snapshot uses any more |
-| `offsite_lag` | warning | the oldest snapshot not yet offsite is more than 48 hours old (one alert per tenant) | the tenant's offsite copy has caught up | check the tenant's offsite jobs and the target's reachability and space |
+| `offsite_lag` | warning | the oldest snapshot not yet offsite is more than 48 hours old (one alert per tenant and offsite target; the second target's key ends in `:2`) | the tenant's offsite copy has caught up | check the tenant's offsite jobs and the target's reachability and space |
 | `backup_inconsistent` | warning | an agent or share backup could not use a snapshot of the source, or files changed while they were read (shown once per source for a missing snapshot) | — (resolve by hand) | configure snapshot support on the source (LVM/ZFS/btrfs on agent hosts, a NAS snapshot directory for shares), see [04 Sources](04-sources.md) |
 | `consistency` | warning | a group backup's snapshot is less consistent than its policy requires (one per guest, see [05](05-policies-and-groups.md#required-consistency)) | the next snapshot of that guest that meets the requirement | enable the QEMU guest agent (VMs), hooks or VSS (agents) or snapshots on the source |
 | `gc_quorum` | warning | a garbage collection would delete more than 20 % of a tenant's chunks and waits for approval | the request is approved (the GC is queued) | decide the `gc_large` request on **Approvals** after checking why so much data became unreferenced |
@@ -91,11 +91,12 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `index_backlog` | warning | a snapshot has waited more than 48 hours to be added to the file search (one alert per tenant) | the waiting snapshots are indexed | check the **File index** jobs on **Jobs** and the index service; files of those snapshots are not found by **Find files** meanwhile, browsing and restores work. See [06 Restores](06-restores.md#find-a-file) |
 | `index_space` | warning | file indexing paused: the volume holding the search index is below its free space floor | indexing runs again | free space on the store (retention, GC) or add disks; **Storage** shows the index size and the free space. See [03 The web interface](03-web-interface.md#storage) |
 | `orphaned` | info | snapshots of an object that is in no protection group of its tenant were found; they are pruned with the default retention (shown once per object) | — | put the object into a group if it should keep being protected with that group's retention, or ignore it; see [05 Policies and protection groups](05-policies-and-groups.md#snapshots-of-objects-in-no-group) |
-| `anomaly` | critical | a backup added far more new data than usual for its source, or new data that suddenly does not compress (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
+| `anomaly` | critical (warning: duration alone) | a backup added far more new data than usual for its source, new data that suddenly does not compress, data that suddenly does not deduplicate, or a backup that took far longer than usual (see [Change-rate anomalies](#change-rate-anomalies)); or its files show ransom-note names or a mass rename ([File-level change signals](#file-level-change-signals)). The snapshot is flagged as anomalous | — | check the source for mass changes or encryption (ransomware), compare the snapshot with the previous one under **Snapshot changes**; a security officer puts the last clean snapshot on hold with **Hold last good snapshot** |
 | `malware` | critical | a YARA scan found matches of the uploaded rules in a snapshot (see [Malware scan (YARA)](#malware-scan-yara)); the snapshot is flagged as anomalous | — (resolve by hand) | open the scan results on **Snapshots**, check the files and the source; a security officer clears the flag if a rule was too broad |
 | `scan_hit` | critical | a **scheduled** scan of a protection group found matches in the newest snapshot of a source (`scan_hit:<tenant>/<source>`); the snapshot is flagged | — (resolve by hand) | as `malware`; the recovery calendar shows the snapshot red. See [Scheduled scans](#scheduled-scans-and-the-recovery-calendar) |
 | `hash_hunt_hit` | critical | an IOC hash hunt found files whose SHA-256 is on an uploaded list (`hash_hunt_hit:<tenant>`); the snapshots holding them are flagged | — (resolve by hand) | open the results on **Hash hunt**; check the source machine; restore a clean version. See [IOC hash hunt](#ioc-hash-hunt) |
 | `change_tracking` | critical | a scheduled full read found changes the change tracking did not report (`change_tracking:<tenant>/<source>`); the message names the tracker, how many changes were unreported and examples | the next full read of that source is clean | see [Change tracking](#change-tracking-scheduled-full-reads); incremental snapshots since the last clean full read may lack changes |
+| `role_elevation` | info | an account elevated one of its sessions to its eligible role (`role_elevation:<account id>:<session id>`; the message names the role, the end time and the reason) | the elevation ends (expiry, **End now**, sign-out) | nothing if it was expected; otherwise end the account's sessions and remove its eligible role. See [09 Users and access](09-users-and-access.md#just-in-time-elevation) |
 | `user_risk` | critical (weakening burst, bulk deletes), warning (unusual hour, download volume) | a risk signal fired for an account (`user_risk:<account id>:<rule>`); the account must step up for 24 hours | — (resolve by hand) | ask the owner; disable the account if it was not them, else clear the mark. See [09 Users and access](09-users-and-access.md#risk-signals-and-step-up) |
 | `tenant_lockdown` | critical | a security officer or administrator locked one tenant down (`tenant_lockdown:<tenant>`) | the lockdown is lifted (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#tenant-lockdown) |
 | `login_new_device` | warning (administrators, security officers), info (other roles) | an account signed in from a browser and network it never used before (`login_new_device:<account id>:<fingerprint>`); also mailed to the account's own address when one is set | — (resolve by hand) | confirm with the account owner; if it was not them, disable the account and check the audit log. See [09 Users and access](09-users-and-access.md#sign-in-devices-and-the-new-device-notice) |
@@ -214,16 +215,39 @@ deduplication, before compression) with the same source's history. It raises a c
   1.3), and it is more than a quarter of that 1 GiB floor. Encrypted files do not compress, so this is the typical
   signature of ransomware encrypting a share or a server.
 
-Both rules need at least 5 earlier backups of the source. Example message:
+Two more checks watch how the backup behaved:
+
+- **Dedup rate:** the share of the data read that turned out to be new (did not deduplicate) is far above the
+  source's usual share (3 x its median and at least 75 %), and at least a quarter of the 1 GiB floor was read. A
+  server that rewrites the same files every night usually adds a few percent of what it reads; after encryption
+  nothing deduplicates any more. Critical.
+- **Duration:** the backup took far longer than usual (3 x the median and at least 15 minutes more). On its own this
+  is a **warning**, since slow storage or a busy network look the same; together with another finding the alert is
+  critical.
+
+All rules need at least 5 earlier backups of the source (the duration rule 5 backups whose duration was measured:
+backups taken before this release have none). Example message:
 
 ```text
 change-rate anomaly on acme/share-6: snapshot 1791580000: 412.0 GiB new data, limit 36.0 GiB (3× the median
 12.0 GiB of the last 14 runs); last snapshot before: share-6/1791493600
 ```
 
+```text
+dedup-rate anomaly on acme/host-a1 (sensitivity high): snapshot 1791580000: 60 % of the 1.5 GiB read did not
+deduplicate (usually 5 %, limit 50 %); last snapshot before: host-a1/1791493600
+```
+
 The message names the tenant, the source, the time of the suspicious snapshot and the **last snapshot before** it
 that is not flagged itself: the one to restore from if the data was encrypted. While the alert is open, further
 anomalies of the same source raise its count instead of a second alert.
+
+**Sensitivity per source.** Each protected system has a sensitivity: **Low**, **Medium** (the default) or **High**.
+High flags smaller deviations (change rate 2 x the median, dedup rate 2 x its median and at least 50 %, duration 2 x
+and at least 5 minutes more); Low only large ones (4.5 x, 4 x and at least 90 %, 4 x and at least 30 minutes more).
+Set it in **Change trends** on the **Sources** page (administrators, security officers and tenant admins for their
+own systems). Raising it applies at once; lowering it weakens a ransomware signal and needs a second person when
+approvals are enabled (request `anomaly.sensitivity`).
 
 ### Flagged snapshots
 
@@ -402,9 +426,10 @@ snapshots could not be searched. Audit: `hash_hunt.request`, `hash_hunt.hits`.
 
 ### Change trends
 
-**Configuration → Sources** ends with **Change trends**: for each protected system the new data and the number of
-changed files (added + changed + deleted) of its last 30 backups, oldest on the left, with the last value next to
-it. A red dot marks a flagged snapshot; hover a point for its time and value. **no file index** means the source's
+**Configuration → Sources** ends with **Change trends**: for each protected system the new data, the number of
+changed files (added + changed + deleted) and the duration of its last 30 backups, oldest on the left, with the last
+value next to it (hover the last new-data value for the share of the data read that was new), and its anomaly
+**Sensitivity**. A red dot marks a flagged snapshot; hover a point for its time and value. **no file index** means the source's
 snapshots have no name index (only new data is shown). The figures come from the same per-backup statistics as the
 storage accounting ([03 The web interface](03-web-interface.md#storage)).
 

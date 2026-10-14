@@ -52,6 +52,8 @@ export const can = {
   lockdown: (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer'),
   // the IOC hash lists themselves (appliance-wide)
   hashLists: (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer'),
+  // Phase 30: per-source anomaly sensitivity (lowering it is an approval; the server decides)
+  sensitivity: (u: User | null) => !!u && ['admin', 'security_officer', 'tenant_admin'].includes(u.role),
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];

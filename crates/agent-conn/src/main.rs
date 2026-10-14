@@ -469,10 +469,10 @@ fn main() -> Result<()> {
                 r.new_chunks
             );
             let m = store.load_manifest(&r.source, r.time)?;
-            println!(
-                "{}",
-                store.stats_line(&m, r.wanted_bytes, store.written().since(written))?
-            );
+            // `read` = what the agent read from its disks (Phase 30: the dedup-rate anomaly compares
+            // the new data with it); the chunks it sent are the part the appliance did not have yet
+            let read = r.scan.read_bytes.max(r.wanted_bytes);
+            println!("{}", store.stats_line(&m, read, store.written().since(written))?);
             if let Some(h) = store.take_hash_stats() {
                 println!("{h}");
             }

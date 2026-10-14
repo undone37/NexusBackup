@@ -68,6 +68,9 @@ pub const WEB_ACTIONS: &[&str] = &[
     crate::keep::SETTING_ACTION,
     crate::tenant_idp::ACTION,
     catalog::agent_updates::ROLLBACK_ACTION,
+    catalog::anomaly::LOWER_ACTION,
+    catalog::elevation::ACTION,
+    catalog::elevation::SETTING_ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -271,6 +274,8 @@ fn unchanged_since_request(c: &Connection, action: &str, p: &Value) -> ApiResult
         "tenant.update" => crate::resources::tenant_value(c, p["name"].as_str().unwrap_or_default())?,
         "settings.anomaly" => crate::storage::anomaly_value(c)?,
         "settings.forwarding" => crate::forwarding::value(c)?,
+        catalog::anomaly::LOWER_ACTION => crate::changes::sensitivity_value(c, p)?,
+        catalog::elevation::SETTING_ACTION => crate::elevation::settings_value(c)?,
         _ => return Ok(()),
     };
     if current.as_ref() != Some(&p["old"]) {
@@ -394,6 +399,9 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         crate::keep::SETTING_ACTION => crate::keep::execute_setting(c, p)?,
         crate::tenant_idp::ACTION => crate::tenant_idp::execute(c, p)?,
         catalog::agent_updates::ROLLBACK_ACTION => crate::agent_updates::execute_rollback(c, p)?,
+        catalog::anomaly::LOWER_ACTION => crate::changes::execute_sensitivity(c, p, requested_by)?,
+        catalog::elevation::ACTION => return crate::elevation::execute(c, p).map(Some),
+        catalog::elevation::SETTING_ACTION => crate::elevation::execute_settings(c, p)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

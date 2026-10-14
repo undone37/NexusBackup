@@ -8,7 +8,14 @@
 //!   tenant keys; the scheduler reads the sealed name indexes). Paths, sizes and
 //!   mtimes only, never contents. The file search's roles (`search::SEARCHERS`).
 //! - `GET /stats/trends?tenant=`: new bytes and changed files of each source's
-//!   last 30 runs from `backup_stats`, with the anomaly flags.
+//!   last 30 runs from `backup_stats`, with the anomaly flags; Phase 30: also
+//!   the bytes read, the duration and the source's anomaly sensitivity.
+//! - `PUT /stats/sensitivity {tenant, source, level}` (Phase 30): the
+//!   per-source sensitivity of the anomaly checks (`low` | `medium` | `high`).
+//!   Admins, security officers and tenant admins (own tenant). Raising applies
+//!   at once; lowering weakens a ransomware signal and is an approval
+//!   (`anomaly.sensitivity`), refused while the tenant is locked down. Audited
+//!   `anomaly.sensitivity`.
 
 use crate::auth::Ctx;
 use crate::{validate, ApiError, ApiResult, St, J, Q};
@@ -16,12 +23,14 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use catalog::rusqlite::{params, OptionalExtension};
+use catalog::anomaly::{Sensitivity, LOWER_ACTION};
+use catalog::rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const CLEARERS: &[&str] = &["security_officer"];
+const SENSITIVITY_SETTERS: &[&str] = &["admin", "security_officer", "tenant_admin"];
 /// the scheduler's `changes::DIFF_MAX_LIMIT`
 const DIFF_MAX_LIMIT: u64 = 1000;
 pub const TREND_RUNS: i64 = 30;
@@ -144,12 +153,14 @@ pub struct TrendFilter {
     tenant: Option<String>,
 }
 
-/// `[{tenant, source, runs: [{time, new_plain, new_stored, files_changed, anomalous}]}]`,
-/// oldest run first; `files_changed` = added + changed + deleted (null: no name index).
+/// `[{tenant, source, sensitivity, runs: [{time, read, new_plain, new_stored, secs, files_changed,
+/// anomalous}]}]`, oldest run first; `files_changed` = added + changed + deleted (null: no name
+/// index), `secs` = the backup's duration (null: older connector).
 pub async fn trends(State(st): State<St>, ctx: Ctx, Q(f): Q<TrendFilter>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
     let mut q = c.prepare(
-        "SELECT tenant, source, time, new_plain, new_stored, files_added + files_changed + files_deleted, anomalous
+        "SELECT tenant, source, time, new_plain, new_stored, files_added + files_changed + files_deleted, anomalous,
+                read, secs
          FROM (SELECT b.*, s.anomaly IS NOT NULL AND s.anomaly_cleared_at IS NULL AS anomalous,
                  ROW_NUMBER() OVER (PARTITION BY b.tenant, b.source ORDER BY b.time DESC) AS n
                FROM backup_stats b LEFT JOIN snapshots s USING (tenant, source, time)
@@ -160,7 +171,8 @@ pub async fn trends(State(st): State<St>, ctx: Ctx, Q(f): Q<TrendFilter>) -> Api
         Ok((
             (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
             json!({"time": r.get::<_, i64>(2)?, "new_plain": r.get::<_, i64>(3)?, "new_stored": r.get::<_, i64>(4)?,
-                   "files_changed": r.get::<_, Option<i64>>(5)?, "anomalous": r.get::<_, Option<bool>>(6)?.unwrap_or(false)}),
+                   "files_changed": r.get::<_, Option<i64>>(5)?, "anomalous": r.get::<_, Option<bool>>(6)?.unwrap_or(false),
+                   "read": r.get::<_, i64>(7)?, "secs": r.get::<_, Option<i64>>(8)?}),
         ))
     })?;
     let mut by: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
@@ -168,9 +180,68 @@ pub async fn trends(State(st): State<St>, ctx: Ctx, Q(f): Q<TrendFilter>) -> Api
         let (k, v) = row?;
         by.entry(k).or_default().push(v);
     }
-    Ok(Json(Value::Array(
-        by.into_iter()
-            .map(|((tenant, source), runs)| json!({"tenant": tenant, "source": source, "runs": runs}))
-            .collect(),
-    )))
+    let mut out = Vec::with_capacity(by.len());
+    for ((tenant, source), runs) in by {
+        let level = catalog::anomaly::get(&c, &tenant, &source)?;
+        out.push(json!({"tenant": tenant, "source": source, "sensitivity": level, "runs": runs}));
+    }
+    Ok(Json(Value::Array(out)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SensitivityReq {
+    tenant: String,
+    source: String,
+    level: Sensitivity,
+}
+
+pub async fn put_sensitivity(State(st): State<St>, ctx: Ctx, J(r): J<SensitivityReq>) -> ApiResult<Response> {
+    ctx.require(SENSITIVITY_SETTERS)?;
+    validate::name(&r.tenant, "tenant")?;
+    validate::source_ref(&r.source)?;
+    ctx.owns(&r.tenant)?;
+    let old = {
+        let c = st.cat.conn();
+        let known: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tenants WHERE name = ?1)",
+            [&r.tenant],
+            |x| x.get(0),
+        )?;
+        if !known {
+            return Err(ApiError::not_found());
+        }
+        catalog::anomaly::get(&c, &r.tenant, &r.source)?
+    };
+    let target = format!("stats/{}/{}", r.tenant, r.source);
+    let p = json!({"tenant": r.tenant, "source": r.source, "level": r.level, "old": old});
+    if r.level < old {
+        crate::lockdown::refuse(&st.cat.conn(), &r.tenant, "weaker anomaly checks")?;
+        return crate::quorum::gate(&st, &ctx, LOWER_ACTION, &target, p);
+    }
+    catalog::anomaly::set(&st.cat.conn(), &r.tenant, &r.source, r.level, ctx.name())?;
+    st.audit(ctx.name(), LOWER_ACTION, &target, p.clone())?;
+    Ok(Json(p).into_response())
+}
+
+/// Approved `anomaly.sensitivity` (quorum::execute).
+pub fn execute_sensitivity(c: &Connection, p: &Value, requested_by: &str) -> ApiResult<()> {
+    let level: Sensitivity =
+        serde_json::from_value(p["level"].clone()).map_err(|_| ApiError::bad("quorum params: level"))?;
+    let (tenant, source) = (
+        p["tenant"].as_str().unwrap_or_default(),
+        p["source"].as_str().unwrap_or_default(),
+    );
+    crate::lockdown::refuse(c, tenant, "weaker anomaly checks")?;
+    Ok(catalog::anomaly::set(c, tenant, source, level, requested_by)?)
+}
+
+/// The level now, for the quorum's "unchanged since the request" check.
+pub fn sensitivity_value(c: &Connection, p: &Value) -> ApiResult<Option<Value>> {
+    let level = catalog::anomaly::get(
+        c,
+        p["tenant"].as_str().unwrap_or_default(),
+        p["source"].as_str().unwrap_or_default(),
+    )?;
+    Ok(Some(json!(level)))
 }

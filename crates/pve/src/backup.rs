@@ -128,6 +128,18 @@ struct Device {
     bitmap_name: Option<String>,
 }
 
+/// The pre-rollback backup would read these disks in full (no reusable dirty bitmap).
+#[derive(Debug)]
+pub struct BitmapGone(pub String);
+
+impl std::fmt::Display for BitmapGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no reusable dirty bitmap for {}", self.0)
+    }
+}
+
+impl std::error::Error for BitmapGone {}
+
 pub fn source_name(vmid: u32) -> String {
     format!("vm-{vmid}")
 }
@@ -217,6 +229,13 @@ impl Cluster {
     /// told `done ok`, because QEMU commits the dirty bitmap when backup_vm returns.
     /// Returns the manifest and the bytes read over NBD (dirty extents only when incremental).
     pub fn backup_vm(&self, store: &Store, vmid: u32) -> Result<(Manifest, u64)> {
+        self.backup_vm_with(store, vmid, false)
+    }
+
+    /// [`Cluster::backup_vm`]; `require_bitmap` (Phase 30, the pre-rollback backup):
+    /// refused with [`BitmapGone`] before anything is read unless PVE reuses the
+    /// dirty bitmap of every disk (the vzdump task then fails, nothing is committed).
+    pub fn backup_vm_with(&self, store: &Store, vmid: u32, require_bitmap: bool) -> Result<(Manifest, u64)> {
         let (node, kind) = self.guest(vmid)?;
         if kind != "qemu" {
             bail!("guest {vmid} is not a VM ({kind})");
@@ -238,7 +257,7 @@ impl Cluster {
         let (pulled, tripped) = std::thread::scope(|sc| {
             let watcher = sc.spawn(|| self.watch_fleecing(&node, &upid, &stop));
             let pulled = self.wait_job(&node, ssh, vmid, &upid, "qemu").and_then(|job| {
-                let result = self.pull(store, ssh, vmid, &job);
+                let result = self.pull(store, ssh, vmid, &job, require_bitmap);
                 let done = match &result {
                     Ok(_) => "ok".to_owned(),
                     Err(e) => format!("fail {}", e.to_string().replace(['\n', '\''], " ")),
@@ -362,10 +381,30 @@ impl Cluster {
         }
     }
 
-    fn pull(&self, store: &Store, ssh: &SshNode, vmid: u32, job: &Job) -> Result<(Manifest, u64)> {
+    fn pull(
+        &self,
+        store: &Store,
+        ssh: &SshNode,
+        vmid: u32,
+        job: &Job,
+        require_bitmap: bool,
+    ) -> Result<(Manifest, u64)> {
         let time = job.time()?;
         let source = source_name(vmid);
         let prev = store.list_snapshots()?.into_iter().rfind(|m| m.source == source);
+        if require_bitmap {
+            let excluded = self.exclude.get(&vmid).map(Vec::as_slice).unwrap_or_default();
+            let fresh: Vec<&str> = job
+                .devices
+                .iter()
+                .filter(|d| !excluded.contains(&d.name))
+                .filter(|d| d.bitmap_mode != "reuse" || !prev.as_ref().is_some_and(|m| m.indexes.contains(&d.name)))
+                .map(|d| d.name.as_str())
+                .collect();
+            if !fresh.is_empty() {
+                return Err(anyhow::Error::new(BitmapGone(fresh.join(", "))));
+            }
+        }
         // build_index hid its devices from the node (fresh bitmaps); a reuse now is a stale node index
         let prev_damaged = prev.as_ref().map(|m| store.is_damaged(m)).transpose()?.unwrap_or(false);
         // VM identity (Phase 22b): a changed vmgenid / SMBIOS UUID means the VMID now

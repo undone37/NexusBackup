@@ -19,6 +19,11 @@
 //!              | u8 len | user | u8 len | group | u64 BE len | data)
 //! ```
 //! Paths are relative to `/` (never absolute, no `..`).
+//!
+//! Phase 30 (ADR-014): keyd publishes a hybrid public key (X25519 | ML-KEM-768,
+//! the ML-KEM seed derived from the same KEK-derived secret, [`PQ_CONTEXT`]) and
+//! bundles are `NXCFGB2\0` with the bundle key in a hybrid box (`crate::hybrid`,
+//! label `config-bundle`); the layout is otherwise v1's. v1 bundles still open.
 
 use crate::{err, parse_recovery_key, unseal, Key};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -31,6 +36,10 @@ use std::path::Path;
 use zeroize::Zeroizing;
 
 pub const MAGIC: &[u8; 8] = b"NXCFGB1\0";
+/// Phase 30: the bundle key in a hybrid (X25519 + ML-KEM-768) box
+pub const MAGIC2: &[u8; 8] = b"NXCFGB2\0";
+const PQ_CONTEXT: &str = "NexusBackup 2026 config-backup ml-kem-768 v1";
+const LABEL: &[u8] = b"config-bundle";
 /// published next to the keyd socket (0644): the X25519 public key and `kek.recovery`
 pub const PUB_FILE: &str = "config-backup.pub";
 pub const KEK_RECOVERY_FILE: &str = "kek.recovery";
@@ -59,6 +68,10 @@ fn secret_of(kek: &[u8; 32]) -> crypto_box::SecretKey {
     crypto_box::SecretKey::from_bytes(blake3::derive_key(CONTEXT, kek))
 }
 
+fn hybrid_of(kek: &[u8; 32]) -> crate::hybrid::Secret {
+    crate::hybrid::Secret::derive(&Zeroizing::new(blake3::derive_key(CONTEXT, kek)), PQ_CONTEXT)
+}
+
 fn config_secret(dir: &Path) -> io::Result<crypto_box::SecretKey> {
     Ok(secret_of(&*unseal(dir)?))
 }
@@ -68,12 +81,18 @@ pub fn config_pubkey(dir: &Path) -> io::Result<[u8; 32]> {
     Ok(*config_secret(dir)?.public_key().as_bytes())
 }
 
-/// keyd serve: writes [`PUB_FILE`] and [`KEK_RECOVERY_FILE`] (both public:
-/// the latter is wrapped under the recovery key and copied offsite anyway) into
-/// `out` (keyd's runtime dir, writable only by keyd).
+/// Phase 30: the hybrid public key bundles are sealed to (its X25519 half is
+/// [`config_pubkey`]).
+pub fn config_pubkey_pq(dir: &Path) -> io::Result<Vec<u8>> {
+    Ok(hybrid_of(&*unseal(dir)?).public().to_bytes())
+}
+
+/// keyd serve: writes [`PUB_FILE`] (the hybrid public key since Phase 30) and
+/// [`KEK_RECOVERY_FILE`] (both public: the latter is wrapped under the recovery
+/// key and copied offsite anyway) into `out` (keyd's runtime dir, writable only by keyd).
 pub fn publish(dir: &Path, out: &Path) -> io::Result<()> {
     for (name, bytes) in [
-        (PUB_FILE, config_pubkey(dir)?.to_vec()),
+        (PUB_FILE, config_pubkey_pq(dir)?),
         (KEK_RECOVERY_FILE, fs::read(dir.join("kek.recovery"))?),
     ] {
         let p = out.join(name);
@@ -156,12 +175,22 @@ fn put(out: &mut Vec<u8>, b: &[u8]) {
 }
 
 /// Seals `entries` to `pubkey` (see [`publish`]); no secret of keyd is needed.
-pub fn seal(pubkey: &[u8; 32], kek_recovery: &[u8], header: &[u8], entries: &[Entry]) -> io::Result<Vec<u8>> {
+/// A hybrid public key makes a v2 bundle, a 32-byte X25519 key a v1 bundle.
+pub fn seal(pubkey: &[u8], kek_recovery: &[u8], header: &[u8], entries: &[Entry]) -> io::Result<Vec<u8>> {
     let key = Zeroizing::new(generate_key());
-    let sealed_key = crypto_box::PublicKey::from_bytes(*pubkey)
-        .seal(&mut rand::rngs::OsRng, &key[..])
-        .map_err(|_| err(io::ErrorKind::Other, "sealing failed"))?;
-    let mut out = MAGIC.to_vec();
+    let (magic, sealed_key) = match <[u8; 32]>::try_from(pubkey) {
+        Ok(x) => (
+            MAGIC,
+            crypto_box::PublicKey::from_bytes(x)
+                .seal(&mut rand::rngs::OsRng, &key[..])
+                .map_err(|_| err(io::ErrorKind::Other, "sealing failed"))?,
+        ),
+        Err(_) => (
+            MAGIC2,
+            crate::hybrid::seal(&crate::hybrid::Public::from_bytes(pubkey)?, LABEL, &key[..])?,
+        ),
+    };
+    let mut out = magic.to_vec();
     put(&mut out, header);
     put(&mut out, kek_recovery);
     put(&mut out, &sealed_key);
@@ -176,6 +205,7 @@ pub fn seal(pubkey: &[u8; 32], kek_recovery: &[u8], header: &[u8], entries: &[En
 }
 
 struct Parts<'a> {
+    hybrid: bool,
     header: &'a [u8],
     kek_recovery: &'a [u8],
     sealed_key: &'a [u8],
@@ -185,7 +215,8 @@ struct Parts<'a> {
 
 fn split(b: &[u8]) -> io::Result<Parts<'_>> {
     let bad = || err(io::ErrorKind::InvalidData, "not a NexusBackup configuration bundle");
-    if !b.starts_with(MAGIC) {
+    let hybrid = b.starts_with(MAGIC2);
+    if !b.starts_with(MAGIC) && !hybrid {
         return Err(bad());
     }
     let mut pos = MAGIC.len();
@@ -200,6 +231,7 @@ fn split(b: &[u8]) -> io::Result<Parts<'_>> {
         return Err(bad());
     }
     Ok(Parts {
+        hybrid,
         header,
         kek_recovery,
         sealed_key,
@@ -233,7 +265,11 @@ fn open_with_kek(p: &Parts<'_>, kek: &[u8; 32]) -> io::Result<Opened> {
             "configuration bundle damaged or tampered with",
         )
     };
-    let key = Zeroizing::new(secret_of(kek).unseal(p.sealed_key).map_err(|_| bad())?);
+    let key = if p.hybrid {
+        crate::hybrid::open(&hybrid_of(kek), LABEL, p.sealed_key).map_err(|_| bad())?
+    } else {
+        Zeroizing::new(secret_of(kek).unseal(p.sealed_key).map_err(|_| bad())?)
+    };
     let key: &[u8; 32] = key[..].try_into().map_err(|_| bad())?;
     let (nonce, ct) = p.rest.split_at(24);
     let plain = Zeroizing::new(
@@ -282,10 +318,17 @@ mod tests {
         let rk = crate::init(d.path()).unwrap();
         let run = tempfile::tempdir().unwrap();
         publish(d.path(), run.path()).unwrap();
-        let pk: [u8; 32] = fs::read(run.path().join(PUB_FILE)).unwrap().try_into().unwrap();
+        let pk = fs::read(run.path().join(PUB_FILE)).unwrap();
+        assert_eq!(pk.len(), crate::hybrid::PUBLIC_LEN);
+        assert_eq!(pk[..32], config_pubkey(d.path()).unwrap());
         let kr = fs::read(run.path().join(KEK_RECOVERY_FILE)).unwrap();
         assert_eq!(kr, fs::read(d.path().join("kek.recovery")).unwrap());
         let b = seal(&pk, &kr, br#"{"appliance":"x"}"#, &entries()).unwrap();
+        assert!(b.starts_with(MAGIC2), "Phase 30: hybrid");
+        // a v1 bundle (X25519 only, earlier releases) still opens
+        let v1 = seal(&pk[..32], &kr, b"{}", &entries()).unwrap();
+        assert!(v1.starts_with(MAGIC));
+        assert_eq!(open(&v1, &rk).unwrap().entries, entries());
         assert_eq!(header(&b).unwrap(), br#"{"appliance":"x"}"#);
         let o = open(&b, &rk).unwrap();
         assert_eq!(o.entries, entries());

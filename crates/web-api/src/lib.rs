@@ -33,6 +33,7 @@ pub mod dashboard;
 pub mod devices;
 pub mod diag;
 pub mod edges;
+pub mod elevation;
 pub mod endpoint;
 pub mod filesearch;
 pub mod firewall;
@@ -52,6 +53,7 @@ pub mod lockdown;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
+pub mod offsite2;
 pub mod oidc;
 pub mod openapi;
 pub mod ops;
@@ -566,6 +568,7 @@ pub fn router(st: St) -> Router {
         .route("/tenants/attach", post(offsite::request_attach))
         .route("/tenants/attach/{id}/run", post(offsite::run_attach))
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
+        .route("/tenants/{name}/offsite2", put(offsite2::put_second))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))
@@ -655,6 +658,7 @@ pub fn router(st: St) -> Router {
             post(changes::clear),
         )
         .route("/stats/trends", get(changes::trends))
+        .route("/stats/sensitivity", put(changes::put_sensitivity))
         .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
         .route("/snapshots/{tenant}/{source}/{time}/scan-back", post(scan::scan_back))
         .route("/scans", get(scan::list_scans))
@@ -749,6 +753,7 @@ pub fn router(st: St) -> Router {
         .merge(threat::routes())
         .merge(devices::routes())
         .merge(risk::routes())
+        .merge(elevation::routes())
         .merge(fullread::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)

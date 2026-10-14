@@ -43,7 +43,7 @@ Build an open-source, enterprise-grade backup suite modelled on Cohesity: a hard
 | MAC system | **SELinux** (not AppArmor) | Type enforcement confines every service into its own domain; root processes are still restricted by policy. AppArmor is path-based and easier to bypass. |
 | Base OS | **Image-based RHEL clone with bootc** (AlmaLinux / CentOS Stream) | Signed container image, read-only `/usr`, atomic A/B updates, automatic rollback. |
 | Offsite tier (phase 1) | **Hetzner Storage Box, one box per tenant** | Cheap, EU-located, SFTP/rsync, automated snapshots. Per-tenant box solves the 10-connection limit, improves isolation, enables per-customer billing. |
-| Offsite retention | **Identical to local retention** | Customer requirement; the same restore points must be available offsite. |
+| Offsite retention | **Identical to local retention** (Phase 30: by default; a target may keep *longer*, never shorter) | Customer requirement; the same restore points must be available offsite. Phase 30 (second offsite target, docs/netbackup-comparison.md decision 5): each offsite target can have its own retention, applied as the larger of it and the policies' per class. |
 | Catalog database | **SQLite (WAL mode)** | Single-node appliance; robust, serverless, trivially backed up. |
 | Garbage collection | **Mark-and-sweep** (not reference counting) | Reference counters corrupt easily on crashes; a wrong counter means data loss. |
 | VM chunking | **Fixed-size chunks aligned to dirty bitmaps** | Maps dirty-bitmap regions directly to chunks; enables random access for instant recovery and single-file restore. |
@@ -859,6 +859,39 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   from a new network" rule is not done. Thresholds are constants, not settings. The mark lasts 24 h; marked sessions
   get 428 on their first change until `POST /auth/step-up`; tokens of a marked account cannot write; security
   officers and admins list and clear marks (not their own).
+
+### Phase 30 — NetBackup Tier 2 (implemented 2026-10-14)
+Backup-duration and dedup-rate anomalies, just-in-time role elevation, instant rollback of a PVE VM, hybrid
+post-quantum key wrapping, a second offsite copy with its own retention (catalog v45, threat model T66–T69).
+Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisions taken on the way:
+- **Anomalies:** the dedup rate is new data / data **read** (not unique / logical, which is the change rate divided
+  by the size); agents now report what they read from their disks as `read`. Duration = snapshot time to commit
+  (`nexus-stats` `secs`). Sensitivity per source (`low`/`medium`/`high`, default medium) scales all three rules;
+  lowering it is the approval `anomaly.sensitivity`. Duration alone raises a warning, everything else critical; all
+  findings flag the snapshot and share the `anomaly` alert kind and key.
+- **Role elevation:** per session (not per account): other sessions and API tokens keep the standing role. Only
+  appliance-wide **local** operators and viewers can hold an eligible role (single sign-on accounts get their role from
+  the IdP mapping); granting it is the approval `user.update` like granting the role. The approval for each elevation
+  (`role.elevate`) is a setting, off by default (the proposal: "optionally"); switching it off is itself an approval.
+  The passkey policy of the eligible role applies to the elevation. Possible approvers stay the standing admins and
+  security officers. Posture check `posture.standing_admins` warns above two standing admins (break-glass + one).
+- **Instant rollback** (open question 6 had no proposal; the maintainer's task decided "a new helper write
+  command"): an option of replace original, approval `restore.replace`. The helper stays unprivileged and only
+  forwards to a new socket-activated **root service** on the node (`pve-plugin/rollback`): it writes only disks of a
+  VM that is stopped, tagged `nexus-rollback` through the API and locked `rollback` by itself, through qemu-nbd with
+  the storage's format (no `sudo`, no paths from the appliance). The VM's "current dirty bitmap" is read by a
+  pre-rollback incremental backup of the paused VM (which also keeps the old state in the store, instead of a PVE
+  snapshot); the VM's configuration is not rolled back. Fallback to the full replace when the VM is stopped, its
+  identity or disk layout changed, or a bitmap cannot be reused.
+- **Post-quantum** (open question 7, proposal taken: keyd hybrid wrapping first, TLS later): ADR-014. RustCrypto
+  `ml-kem` (already in the tree through russh) rather than another implementation; the ML-KEM keys are derived from
+  the existing X25519 secrets, so tenant recovery keys stay one 64-hex-digit secret. Existing tenant recovery keys and
+  replication peers stay X25519-only until replaced or enrolled again (the appliance cannot derive their ML-KEM half).
+- **Second offsite target** (decision 5, proposal taken; plan §2 updated): `tenants.offsite.second` with its own
+  remote, lock and `gfs`, set with `PUT /tenants/{name}/offsite2`; per class the larger of the policies' and the
+  target's value (identical by default, longer only). One offsite job per target, own upload state, copy status per
+  target (`snapshots.offsite2`), inventory and `offsite_lag` alerts per target, gc/verify on both, browse/fetch per
+  target. No per-policy offsite GFS. Configuration backups still go to the first target only.
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed

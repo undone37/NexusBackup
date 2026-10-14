@@ -917,6 +917,16 @@ export const en = {
     trendNoFiles: "no file index",
     trendChart: (what: string, src: string, n: number) => `${what} of ${src} over the last ${n} backups`,
     trendsEmpty: "No measured backups yet.",
+    // Phase 30: duration and dedup rate, per-source sensitivity
+    trendDuration: "Duration",
+    trendNoDuration: "not measured",
+    trendNew: (pct: string) => `${pct} of the data read was new`,
+    sensitivity: "Sensitivity",
+    sensitivityLabel: (src: string) => `Anomaly sensitivity of ${src}`,
+    sensLevel: { low: "Low", medium: "Medium", high: "High" } as Record<string, string>,
+    sensHint:
+      "How readily a backup counts as anomalous: new data, data that did not deduplicate and the backup's duration against the system's own median. High flags smaller deviations; lowering it needs approval by a second person.",
+    sensSaved: (src: string, level: string) => `Sensitivity of ${src}: ${level}.`,
     title: 'Sources',
     lede: 'Systems the appliance backs up: hypervisors, hosts, NAS systems, file shares and plugin sources.',
     new: 'New source',
@@ -2661,7 +2671,7 @@ export const en = {
       report: "A scheduled report could not be mailed. Check the SMTP server under Settings → Alert delivery (reachable, credentials) and the report's recipients on the Reports page, then use Send now. Resolves after the next successful send.",
       console_unlock: 'A one-time code for a root shell on the appliance console was issued. Make sure the request (Settings → Console access) was planned, then acknowledge.',
       console_root_shell: 'Someone opened a root shell on the appliance console. Confirm with the requester (or whoever holds the recovery key) what was done, check the audit log, then acknowledge.',
-      anomaly: 'Much more new data than usual, new data that no longer compresses, ransom-note file names or a mass rename of files (typical for ransomware). The snapshot is flagged as anomalous; compare it with the previous one under Snapshot changes and check the source. A security officer can put the last clean snapshot on legal hold right here, so that retention cannot remove it while you investigate, and clears the flag on the Snapshots page if it was a false alarm.',
+      anomaly: 'Much more new data than usual, new data that no longer compresses or deduplicates, a backup that took far longer than usual (a warning on its own), ransom-note file names or a mass rename of files (typical for ransomware). The snapshot is flagged as anomalous; compare it with the previous one under Snapshot changes and check the source. A security officer can put the last clean snapshot on legal hold right here, so that retention cannot remove it while you investigate, and clears the flag on the Snapshots page if it was a false alarm.',
       legal_hold_advisory: 'The primary holds this replicated snapshot under a legal hold. Holds are not applied here automatically: a security officer applies it with Apply hold. Resolves once applied or when the primary releases its hold.',
       disk: 'A disk or RAID array needs attention (SMART failing, bad sectors, temperature, NVMe wear, degraded or rebuilding array). Open Configuration → Hardware; replace a failed disk as the manual describes. Resolves when the disk or array is healthy again.',
       clock_skew: 'System time and the compliance clock (retention locks) differ. A lag after a restart is normal: the compliance clock catches up slowly and locks last longer meanwhile. A jump while running, or a compliance clock ahead of system time, means system time was changed by hand or a time source is wrong: check Diagnostics (time.sync, time.nts) and the audit log. Resolves when the difference is below a minute.',
@@ -2691,6 +2701,8 @@ export const en = {
         "File indexing is paused: the volume holding the search index is below its free space floor. New snapshots wait (Find files shows how many). Free space on the store or shorten retention; indexing resumes on its own. Resolves when indexing runs again.",
       change_tracking:
         "A scheduled full read of a source found data that changed since the previous snapshot although the change tracking (Proxmox dirty bitmap, the agent's metadata cache or USN journal, the NAS metadata cache or zfs diff) did not report it: incremental backups of that source may have missed changes. The newest snapshot is complete (it was read in full); older incremental snapshots since the last verified full read may lack the unreported changes. Check the examples in the message (Dashboard, Change tracking), the source's storage and agent logs, and keep the full read interval short until a full read is clean again. Resolves after the next clean full read.",
+      role_elevation:
+        "An account with an eligible role elevated one of its sessions to administrator or security officer for a limited time (the message names the account, the role, the end time and the reason). Nothing to do if the elevation was expected; if not, end the account's sessions and remove its eligible role on the Users page, then review the audit log (role.elevate). Resolves when the elevation ends.",
       user_risk:
         "A risk signal fired for a privileged account: a sign-in at an hour the account never used, several weakening requests or deletes within an hour, or an unusually large download volume. The account must confirm it is the owner (password and authenticator or passkey) before its next change in each session; its API tokens cannot change anything for 24 hours. Ask the owner whether it was them. If not, disable the account and end its sessions; if it was, a security officer or another administrator clears the mark on the Users page. Resolve the alert by hand.",
       vault_closed:
@@ -4370,6 +4382,72 @@ export const en = {
       cleared: (n: string) => `Risk mark of ${n} cleared.`,
       chip: "Step-up required",
       chipTitle: (reason: string, until: string) => `${reason} (until ${until})`,
+    },
+  },
+  // Phase 30: NetBackup Tier 2
+  p30: {
+    second: {
+      title: (n: string) => `Second offsite target: ${n}`,
+      intro:
+        "A second copy on another target, for example a Storage Box for fast restores next to an S3 bucket with Object Lock for immutability. It gets every snapshot the first target gets, with its own lock and its own retention.",
+      changeHint: "Changing or removing the second target needs a second person (approval), like the first target.",
+      retention: "Retention on this target",
+      retentionHint:
+        "Snapshots to keep per class. Empty = as the policies. A value below the policies' has no effect: offsite retention is never shorter than local, only longer (for example monthly snapshots for 7 years = 84).",
+      classes: { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" } as Record<string, string>,
+      classShort: { daily: "daily", weekly: "weekly", monthly: "monthly", yearly: "yearly" } as Record<string, string>,
+      asLocal: "as the policies",
+      remove: "Remove second target",
+      removeConfirm: (n: string) => `Remove the second offsite target of ${n}? Its copy stays on the target but is no longer updated. Needs approval.`,
+      button: "Second target",
+      buttonLabel: (n: string) => `Second offsite target of ${n}`,
+      chip: "Second target",
+      first: "First target",
+      which: "Target",
+      keeps: (what: string) => `keeps at least ${what}`,
+      column: "Offsite 2",
+    },
+    pq: {
+      chip: "Post-quantum",
+      hint: "Sealed with X25519 and ML-KEM-768 together: copies harvested today stay closed even if one of the two is broken later (for example by a quantum computer).",
+      legacy: "X25519 only",
+      legacyHint: "This key was created before post-quantum sealing. Create a new tenant recovery key to seal its escrow with X25519 and ML-KEM-768.",
+      peerLegacyHint: "This secondary enrolled before post-quantum sealing (or runs an earlier release): key exports to it use X25519 only. Update it and enroll it again.",
+    },
+    rollback: {
+      label: "Roll back in place (changed blocks only)",
+      hint: (vmid: string) =>
+        `Instead of restoring a new VM, guest ${vmid} is paused, its current state is backed up, then it is stopped and only the blocks that differ from this snapshot are written back onto its disks. Minutes instead of hours when little changed. Its configuration stays as it is now. If that is not possible (the VM is stopped, another VM uses the VMID, disks were added, removed or resized, or Proxmox VE lost the change tracking) the full replace below runs instead.`,
+    },
+    elev: {
+      title: "Elevate just in time",
+      open: (role: string) => `Elevate to ${role}`,
+      intro: (role: string, standing: string) =>
+        `This session acts as ${role} for the chosen time, then returns to ${standing}. Signing out ends it earlier. Confirm with your password and an authenticator code, or leave the code empty to use a passkey.`,
+      duration: "For",
+      minutes: (m: number) => (m < 60 ? `${m} minutes` : m === 60 ? "1 hour" : `${m / 60} hours`),
+      reason: "Reason",
+      reasonHint: "Shown to the approvers and in the alert and audit log, e.g. a ticket number.",
+      audited: "Every elevation raises an info alert and is audited.",
+      submit: "Elevate",
+      done: (role: string) => `This session now acts as ${role}.`,
+      ended: "Back to your standing role.",
+      banner: (role: string, until: string) => `Elevated to ${role} until ${until}.`,
+      bannerStanding: (standing: string) => `Your standing role is ${standing}; it comes back at the end or when you sign out.`,
+      end: "End now",
+      eligible: "Eligible role (just in time)",
+      eligibleNone: "None",
+      eligibleHint:
+        "Operators and viewers without a tenant can hold an eligible role: they elevate one session to it for 15 minutes to 8 hours after confirming their password and second factor. Granting it needs approval like the role itself.",
+      eligibleChip: (role: string) => `eligible: ${role}`,
+      elevatedChip: (until: string) => `elevated until ${until}`,
+      settingsTitle: "Role elevation",
+      settingsHint: (min: number, max: number) =>
+        `Accounts with an eligible role (Users page) elevate a session to it for ${min} minutes to ${max / 60} hours, confirmed with their password and second factor. Each elevation raises an info alert and is audited.`,
+      approval: "Every elevation needs a second person",
+      approvalHint: "Then an elevation is a request (role.elevate) that an administrator or security officer approves; it starts when approved. Switching this off needs approval.",
+      withApproval: "with approval",
+      withoutApproval: "without approval",
     },
   },
 };

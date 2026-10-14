@@ -190,7 +190,7 @@ impl Scheduler {
                     .offsite_cfg(target)?
                     .with_context(|| format!("tenant {target} has no offsite target"))?;
                 let jd = self.job_dir(job.id);
-                let files = self.offsite_files(target, &o, &jd)?;
+                let files = self.offsite_files(target, &o, &jd, 1)?;
                 let step = Step::Cli {
                     bin: self.cfg.offsite_bin.clone(),
                     args: vec![jd.join("offsite.json").to_string_lossy().into_owned(), "rekey".into()],
@@ -208,7 +208,7 @@ impl Scheduler {
                     .offsite_cfg(target)?
                     .with_context(|| format!("tenant {target} has no offsite target"))?;
                 let jd = self.job_dir(job.id);
-                let files = self.offsite_files(target, &o, &jd)?;
+                let files = self.offsite_files(target, &o, &jd, 1)?;
                 let step = Step::Cli {
                     bin: self.cfg.offsite_bin.clone(),
                     args: vec![

@@ -20,6 +20,10 @@ pub struct Status {
     pub public: String,
     /// first 16 hex digits of `public` (the escrow file names offsite carry it)
     pub kid: String,
+    /// Phase 30: the ML-KEM-768 encapsulation key derived from the same secret
+    /// (hex; keys set before have none and keep X25519-only escrow files)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_pq: Option<String>,
     pub set_at: i64,
     pub requested_by: String,
     pub approved_by: String,
@@ -51,6 +55,21 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The public key keyd seals the escrow to: X25519, followed by the ML-KEM-768
+/// key when there is one (`keyd::hybrid`).
+pub fn sealing_key(s: &Status) -> Option<Vec<u8>> {
+    let mut out = parse_public(&s.public)?.to_vec();
+    if let Some(pq) = &s.public_pq {
+        if pq.len() % 2 != 0 {
+            return None;
+        }
+        for i in (0..pq.len()).step_by(2) {
+            out.push(u8::from_str_radix(pq.get(i..i + 2)?, 16).ok()?);
+        }
+    }
+    Some(out)
+}
+
 /// Public key bytes of a [`Status::public`].
 pub fn parse_public(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 {
@@ -63,15 +82,33 @@ pub fn parse_public(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+/// The ML-KEM-768 seed context of `keyd::tenant_key::RECOVERY_CONTEXT` (the
+/// scheduler's tests check both give the same key).
+const RECOVERY_CONTEXT: &str = "NexusBackup 2026 tenant-recovery ml-kem-768 v1";
+
+/// ML-KEM-768 encapsulation key (hex) of a tenant recovery secret: the seed is
+/// BLAKE3's derive-key output over the secret (`keyd::hybrid::Secret::derive`).
+pub fn pq_public(secret: &[u8; 32]) -> String {
+    use ml_kem::kem::KeyExport;
+    let mut seed = Zeroizing::new([0u8; 64]);
+    blake3::Hasher::new_derive_key(RECOVERY_CONTEXT)
+        .update(secret)
+        .finalize_xof()
+        .fill(&mut seed[..]);
+    let dk = ml_kem::ml_kem_768::DecapsulationKey::from_seed(ml_kem::Seed::from(*seed));
+    hex(&dk.encapsulation_key().to_bytes())
+}
+
 /// A new tenant recovery key: 256 random bits written like the appliance
-/// recovery key (16 groups of 4 hex digits, `keyd::format_recovery_key`), and
-/// its X25519 public key (hex). The key itself is the X25519 secret key.
-pub fn generate() -> (Zeroizing<String>, String) {
+/// recovery key (16 groups of 4 hex digits, `keyd::format_recovery_key`), its
+/// X25519 public key (hex; the key itself is the X25519 secret key) and, since
+/// Phase 30, the ML-KEM-768 public key derived from it (hex, [`pq_public`]).
+pub fn generate() -> (Zeroizing<String>, String, String) {
     let k = Zeroizing::new(rand::random::<[u8; 32]>());
     let h = Zeroizing::new(hex(&k[..]));
     let key = Zeroizing::new((0..16).map(|i| &h[i * 4..i * 4 + 4]).collect::<Vec<_>>().join("-"));
     let public = crypto_box::SecretKey::from_bytes(*k).public_key();
-    (key, hex(public.as_bytes()))
+    (key, hex(public.as_bytes()), pq_public(&k))
 }
 
 #[cfg(test)]
@@ -80,7 +117,8 @@ mod tests {
 
     #[test]
     fn generate_format_and_public_key() {
-        let (k, p) = generate();
+        let (k, p, pq) = generate();
+        assert_eq!(pq.len(), 2 * 1184);
         let groups: Vec<&str> = k.split('-').collect();
         assert_eq!(groups.len(), 16);
         assert!(groups
@@ -105,6 +143,7 @@ mod tests {
         let s = Status {
             public: "ab".repeat(32),
             kid: "ab".repeat(8),
+            public_pq: None,
             set_at: 5,
             requested_by: "alice".into(),
             approved_by: "bob".into(),

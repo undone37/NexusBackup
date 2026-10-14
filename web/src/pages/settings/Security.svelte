@@ -23,6 +23,8 @@
   let pk: PasskeySettings | null = $state(null);
   let pkf = $state({ require_privileged: false, rp_id: '' });
   const isAdmin = $derived(session.user?.role === 'admin');
+  // Phase 30: role elevation needs a second person
+  let elevApproval = $state(false);
 
   async function load() {
     try {
@@ -32,6 +34,7 @@
       maxSessions = cur.max_sessions;
       dekDays = cur.dek_rotation_days;
       banner = cur.login_banner;
+      elevApproval = cur.elevation.settings.approval;
       pk = await get<PasskeySettings>('/settings/passkeys');
       pkf = { ...pk.policy };
       if (isAdmin) sessions = await get<SessionInfo[]>('/sessions');
@@ -61,6 +64,10 @@
   async function saveDek(e: SubmitEvent) {
     e.preventDefault();
     if (await act(put('/settings/dek-rotation', { days: Number(dekDays) }), t.saved)) load();
+  }
+  async function saveElevation(e: SubmitEvent) {
+    e.preventDefault();
+    if (await act(put('/settings/elevation', { approval: elevApproval }), t.saved)) load();
   }
   async function saveBanner(e: SubmitEvent) {
     e.preventDefault();
@@ -126,6 +133,22 @@
             <input id="sec-abs" type="number" min="1" max="24" step="1" bind:value={sess.absolute_h} required />
           </div>
         </div>
+      </fieldset>
+      {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+    </form>
+  </section>
+
+  <section class="card settings-section" aria-labelledby="sec-elev">
+    <div class="card-head">
+      <h2 id="sec-elev">{t.p30.elev.settingsTitle}</h2>
+      <span class="chip {cur.elevation.settings.approval ? 'ok' : 'plain'}">{cur.elevation.settings.approval ? t.p30.elev.withApproval : t.p30.elev.withoutApproval}</span>
+      {#if cur.elevation.pending}<span class="chip warn">{t.quorumPending(cur.elevation.pending)}</span>{/if}
+    </div>
+    <p>{t.p30.elev.settingsHint(cur.elevation.min_minutes, cur.elevation.max_minutes)}</p>
+    <form onsubmit={saveElevation}>
+      <fieldset disabled={!isAdmin}>
+        <label class="inline-check"><input type="checkbox" bind:checked={elevApproval} />{t.p30.elev.approval}</label>
+        <div class="hint">{t.p30.elev.approvalHint}</div>
       </fieldset>
       {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
     </form>

@@ -129,6 +129,14 @@ pinned certificate the secondary does not even send its proof. The token never t
   Remedy: `export-keys` on the primary (quorum) → next sync imports the new version.
 - Restore and DR on the secondary use only its own keyd; the secondary's escrow/offsite and recovery key
   cover the imported DEKs like local ones.
+- **Post-quantum (Phase 30, ADR-014):** the secondary's keyd also has an ML-KEM-768 key derived from its replication
+  secret (`replica-pubkey-pq` = X25519 public | ML-KEM-768 encapsulation key). The secondary sends it at enrollment
+  (`EnrollRequest.keyd_pub_pq`, hex, inside the exporter-bound TLS channel; the primary checks that it extends
+  `keyd_pub` and stores it as `replication_peers.keyd_pub_pq`). Exports to such a peer are hybrid boxes
+  (`export-for-pq <tenant> <quorum-id> <len>` + the key; label `dek-export`), recorded with `post_quantum: true` in
+  `key_exports` and the audit entry; the peer list shows the state. `import-sealed` opens both formats. A peer
+  enrolled before (or a secondary of an earlier release) keeps X25519-only exports until it enrolls again; a
+  secondary enrolling at a primary of an earlier release retries without the field.
 
 ## 6. Peer API (primary, `/replication/v1`, JSON unless noted)
 

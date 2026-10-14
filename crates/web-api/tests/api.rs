@@ -3777,6 +3777,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenant_idp.rs"),
         include_str!("../src/fullread.rs"),
         include_str!("../src/risk.rs"),
+        include_str!("../src/elevation.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -3976,6 +3977,8 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/snapshots/diff", "/api/v1/snapshots/diff".into(), Some(json!({"tenant": "acme", "source": "vm-100", "time": 1000})), 'Y'),
         ("POST", "/snapshots/{tenant}/{source}/{time}/anomaly/clear", format!("{snap}/anomaly/clear"), Some(json!({"note": "x"})), 'N'),
         ("GET", "/stats/trends", "/api/v1/stats/trends".into(), none(), 'Y'),
+        // Phase 30: sensitivity of its own sources
+        ("PUT", "/stats/sensitivity", "/api/v1/stats/sensitivity".into(), Some(json!({"tenant": "acme", "source": "vm-100", "level": "high"})), 'Y'),
         ("POST", "/snapshots/{tenant}/{source}/{time}/scan", format!("{snap}/scan"), e(), 'Y'),
         ("GET", "/scans", "/api/v1/scans".into(), none(), 'Y'),
         ("GET", "/scan/rules", "/api/v1/scan/rules".into(), none(), 'N'),
@@ -4122,6 +4125,12 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
         ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
         ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
+        // Phase 30: the second offsite target is the provider's (like the first)
+        ("PUT", "/tenants/{name}/offsite2", "/api/v1/tenants/acme/offsite2".into(), Some(json!({"target": null})), 'N'),
+        // Phase 30: role elevation is for appliance-wide accounts (a tenant admin is never eligible)
+        ("POST", "/auth/elevate", "/api/v1/auth/elevate".into(), Some(json!({"role": "admin", "minutes": 30, "reason": "x"})), 'N'),
+        ("POST", "/auth/elevate/end", "/api/v1/auth/elevate/end".into(), e(), 'Y'),
+        ("PUT", "/settings/elevation", "/api/v1/settings/elevation".into(), Some(json!({"approval": true})), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

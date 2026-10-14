@@ -22,6 +22,9 @@ pub struct Stats {
     pub new_plain: u64,
     /// their sealed size on disk (after compression + encryption)
     pub new_stored: u64,
+    /// Phase 30: the backup's duration in seconds (absent from older connectors)
+    #[serde(default)]
+    pub secs: Option<u64>,
 }
 
 /// The well-formed `nexus-stats` lines of a job log.
@@ -52,10 +55,11 @@ impl Scheduler {
     pub(crate) fn record_stats(&self, tenant: &str, log: &str) -> Result<()> {
         for s in parse(log) {
             self.db.conn().execute(
-                "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                "INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored, secs)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
                  ON CONFLICT(tenant, source, time) DO UPDATE SET read=excluded.read, logical=excluded.logical,
-                   new_chunks=excluded.new_chunks, new_plain=excluded.new_plain, new_stored=excluded.new_stored",
+                   new_chunks=excluded.new_chunks, new_plain=excluded.new_plain, new_stored=excluded.new_stored,
+                   secs=excluded.secs",
                 params![
                     tenant,
                     s.source,
@@ -64,7 +68,8 @@ impl Scheduler {
                     s.logical as i64,
                     s.new_chunks as i64,
                     s.new_plain as i64,
-                    s.new_stored as i64
+                    s.new_stored as i64,
+                    s.secs.map(|v| v as i64)
                 ],
             )?;
             self.check_anomaly(tenant, &s)?;
@@ -118,8 +123,10 @@ mod tests {
             nexus-stats {\"source\":\"vm-100\",\"time\":1700000000,\"read\":10,\"logical\":100,\"new_chunks\":2,\"new_plain\":8,\"new_stored\":5}\n\
             nexus-stats {\"source\":\"../x\",\"time\":1,\"read\":0,\"logical\":0,\"new_chunks\":0,\"new_plain\":0,\"new_stored\":0}\n\
             nexus-stats {broken\n\
-            nexus-stats {\"source\":\"ct-7\",\"time\":5}\n";
-        let v = parse(log);
+            nexus-stats {\"source\":\"ct-7\",\"time\":5}\n\
+            nexus-stats {\"source\":\"vm-101\",\"time\":1700000000,\"read\":1,\"logical\":1,\"new_chunks\":1,\"new_plain\":1,\"new_stored\":1,\"secs\":42}\n";
+        let mut v = parse(log);
+        assert_eq!(v.pop().and_then(|s| s.secs), Some(42));
         assert_eq!(
             v,
             vec![Stats {
@@ -129,7 +136,8 @@ mod tests {
                 logical: 100,
                 new_chunks: 2,
                 new_plain: 8,
-                new_stored: 5
+                new_stored: 5,
+                secs: None
             }]
         );
     }

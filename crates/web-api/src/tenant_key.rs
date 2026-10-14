@@ -93,9 +93,10 @@ pub async fn get(State(st): State<St>, ctx: Ctx, Path(tenant): Path<String>) -> 
                    "status": status(r, now)})
         })
         .collect();
-    let key = tenant_key::get(&c, &tenant)?.map(
-        |s| json!({"kid": s.kid, "set_at": s.set_at, "requested_by": s.requested_by, "approved_by": s.approved_by}),
-    );
+    let key = tenant_key::get(&c, &tenant)?.map(|s| {
+        json!({"kid": s.kid, "set_at": s.set_at, "requested_by": s.requested_by, "approved_by": s.approved_by,
+                   "post_quantum": s.public_pq.is_some()})
+    });
     Ok(Json(json!({"tenant": tenant, "key": key, "requests": reqs})))
 }
 
@@ -147,11 +148,13 @@ pub async fn show(State(st): State<St>, ctx: Ctx, Path((tenant, id)): Path<(Stri
         "shown" => return Err(ApiError::conflict("this key was already shown")),
         s => return Err(ApiError::conflict(format!("request is {s}"))),
     }
-    let (key, public) = tenant_key::generate();
+    // Phase 30: with the ML-KEM-768 half of the same secret (keyd seals the escrow hybrid)
+    let (key, public, pq) = tenant_key::generate();
     let approved_by = row.decided_by.clone().unwrap_or_default();
     let s = Status {
         kid: public[..16].to_owned(),
         public,
+        public_pq: Some(pq),
         set_at: now,
         requested_by: row.by.clone(),
         approved_by: approved_by.clone(),

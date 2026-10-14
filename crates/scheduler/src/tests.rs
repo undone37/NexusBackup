@@ -2150,6 +2150,8 @@ mod network;
 mod offsite_ui;
 /// Phase 29 full read, freezes, restores of flagged snapshots, scan back.
 mod phase29;
+/// Phase 30 duration and dedup-rate anomalies, rollback, offsite targets.
+mod phase30;
 /// Phase 22b restore priority.
 mod priority;
 /// Phase 25 restore tests and recovery plans.

@@ -94,7 +94,10 @@ in its offsite copy, never other tenants' and never the appliance's key.
 ![Tenant recovery key, shown once](images/tenant-key-shown.png)
 
 - Before the next offsite run the key service seals all of the tenant's data keys to the new key; the run uploads
-  them to `keys/tenants/<tenant>/tenant-escrow.*`. Data keys created later (key rotation) are sealed automatically,
+  them to `keys/tenants/<tenant>/tenant-escrow.*`. Keys created with this release seal with **X25519 and
+  ML-KEM-768** together (**Post-quantum** in the dialog): a copy taken from the offsite provider today stays closed
+  even if one of the two methods is broken later, for example by a quantum computer. A key created with an earlier
+  release shows **X25519 only**; replace it to get post-quantum sealing. Data keys created later (key rotation) are sealed automatically,
   without the key. A tenant without an offsite target gets nothing offsite.
 - **Replacing** needs an approval again. The old key no longer receives new data keys, and the next offsite run
   removes its files from the target (on S3 with Object Lock the old objects stay until their lock ends).

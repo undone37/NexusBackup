@@ -15,9 +15,16 @@
 //! file names, so the offsite copy (append-only uploads) never mixes keys.
 //! The plaintext names the tenant and the version, so a file renamed to
 //! another tenant or version is refused.
+//!
+//! Phase 30 (ADR-014): keys generated since then also have an ML-KEM-768 half
+//! derived from the same secret ([`RECOVERY_CONTEXT`]); `tenant-recovery.pub`
+//! then holds `X25519 public | ML-KEM-768 encapsulation key` and the escrow files
+//! are hybrid boxes (`crate::hybrid`, label `tenant-escrow`). Keys set before keep
+//! their X25519-only files until the key is replaced; [`open`] reads both.
 
+use crate::hybrid;
 use crate::{err, label, tenant_dir, versions, Key};
-use chunkstore::crypto::{generate_key, hex, unwrap_key, wrap_key};
+use chunkstore::crypto::{generate_key, unwrap_key, wrap_key};
 use chunkstore::store::write_atomic;
 use std::fs;
 use std::io;
@@ -27,10 +34,22 @@ use zeroize::Zeroizing;
 pub(crate) const PUB: &str = "tenant-recovery.pub";
 const PREFIX: &str = "tenant-escrow.";
 const MAGIC: &[u8; 8] = b"NXTRK1\0\0";
+/// ML-KEM-768 seed of a tenant recovery key (derived from its X25519 secret).
+pub const RECOVERY_CONTEXT: &str = "NexusBackup 2026 tenant-recovery ml-kem-768 v1";
+const LABEL: &[u8] = b"tenant-escrow";
 
-/// Short id of a tenant recovery key (its public key's first 16 hex digits).
-pub fn key_id(public: &[u8; 32]) -> String {
-    hex(public)[..16].to_owned()
+/// Short id of a tenant recovery key (its X25519 public key's first 16 hex digits).
+pub fn key_id(public: &[u8]) -> String {
+    public[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `tenant-recovery.pub` contents: an X25519 public key (keys set before
+/// Phase 30) or a hybrid one ([`hybrid::PUBLIC_LEN`] bytes).
+fn check_public(public: &[u8]) -> io::Result<()> {
+    if public.len() == 32 {
+        return Ok(());
+    }
+    hybrid::Public::from_bytes(public).map(|_| ())
 }
 
 /// X25519 public key of a tenant recovery key as typed (see `crate::parse_recovery_key`).
@@ -39,12 +58,20 @@ pub fn public_of(recovery_key: &str) -> io::Result<[u8; 32]> {
     Ok(*crypto_box::SecretKey::from_bytes(*sk).public_key().as_bytes())
 }
 
-/// A new tenant recovery key and its public key (the web-api generates its own
-/// with `catalog::tenant_key::generate`, same format; this one is for tests and tools).
-pub fn generate() -> (String, [u8; 32]) {
+/// Hybrid public key (`X25519 public | ML-KEM-768 encapsulation key`) of a
+/// tenant recovery key as typed.
+pub fn hybrid_public_of(recovery_key: &str) -> io::Result<Vec<u8>> {
+    let sk = crate::parse_recovery_key(recovery_key)?;
+    Ok(hybrid::Secret::derive(&sk, RECOVERY_CONTEXT).public().to_bytes())
+}
+
+/// A new tenant recovery key and its hybrid public key (the web-api generates its
+/// own with `catalog::tenant_key::generate` + [`hybrid_public_of`], same format;
+/// this one is for tests and tools).
+pub fn generate() -> (String, Vec<u8>) {
     let k = Zeroizing::new(generate_key());
     let s = crate::format_recovery_key(&k);
-    let p = public_of(&s).expect("generated keys parse");
+    let p = hybrid_public_of(&s).expect("generated keys parse");
     (s, p)
 }
 
@@ -52,24 +79,27 @@ fn file_name(kid: &str, v: u32) -> String {
     format!("{PREFIX}{kid}.{v}")
 }
 
-fn seal(public: &[u8; 32], tenant: &str, v: u32, dek: &[u8; 32]) -> io::Result<Vec<u8>> {
+fn seal(public: &[u8], tenant: &str, v: u32, dek: &[u8; 32]) -> io::Result<Vec<u8>> {
     let mut pt = Zeroizing::new(Vec::with_capacity(8 + 1 + tenant.len() + 36));
     pt.extend_from_slice(MAGIC);
     pt.push(tenant.len() as u8);
     pt.extend_from_slice(tenant.as_bytes());
     pt.extend_from_slice(&v.to_le_bytes());
     pt.extend_from_slice(dek);
-    crypto_box::PublicKey::from_bytes(*public)
+    if public.len() != 32 {
+        return hybrid::seal(&hybrid::Public::from_bytes(public)?, LABEL, &pt);
+    }
+    let p: [u8; 32] = public.try_into().unwrap();
+    crypto_box::PublicKey::from_bytes(p)
         .seal(&mut rand::rngs::OsRng, &pt)
         .map_err(|_| err(io::ErrorKind::Other, "sealing failed"))
 }
 
-/// The tenant's recovery public key, if one is set.
-pub fn current(dir: &Path, tenant: &str) -> io::Result<Option<[u8; 32]>> {
+/// The tenant's recovery public key (32 bytes X25519, or hybrid), if one is set.
+pub fn current(dir: &Path, tenant: &str) -> io::Result<Option<Vec<u8>>> {
     match fs::read(tenant_dir(dir, tenant)?.join(PUB)) {
-        Ok(b) => b
-            .try_into()
-            .map(Some)
+        Ok(b) => check_public(&b)
+            .map(|_| Some(b))
             .map_err(|_| err(io::ErrorKind::InvalidData, "tenant-recovery.pub corrupt")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
@@ -89,14 +119,17 @@ pub(crate) fn on_new_dek(dir: &Path, tenant: &str, v: u32, dek: &[u8; 32]) -> io
 /// Sets (`Some`), replaces or removes (`None`) the tenant recovery key: the
 /// old escrow files go, every DEK version is sealed to the new public key.
 /// Idempotent (also repairs missing files). Returns whether the key changed.
-pub fn set(dir: &Path, tenant: &str, public: Option<&[u8; 32]>) -> io::Result<bool> {
+pub fn set(dir: &Path, tenant: &str, public: Option<&[u8]>) -> io::Result<bool> {
+    if let Some(p) = public {
+        check_public(p)?;
+    }
     let td = tenant_dir(dir, tenant)?;
     let vs = versions(dir, tenant)?;
     if vs.is_empty() {
         return Err(err(io::ErrorKind::NotFound, format!("no tenant {tenant}")));
     }
     let old = current(dir, tenant)?;
-    let changed = old.as_ref() != public;
+    let changed = old.as_deref() != public;
     if changed {
         for e in fs::read_dir(&td)? {
             let n = e?.file_name();
@@ -153,7 +186,9 @@ pub fn is_escrow_file(name: &str) -> bool {
 /// Files of other keys are ignored; a file that does not open or names another
 /// tenant or version is an error. Never touches the appliance escrow.
 pub fn open(tenant: &str, recovery_key: &str, files: &[(String, Vec<u8>)]) -> io::Result<Vec<(u32, Key)>> {
-    let sk = crypto_box::SecretKey::from_bytes(*crate::parse_recovery_key(recovery_key)?);
+    let raw = crate::parse_recovery_key(recovery_key)?;
+    let sk = crypto_box::SecretKey::from_bytes(*raw);
+    let hs = hybrid::Secret::derive(&raw, RECOVERY_CONTEXT);
     let kid = key_id(sk.public_key().as_bytes());
     let bad = |n: &str| {
         err(
@@ -171,7 +206,11 @@ pub fn open(tenant: &str, recovery_key: &str, files: &[(String, Vec<u8>)]) -> io
         else {
             continue;
         };
-        let pt = Zeroizing::new(sk.unseal(blob).map_err(|_| bad(name))?);
+        let pt = if hybrid::is_hybrid(blob) {
+            hybrid::open(&hs, LABEL, blob).map_err(|_| bad(name))?
+        } else {
+            Zeroizing::new(sk.unseal(blob).map_err(|_| bad(name))?)
+        };
         let rest = pt.strip_prefix(MAGIC.as_slice()).ok_or_else(|| bad(name))?;
         let (&n, rest) = rest.split_first().ok_or_else(|| bad(name))?;
         let n = n as usize;
@@ -248,8 +287,13 @@ mod tests {
         create_tenant(d.path(), "acme").unwrap();
         create_tenant(d.path(), "other").unwrap();
         let (key, public) = generate();
-        assert_eq!(public_of(&key.to_uppercase()).unwrap(), public);
+        assert_eq!(public_of(&key.to_uppercase()).unwrap()[..], public[..32]);
+        assert_eq!(hybrid_public_of(&key.to_uppercase()).unwrap(), public);
         assert!(set(d.path(), "nope", Some(&public)).is_err());
+        assert!(
+            set(d.path(), "acme", Some(&public[..10])).is_err(),
+            "neither X25519 nor hybrid"
+        );
         assert!(set(d.path(), "acme", Some(&public)).unwrap());
         assert!(!set(d.path(), "acme", Some(&public)).unwrap(), "idempotent");
         // the appliance never holds the secret: only the public key is on disk
@@ -303,6 +347,38 @@ mod tests {
         assert!(set(d.path(), "acme", None).unwrap());
         assert!(tenant_files(d.path(), "acme").iter().all(|(n, _)| !is_escrow_file(n)));
         assert!(!td.join(PUB).exists());
+    }
+
+    /// Keys set before Phase 30 (X25519 only) keep working; a hybrid key's files
+    /// are hybrid boxes; both open with the recovery key.
+    #[test]
+    fn legacy_and_hybrid_escrow() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        create_tenant(d.path(), "acme").unwrap();
+        let (key, hybrid_pub) = generate();
+        let x = public_of(&key).unwrap();
+        assert!(set(d.path(), "acme", Some(&x)).unwrap());
+        let legacy = tenant_files(d.path(), "acme");
+        let esc: Vec<_> = legacy.iter().filter(|(n, _)| is_escrow_file(n)).collect();
+        assert!(!hybrid::is_hybrid(&esc[0].1));
+        assert_eq!(plain(open("acme", &key, &legacy).unwrap()), deks(d.path(), "acme"));
+        // the same key with its post-quantum half: same id, hybrid files
+        assert!(set(d.path(), "acme", Some(&hybrid_pub)).unwrap());
+        let files = tenant_files(d.path(), "acme");
+        let esc: Vec<_> = files.iter().filter(|(n, _)| is_escrow_file(n)).collect();
+        assert_eq!(esc.len(), 1);
+        assert!(hybrid::is_hybrid(&esc[0].1));
+        assert_eq!(key_id(&x), key_id(&hybrid_pub));
+        assert_eq!(plain(open("acme", &key, &files).unwrap()), deks(d.path(), "acme"));
+        // a hybrid file under the X25519 key only: the ML-KEM half is missing
+        let mut broken = files.clone();
+        for (n, b) in broken.iter_mut().filter(|(n, _)| is_escrow_file(n)) {
+            let _ = n;
+            let at = 8 + 32 + 5;
+            b[at] ^= 1;
+        }
+        assert!(open("acme", &key, &broken).is_err());
     }
 
     #[test]

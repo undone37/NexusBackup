@@ -635,3 +635,58 @@ so per node the guests run one after the other; parallelism comes from nodes, gr
   serialised by the node lock, needs a second PVE node to show the speed-up)
 - [ ] open: per-directory reuse of unchanged Windows volumes (31c) would cut the file index of a running system
   volume from 150 s to seconds
+
+## Phase 30 — NetBackup Tier 2 (2026-10-14)
+Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, tests, docs, UI, manual). Catalog v45
+(`SCHEMA_V45`, all Phase 30 schema changes), threat model T66-T69.
+- [x] 1 backup-duration and dedup-rate anomalies: `nexus-stats` carries `secs` (snapshot time to commit), agents
+  report the bytes they read as `read`; `backup_stats.secs`, `anomaly_sensitivity` (catalog::anomaly); scheduler
+  dedup-rate rule (new / read, critical) and duration rule (warning alone) next to the change rate, per-source
+  sensitivity low/medium/high; one `anomaly` alert per run, every finding flags the snapshot;
+  `PUT /stats/sensitivity` (lowering = approval `anomaly.sensitivity`), trends with read/secs/sensitivity; UI
+  (Change trends: duration sparkline, sensitivity select), mock, manual 11, docs/ransomware-signals.md
+- [x] 2 just-in-time role elevation: `users.eligible_role` (admin / security officer for appliance-wide local
+  operators and viewers; granting = approval `user.update`), `sessions.elevated_role/elevated_until`
+  (catalog::elevation); `POST /auth/elevate` (15 min..8 h, reason, password + TOTP or passkey; passkey only when the
+  passkey policy covers the role), optional approval `role.elevate` (setting `elevation.approval`, switching it off =
+  approval `security.elevation`), `POST /auth/elevate/end`, sign-out / expiry / account change end it; info alert
+  `role_elevation` (resolved at the end, scheduler housekeeping for expired ones), audit `role.elevate(_end)`;
+  `/auth/me` `elevation`, `/users` `eligible_role` + `elevated_until`; posture check `posture.standing_admins`
+  (nexus-diag, > 2 standing admins); UI: Elevate button + dialog, banner with End now, Users page eligible role,
+  Settings → Security "Role elevation"; mock; manual 09/11/15, docs/control-plane.md "Role elevation", T66
+- [x] 3 instant rollback of a PVE VM: option `rollback` of "replace original" (VM restores, approval
+  `restore.replace`, `--rollback`), `pve::rollback`: identity / disk layout check, pause, pre-rollback incremental
+  backup that must reuse every dirty bitmap (`BitmapGone` otherwise: VM resumed, full replace), stop, tag
+  `nexus-rollback`, `rollback-begin` (PVE lock `rollback`), changed chunks by fixed-index chunk ID, all disk
+  sessions opened and size-checked first, pipelined NBD writes + flush (`nbd::Client::write_many`/`flush`),
+  `rollback-end`, untag, start; interrupted rollbacks resume; full replace as the fallback. Node: helper commands
+  `rollback-begin|nbd|end` forward to the new root service `pve-plugin/rollback` (socket-activated,
+  `nexusbackup-rollback.socket`, qemu-nbd with the storage's format, config lock, tag + lock checks, one writer
+  per disk); deb package with units. Tests: crates/pve/tests/rollback.rs (orchestration against an in-memory
+  node: changed chunks only, fallbacks, resume; the real helper + root service (stub PVE modules) + qemu-nbd +
+  NBD client end to end), crates/nbd/tests/qemu.rs (writes), pve-plugin/t/rollback.t, scheduler + web-api
+  tests; UI restore dialog option, mock, manual 06, docs/pve-connector.md "Instant rollback", T67
+- [ ] lab (3): on a PVE host with a running VM: `nexus-pve <cfg> restore <vmid> <time> <node> <new id> <storage>
+  --replace --rollback` (vzdump of a paused VM with bitmap reuse, the real PVE module calls of the root service,
+  qemu-nbd on LVM-thin / ZFS / dir qcow2 / RBD, socket unit after `apt install ./nexusbackup-pve_*.deb`); compare
+  the rolled-back disk with `nexus-pve dump` of the snapshot
+- [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
+  secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
+  existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:
+  no new crate, `cargo deny check` ok); tenant recovery escrow (new keys: `public_pq` in the catalog,
+  `tenant-recovery-pq`), replication DEK exports (`keyd_pub_pq` at enrollment, catalog column, `replica-pubkey-pq`,
+  `export-for-pq`, retry without it at an older primary), configuration bundles (`NXCFGB2`); every opener reads
+  both formats; UI chips (tenant recovery key, replication peers), manual 08/14, docs/adr.md ADR-014,
+  docs/replication.md §5, control-plane, T68; fuzz target `keyd:hybrid_open`; tests in keyd, scheduler, web-api
+  replication (hybrid export end to end), setup/offsite unchanged and passing
+- [x] 5 second offsite copy with its own retention: `tenants.offsite.second` (remote, own lock, `gfs`;
+  `PUT /tenants/{name}/offsite2`, change/removal = approval `tenant.update`, S3 secret sealed at its own location),
+  own `gfs` on the first target too, retention per class = max(policies, target) (plan §2 updated, decision 5);
+  scheduler: one offsite job per target (`offsite2.json`, state `<base>/.second/<tenant>`), gc/verify on both,
+  `snapshots.offsite2` (catalog v45) from each target's listing, `offsite_lag` and `inventory` per target, egress to
+  both, browse/fetch with `target`; UI: Second target dialog, own retention in the tenant form, Offsite 2 column,
+  target choice in Offsite copy; mock; manual 07/11, control-plane "Second offsite target", T69
+- [ ] lab (5): two real targets (Storage Box + S3 with Object Lock) for one tenant: uploads, retention with a longer
+  monthly count on the second, listing, fetch back from the second, DR (`nexus-setup` attach) from the second
+- [ ] open (all): lab runs listed above; rollback of containers; per-policy offsite GFS; risk of a pre-rollback
+  backup of a paused Windows guest without guest-agent freeze (crash-consistent state kept)

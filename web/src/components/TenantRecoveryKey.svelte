@@ -106,6 +106,11 @@
         <IconKey aria-hidden="true" />
         {#if info.key}
           <span class="chip ok">{t.tkey.kid} <span class="mono">{info.key.kid}</span></span>
+          {#if info.key.post_quantum}
+            <span class="chip accent" title={t.p30.pq.hint}>{t.p30.pq.chip}</span>
+          {:else}
+            <span class="chip" title={t.p30.pq.legacyHint}>{t.p30.pq.legacy}</span>
+          {/if}
           <span>{t.tkey.set(fmtTime(info.key.set_at), info.key.requested_by, info.key.approved_by)}</span>
         {:else}
           <span>{t.tkey.none}</span>

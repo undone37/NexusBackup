@@ -61,7 +61,9 @@
   let heldOnly = $state(route.query.get('held') === 'true');
   // Phase 17d: local copies, or offsite-only ones (pruned locally, still on the offsite target)
   let where = $state(route.query.get('where') ?? '');
-  const offsiteOnly = (s: Snapshot) => !s.local && s.offsite;
+  const offsiteOnly = (s: Snapshot) => !s.local && (s.offsite || !!s.offsite2);
+  // Phase 30: a column for the second offsite target once any snapshot is there
+  const hasSecond = $derived(snaps.some((s) => s.offsite2));
   const shown = $derived(
     snaps.filter((s) => (where === 'local' ? s.local : where === 'offsite' ? offsiteOnly(s) : true)),
   );
@@ -276,6 +278,8 @@
   let rLinkDown = $state(false);
   let rReplace = $state(false);
   let rKeepLinks = $state(false);
+  // Phase 30: replace by rolling the VM back in place (changed chunks only)
+  let rRollback = $state(false);
   let rScan: ScanFirstOpt | '' = $state('');
 
   // Phase 21e: YARA scan of a snapshot (results in ScanResults)
@@ -310,6 +314,7 @@
     rLinkDown = m === 'instant';
     rReplace = false;
     rKeepLinks = false;
+    rRollback = false;
     rScan = '';
     dlgOpen = true;
   }
@@ -347,6 +352,7 @@
     if (rReplace && mode === 'restore') {
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
+      if (rRollback && kind === 'restore') params.rollback = true;
     }
     const r = await act(
       post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }),
@@ -501,7 +507,7 @@
   }
 
   async function fetchBack(s: Snapshot) {
-    const id = await fetchFromOffsite(s.tenant, s.source, s.time);
+    const id = await fetchFromOffsite(s.tenant, s.source, s.time, s.offsite ? 1 : 2);
     if (id) navigate(`/jobs/${id}`);
   }
 
@@ -616,6 +622,7 @@
             <th scope="col" class="num">{t.snap.size}</th>
             <th scope="col">{t.dash.local}</th>
             <th scope="col">{t.dash.offsite}</th>
+            {#if hasSecond}<th scope="col">{t.p30.second.column}</th>{/if}
             <th scope="col">{t.dash.verified}</th>
             <th scope="col">{t.snap.lock}</th>
             <th scope="col">{t.cons.column}</th>
@@ -715,6 +722,7 @@
               <td class="num">{fmtBytes(s.size)}</td>
               <td><Check on={s.local} /></td>
               <td><Check on={s.offsite} /></td>
+              {#if hasSecond}<td><Check on={!!s.offsite2} /></td>{/if}
               <td><Check on={s.verified} title={s.verified ? fmtAgo(s.verified) : ''} /></td>
               <td class="nowrap">{s.lock_until > now ? fmtTime(s.lock_until) : '—'}</td>
               <td><ConsistencyBadge level={s.consistency} /></td>
@@ -812,6 +820,12 @@
             <label class="inline-check"><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label>
           </div>
           {#if rReplace}
+            {#if sel?.source.startsWith('vm-')}
+              <div class="field">
+                <label class="inline-check"><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{t.p30.rollback.label}</label>
+                <div class="hint">{t.p30.rollback.hint(origVmid(sel))}</div>
+              </div>
+            {/if}
             <p class="banner warn">{t.ropts.replaceHint(origVmid(sel))}</p>
             <div class="field">
               <label class="inline-check"><input id="r-keeplinks" type="checkbox" bind:checked={rKeepLinks} />{t.ropts.keepLinks}</label>

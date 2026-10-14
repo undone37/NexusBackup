@@ -11,8 +11,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod access;
 pub mod agent_updates;
 pub mod alerting;
+pub mod anomaly;
 pub mod auth;
 pub mod console;
+pub mod elevation;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
@@ -916,12 +918,41 @@ ALTER TABLE users ADD COLUMN risk_reason TEXT;
 ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 "#;
 
+/// v45 (Phase 30, docs/netbackup-comparison.md Tier 2):
+/// - backup-duration and dedup-rate anomalies: `backup_stats.secs` (the
+///   backup's duration from the connector's `nexus-stats` line, NULL for older
+///   rows) and `anomaly_sensitivity`, the per-source sensitivity of the anomaly
+///   checks (`low` | `medium` | `high`; no row = `medium`);
+/// - just-in-time role elevation: `users.eligible_role` (`admin` |
+///   `security_officer` an operator or viewer may elevate to, NULL = none) and
+///   `sessions.elevated_role` / `sessions.elevated_until` (the session acts in
+///   that role until then; catalog::elevation);
+/// - hybrid post-quantum key wrapping: `replication_peers.keyd_pub_pq` (the
+///   secondary keyd's X25519 | ML-KEM-768 public key, hex; NULL = an earlier
+///   secondary: X25519-only exports);
+/// - second offsite target: `snapshots.offsite2` (the snapshot is on the
+///   tenant's second offsite target, `tenants.offsite.second`).
+///
+/// Purely additive: the previous release ignores the columns and tables.
+const SCHEMA_V45: &str = r#"
+ALTER TABLE backup_stats ADD COLUMN secs INTEGER;
+CREATE TABLE anomaly_sensitivity (
+  tenant TEXT NOT NULL, source TEXT NOT NULL,
+  level TEXT NOT NULL CHECK (level IN ('low','medium','high')),
+  set_by TEXT NOT NULL, set_at INTEGER NOT NULL, PRIMARY KEY (tenant, source));
+ALTER TABLE users ADD COLUMN eligible_role TEXT CHECK (eligible_role IN ('admin','security_officer'));
+ALTER TABLE sessions ADD COLUMN elevated_role TEXT;
+ALTER TABLE sessions ADD COLUMN elevated_until INTEGER;
+ALTER TABLE replication_peers ADD COLUMN keyd_pub_pq TEXT;
+ALTER TABLE snapshots ADD COLUMN offsite2 INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3284,5 +3315,66 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM login_hours", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "hours go with the account");
+    }
+
+    /// v45 (Phase 30) on top of the previous catalog: older stats rows have no
+    /// duration, sensitivity defaults to no row (medium) and only takes the
+    /// three levels.
+    #[test]
+    fn migration_v45_phase30() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V45).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO backup_stats (tenant, source, time, read, logical, new_chunks, new_plain, new_stored)
+                   VALUES ('t','vm-1',1,1,1,1,1,1);
+                 INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','operator',1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let secs: Option<i64> = conn
+            .query_row("SELECT secs FROM backup_stats", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(secs, None);
+        conn.execute(
+            "INSERT INTO anomaly_sensitivity (tenant, source, level, set_by, set_at) VALUES ('t','vm-1','high','ann',1)",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO anomaly_sensitivity (tenant, source, level, set_by, set_at) VALUES ('t','vm-2','max','ann',1)",
+                []
+            )
+            .is_err());
+        // no eligible role, no elevated session; only admin / security_officer are eligible roles
+        let e: Option<String> = conn
+            .query_row("SELECT eligible_role FROM users", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(e, None);
+        conn.execute("UPDATE users SET eligible_role = 'admin'", []).unwrap();
+        assert!(conn.execute("UPDATE users SET eligible_role = 'operator'", []).is_err());
+        conn.execute(
+            "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen, ip, user_agent, elevated_role, elevated_until)
+             VALUES ('h', 1, 'c', 1, 1, '', '', 'admin', 99)",
+            [],
+        )
+        .unwrap();
+        // replication peers enrolled before have no hybrid key
+        conn.prepare("SELECT keyd_pub_pq FROM replication_peers").unwrap();
+        // no snapshot is on a second offsite target yet
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots WHERE offsite2 != 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

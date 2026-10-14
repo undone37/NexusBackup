@@ -44,12 +44,14 @@ pub struct User {
     /// no login from then on (v15); `None` = never
     pub expires: Option<i64>,
     pub last_login: Option<i64>,
+    /// Phase 30: the role this account may elevate to just in time (catalog::elevation)
+    pub eligible_role: Option<String>,
 }
 
-pub const USER_COLS: &str =
-    "id, name, role, tenant, disabled, created, activation_hash, activation_expires, auth, can_download, expires, last_login";
+pub const USER_COLS: &str = "id, name, role, tenant, disabled, created, activation_hash, activation_expires, auth, \
+     can_download, expires, last_login, eligible_role";
 /// Columns of [`USER_COLS`]: credentials selected after them start here.
-pub const USER_NCOLS: usize = 12;
+pub const USER_NCOLS: usize = 13;
 
 impl User {
     pub fn from_row(r: &Row, off: usize) -> catalog::rusqlite::Result<Self> {
@@ -69,6 +71,7 @@ impl User {
             },
             expires: r.get(off + 10)?,
             last_login: r.get(off + 11)?,
+            eligible_role: r.get(off + 12)?,
         })
     }
 
@@ -100,6 +103,9 @@ pub struct Ctx {
     /// "view as tenant" (Phase 19b, `crate::impersonate`): the admin's session
     /// acts as `user.role` (viewer or tenant_admin) of `user.tenant`; the tenant
     pub impersonating: Option<String>,
+    /// just-in-time elevation (Phase 30, `crate::elevation`): `user.role` is the
+    /// elevated role, this keeps the standing one and the end
+    pub elevated: Option<crate::elevation::Elevated>,
 }
 
 /// Writers of a tenant's own configuration (sources, groups, agents, its
@@ -160,6 +166,7 @@ impl FromRequestParts<St> for Ctx {
                 csrf: String::new(),
                 token: Some(t.token.clone()),
                 impersonating: None,
+                elevated: None,
             });
         }
         let token = session_cookie(parts).ok_or_else(ApiError::unauthorized)?;
@@ -169,7 +176,8 @@ impl FromRequestParts<St> for Ctx {
         let row = c
             .query_row(
                 &format!(
-                    "SELECT s.csrf, s.created, s.last_seen, s.impersonating, s.impersonating_role, {}
+                    "SELECT s.csrf, s.created, s.last_seen, s.impersonating, s.impersonating_role, s.id,
+                       s.elevated_role, s.elevated_until, {}
                      FROM sessions s JOIN users u ON u.id = s.user_id
                      WHERE s.id_hash = ?1 AND u.activation_hash IS NULL",
                     USER_COLS
@@ -185,12 +193,17 @@ impl FromRequestParts<St> for Ctx {
                         r.get::<_, i64>(1)?,
                         r.get::<_, i64>(2)?,
                         (r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?),
-                        User::from_row(r, 5)?,
+                        (
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                            r.get::<_, Option<i64>>(7)?,
+                        ),
+                        User::from_row(r, 8)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((csrf, created, last_seen, imp, mut user)) = row else {
+        let Some((csrf, created, last_seen, imp, (session, er, eu), mut user)) = row else {
             return Err(ApiError::unauthorized());
         };
         if user.expired(now) {
@@ -227,13 +240,20 @@ impl FromRequestParts<St> for Ctx {
             "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
             params![now, sid],
         )?;
+        // Phase 30: the session's just-in-time elevation (before impersonation, which needs admin)
+        let (elevated, ended) = crate::elevation::apply(&c, session, &mut user, (er, eu), now)?;
         let impersonating = crate::impersonate::apply(&c, &sid, &mut user, imp)?;
+        drop(c);
+        if ended {
+            crate::elevation::audit_expired(st, &user.name)?;
+        }
         Ok(Ctx {
             user,
             sid,
             csrf,
             token: None,
             impersonating,
+            elevated,
         })
     }
 }
@@ -650,9 +670,11 @@ pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -
 }
 
 pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
-    st.cat
-        .conn()
-        .execute("DELETE FROM sessions WHERE id_hash = ?1", [&ctx.sid])?;
+    {
+        let c = st.cat.conn();
+        crate::elevation::sign_out(&c, &ctx)?;
+        c.execute("DELETE FROM sessions WHERE id_hash = ?1", [&ctx.sid])?;
+    }
     st.audit(ctx.name(), "auth.logout", &format!("user/{}", ctx.name()), json!({}))?;
     let mut res = Json(json!({"ok": true})).into_response();
     res.headers_mut().insert(
@@ -676,12 +698,14 @@ pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Va
     let incident = crate::incident::banner(&st.cat.conn(), &ctx)?;
     let freeze = crate::incident::freeze_banner(&st.cat.conn(), &ctx)?;
     let step_up = crate::risk::me(&st.cat.conn(), &ctx)?;
+    let elevation = crate::elevation::me(&ctx);
     let imp = ctx
         .impersonating
         .as_ref()
         .map(|t| json!({"tenant": t, "role": ctx.user.role}));
     Ok(Json(
         json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault,
-               "impersonating": imp, "incident": incident, "freeze": freeze, "step_up": step_up}),
+               "impersonating": imp, "incident": incident, "freeze": freeze, "step_up": step_up,
+               "elevation": elevation}),
     ))
 }

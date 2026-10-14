@@ -211,6 +211,7 @@ pub async fn get_security(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp
         "mgmt_allow": allow,
         "client_ip": ip,
         "pending": {"session": pending(&c, "security.session")?, "mgmt_allow": crate::firewall::pending_for(&c, "web")?},
+        "elevation": crate::elevation::security_value(&c)?,
     })))
 }
 

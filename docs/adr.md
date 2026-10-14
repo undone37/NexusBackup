@@ -61,3 +61,41 @@ Status of all records below: **Accepted (2026-10-08)**.
 ## ADR-013 Boot menu password derived from the recovery key
 - **Decision (Phase 18, 2026-10-12):** GRUB's superuser password (editing entries, the GRUB command line) is derived from the recovery key (HMAC-SHA256 with the label `nexus-grub-password-v1`, 20 letters; `crates/setup/src/grub.rs`), not generated and shown separately. Boot entries stay unrestricted; rescue mode masked, sulogin never forced, no initramfs shell.
 - **Consequences:** No second secret to store; whoever holds the recovery key computes the password (`nexus-setup grub-password` or a Python one-liner, also off the appliance). The recovery key already opens all data and the console gate, so the derivation adds no new power to it. Rotating the GRUB password means rotating the recovery key (not available yet). HMAC instead of HKDF: the same construction for a uniformly random 32-byte key, and reproducible with Python's standard library.
+
+## ADR-014 Hybrid post-quantum sealing of long-lived key material (X25519 + ML-KEM-768)
+- **Context (Phase 30, docs/netbackup-comparison.md Tier 2):** three kinds of secrets rest outside the appliance under
+  a public key for years: the tenant recovery escrow (`tenant-escrow.*`, offsite), replication DEK exports (stored on
+  the primary, fetched by the secondary) and configuration bundles (offsite). They were X25519 sealed boxes
+  (crypto_box). A copy harvested from an offsite provider today could be opened once X25519 falls to a quantum
+  computer ("harvest now, decrypt later"). Chunk data is not affected: XChaCha20-Poly1305 with 256-bit keys keeps
+  ~128 bits against Grover.
+- **Decision:** a hybrid KEM in keyd (`crates/keyd/src/hybrid.rs`): X25519 **and** ML-KEM-768 (FIPS 203), the key is
+  `BLAKE3 derive_key("NexusBackup 2026 hybrid seal X25519+ML-KEM-768 v2", x25519 shared | ML-KEM shared | ephemeral
+  public | recipient X25519 public | ML-KEM ciphertext)`, payload XChaCha20-Poly1305 with a 24-byte random nonce and
+  `label | header` as AAD; format `NXHYB2\0\0 | ephemeral X25519 public (32) | ML-KEM ciphertext (1088) | nonce |
+  AEAD` (a version in the magic). Like X-Wing, the combiner binds both shared secrets to the ciphertext and the
+  recipient, so the box stays closed while either primitive holds. The recipient's ML-KEM key pair is derived from the
+  existing 32-byte X25519 secret (`BLAKE3 derive_key(<use> ml-kem-768 v1, secret)` → 64-byte seed `d | z`), so no new
+  secret has to be stored, escrowed or typed: a tenant recovery key stays 16 groups of 4 hex digits.
+- **Implementation:** RustCrypto `ml-kem` 0.3 (pure Rust, Apache-2.0 OR MIT, FIPS 203 final; already in the tree
+  through `russh`'s `mlkem768x25519` key exchange, so `cargo deny` and the lockfile see no new crate) and
+  `curve25519-dalek` 4 for the raw X25519 DH. Encapsulation uses `encapsulate_deterministic` with 32 bytes from the
+  OS RNG (the `hazmat` feature; `ml-kem` 0.3 wants a `rand_core` 0.10 RNG, the workspace has 0.8). Public keys from
+  the wire are validated (FIPS 203 modulus check); an all-zero X25519 shared secret is refused.
+- **Where:** tenant recovery escrow (new keys; `tenant-recovery.pub` = X25519 | ML-KEM-768 encapsulation key, the
+  web-api derives the ML-KEM half when it shows the key, `catalog::tenant_key::pq_public`), replication DEK exports
+  (the secondary sends its hybrid key at enrollment, `keyd_pub_pq`; keyd `replica-pubkey-pq`, `export-for-pq`),
+  configuration bundles (`NXCFGB2\0`, keyd publishes the hybrid key in `config-backup.pub`). Each use has its own
+  label and seed context.
+- **Compatibility:** every opener reads both formats (no magic = X25519 box of earlier releases). Tenant recovery
+  keys set before keep their X25519-only escrow until they are replaced (the ML-KEM half needs the secret, which the
+  appliance does not keep); peers enrolled before keep X25519-only exports until they enroll again; a secondary
+  enrolling at a primary of an earlier release retries without the hybrid key. Bundles and escrow files written by
+  this release need this release (or later) to open.
+- **Not covered:** TLS (agents, replication, edge, web UI) stays X25519 until the rustls provider in use (`ring`)
+  offers the X25519MLKEM768 group; `aws-lc-rs` would bring a C dependency (plan §2 pure-Rust preference; open question
+  7 of the NetBackup comparison, proposal taken). On-appliance seals (catalog credentials sealed to the scheduler,
+  TOTP seeds) stay as they are: they never leave the appliance. SSH to PVE/TrueNAS nodes already negotiates
+  `mlkem768x25519-sha256` where both sides offer it (russh).
+- **Consequences:** ~1.2 KiB more per sealed box (escrow file, export, bundle), ~1.2 KiB public keys (catalog setting,
+  replication peer row); key generation and sealing take well under a millisecond.

@@ -75,6 +75,7 @@ DEFAULTS = {
     "GRUB_USER": "/etc/nexus/grub-user.cfg",  # boot menu password hash (nexus-setup)
     "GRUB_BOOT": "/boot/grub2/user.cfg",  # its installed copy (nexus-grub-password)
     "DORMANT_ADMIN_DAYS": "90",  # posture: when the dormant-account setting is off
+    "STANDING_ADMINS_MAX": "2",  # posture: permanent admins (break-glass + one) before a warning
     "TIMEOUT": "120",  # per tool call
     "JOURNAL_MAX_MB": "64",  # per journal file in the bundle
 }
@@ -573,6 +574,27 @@ def p_dormant_admins(conn, settings, now):
     return True, f"every admin and security officer logged in within {days} days"
 
 
+def p_standing_admins(conn, settings, now):
+    """Phase 30: day-to-day accounts should elevate just in time (eligible role) instead of
+    holding the admin role permanently."""
+    most = int(cfg("STANDING_ADMINS_MAX"))
+    rows = conn.execute(
+        "SELECT name FROM users WHERE role = 'admin' AND disabled = 0 AND activation_hash IS NULL"
+        " AND (expires IS NULL OR expires > ?) ORDER BY name", (now,)).fetchall()
+    try:
+        eligible = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE eligible_role IS NOT NULL AND disabled = 0 AND activation_hash IS NULL"
+            " AND (expires IS NULL OR expires > ?)", (now,)).fetchone()[0]
+    except sqlite3.OperationalError:  # catalog before v45
+        eligible = 0
+    names = ", ".join(r[0] for r in rows[:10])
+    jit = f"; {eligible} account(s) elevate just in time" if eligible else ""
+    if len(rows) > most:
+        return False, (f"{len(rows)} standing administrators ({names}); keep at most {most} (break-glass and one more)"
+                       f" and give the others an eligible role{jit}")
+    return True, f"{len(rows)} standing administrator(s){jit}"
+
+
 def p_totp(conn, settings, now):
     local, oidc, missing = 0, 0, []
     for name, auth, totp in conn.execute(
@@ -609,6 +631,7 @@ def posture_checks():
         check("posture.inbound", "Security posture: inbound allow-list", posture(p_inbound)),
         check("posture.certificate", "Security posture: own web certificate", posture(p_certificate)),
         check("posture.dormant_admins", "Security posture: dormant administrators", posture(p_dormant_admins)),
+        check("posture.standing_admins", "Security posture: standing administrators", posture(p_standing_admins)),
         check("posture.totp", "Security posture: second factor", posture(p_totp)),
         check("posture.grub", "Security posture: boot menu password", grub_password),
     ]

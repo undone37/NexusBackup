@@ -117,6 +117,15 @@ fn printable(s: &str, max: usize) -> bool {
 }
 
 impl S3Remote {
+    /// The write-only secret was omitted (keep the stored one, crate::offsite2).
+    pub(crate) fn secret_key_missing(&self) -> bool {
+        self.secret_key.is_none()
+    }
+
+    pub(crate) fn set_secret(&mut self, s: Option<String>) {
+        self.secret_key = s;
+    }
+
     fn check(&self) -> ApiResult<()> {
         let bad = |m: &str| Err(ApiError::bad(format!("offsite.remote.{m}")));
         let ep = self.endpoint.strip_prefix("https://").unwrap_or("");
@@ -199,6 +208,13 @@ pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
+    // Phase 30: the second target has its own endpoint (crate::offsite2)
+    if v.get("second").is_some() {
+        return Err(ApiError::bad(
+            "offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2",
+        ));
+    }
+    check_offsite_gfs(v)?;
     offsite_bandwidth(v)?;
     if v["remote"]["type"] != "s3" {
         opaque(v, "offsite", 16 << 10)?;
@@ -213,6 +229,32 @@ pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     rr.remove("secret_key_set");
     opaque(&rest, "offsite", 80 << 10)?;
     Ok(Some(r))
+}
+
+/// Classes an offsite target's own retention (`gfs`, Phase 30) may set.
+pub const OFFSITE_GFS_CLASSES: &[&str] = &["daily", "weekly", "monthly", "yearly"];
+
+/// Phase 30: an offsite target's own retention (`gfs`, counts per class, null =
+/// as the policies). Offsite retention is never shorter than local (plan §2):
+/// the scheduler keeps the larger of this and the policies' value per class.
+fn check_offsite_gfs(v: &Value) -> ApiResult<()> {
+    match v.get("gfs") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Object(o)) => {
+            for (k, x) in o {
+                if !OFFSITE_GFS_CLASSES.contains(&k.as_str()) {
+                    return Err(ApiError::bad(format!(
+                        "offsite.gfs.{k}: unknown class (daily, weekly, monthly, yearly)"
+                    )));
+                }
+                if !x.is_null() && x.as_u64().is_none_or(|n| n > 10_000) {
+                    return Err(ApiError::bad(format!("offsite.gfs.{k}: 0..=10000 or null")));
+                }
+            }
+            Ok(())
+        }
+        Some(_) => Err(ApiError::bad("offsite.gfs: an object of counts per class, or null")),
+    }
 }
 
 /// `bwlimit`, `windows` and `timezone` of an offsite config (Phase 17a), validated.
@@ -233,7 +275,7 @@ fn offsite_bandwidth(v: &Value) -> ApiResult<catalog::schedule::Bandwidth> {
 
 /// Only the bandwidth part (`bwlimit`, `windows`, `timezone`) differs and the
 /// new one allows nothing more at any time: a tightening, applied directly.
-fn offsite_tightened(old: &Value, new: &Value) -> bool {
+pub(crate) fn offsite_tightened(old: &Value, new: &Value) -> bool {
     let rest = |v: &Value| {
         let mut v = v.clone();
         if let Some(o) = v.as_object_mut() {
@@ -262,16 +304,23 @@ pub(crate) fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remo
     Ok(out)
 }
 
-/// The offsite config as shown: `secret_key` replaced by `secret_key_set`.
+/// The offsite config as shown: `secret_key` replaced by `secret_key_set` (also
+/// in the second target, Phase 30).
 pub fn public_offsite(v: &Value) -> Value {
-    let mut v = v.clone();
-    if let Some(r) = v.get_mut("remote").and_then(Value::as_object_mut) {
-        if let Some(s) = r.remove("secret_key") {
-            r.insert(
-                "secret_key_set".into(),
-                json!(s.as_str().is_some_and(|s| !s.is_empty())),
-            );
+    fn hide(v: &mut Value) {
+        if let Some(r) = v.get_mut("remote").and_then(Value::as_object_mut) {
+            if let Some(s) = r.remove("secret_key") {
+                r.insert(
+                    "secret_key_set".into(),
+                    json!(s.as_str().is_some_and(|s| !s.is_empty())),
+                );
+            }
         }
+    }
+    let mut v = v.clone();
+    hide(&mut v);
+    if let Some(s) = v.get_mut("second") {
+        hide(s);
     }
     v
 }
@@ -365,7 +414,16 @@ pub async fn update_tenant(
         }
         new.secret_key = o["secret_key"].as_str().map(str::to_owned);
     }
-    let offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
+    let mut offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
+    // Phase 30: the second target stays as stored (it has its own endpoint)
+    if let Some(second) = old["offsite"].get("second").filter(|s| s.is_object()) {
+        if !offsite["remote"].is_object() {
+            return Err(ApiError::conflict(
+                "the tenant has a second offsite target: remove it first (PUT /tenants/{name}/offsite2)",
+            ));
+        }
+        offsite["second"] = second.clone();
+    }
     let target = format!("tenant/{name}");
     let had_offsite = old["offsite"].as_object().is_some_and(|o| !o.is_empty());
     if had_offsite && old["offsite"] != offsite && !offsite_tightened(&old["offsite"], &offsite) {
@@ -2173,6 +2231,10 @@ pub struct UserUpdate {
     /// unix time, or `null` = never expires
     #[serde(default, deserialize_with = "present")]
     expires: Option<Value>,
+    /// Phase 30: `admin` | `security_officer` the account may elevate to just in
+    /// time (appliance-wide local operators and viewers), `null` = none
+    #[serde(default, deserialize_with = "present")]
+    eligible_role: Option<Value>,
     /// own account only
     #[serde(default)]
     password: Option<String>,
@@ -2240,7 +2302,9 @@ pub async fn list_users(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>
         ))?
         .query_map([ctx.scope()], |r| User::from_row(r, 0))?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Json(json!(rows)))
+    let mut rows: Vec<Value> = rows.into_iter().map(|u| json!(u)).collect();
+    crate::elevation::user_extras(&c, &mut rows)?;
+    Ok(Json(Value::Array(rows)))
 }
 
 /// Creates an account pending activation and returns its one-time activation
@@ -2366,6 +2430,12 @@ pub fn apply_user_update(c: &Connection, p: &Value) -> ApiResult<Value> {
     if let Some(e) = p.get("expires") {
         c.execute("UPDATE users SET expires = ?2 WHERE id = ?1", params![id, e.as_i64()])?;
     }
+    if let Some(e) = p.get("eligible_role") {
+        c.execute(
+            "UPDATE users SET eligible_role = ?2 WHERE id = ?1",
+            params![id, e.as_str()],
+        )?;
+    }
     if let Some(h) = p["password_hash"].as_str() {
         c.execute("UPDATE users SET password_hash = ?2 WHERE id = ?1", params![id, h])?;
     }
@@ -2428,7 +2498,8 @@ pub async fn update_user(
     if old.auth == "oidc" {
         let role_change = r.role.as_ref().is_some_and(|x| *x != old.role);
         let tenant_change = r.tenant.as_ref().is_some_and(|t| t.as_str() != old.tenant.as_deref());
-        if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change {
+        let eligible = r.eligible_role.as_ref().is_some_and(|e| !e.is_null());
+        if r.password.is_some() || r.reset_totp || r.new_activation || role_change || tenant_change || eligible {
             return Err(ApiError::bad(
                 "OIDC account: credentials, role and tenant come from the identity provider (mappings); \
                  only `disabled`, `can_download` and `expires` can be changed here",
@@ -2475,6 +2546,25 @@ pub async fn update_user(
     };
     crate::tenancy::check_user_change(&ctx, Some(&old), &role, tenant.as_deref())?;
     let disabled = r.disabled.unwrap_or(old.disabled);
+    // Phase 30: an eligible role needs an appliance-wide local operator or viewer; a role
+    // or tenant change that rules it out drops it
+    let eligible: Option<String> = match &r.eligible_role {
+        None => old.eligible_role.clone(),
+        Some(Value::Null) => None,
+        Some(Value::String(e)) if catalog::elevation::ELIGIBLE.contains(&e.as_str()) => {
+            if !catalog::elevation::can_hold(&role, tenant.as_deref(), &old.auth) {
+                return Err(ApiError::bad(
+                    "eligible_role: only appliance-wide local operators and viewers can be eligible for a role",
+                ));
+            }
+            Some(e.clone())
+        }
+        Some(_) => return Err(ApiError::bad("eligible_role: admin, security_officer or null")),
+    };
+    let eligible = eligible.filter(|_| catalog::elevation::can_hold(&role, tenant.as_deref(), &old.auth));
+    if eligible.is_some() && ctx.is_tenant_admin() {
+        return Err(ApiError::forbidden());
+    }
     let expires = match &r.expires {
         None => old.expires,
         Some(Value::Null) => None,
@@ -2508,7 +2598,9 @@ pub async fn update_user(
     let grant = validate::privileged(&role) && !disabled && !(was_priv && old.role == role);
     let removes_last = was_priv && (disabled || role != old.role) && others_enabled == 0;
     let cred_reset = r.new_activation && (validate::privileged(&old.role) || validate::privileged(&role));
-    let gated = grant || removes_last || cred_reset;
+    // an eligible role is a (deferred) grant of admin / security officer
+    let grant_eligible = eligible.is_some() && !disabled && eligible != old.eligible_role;
+    let gated = grant || removes_last || cred_reset || grant_eligible;
     if !approvals && removes_last && old.role == "admin" {
         return Err(ApiError::conflict(
             "the last enabled admin cannot be disabled or demoted",
@@ -2543,6 +2635,9 @@ pub async fn update_user(
     }
     if expires != old.expires {
         p["expires"] = json!(expires);
+    }
+    if eligible != old.eligible_role {
+        p["eligible_role"] = json!(eligible);
     }
     if let Some(pw) = r.password {
         if pw.len() > 1024 {

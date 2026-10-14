@@ -1109,6 +1109,8 @@ impl Scheduler {
         let mut offsite = Vec::new();
         for (_, o) in self.tenants()? {
             offsite.extend(firewall::offsite_targets(&o));
+            // Phase 30: the second offsite target
+            offsite.extend(firewall::offsite_targets(&o["second"]));
         }
         // approved "attach an offsite copy" requests: the target before the tenant exists
         offsite.extend(self.attach_targets()?);
@@ -1603,6 +1605,8 @@ impl Scheduler {
                 let attempts = self.attempt_note(job.id);
                 let key = match kind {
                     "job_failed" => lifecycle::job_failed_key(&job),
+                    // Phase 30: the second offsite target's inventory alert is its own
+                    "inventory" if offsite_job_target(&job.params) == 2 => format!("{kind}:{}:2", job.tenant),
                     _ => format!("{kind}:{}", job.tenant),
                 };
                 self.raise(
@@ -1839,6 +1843,12 @@ impl Scheduler {
                 Some(r)
             }
             // `restored {json}` / `enrolled {json}` (nexus-agentctl, nexus-replica), `replicated {json}`
+            // Phase 30: an in-place rollback reports `rolled-back {json}` instead
+            "restore" if log.lines().any(|l| l.starts_with("rolled-back {")) => log.lines().find_map(|l| {
+                let mut v = serde_json::from_str::<Value>(l.strip_prefix("rolled-back ")?).ok()?;
+                v["rolled_back"] = json!(true);
+                Some(v)
+            }),
             "restore_files" | "agent_enroll" | "replica_enroll" | "replica_sync" | "restore" | "restore_ct"
             | "instant_disk" => {
                 let pfx = match job.kind.as_str() {
@@ -1892,17 +1902,22 @@ impl Scheduler {
                         })
                     }),
                 };
-                let pending: i64 = self.db.conn().query_row(
-                    "SELECT COUNT(*) FROM jobs WHERE kind='offsite' AND tenant=?1 AND state='queued'",
-                    [&job.tenant],
-                    |r| r.get(0),
-                )?;
-                if wants
-                    && pending == 0
-                    && self.offsite_cfg(&job.tenant)?.is_some()
-                    && !catalog::tenants::disabled(&self.db.conn(), &job.tenant)?
-                {
-                    self.insert_job("offsite", &job.tenant, &json!({"chain": true, "after_job": job.id}))?;
+                // Phase 30: one offsite job per configured target
+                for n in self.offsite_targets(&job.tenant)? {
+                    let pending: i64 = self.db.conn().query_row(
+                        "SELECT COUNT(*) FROM jobs WHERE kind='offsite' AND tenant=?1 AND state='queued'
+                           AND COALESCE(json_extract(params, '$.target'), 1) = ?2",
+                        params![job.tenant, n],
+                        |r| r.get(0),
+                    )?;
+                    if wants && pending == 0 && !catalog::tenants::disabled(&self.db.conn(), &job.tenant)? {
+                        let p = if n == 1 {
+                            json!({"chain": true, "after_job": job.id})
+                        } else {
+                            json!({"chain": true, "target": n, "after_job": job.id})
+                        };
+                        self.insert_job("offsite", &job.tenant, &p)?;
+                    }
                 }
             }
             "verify" => {
@@ -2305,6 +2320,12 @@ impl Scheduler {
     }
 
     fn offsite_cfg(&self, tenant: &str) -> Result<Option<Value>> {
+        self.offsite_cfg_n(tenant, 1)
+    }
+
+    /// Offsite target `n` of a tenant (Phase 30: 1 = `tenants.offsite`, 2 = its
+    /// `second`), secrets opened; `None` without a remote.
+    fn offsite_cfg_n(&self, tenant: &str, n: u8) -> Result<Option<Value>> {
         let o: Option<String> = self
             .db
             .conn()
@@ -2314,7 +2335,27 @@ impl Scheduler {
         self.secrets
             .open_all(&tenant_owner(tenant), &mut v)
             .with_context(|| format!("offsite config of tenant {tenant}"))?;
-        Ok(v["remote"].is_object().then_some(v))
+        Ok(offsite_target(&v, n))
+    }
+
+    /// The configured offsite targets of a tenant (1, and 2 when there is a second).
+    fn offsite_targets(&self, tenant: &str) -> Result<Vec<u8>> {
+        Ok([1u8, 2]
+            .into_iter()
+            .filter(|n| matches!(self.offsite_cfg_n(tenant, *n), Ok(Some(_))))
+            .collect())
+    }
+
+    /// Phase 30: the retention of offsite target `o`: per class the larger of its
+    /// own `gfs` and the policies' (offsite retention is never shorter than local).
+    fn offsite_gfs_of(&self, tenant: &str, o: &Value) -> Result<Gfs> {
+        let mut g = self.offsite_gfs(tenant)?;
+        let own = |k: &str| o["gfs"][k].as_u64().map(|n| n.min(u32::MAX as u64) as u32).unwrap_or(0);
+        g.daily = g.daily.max(own("daily"));
+        g.weekly = g.weekly.max(own("weekly"));
+        g.monthly = g.monthly.max(own("monthly"));
+        g.yearly = g.yearly.max(own("yearly"));
+        Ok(g)
     }
 
     /// Offsite GFS: the most generous value of each class over the tenant's
@@ -2382,15 +2423,22 @@ impl Scheduler {
     }
 
     fn offsite_config(&self, tenant: &str, dir: &Path) -> Result<Option<Files>> {
-        let Some(o) = self.offsite_cfg(tenant)? else {
+        self.offsite_config_n(tenant, dir, 1)
+    }
+
+    /// Job files of offsite target `n` (`offsite.json`, or `offsite2.json` and
+    /// its own secret files for the second target).
+    fn offsite_config_n(&self, tenant: &str, dir: &Path, n: u8) -> Result<Option<Files>> {
+        let Some(o) = self.offsite_cfg_n(tenant, n)? else {
             return Ok(None);
         };
         self.refresh_escrow(tenant);
-        self.offsite_files(tenant, &o, dir).map(Some)
+        self.offsite_files(tenant, &o, dir, n).map(Some)
     }
 
-    /// Job dir files for nexus-offsite from an opened offsite config `o`.
-    fn offsite_files(&self, tenant: &str, o: &Value, dir: &Path) -> Result<Files> {
+    /// Job dir files for nexus-offsite from an opened offsite config `o` of target `n`.
+    fn offsite_files(&self, tenant: &str, o: &Value, dir: &Path, n: u8) -> Result<Files> {
+        let pfx = offsite_prefix(n);
         let mut files = Vec::new();
         let mut remote = o["remote"].clone();
         if let Some(k) = remote["key_pem"].as_str() {
@@ -2398,28 +2446,33 @@ impl Scheduler {
             if !k.ends_with('\n') {
                 k.push('\n');
             }
-            files.push(("offsite.key".to_owned(), k.into_bytes()));
-            remote["key_file"] = json!(dir.join("offsite.key"));
+            files.push((format!("{pfx}.key"), k.into_bytes()));
+            remote["key_file"] = json!(dir.join(format!("{pfx}.key")));
             remote.as_object_mut().unwrap().remove("key_pem");
         }
         if remote["type"] == "s3" {
             let r = remote.as_object_mut().unwrap();
             if let Some(Value::String(k)) = r.remove("secret_key") {
-                files.push(("offsite-s3.secret".to_owned(), k.into_bytes()));
-                r.insert("secret_key_file".into(), json!(dir.join("offsite-s3.secret")));
+                files.push((format!("{pfx}-s3.secret"), k.into_bytes()));
+                r.insert("secret_key_file".into(), json!(dir.join(format!("{pfx}-s3.secret"))));
             }
             if let Some(Value::String(ca)) = r.remove("ca_pem") {
-                files.push(("offsite-ca.pem".to_owned(), ca.into_bytes()));
-                r.insert("ca_file".into(), json!(dir.join("offsite-ca.pem")));
+                files.push((format!("{pfx}-ca.pem"), ca.into_bytes()));
+                r.insert("ca_file".into(), json!(dir.join(format!("{pfx}-ca.pem"))));
             }
         }
-        let g = self.offsite_gfs(tenant)?;
+        let g = self.offsite_gfs_of(tenant, o)?;
+        // the second target keeps its own upload state (packs present on that target)
+        let state = match n {
+            1 => self.cfg.offsite_state_base.join(tenant),
+            _ => self.cfg.offsite_state_base.join(".second").join(tenant),
+        };
         let mut cfg = json!({
             "store": self.cfg.store_base.join(tenant),
             "tenant": tenant,
             "keyd_socket": self.cfg.keyd_socket,
             "escrow_dir": self.cfg.escrow_base.join(tenant),
-            "state": self.cfg.offsite_state_base.join(tenant),
+            "state": state,
             "remote": remote,
             "gfs": {"daily": g.daily, "weekly": g.weekly, "monthly": g.monthly, "yearly": g.yearly},
             "held": catalog::holds::held(&self.db.conn(), tenant)?,
@@ -2435,7 +2488,7 @@ impl Scheduler {
                 cfg[k] = o[k].clone();
             }
         }
-        files.push(("offsite.json".into(), serde_json::to_vec_pretty(&cfg)?));
+        files.push((format!("{pfx}.json"), serde_json::to_vec_pretty(&cfg)?));
         Ok(files)
     }
 
@@ -2670,11 +2723,16 @@ impl Scheduler {
             alert: None,
             capture: false,
         };
-        let offsite = |args: &[&str], alert: Option<&'static str>| Step::Cli {
+        // nexus-offsite on target `n` (Phase 30: `offsite2.json` for the second)
+        let offsite_n = |n: u8, args: &[&str], alert: Option<&'static str>| Step::Cli {
             bin: self.cfg.offsite_bin.clone(),
-            args: std::iter::once(dir.join("offsite.json").to_string_lossy().into_owned())
-                .chain(args.iter().map(|s| s.to_string()))
-                .collect(),
+            args: std::iter::once(
+                dir.join(format!("{}.json", offsite_prefix(n)))
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .chain(args.iter().map(|s| s.to_string()))
+            .collect(),
             alert,
             capture: false,
         };
@@ -2894,12 +2952,23 @@ impl Scheduler {
                 });
             }
             "offsite" => {
+                // Phase 30: `target` 2 = the second offsite target (own state, own retention)
+                let n = offsite_job_target(p);
                 plan.files = self
-                    .offsite_config(tenant, &dir)?
-                    .context("tenant has no offsite target")?;
-                plan.steps.push(offsite(&["upload"], None));
-                plan.steps.push(offsite(&["check"], Some("inventory")));
-                plan.steps.push(offsite(&["retention"], None));
+                    .offsite_config_n(tenant, &dir, n)?
+                    .with_context(|| format!("tenant has no offsite target {n}"))?;
+                let cfg = dir.join(format!("{}.json", offsite_prefix(n)));
+                let step = |args: &[&str], alert: Option<&'static str>| Step::Cli {
+                    bin: self.cfg.offsite_bin.clone(),
+                    args: std::iter::once(cfg.to_string_lossy().into_owned())
+                        .chain(args.iter().map(|s| s.to_string()))
+                        .collect(),
+                    alert,
+                    capture: false,
+                };
+                plan.steps.push(step(&["upload"], None));
+                plan.steps.push(step(&["check"], Some("inventory")));
+                plan.steps.push(step(&["retention"], None));
             }
             "gc" => {
                 // quorum-approved, or confirmed by one admin while approvals are disabled
@@ -2910,9 +2979,11 @@ impl Scheduler {
                 plan.steps.push(Step::Gc {
                     approved: p["approved"].as_bool() == Some(true) && (p["quorum_id"].is_i64() || confirmed),
                 });
-                if let Some(f) = self.offsite_config(tenant, &dir)? {
-                    plan.files = f;
-                    plan.steps.push(offsite(&["gc"], None));
+                for n in self.offsite_targets(tenant)? {
+                    if let Some(f) = self.offsite_config_n(tenant, &dir, n)? {
+                        plan.files.extend(f);
+                        plan.steps.push(offsite_n(n, &["gc"], None));
+                    }
                 }
             }
             "snapshot_delete" => {
@@ -2928,9 +2999,11 @@ impl Scheduler {
                     part: (catalog::now() / 86400) as u64 % parts,
                     parts,
                 });
-                if let Some(f) = self.offsite_config(tenant, &dir)? {
-                    plan.files = f;
-                    plan.steps.push(offsite(&["verify", "3"], Some("verify")));
+                for n in self.offsite_targets(tenant)? {
+                    if let Some(f) = self.offsite_config_n(tenant, &dir, n)? {
+                        plan.files.extend(f);
+                        plan.steps.push(offsite_n(n, &["verify", "3"], Some("verify")));
+                    }
                 }
             }
             "restore" | "restore_ct" | "instant_recover" => {
@@ -3207,21 +3280,25 @@ impl Scheduler {
             local.insert(key, (m.lock_until as i64, size));
         }
         drop(store);
-        let offsite = if self.offsite_cfg(tenant)?.is_some()
-            && !self.running.values().any(|k| k == &format!("tenant:{tenant}"))
-        {
-            match self.offsite_list(tenant) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    eprintln!("<4>offsite list of tenant {tenant} failed: {e:#}");
-                    None
+        // per offsite target (Phase 30): what it holds, `None` = unknown now (busy or unreachable)
+        let busy = self.running.values().any(|k| k == &format!("tenant:{tenant}"));
+        let mut listed: [Option<HashSet<(String, i64)>>; 2] = [None, None];
+        for (i, n) in [1u8, 2].into_iter().enumerate() {
+            listed[i] = if self.offsite_cfg_n(tenant, n)?.is_none() {
+                Some(HashSet::new())
+            } else if busy {
+                None
+            } else {
+                match self.offsite_list_n(tenant, n) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        eprintln!("<4>offsite list of tenant {tenant} (target {n}) failed: {e:#}");
+                        None
+                    }
                 }
-            }
-        } else if self.offsite_cfg(tenant)?.is_none() {
-            Some(HashSet::new())
-        } else {
-            None
-        };
+            };
+        }
+        let [offsite, offsite2] = listed;
         // vanished while still locked = someone deleted around the store's locks
         let vanished: Vec<(String, i64)> = {
             let c = self.db.conn();
@@ -3247,6 +3324,16 @@ impl Scheduler {
                     )?;
                 }
             }
+            if let Some(o) = &offsite2 {
+                tx.execute("UPDATE snapshots SET offsite2=0 WHERE tenant=?1", [tenant])?;
+                for (s, t) in o {
+                    tx.execute(
+                        "INSERT INTO snapshots (tenant, source, time, local, offsite, offsite2) VALUES (?1,?2,?3,0,0,1) \
+                         ON CONFLICT (tenant, source, time) DO UPDATE SET offsite2=1",
+                        params![tenant, s, t],
+                    )?;
+                }
+            }
             for ((s, t), (lock, size)) in &local {
                 tx.execute(
                     "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, origin) \
@@ -3256,7 +3343,7 @@ impl Scheduler {
                 )?;
             }
             tx.execute(
-                "DELETE FROM snapshots WHERE tenant=?1 AND local=0 AND offsite=0",
+                "DELETE FROM snapshots WHERE tenant=?1 AND local=0 AND offsite=0 AND offsite2=0",
                 [tenant],
             )?;
             tx.commit()?;
@@ -3272,15 +3359,20 @@ impl Scheduler {
         Ok(())
     }
 
-    fn offsite_list(&self, tenant: &str) -> Result<HashSet<(String, i64)>> {
+    fn offsite_list_n(&self, tenant: &str, n: u8) -> Result<HashSet<(String, i64)>> {
         let dir = self.cfg.runtime_dir.join(format!("job-refresh-{tenant}"));
         let _ = fs::remove_dir_all(&dir);
-        let files = self.offsite_config(tenant, &dir)?.context("no offsite target")?;
+        let files = self.offsite_config_n(tenant, &dir, n)?.context("no offsite target")?;
         run::write_private(&dir, &files)?;
         let log = Arc::new(std::sync::Mutex::new(run::BoundedLog::new(8192)));
         let r = run::run_cli(
             &self.cfg.offsite_bin,
-            &[dir.join("offsite.json").to_string_lossy().into_owned(), "list".into()],
+            &[
+                dir.join(format!("{}.json", offsite_prefix(n)))
+                    .to_string_lossy()
+                    .into_owned(),
+                "list".into(),
+            ],
             &log,
             true,
             None,
@@ -3592,33 +3684,43 @@ impl Scheduler {
             protected.entry(g.tenant.clone()).or_default().extend(group_sources(&g));
         }
         for (tenant, sources) in protected {
-            if self.offsite_cfg(&tenant)?.is_none() {
-                continue;
-            }
-            let oldest: Option<i64> = {
-                let c = self.db.conn();
-                let mut st =
-                    c.prepare("SELECT source, time FROM snapshots WHERE tenant=?1 AND local=1 AND offsite=0")?;
-                let rows = st.query_map([&tenant], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-                rows.filter_map(|r| r.ok())
-                    .filter(|(s, _)| sources.contains(s))
-                    .map(|(_, t)| t)
-                    .min()
-            };
-            let key = format!("offsite_lag:{tenant}");
-            if let Some(t) = oldest.filter(|t| now - t > self.cfg.offsite_lag_secs) {
-                self.raise(
-                    "warning",
-                    "offsite_lag",
-                    &key,
-                    &format!(
-                        "offsite copy of tenant {tenant} lags by {} h (oldest snapshot not offsite: {t})",
-                        (now - t) / 3600
-                    ),
-                    Some(&tenant),
-                )?;
-            } else {
-                self.resolve(&key)?;
+            // Phase 30: per offsite target (the second: key `offsite_lag:<tenant>:2`)
+            for (n, col) in [(1u8, "offsite"), (2, "offsite2")] {
+                let key = if n == 1 {
+                    format!("offsite_lag:{tenant}")
+                } else {
+                    format!("offsite_lag:{tenant}:2")
+                };
+                if self.offsite_cfg_n(&tenant, n)?.is_none() {
+                    self.resolve(&key)?;
+                    continue;
+                }
+                let oldest: Option<i64> = {
+                    let c = self.db.conn();
+                    let mut st = c.prepare(&format!(
+                        "SELECT source, time FROM snapshots WHERE tenant=?1 AND local=1 AND {col}=0"
+                    ))?;
+                    let rows = st.query_map([&tenant], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                    rows.filter_map(|r| r.ok())
+                        .filter(|(s, _)| sources.contains(s))
+                        .map(|(_, t)| t)
+                        .min()
+                };
+                let which = if n == 1 { "offsite copy" } else { "second offsite copy" };
+                if let Some(t) = oldest.filter(|t| now - t > self.cfg.offsite_lag_secs) {
+                    self.raise(
+                        "warning",
+                        "offsite_lag",
+                        &key,
+                        &format!(
+                            "{which} of tenant {tenant} lags by {} h (oldest snapshot not there: {t})",
+                            (now - t) / 3600
+                        ),
+                        Some(&tenant),
+                    )?;
+                } else {
+                    self.resolve(&key)?;
+                }
             }
         }
         Ok(())
@@ -3678,6 +3780,37 @@ pub fn load_config(path: &Path) -> Result<Config> {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("{}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(e).with_context(|| format!("{}", path.display())),
+    }
+}
+
+/// Phase 30: offsite target `n` of a tenant's offsite config (1 = the config
+/// itself without its `second`, 2 = the `second`), `None` without a remote.
+fn offsite_target(v: &Value, n: u8) -> Option<Value> {
+    let mut t = match n {
+        1 => v.clone(),
+        _ => v.get("second")?.clone(),
+    };
+    if let Some(o) = t.as_object_mut() {
+        o.remove("second");
+    }
+    t["remote"].is_object().then_some(t)
+}
+
+/// Job file name prefix of offsite target `n`.
+fn offsite_prefix(n: u8) -> &'static str {
+    if n == 2 {
+        "offsite2"
+    } else {
+        "offsite"
+    }
+}
+
+/// The offsite target an offsite job works on (`target`, default 1).
+fn offsite_job_target(p: &Value) -> u8 {
+    if p["target"].as_u64() == Some(2) {
+        2
+    } else {
+        1
     }
 }
 

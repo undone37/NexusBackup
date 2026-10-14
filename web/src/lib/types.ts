@@ -30,6 +30,17 @@ export interface User {
   /** no sign-in from then on (unix time); null = never */
   expires?: number | null;
   last_login?: number | null;
+  /** Phase 30: the role this account may elevate to just in time (operators and viewers) */
+  eligible_role?: Role | null;
+  /** Phase 30 (GET /users): one of its sessions is elevated until then */
+  elevated_until?: number | null;
+}
+
+/** Phase 30: GET /auth/me `elevation` (this session acts in `role` until `until`). */
+export interface Elevation {
+  role: Role;
+  until: number;
+  standing_role: Role;
 }
 
 /** One-time activation code (or half of it) as returned by user create / new_activation / approve. */
@@ -93,8 +104,20 @@ export interface S3Remote {
 }
 
 /** `tenants.offsite`; `{}` = no offsite copy. Older UI versions stored the SFTP fields flat. */
+/** Phase 30: an offsite target's own retention (counts per class; never below the policies'). */
+export interface OffsiteGfs {
+  daily?: number;
+  weekly?: number;
+  monthly?: number;
+  yearly?: number;
+}
+
 export interface TenantOffsite {
   remote?: SftpRemote | S3Remote;
+  /** Phase 30: own retention of this target (longer than local only) */
+  gfs?: OffsiteGfs;
+  /** Phase 30: the second offsite target (PUT /tenants/{name}/offsite2) */
+  second?: TenantOffsite;
   /** bytes per second over all uploaders */
   bwlimit?: number | null;
   /** Phase 17a: pause / limit windows in `timezone` */
@@ -1125,6 +1148,8 @@ export interface Snapshot {
   size: number;
   local: boolean;
   offsite: boolean;
+  /** Phase 30: on the tenant's second offsite target */
+  offsite2?: boolean;
   lock_until: number;
   /** time of the last successful verify, null = never verified */
   verified: number | null;
@@ -1279,11 +1304,25 @@ export interface DiffResult {
   entries?: DiffEntry[];
 }
 
+/** Phase 30: per-source sensitivity of the anomaly checks. */
+export type Sensitivity = 'low' | 'medium' | 'high';
+
 /** GET /stats/trends: the last 30 runs of one source, oldest first. */
 export interface SourceTrend {
   tenant: string;
   source: string;
-  runs: { time: number; new_plain: number; new_stored: number; files_changed: number | null; anomalous: boolean }[];
+  /** Phase 30 */
+  sensitivity: Sensitivity;
+  runs: {
+    time: number;
+    new_plain: number;
+    new_stored: number;
+    files_changed: number | null;
+    anomalous: boolean;
+    /** Phase 30: bytes read and the backup's duration (null: older connector) */
+    read: number;
+    secs: number | null;
+  }[];
 }
 
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
@@ -1345,6 +1384,8 @@ export interface ReplicationPeer {
   state: 'pending' | 'approved' | 'enrolled' | 'revoked';
   cert_sha256: string | null;
   keyd_fingerprint: string | null;
+  /** Phase 30: DEK exports to this peer are sealed X25519 + ML-KEM-768 */
+  post_quantum?: boolean;
   token_expires: number | null;
   enrolled_at: number | null;
   last_seen: number | null;
@@ -1498,6 +1539,8 @@ export interface LoginResponse {
   freeze?: FreezeBanner | null;
   /** Phase 29: the account is marked by a risk signal: sensitive requests need a step-up */
   step_up?: StepUpState | null;
+  /** Phase 30: this session is elevated just in time */
+  elevation?: Elevation | null;
 }
 
 /** Phase 21b: the incident banner (GET /auth/me, /dashboard). */
@@ -1581,7 +1624,8 @@ export type TenantKeyRequestStatus = 'pending' | 'rejected' | 'approved' | 'expi
 export interface TenantKeyInfo {
   tenant: string;
   /** null: no tenant recovery key (only the appliance recovery key restores this tenant) */
-  key: { kid: string; set_at: number; requested_by: string; approved_by: string } | null;
+  /** `post_quantum` (Phase 30): the escrow is sealed X25519 + ML-KEM-768 (keys set before: X25519 only) */
+  key: { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum?: boolean } | null;
   requests: {
     id: number;
     requested_by: string;
@@ -2011,6 +2055,8 @@ export interface SecuritySettings {
   client_ip: string;
   client_allowed: boolean;
   pending: { session: number | null; mgmt_allow: number | null };
+  /** Phase 30: role elevation (`approval`: every elevation needs a second person) */
+  elevation: { settings: { approval: boolean }; pending: number | null; min_minutes: number; max_minutes: number };
 }
 
 /** Phase 21c: one of my passkeys (GET /auth/passkeys). */

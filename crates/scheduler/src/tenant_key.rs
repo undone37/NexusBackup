@@ -10,19 +10,21 @@ use std::path::Path;
 
 /// Hands the catalog's tenant recovery public key (or its absence) to keyd.
 pub(crate) fn sync(db: &Catalog, socket: &Path, tenant: &str) {
+    // Phase 30: X25519 + ML-KEM-768 when the key has its post-quantum half
     let public = match catalog::tenant_key::get(&db.conn(), tenant) {
-        Ok(s) => s.and_then(|s| catalog::tenant_key::parse_public(&s.public)),
+        Ok(s) => s.and_then(|s| catalog::tenant_key::sealing_key(&s)),
         Err(e) => {
             eprintln!("<4>scheduler: tenant recovery key of {tenant}: {e}");
             return;
         }
     };
-    match keyd::request_tenant_recovery(socket, tenant, public.as_ref()) {
+    match keyd::request_tenant_recovery(socket, tenant, public.as_deref()) {
         Ok(true) => eprintln!(
             "scheduler: tenant {tenant}: recovery key {} in keyd",
             public.map_or("removed".to_owned(), |p| format!(
-                "set (id {})",
-                keyd::tenant_key::key_id(&p)
+                "set (id {}{})",
+                keyd::tenant_key::key_id(&p),
+                if p.len() > 32 { ", X25519 + ML-KEM-768" } else { "" }
             ))
         ),
         Ok(false) => {}
@@ -62,17 +64,31 @@ mod tests {
             for c in l.incoming().take(3) {
                 let mut c = c.unwrap();
                 let mut line = String::new();
-                std::io::BufRead::read_line(&mut std::io::BufReader::new(&c), &mut line).unwrap();
-                if let Ok(a) = keyd::answer(&dir, &line) {
+                let mut r = std::io::BufReader::new(&c);
+                std::io::BufRead::read_line(&mut r, &mut line).unwrap();
+                // `tenant-recovery-pq <t> <len>` carries the hybrid key as its body
+                let mut body = vec![0u8; 0];
+                if line.starts_with("tenant-recovery-pq ") {
+                    body.resize(line.trim_end().rsplit(' ').next().unwrap().parse().unwrap(), 0);
+                    std::io::Read::read_exact(&mut r, &mut body).unwrap();
+                }
+                if let Ok(a) = keyd::answer_with_body(&dir, &line, &body) {
                     std::io::Write::write_all(&mut c, &a).unwrap();
                 }
             }
         });
         let db = Catalog::open_memory().unwrap();
-        let (key, public) = catalog::tenant_key::generate();
+        let (key, public, pq) = catalog::tenant_key::generate();
+        // the catalog derives the ML-KEM half exactly like keyd
+        let want: String = keyd::tenant_key::hybrid_public_of(&key).unwrap()[32..]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(pq, want);
         let st = catalog::tenant_key::Status {
             kid: public[..16].to_owned(),
             public,
+            public_pq: Some(pq),
             set_at: 1,
             requested_by: "a".into(),
             approved_by: "b".into(),
@@ -81,6 +97,9 @@ mod tests {
         catalog::tenant_key::put(&db.conn(), "acme", &st).unwrap();
         sync(&db, &sock, "acme");
         let files = keyd::fetch_escrow(&sock, "acme").unwrap();
+        assert!(files.iter().any(
+            |(n, b)| keyd::tenant_key::is_escrow_file(n.rsplit('/').next().unwrap()) && keyd::hybrid::is_hybrid(b)
+        ));
         let tenant_files: Vec<_> = files
             .iter()
             .filter_map(|(n, b)| Some((n.strip_prefix("tenants/acme/")?.to_owned(), b.clone())))

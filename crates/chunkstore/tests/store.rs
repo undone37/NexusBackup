@@ -500,7 +500,20 @@ fn written_stats_count_plain_and_sealed_bytes() {
         w.plain,
         w.stored
     );
+    // a snapshot time from long ago (an import): no duration
     assert_eq!(line, want);
+
+    // Phase 30: a snapshot taken 90 s ago reports the backup's duration
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let img = s.store_image(&vec![7u8; 1 << 16][..], 65536).unwrap();
+    let m = s.commit_snapshot("vm-8", now - 90, &[("disk0", img)]).unwrap();
+    let line = s.stats_line(&m, 1, chunkstore::Written::default()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(line.strip_prefix("nexus-stats ").unwrap()).unwrap();
+    let secs = v["secs"].as_u64().unwrap();
+    assert!((90..100).contains(&secs), "{line}");
 }
 
 /// A full backup (fresh bitmap: every extent dirty, no base) reads each byte once; a grown
