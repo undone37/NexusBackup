@@ -423,6 +423,11 @@ fn ntfs_whole_disk_windows_volume() {
         fs::write(mnt.join("Windows/System32/kernel32.dll"), vec![1u8; 3000])?;
         fs::create_dir_all(mnt.join("Users/ann/Documents"))?;
         fs::write(mnt.join("Users/ann/Documents/Angebot Müller.docx"), b"PK docx")?;
+        // enough MFT records that taking the directories over saves reads
+        fs::create_dir_all(mnt.join("Users/ann/Mail"))?;
+        for i in 0..400 {
+            fs::write(mnt.join(format!("Users/ann/Mail/{i:04}.eml")), b"Subject: x")?;
+        }
         touch(&mnt.join("Users/ann/Documents/Angebot Müller.docx"), MTIME);
         io::Result::Ok(())
     })();
@@ -790,4 +795,128 @@ fn reuse_skips_the_parse() {
     let l = parent::list(&src, &helper(), lim, &mut |_| false).unwrap();
     assert_eq!((l[0].volume.state.as_str(), l[0].entries.len()), ("partial", 3));
     assert!(l[0].volume.reason.as_deref().unwrap().contains("entry limit"));
+}
+
+/// An NTFS image of `size` bytes with `files` (path, content), written through
+/// ntfs-3g (FUSE); `false` when the tools are missing.
+fn ntfs_img(img: &Path, size: u64, label: &str, files: &[(&str, Vec<u8>)]) -> bool {
+    sized(img, size);
+    if !run("mkntfs", &["-F", "-Q", "-q", "-L", label, img.to_str().unwrap()]) {
+        return false;
+    }
+    let mnt = img.with_extension("mnt");
+    fs::create_dir_all(&mnt).unwrap();
+    if !run("ntfs-3g", &[img.to_str().unwrap(), mnt.to_str().unwrap()]) {
+        return false;
+    }
+    let res = (|| {
+        for (p, data) in files {
+            let p = mnt.join(p);
+            fs::create_dir_all(p.parent().unwrap())?;
+            fs::write(&p, data)?;
+        }
+        io::Result::Ok(())
+    })();
+    let umount =
+        run("fusermount", &["-u", mnt.to_str().unwrap()]) || run("fusermount3", &["-u", mnt.to_str().unwrap()]);
+    res.unwrap();
+    assert!(umount, "unmount");
+    true
+}
+
+/// Phase 31c: drive letters from the SYSTEM hive (`MountedDevices`): a GPT disk
+/// with the system volume and a data volume (by partition GUID), an MBR disk
+/// with a data volume (by disk signature and offset).
+#[test]
+fn windows_drive_letters_from_the_system_hive() {
+    use fsindex::regf::{build, dmio};
+    let d = tempfile::tempdir().unwrap();
+    let p = |n: &str| d.path().join(n);
+    let (sys_g, data_g) = (
+        "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+        "11223344-5566-7788-99aa-bbccddeeff00",
+    );
+    let mut mbr = 0x1234_abcdu32.to_le_bytes().to_vec();
+    mbr.extend((1u64 << 20).to_le_bytes());
+    let hive = build(&[(
+        "MountedDevices",
+        vec![
+            ("\\DosDevices\\C:", 3, dmio(sys_g)),
+            ("\\DosDevices\\E:", 3, dmio(data_g)),
+            ("\\DosDevices\\F:", 3, mbr),
+        ],
+    )]);
+    if !ntfs_img(
+        &p("sys.img"),
+        16 << 20,
+        "System",
+        &[
+            ("Windows/System32/config/SYSTEM", hive),
+            ("Windows/System32/kernel32.dll", vec![1; 100]),
+        ],
+    ) || !ntfs_img(
+        &p("data.img"),
+        8 << 20,
+        "Daten",
+        &[("Projekte/plan.txt", b"x".to_vec())],
+    ) || !ntfs_img(&p("mbr.img"), 8 << 20, "Archiv", &[("alt.txt", b"y".to_vec())])
+    {
+        return;
+    }
+    let disk = p("disk0.img");
+    sized(&disk, 40 << 20);
+    if !run(
+        "sgdisk",
+        &[
+            "-n",
+            "1:2048:+16M",
+            "-t",
+            "1:0700",
+            "-u",
+            &format!("1:{sys_g}"),
+            "-n",
+            "2:34816:+8M",
+            "-t",
+            "2:0700",
+            "-u",
+            &format!("2:{data_g}"),
+            disk.to_str().unwrap(),
+        ],
+    ) {
+        return;
+    }
+    put(&disk, 2048 * 512, &p("sys.img"));
+    put(&disk, 34816 * 512, &p("data.img"));
+    // MBR disk: signature 0x1234abcd, one NTFS partition at 1 MiB
+    let disk1 = p("disk1.img");
+    sized(&disk1, 12 << 20);
+    let mut m = vec![0u8; 512];
+    m[440..444].copy_from_slice(&0x1234_abcdu32.to_le_bytes());
+    m[446 + 4] = 0x07;
+    m[446 + 8..446 + 12].copy_from_slice(&2048u32.to_le_bytes());
+    m[446 + 12..446 + 16].copy_from_slice(&16384u32.to_le_bytes());
+    m[510] = 0x55;
+    m[511] = 0xaa;
+    File::options()
+        .write(true)
+        .open(&disk1)
+        .unwrap()
+        .write_all_at(&m, 0)
+        .unwrap();
+    put(&disk1, 2048 * 512, &p("mbr.img"));
+
+    let l = list(&[&disk, &disk1]);
+    let sys = vol(&l, "vda1");
+    assert!(sys.volume.windows, "{:?}", sys.volume);
+    assert_eq!(sys.volume.drives.len(), 3, "{:?}", sys.volume.drives);
+    assert_eq!(vol(&l, "vdb1").volume.partuuid.as_deref(), Some("1234abcd-01"));
+    let mut vols: Vec<Volume> = l.iter().map(|x| x.volume.clone()).collect();
+    fsindex::mapping::assign(&mut vols);
+    let m = fsindex::mapping::Mapper::new(&vols);
+    assert_eq!(
+        m.guest("vda1/Windows/System32/kernel32.dll"),
+        "C:/Windows/System32/kernel32.dll"
+    );
+    assert_eq!(m.guest("vda2/Projekte/plan.txt"), "E:/Projekte/plan.txt");
+    assert_eq!(m.guest("vdb1/alt.txt"), "F:/alt.txt");
 }

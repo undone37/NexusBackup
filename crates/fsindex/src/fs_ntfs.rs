@@ -222,5 +222,66 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             });
         }
     }
+    // Phase 31c: the drive letters of the system volume (helper 0 alone; a broken or
+    // missing hive leaves the letters out, the volume is still `C:`)
+    if info.windows && out.owns("", 0) {
+        info.drives = drives(&ntfs, &mut fs).unwrap_or_default();
+    }
     Ok(())
+}
+
+/// The SYSTEM hive of the volume, read in place through the file's `$DATA`.
+struct HiveFile<'a, 'n, 'f> {
+    v: ntfs::attribute_value::NtfsAttributeValue<'n, 'f>,
+    fs: &'a mut Padded,
+}
+
+impl crate::regf::HiveRead for HiveFile<'_, '_, '_> {
+    fn size(&self) -> u64 {
+        self.v.len()
+    }
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<(), String> {
+        if off.checked_add(buf.len() as u64).is_none_or(|e| e > self.v.len()) {
+            return Err("hive: read beyond the end".into());
+        }
+        self.v
+            .seek(self.fs, std::io::SeekFrom::Start(off))
+            .map_err(|e| e.to_string())?;
+        let mut done = 0;
+        while done < buf.len() {
+            let n = self.v.read(self.fs, &mut buf[done..]).map_err(|e| e.to_string())?;
+            if n == 0 {
+                return Err("hive: short read".into());
+            }
+            done += n;
+        }
+        Ok(())
+    }
+}
+
+/// `MountedDevices` of `Windows/System32/config/SYSTEM` ([`crate::regf::drive_letters`]).
+fn drives(ntfs: &Ntfs, fs: &mut Padded) -> Result<Vec<(String, String)>, String> {
+    let e = |e: ntfs::NtfsError| e.to_string();
+    // the index is sorted by NTFS' upcase table; for these ASCII names (and nearly all others)
+    // simple uppercasing orders the same, without reading the 128 KiB $UpCase
+    let up = |s: &str| s.chars().flat_map(char::to_uppercase).collect::<String>();
+    let mut rec = ROOT;
+    for name in ["WINDOWS", "SYSTEM32", "CONFIG", "SYSTEM"] {
+        let dir = ntfs.file(fs, rec).map_err(e)?;
+        let idx = dir.directory_index(fs).map_err(e)?;
+        let mut finder = idx.finder();
+        let hit = finder
+            .find(fs, |k| {
+                let k = k.name().to_string_lossy();
+                name.encode_utf16().cmp(up(&k).encode_utf16())
+            })
+            .ok_or_else(|| format!("{name} not found"))?
+            .map_err(e)?;
+        rec = hit.file_reference().file_record_number();
+    }
+    let f = ntfs.file(fs, rec).map_err(e)?;
+    let item = f.data(fs, "").ok_or("SYSTEM hive without data")?.map_err(e)?;
+    let attr = item.to_attribute().map_err(e)?;
+    let v = attr.value(fs).map_err(e)?;
+    crate::regf::drive_letters(HiveFile { v, fs })
 }

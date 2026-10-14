@@ -71,3 +71,10 @@ path = "fuzz_targets/disk_walk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "regf_hive"
+path = "fuzz_targets/regf_hive.rs"
+test = false
+doc = false
+bench = false

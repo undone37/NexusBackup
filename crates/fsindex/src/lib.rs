@@ -26,6 +26,7 @@ pub mod parent;
 pub mod part;
 pub mod probe;
 pub mod proto;
+pub mod regf;
 pub mod sandbox;
 pub mod walk;
 
@@ -90,6 +91,13 @@ pub struct Volume {
     /// entries skipped (path too long, names that do not decode, …)
     #[serde(default)]
     pub skipped_entries: u64,
+    /// how the SYSTEM hive's `MountedDevices` names this volume: `guid:<GPT partition
+    /// or dynamic volume GUID>`, `mbr:<disk signature>:<byte offset>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub win_id: Option<String>,
+    /// Windows system volume: the drive letters of its SYSTEM hive (`D:`, `win_id`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drives: Vec<(String, String)>,
     /// where the guest mounts it (set by the parent, [`mapping`]): `/`, `/home`,
     /// `C:`; `None`: shown as its label or `vol<N>`
     #[serde(default, skip_serializing_if = "Option::is_none")]

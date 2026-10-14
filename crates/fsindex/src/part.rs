@@ -30,8 +30,11 @@ pub struct Part {
     pub start: u64,
     pub len: u64,
     pub ptype: PType,
-    /// GPT unique partition GUID (lowercase), `PARTUUID=`
+    /// GPT unique partition GUID (lowercase); MBR: `<disk signature>-<number>` as
+    /// Linux writes it; `PARTUUID=`
     pub guid: Option<String>,
+    /// how Windows' `MountedDevices` names it ([`crate::Volume::win_id`])
+    pub win_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,6 +151,7 @@ fn gpt_at(v: &Vol, lba: u64, ss: u64) -> Result<Vec<Part>, String> {
             len: (last - first + 1) * ss,
             ptype: pt,
             guid: Some(guid(&e[16..32])),
+            win_id: Some(format!("guid:{}", guid(&e[16..32]))),
         });
         if out.len() > MAX_PARTS {
             return Err("too many partitions".into());
@@ -229,7 +233,17 @@ pub fn parse(v: &Vol) -> io::Result<Table> {
                 len: n * SECTOR,
                 ptype: pt,
                 guid: None,
+                win_id: None,
             });
+        }
+    }
+    // the disk signature names the partitions: Linux `PARTUUID=ssssssss-nn`,
+    // Windows `MountedDevices` (signature, byte offset)
+    let sig = le32(&s0, 440);
+    if sig != 0 {
+        for p in &mut out {
+            p.guid = Some(format!("{sig:08x}-{:02x}", p.number));
+            p.win_id = Some(format!("mbr:{sig:08x}:{}", p.start));
         }
     }
     Ok(Table::Mbr(out))
@@ -264,6 +278,7 @@ fn logical(v: &Vol, ext: u64, out: &mut Vec<Part>) -> Result<(), String> {
                     len: n * SECTOR,
                     ptype: pt,
                     guid: None,
+                    win_id: None,
                 });
             }
             number += 1;

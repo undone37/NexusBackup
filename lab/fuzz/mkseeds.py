@@ -400,4 +400,62 @@ put("fsindex", "helper_frames", "listing",
 put("fsindex", "helper_frames", "hostile",
     fx_frame(b"B", vol_json.replace(b"vda1", b"../x")) + fx_frame(b"E", fx_ent("../etc/passwd") + fx_ent("/abs")))
 
+
+def hive(keys):
+    """A minimal registry hive (as crates/fsindex/src/regf.rs `build`): the root key with
+    one subkey per (name, [(value name, type, data)])."""
+    bins = bytearray(b"hbin" + bytes(28))
+
+    def cell(data):
+        off = len(bins)
+        n = (len(data) + 4 + 7) // 8 * 8
+        bins.extend(struct.pack("<i", -n) + data)
+        bins.extend(bytes(off + n - len(bins)))
+        return off
+
+    def key(name, subs, values):
+        lst = cell(b"lf" + struct.pack("<H", len(subs)) + b"".join(struct.pack("<II", s, 0) for s in subs)) if subs else 0
+        vl = cell(b"".join(struct.pack("<I", v) for v in values)) if values else 0
+        k = bytearray(0x4c)
+        k[0:4] = b"nk" + struct.pack("<H", 0x20)
+        struct.pack_into("<I", k, 0x14, len(subs))
+        struct.pack_into("<I", k, 0x1c, lst)
+        struct.pack_into("<II", k, 0x24, len(values), vl)
+        struct.pack_into("<H", k, 0x48, len(name))
+        return cell(bytes(k) + name.encode())
+
+    def value(name, ty, data):
+        if len(data) <= 4:
+            size, at = len(data) | 0x80000000, struct.unpack("<I", data.ljust(4, b"\0"))[0]
+        else:
+            size, at = len(data), cell(data)
+        return cell(b"vk" + struct.pack("<HIIIHH", len(name), size, at, ty, 1, 0) + name.encode())
+
+    subs = [key(n, [], [value(*v) for v in vals]) for n, vals in keys]
+    root = key("ROOT", subs, [])
+    size = (len(bins) + 4095) // 4096 * 4096
+    bins.extend(bytes(size - len(bins)))
+    struct.pack_into("<I", bins, 8, size)
+    base = bytearray(4096)
+    base[0:4] = b"regf"
+    struct.pack_into("<IIIIII", base, 4, 1, 1, 0, 0, 1, 5)
+    struct.pack_into("<II", base, 36, root, size)
+    x = 0
+    for i in range(127):
+        x ^= struct.unpack_from("<I", base, i * 4)[0]
+    struct.pack_into("<I", base, 508, {0: 1, 0xFFFFFFFF: 0xFFFFFFFE}.get(x, x))
+    return bytes(base + bins)
+
+
+def dmio(g):
+    return b"DMIO:ID:" + __import__("uuid").UUID(g).bytes_le
+
+
+put("fsindex", "regf_hive", "system", hive([
+    ("Select", [("Current", 4, struct.pack("<I", 1))]),
+    ("MountedDevices", [("\\DosDevices\\C:", 3, dmio("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")),
+                        ("\\DosDevices\\E:", 3, struct.pack("<IQ", 0xdeadbeef, 1 << 20)),
+                        ("\\??\\Volume{x}", 3, "\\??\\SCSI#CdRom".encode("utf-16-le"))]),
+]))
+
 print("seeds written")

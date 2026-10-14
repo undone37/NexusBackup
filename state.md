@@ -561,7 +561,12 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   unchanged directories taken over from the previous name index without reading them, also with parallel helpers;
   ext4 excluded (ext4-view caches blocks, read sets would be incomplete); tests: a second listing with the history
   lists the same and reads less, a dropped record is listed again, NTFS records always have their read set
-- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, content hashes
+- [x] 31c Windows drive letters from the SYSTEM hive (`MountedDevices`): own read-only regf parser
+  (`fsindex::regf`), hive read in place on the system volume by helper 0, matched by GPT partition GUID / LDM volume
+  GUID (`DMIO:ID:`) or MBR signature + offset (`win_id`); MBR partitions get `PARTUUID=<sig>-<nn>`; tests: unit
+  (hostile hives, ri loops, byte flips), real GPT + MBR disks with mkntfs/ntfs-3g (C:, E:, F:); fuzz target
+  `regf_hive`
+- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

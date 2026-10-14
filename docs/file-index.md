@@ -131,8 +131,8 @@ download and restore work unchanged. The micro-VM walk is still available as `fi
 Every snapshot gets a sealed volume report `snapshots/<source>/<time>/fsindex` (chunkstore `snapfile.rs`): per
 volume the browse name, device, file system, label, UUID, PARTUUID, state (`indexed`, `skipped`, `unsupported`,
 `failed`, `partial`) with a reason, the guest mount point (from the root file system's `/etc/fstab`: `UUID=`,
-`LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows `C:` = the NTFS volume with
-`Windows/System32`; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
+`LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows: drive letters from the system volume's
+SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
 key is the set of chunk ids, the granularity is the volume). XFS, btrfs and ZFS volumes are listed through the
 micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off); BitLocker, LUKS, ReFS, Windows dynamic
@@ -168,6 +168,18 @@ directory. A renamed or moved directory has another path and is listed again. Vo
 records on. ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
 listing depends on; ext4 volumes are taken over per volume as before. The job log line says how many directories
 were taken over; the result has `dirs_taken_over`.
+
+**Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
+reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)
+with an own read-only registry hive parser (`fsindex::regf`: base block checksum, `nk`/`vk` cells, `lf`/`lh`/`li`/`ri`
+subkey lists, every offset checked against the hive, lists and `ri` nesting bounded, big-data values not read) and
+takes the `\DosDevices\X:` values of `HKLM\SYSTEM\MountedDevices`: `DMIO:ID:` + GUID names a GPT partition (its
+unique partition GUID) or a dynamic volume, 12 bytes name an MBR partition (disk signature at 0x1B8 + byte offset).
+The volume report keeps them (`drives`, and `win_id` per volume); the parent's mount mapping accepts only `A:`-`Z:`
+and volumes it listed, gives each letter once, and keeps `C:` for the system volume when the hive does not name it
+(missing, unreadable or damaged hive: as before). The hive's transaction logs (`SYSTEM.LOG1/2`) are not replayed: a
+letter changed in the last minutes before a crash-consistent snapshot may still show the old one (Cohesity documents
+the same staleness). MBR partitions now also carry Linux's `PARTUUID=<signature>-<number>`.
 
 `groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
 browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.

@@ -181,6 +181,7 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                             size: p.len,
                             key: format!("{name}@{}+{}", p.start, p.len),
                             partuuid: p.guid.clone(),
+                            win_id: p.win_id.clone(),
                             ..Default::default()
                         },
                         ptype: p.ptype,
