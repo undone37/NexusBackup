@@ -3,7 +3,7 @@
   import { get, post, act, errText, qs } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
-  import { route } from '../lib/router.svelte';
+  import { href, route } from '../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Alert, Snapshot } from '../lib/types';
@@ -108,6 +108,20 @@
       load();
     }
   }
+  /** A readable title of an alert kind (`user_risk` -> "Unusual account activity" or "User risk"). */
+  const kindTitle = (k: string) => t.alerts.kindTitles[k] ?? k.charAt(0).toUpperCase() + k.slice(1).replaceAll('_', ' ');
+  /** The message split around "job N" mentions (links to the job). */
+  function linkParts(m: string): { text: string; job?: number }[] {
+    const out: { text: string; job?: number }[] = [];
+    let last = 0;
+    for (const x of m.matchAll(/\bjob #?(\d+)\b/g)) {
+      out.push({ text: m.slice(last, x.index) });
+      out.push({ text: x[0], job: Number(x[1]) });
+      last = x.index! + x[0].length;
+    }
+    out.push({ text: m.slice(last) });
+    return out;
+  }
 </script>
 
 <div class="page-head">
@@ -154,12 +168,15 @@
                 <div class="muted small">{t.alerts.count(a.count)}{a.count > 1 ? ` · ${fmtAgo(a.first_ts)}` : ''}</div>
               </td>
               <td>
-                <span class="mono">{a.kind}</span>
+                <strong>{kindTitle(a.kind)}</strong>
+                <div class="muted small mono">{a.kind}</div>
                 <div class="muted small">{t.alerts.categories[a.category] ?? a.category}</div>
                 {#if a.tenant}<div class="muted small">{t.alerts.tenant}: {a.tenant}</div>{/if}
               </td>
               <td>
-                {a.message}
+                <!-- "job 220" in a message opens that job -->
+                {#each linkParts(a.message) as part, i (i)}{#if part.job}<a href={href(`/jobs/${part.job}`)}>{part.text}</a
+                    >{:else}{part.text}{/if}{/each}
                 <details class="alert-hint">
                   <summary>{t.alerts.whatToDo}</summary>
                   <p>{hint(a)}</p>
