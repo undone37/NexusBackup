@@ -253,18 +253,28 @@ struct PluginRestoreP {
 struct OffsiteRestoreP {
     source: String,
     time: i64,
+    /// Phase 30: 2 = from the second offsite target
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<u8>,
 }
 
-/// The tenant has an offsite target (`tenants.offsite.remote`).
-fn has_offsite(st: &St, tenant: &str) -> ApiResult<()> {
+/// The tenant has offsite target `n` (1: `tenants.offsite.remote`, 2: its `second`).
+fn has_offsite_n(st: &St, tenant: &str, n: u8) -> ApiResult<()> {
     let o: Option<String> = st
         .cat
         .conn()
         .query_row("SELECT offsite FROM tenants WHERE name = ?1", [tenant], |r| r.get(0))
         .optional()?;
     let o: Value = o.and_then(|o| serde_json::from_str(&o).ok()).unwrap_or_default();
-    if o["remote"].is_object() {
+    let ok = match n {
+        1 => o["remote"].is_object(),
+        2 => o["second"]["remote"].is_object(),
+        _ => return Err(ApiError::bad("target: 1 or 2")),
+    };
+    if ok {
         Ok(())
+    } else if n == 2 {
+        Err(ApiError::bad("tenant: has no second offsite target"))
     } else {
         Err(ApiError::bad("tenant: has no offsite target"))
     }
@@ -279,6 +289,9 @@ struct Empty {}
 struct MaintP {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+    /// Phase 30: `offsite` / `offsite_list` on the second offsite target (2)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<u8>,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(v: Value) -> ApiResult<T> {
@@ -594,19 +607,24 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             json!(r)
         }
         "offsite_list" => {
-            let _: MaintP = parse(p)?;
-            has_offsite(st, tenant)?;
-            json!({})
+            let m: MaintP = parse(p)?;
+            has_offsite_n(st, tenant, m.target.unwrap_or(1))?;
+            match m.target {
+                Some(2) => json!({"target": 2}),
+                _ => json!({}),
+            }
         }
         "offsite_restore" => {
             let r: OffsiteRestoreP = parse(p)?;
             validate::source_ref(&r.source)?;
-            has_offsite(st, tenant)?;
+            let n = r.target.unwrap_or(1);
+            has_offsite_n(st, tenant, n)?;
+            let col = if n == 2 { "offsite2" } else { "offsite" };
             let row: Option<(bool, bool)> = st
                 .cat
                 .conn()
                 .query_row(
-                    "SELECT local, offsite FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                    &format!("SELECT local, {col} FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3"),
                     params![tenant, r.source, r.time],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
@@ -628,6 +646,12 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             let m: MaintP = parse(p)?;
             if let Some(s) = &m.source {
                 validate::source_ref(s)?;
+            }
+            if let Some(n) = m.target {
+                if kind != "offsite" {
+                    return Err(ApiError::bad("target: only for offsite jobs"));
+                }
+                has_offsite_n(st, tenant, n)?;
             }
             json!(m)
         }
@@ -974,7 +998,7 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                        'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
                      WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
                      ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state,
-                    s.clean_point AS clean_point,
+                    s.clean_point AS clean_point, s.offsite2 AS offsite2,
                     (SELECT json_object('state', state, 'reason', reason) FROM snapshot_index y
                      WHERE y.tenant = s.tenant AND y.source = s.source AND y.time = s.time) AS file_index
              FROM snapshots s
@@ -998,6 +1022,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
             Ok(json!({
                 "tenant": r.get::<_, String>(0)?, "source": r.get::<_, String>(1)?, "time": r.get::<_, i64>(2)?,
                 "size": r.get::<_, i64>(3)?, "local": r.get::<_, bool>(4)?, "offsite": r.get::<_, bool>(5)?,
+                // Phase 30: on the tenant's second offsite target
+                "offsite2": r.get::<_, bool>("offsite2")?,
                 "lock_until": r.get::<_, i64>(6)?, "verified": r.get::<_, Option<i64>>(7)?,
                 "origin": r.get::<_, Option<String>>(8)?, "hold": hold,
                 "consistency": r.get::<_, Option<String>>(10)?,

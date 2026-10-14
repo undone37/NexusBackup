@@ -67,9 +67,12 @@ impl Scheduler {
 
     pub(crate) fn plan_offsite_ui(&self, job: &Job, mut plan: Plan) -> Result<Plan> {
         let (tenant, p, dir) = (job.tenant.as_str(), &job.params, plan.dir.clone());
+        // Phase 30: `target` 2 browses / fetches from the second offsite target
+        let n = crate::offsite_job_target(p);
+        let cfg_file = dir.join(format!("{}.json", crate::offsite_prefix(n)));
         let offsite = |args: Vec<String>, capture: bool| Step::Cli {
             bin: self.cfg.offsite_bin.clone(),
-            args: std::iter::once(dir.join("offsite.json").to_string_lossy().into_owned())
+            args: std::iter::once(cfg_file.to_string_lossy().into_owned())
                 .chain(args)
                 .collect(),
             alert: None,
@@ -78,15 +81,15 @@ impl Scheduler {
         match job.kind.as_str() {
             "offsite_list" => {
                 plan.files = self
-                    .offsite_config(tenant, &dir)?
-                    .context("tenant has no offsite target")?;
+                    .offsite_config_n(tenant, &dir, n)?
+                    .with_context(|| format!("tenant has no offsite target {n}"))?;
                 plan.steps.push(offsite(vec!["list".into(), "--json".into()], true));
             }
             "offsite_restore" => {
                 let (source, time) = (ident(p, "source")?, num(p, "time")?);
                 plan.files = self
-                    .offsite_config(tenant, &dir)?
-                    .context("tenant has no offsite target")?;
+                    .offsite_config_n(tenant, &dir, n)?
+                    .with_context(|| format!("tenant has no offsite target {n}"))?;
                 let keep = self.cfg.offsite_fetch_keep_secs.to_string();
                 plan.steps.push(offsite(
                     vec!["restore".into(), source.to_owned(), time.to_string(), keep],
@@ -124,7 +127,7 @@ impl Scheduler {
                 if !o["remote"].is_object() {
                     bail!("attach request {id} has no offsite target");
                 }
-                plan.files = self.offsite_files(tenant, &o, &dir)?;
+                plan.files = self.offsite_files(tenant, &o, &dir, 1)?;
                 plan.files.push(("recovery.key".into(), rk.as_bytes().to_vec()));
                 plan.steps.push(offsite(
                     vec!["attach".into(), dir.join("recovery.key").to_string_lossy().into_owned()],

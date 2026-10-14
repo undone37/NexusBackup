@@ -697,8 +697,10 @@ function repairDone(j: Job, t: number) {
 /** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
 function offsiteResult(j: Job, t: number) {
   if (j.kind === 'offsite_list') {
+    // Phase 30: `target` 2 lists the second offsite target
+    const second = j.params.target === 2;
     const snaps = db.snapshots
-      .filter((s) => s.tenant === j.tenant && s.offsite)
+      .filter((s) => s.tenant === j.tenant && (second ? s.offsite2 : s.offsite))
       .sort((a, b) => a.source.localeCompare(b.source) || a.time - b.time);
     // the demo target lost one manifest (initech): "missing on the target"
     const lost = j.tenant === 'initech' ? snaps.find((s) => s.source === 'vm-100' && s.local) : undefined;
@@ -1744,6 +1746,24 @@ function seed() {
 
   seedPhase28(t);
   seedPhase29(t);
+  seedPhase30();
+}
+
+/** Phase 30: acme copies to a second offsite target (a Storage Box keeping monthly snapshots for 7 years). */
+function seedPhase30() {
+  const acme = db.tenants.find((x) => x.name === 'acme');
+  if (acme) {
+    acme.offsite = {
+      ...acme.offsite,
+      second: {
+        remote: { type: 'sftp', host: 'u-acme2.your-storagebox.de', port: 23, user: 'u-acme2', key_file: '/etc/nexus/ssh/offsite-acme2', host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoSecondBoxKey' },
+        gfs: { monthly: 84, yearly: 7 },
+        uploaders: 2,
+        bwlimit: null,
+      },
+    };
+  }
+  for (const s of db.snapshots) if (s.tenant === 'acme') s.offsite2 = !!s.offsite;
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -2152,9 +2172,12 @@ function tenantOffsite(body: Json, old?: Json): Json {
 }
 
 function publicOffsite(o: Json): Json {
-  if (!o?.remote?.secret_key) return o;
-  const { secret_key: _s, ...r } = o.remote;
-  return { ...o, remote: { ...r, secret_key_set: true } };
+  // Phase 30: the second target's secret is write-only as well
+  const second = o?.second ? publicOffsite(o.second) : undefined;
+  const out = second ? { ...o, second } : o;
+  if (!out?.remote?.secret_key) return out;
+  const { secret_key: _s, ...r } = out.remote;
+  return { ...out, remote: { ...r, secret_key_set: true } };
 }
 
 function execute(qid: number, action: string, p: Json, by = '', decider = ''): Json | void {
@@ -2596,8 +2619,15 @@ on('POST', '/tenants', async (c) => {
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  if (c.body.offsite?.second !== undefined) throw new HttpError(400, 'offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2');
   const next = tenantOffsite(c.body.offsite, t.offsite);
   checkWindows(next.windows ?? []);
+  checkOffsiteGfs(next.gfs);
+  // Phase 30: the second target stays as stored
+  if (t.offsite?.second) {
+    if (!next.remote) throw new HttpError(409, 'the tenant has a second offsite target: remove it first');
+    next.second = t.offsite.second;
+  }
   // Phase 17a: only the bandwidth part tightened (bwlimit, windows, timezone): direct
   const rest = ({ bwlimit: _b, windows: _w, timezone: _z, ...r }: Json) => JSON.stringify(r);
   const bw = (o: Json) => ({ windows: o.windows ?? [], base: o.bwlimit, tz: o.timezone ?? 'UTC' });
@@ -2607,6 +2637,35 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   t.offsite = next;
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
+});
+// Phase 30: the second offsite target (own retention and lock); a change or removal needs approval
+function checkOffsiteGfs(g: Json | undefined) {
+  if (g == null) return;
+  for (const [k, v] of Object.entries(g)) {
+    if (!['daily', 'weekly', 'monthly', 'yearly'].includes(k)) throw new HttpError(400, `offsite.gfs.${k}: unknown class (daily, weekly, monthly, yearly)`);
+    if (v != null && !(Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 10000)) throw new HttpError(400, `offsite.gfs.${k}: 0..=10000 or null`);
+  }
+}
+on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  const target = c.body.target;
+  const before = t.offsite?.second ?? null;
+  let second: Json | null = null;
+  if (target != null) {
+    if (!t.offsite?.remote) throw new HttpError(400, 'target: the tenant has no offsite target yet: set up the first one');
+    if (!target.remote) throw new HttpError(400, 'target.remote: required (sftp or s3)');
+    second = tenantOffsite(target, before ?? undefined);
+    checkOffsiteGfs(second.gfs);
+  }
+  const next = { ...t.offsite };
+  if (second) next.second = second;
+  else delete next.second;
+  if (before && JSON.stringify(before) !== JSON.stringify(second))
+    return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
+  t.offsite = next;
+  await audit(u.name, 'tenant.offsite2', `tenant/${t.name}`, { second: second ? publicOffsite(second) : null });
+  return [200, { name: t.name, offsite: publicOffsite(t.offsite) }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
 // Phase 17d: attach an existing offsite copy (web-api offsite.rs): request → approval → recovery key once
@@ -4410,8 +4469,10 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
   // Phase 17d: browse the offsite copy, fetch an offsite-only snapshot back (web-api jobs.rs)
   if (kind === 'offsite_list' || kind === 'offsite_restore') {
     if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote) throw new HttpError(400, 'tenant: has no offsite target');
+    // Phase 30: the second offsite target
+    if (p.target === 2 && !db.tenants.find((x) => x.name === tenant)?.offsite?.second?.remote) throw new HttpError(400, 'tenant: has no second offsite target');
     if (kind === 'offsite_restore') {
-      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && x.offsite);
+      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && (p.target === 2 ? x.offsite2 : x.offsite));
       if (!s) throw new HttpError(404, 'no such offsite snapshot');
       if (s.local) throw new HttpError(409, 'the snapshot is in the local store already');
     }

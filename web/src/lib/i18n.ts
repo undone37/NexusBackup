@@ -4258,6 +4258,27 @@ export const en = {
   },
   // Phase 30: NetBackup Tier 2
   p30: {
+    second: {
+      title: (n: string) => `Second offsite target: ${n}`,
+      intro:
+        "A second copy on another target, for example a Storage Box for fast restores next to an S3 bucket with Object Lock for immutability. It gets every snapshot the first target gets, with its own lock and its own retention.",
+      changeHint: "Changing or removing the second target needs a second person (approval), like the first target.",
+      retention: "Retention on this target",
+      retentionHint:
+        "Snapshots to keep per class. Empty = as the policies. A value below the policies' has no effect: offsite retention is never shorter than local, only longer (for example monthly snapshots for 7 years = 84).",
+      classes: { daily: "Daily", weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" } as Record<string, string>,
+      classShort: { daily: "daily", weekly: "weekly", monthly: "monthly", yearly: "yearly" } as Record<string, string>,
+      asLocal: "as the policies",
+      remove: "Remove second target",
+      removeConfirm: (n: string) => `Remove the second offsite target of ${n}? Its copy stays on the target but is no longer updated. Needs approval.`,
+      button: "Second target",
+      buttonLabel: (n: string) => `Second offsite target of ${n}`,
+      chip: "Second target",
+      first: "First target",
+      which: "Target",
+      keeps: (what: string) => `keeps at least ${what}`,
+      column: "Offsite 2",
+    },
     pq: {
       chip: "Post-quantum",
       hint: "Sealed with X25519 and ML-KEM-768 together: copies harvested today stay closed even if one of the two is broken later (for example by a quantum computer).",

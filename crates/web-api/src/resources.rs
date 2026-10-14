@@ -117,6 +117,15 @@ fn printable(s: &str, max: usize) -> bool {
 }
 
 impl S3Remote {
+    /// The write-only secret was omitted (keep the stored one, crate::offsite2).
+    pub(crate) fn secret_key_missing(&self) -> bool {
+        self.secret_key.is_none()
+    }
+
+    pub(crate) fn set_secret(&mut self, s: Option<String>) {
+        self.secret_key = s;
+    }
+
     fn check(&self) -> ApiResult<()> {
         let bad = |m: &str| Err(ApiError::bad(format!("offsite.remote.{m}")));
         let ep = self.endpoint.strip_prefix("https://").unwrap_or("");
@@ -199,6 +208,13 @@ pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     if !v.is_object() {
         return Err(ApiError::bad("offsite: must be an object"));
     }
+    // Phase 30: the second target has its own endpoint (crate::offsite2)
+    if v.get("second").is_some() {
+        return Err(ApiError::bad(
+            "offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2",
+        ));
+    }
+    check_offsite_gfs(v)?;
     offsite_bandwidth(v)?;
     if v["remote"]["type"] != "s3" {
         opaque(v, "offsite", 16 << 10)?;
@@ -213,6 +229,32 @@ pub(crate) fn check_offsite(v: &Value) -> ApiResult<Option<S3Remote>> {
     rr.remove("secret_key_set");
     opaque(&rest, "offsite", 80 << 10)?;
     Ok(Some(r))
+}
+
+/// Classes an offsite target's own retention (`gfs`, Phase 30) may set.
+pub const OFFSITE_GFS_CLASSES: &[&str] = &["daily", "weekly", "monthly", "yearly"];
+
+/// Phase 30: an offsite target's own retention (`gfs`, counts per class, null =
+/// as the policies). Offsite retention is never shorter than local (plan §2):
+/// the scheduler keeps the larger of this and the policies' value per class.
+fn check_offsite_gfs(v: &Value) -> ApiResult<()> {
+    match v.get("gfs") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Object(o)) => {
+            for (k, x) in o {
+                if !OFFSITE_GFS_CLASSES.contains(&k.as_str()) {
+                    return Err(ApiError::bad(format!(
+                        "offsite.gfs.{k}: unknown class (daily, weekly, monthly, yearly)"
+                    )));
+                }
+                if !x.is_null() && x.as_u64().is_none_or(|n| n > 10_000) {
+                    return Err(ApiError::bad(format!("offsite.gfs.{k}: 0..=10000 or null")));
+                }
+            }
+            Ok(())
+        }
+        Some(_) => Err(ApiError::bad("offsite.gfs: an object of counts per class, or null")),
+    }
 }
 
 /// `bwlimit`, `windows` and `timezone` of an offsite config (Phase 17a), validated.
@@ -233,7 +275,7 @@ fn offsite_bandwidth(v: &Value) -> ApiResult<catalog::schedule::Bandwidth> {
 
 /// Only the bandwidth part (`bwlimit`, `windows`, `timezone`) differs and the
 /// new one allows nothing more at any time: a tightening, applied directly.
-fn offsite_tightened(old: &Value, new: &Value) -> bool {
+pub(crate) fn offsite_tightened(old: &Value, new: &Value) -> bool {
     let rest = |v: &Value| {
         let mut v = v.clone();
         if let Some(o) = v.as_object_mut() {
@@ -262,16 +304,23 @@ pub(crate) fn sealed_offsite(st: &St, tenant: &str, v: &Value, s3: Option<S3Remo
     Ok(out)
 }
 
-/// The offsite config as shown: `secret_key` replaced by `secret_key_set`.
+/// The offsite config as shown: `secret_key` replaced by `secret_key_set` (also
+/// in the second target, Phase 30).
 pub fn public_offsite(v: &Value) -> Value {
-    let mut v = v.clone();
-    if let Some(r) = v.get_mut("remote").and_then(Value::as_object_mut) {
-        if let Some(s) = r.remove("secret_key") {
-            r.insert(
-                "secret_key_set".into(),
-                json!(s.as_str().is_some_and(|s| !s.is_empty())),
-            );
+    fn hide(v: &mut Value) {
+        if let Some(r) = v.get_mut("remote").and_then(Value::as_object_mut) {
+            if let Some(s) = r.remove("secret_key") {
+                r.insert(
+                    "secret_key_set".into(),
+                    json!(s.as_str().is_some_and(|s| !s.is_empty())),
+                );
+            }
         }
+    }
+    let mut v = v.clone();
+    hide(&mut v);
+    if let Some(s) = v.get_mut("second") {
+        hide(s);
     }
     v
 }
@@ -365,7 +414,16 @@ pub async fn update_tenant(
         }
         new.secret_key = o["secret_key"].as_str().map(str::to_owned);
     }
-    let offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
+    let mut offsite = sealed_offsite(&st, &name, &r.offsite, s3)?;
+    // Phase 30: the second target stays as stored (it has its own endpoint)
+    if let Some(second) = old["offsite"].get("second").filter(|s| s.is_object()) {
+        if !offsite["remote"].is_object() {
+            return Err(ApiError::conflict(
+                "the tenant has a second offsite target: remove it first (PUT /tenants/{name}/offsite2)",
+            ));
+        }
+        offsite["second"] = second.clone();
+    }
     let target = format!("tenant/{name}");
     let had_offsite = old["offsite"].as_object().is_some_and(|o| !o.is_empty());
     if had_offsite && old["offsite"] != offsite && !offsite_tightened(&old["offsite"], &offsite) {

@@ -23,6 +23,8 @@ fn pw_hash() -> &'static str {
 }
 
 struct T {
+    /// the scheduler's key (opens what the web-api sealed)
+    sk: catalog::secret::SchedulerKey,
     app: Router,
     st: Arc<AppState>,
     secrets: HashMap<String, String>,
@@ -46,7 +48,10 @@ impl T {
         let cat = Catalog::open(&dir.path().join("catalog.db")).unwrap();
         let downloads = dir.path().join("downloads");
         std::fs::create_dir(&downloads).unwrap();
-        let st = AppState::with_keys(cat, None, downloads, TotpKey::generate(), None);
+        let sk = catalog::secret::SchedulerKey::generate();
+        let secrets_pub = dir.path().join("secrets.pub");
+        sk.write_public(&secrets_pub, None).unwrap();
+        let st = AppState::with_keys(cat, None, downloads, TotpKey::generate(), Some(secrets_pub));
         st.cat
             .conn()
             .execute_batch(
@@ -63,6 +68,7 @@ impl T {
             )
             .unwrap();
         let mut t = T {
+            sk,
             app: web_api::router(st.clone()),
             st,
             secrets: HashMap::new(),
@@ -547,4 +553,142 @@ async fn rollback_is_a_replace_option() {
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
         assert!(r.body["error"].as_str().unwrap().contains("rollback"), "{:?}", r.body);
     }
+}
+
+/// Second offsite target: needs a first one; set up directly, changed or
+/// removed with approval; its S3 secret sealed at its own location and kept
+/// when omitted for the same endpoint; the first target's form keeps it; its
+/// own retention validated; copy status and jobs per target.
+#[tokio::test]
+async fn second_offsite_target() {
+    let t = T::new();
+    let (alice, sam) = (t.login("alice").await, t.login("sam").await);
+    let s3 = |bucket: &str, secret: Option<&str>| {
+        let mut r = json!({"type": "s3", "endpoint": "https://s3.example", "region": "eu-central-1",
+                           "bucket": bucket, "access_key": "AK", "lock": true});
+        if let Some(s) = secret {
+            r["secret_key"] = json!(s);
+        }
+        r
+    };
+    let put2 = |target: Value| t.put("/api/v1/tenants/acme/offsite2", &alice, json!({"target": target}));
+    let r = put2(json!({"remote": s3("archive", Some("SK2"))})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "no first target yet: {:?}", r.body);
+    let first = json!({"remote": {"type": "sftp", "host": "box.example", "user": "u1",
+                                  "key_file": "/etc/nexus/ssh/offsite", "host_key": "ssh-ed25519 AAA"}, "bwlimit": 1000000});
+    let r = t.put("/api/v1/tenants/acme", &alice, json!({"offsite": first})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    // own retention: classes and ranges checked
+    let r = put2(json!({"remote": s3("archive", Some("SK2")), "gfs": {"hourly": 3}})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = put2(json!({"remote": s3("archive", Some("SK2")), "gfs": {"monthly": -1}})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // set up: at once
+    let r = put2(json!({"remote": s3("archive", Some("SK2")), "gfs": {"monthly": 84, "yearly": 7}})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["offsite"]["second"]["remote"]["secret_key_set"], true);
+    assert!(r.body["offsite"]["second"]["remote"].get("secret_key").is_none());
+    let stored: Value =
+        serde_json::from_str(&t.one::<String>("SELECT offsite FROM tenants WHERE name = 'acme'")).unwrap();
+    let sealed = stored["second"]["remote"]["secret_key"].as_str().unwrap().to_owned();
+    assert!(sealed.starts_with("sealed:v1:"));
+    let mut opened = stored.clone();
+    t.sk.open_all(&catalog::secret::tenant_owner("acme"), &mut opened)
+        .unwrap();
+    assert_eq!(opened["second"]["remote"]["secret_key"], "SK2");
+    // a sealed secret moved to the first target does not open there
+    let mut moved = stored.clone();
+    moved["remote"] = stored["second"]["remote"].clone();
+    assert!(t
+        .sk
+        .open_all(&catalog::secret::tenant_owner("acme"), &mut moved)
+        .is_err());
+    let tenants = t.get("/api/v1/tenants", &alice).await.body;
+    let acme = tenants
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "acme")
+        .unwrap()
+        .clone();
+    assert_eq!(acme["offsite"]["second"]["gfs"]["monthly"], 84);
+    assert!(!acme.to_string().contains("sealed:v1:"));
+    // the first target's form keeps the second; it cannot carry one
+    let mut tighter = first.clone();
+    tighter["bwlimit"] = json!(500000);
+    let r = t.put("/api/v1/tenants/acme", &alice, json!({"offsite": tighter})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["offsite"]["second"]["gfs"]["yearly"], 7);
+    let mut with = first.clone();
+    with["second"] = json!({"remote": s3("x", Some("y"))});
+    assert_eq!(
+        t.put("/api/v1/tenants/acme", &alice, json!({"offsite": with}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        t.put("/api/v1/tenants/acme", &alice, json!({"offsite": {}}))
+            .await
+            .status,
+        StatusCode::CONFLICT,
+        "remove the second first"
+    );
+    // a change: approval; the secret may be omitted for the same endpoint
+    let r = put2(json!({"remote": s3("archive", None), "gfs": {"monthly": 120}})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let q = r.body["quorum_id"].as_i64().unwrap();
+    assert_eq!(
+        t.post(&format!("/api/v1/quorum/{q}/approve"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let stored: Value =
+        serde_json::from_str(&t.one::<String>("SELECT offsite FROM tenants WHERE name = 'acme'")).unwrap();
+    assert_eq!(stored["second"]["gfs"]["monthly"], 120);
+    assert_eq!(stored["second"]["remote"]["secret_key"], sealed, "kept");
+    // another bucket without the secret: refused (the key would follow it)
+    let r = put2(json!({"remote": s3("elsewhere", None)})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // jobs and copy status per target
+    t.exec("UPDATE snapshots SET offsite2 = 1, local = 0 WHERE source = 'vm-101'");
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            json!({"kind": "offsite_list", "tenant": "acme", "params": {"target": 2}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            json!({"kind": "offsite_restore", "tenant": "acme", "params": {"source": "vm-101", "time": 1500, "target": 2}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let snaps = t.get("/api/v1/snapshots?source=vm-101", &alice).await.body;
+    assert_eq!(
+        (snaps[0]["offsite"].clone(), snaps[0]["offsite2"].clone()),
+        (json!(false), json!(true))
+    );
+    assert_eq!(
+        t.post(
+            "/api/v1/jobs",
+            &alice,
+            json!({"kind": "offsite_list", "tenant": "globex", "params": {"target": 2}})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST
+    );
+    // removing: approval
+    let r = put2(Value::Null).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM audit WHERE action = 'tenant.offsite2'"),
+        1
+    );
 }

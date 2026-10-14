@@ -104,8 +104,20 @@ export interface S3Remote {
 }
 
 /** `tenants.offsite`; `{}` = no offsite copy. Older UI versions stored the SFTP fields flat. */
+/** Phase 30: an offsite target's own retention (counts per class; never below the policies'). */
+export interface OffsiteGfs {
+  daily?: number;
+  weekly?: number;
+  monthly?: number;
+  yearly?: number;
+}
+
 export interface TenantOffsite {
   remote?: SftpRemote | S3Remote;
+  /** Phase 30: own retention of this target (longer than local only) */
+  gfs?: OffsiteGfs;
+  /** Phase 30: the second offsite target (PUT /tenants/{name}/offsite2) */
+  second?: TenantOffsite;
   /** bytes per second over all uploaders */
   bwlimit?: number | null;
   /** Phase 17a: pause / limit windows in `timezone` */
@@ -1122,6 +1134,8 @@ export interface Snapshot {
   size: number;
   local: boolean;
   offsite: boolean;
+  /** Phase 30: on the tenant's second offsite target */
+  offsite2?: boolean;
   lock_until: number;
   /** time of the last successful verify, null = never verified */
   verified: number | null;

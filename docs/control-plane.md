@@ -62,7 +62,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
 | Phase 28 (v43) | `groups.scan_schedule` (schedule grammar, NULL = off), `groups.scan_budget_min`, `groups.file_hashes`; `snapshots.scan_state` (`clean`/`hit`/`incomplete`, NULL = unscanned); `hash_lists` (name PK, hashes (normalised hex lines), count, sha256, uploaded_by, uploaded_at); `tenant_lockdowns` (tenant PK, active, state JSON); `login_devices` (user_id FK ON DELETE CASCADE, fingerprint, family, prefix, first_seen, last_seen; PK (user_id, fingerprint)); `users.email` — see "Tenant lockdown", "New-device sign-in", docs/malware-scan.md, docs/file-index.md |
-| Phase 30 (v45) | `backup_stats.secs` (the backup's duration from `nexus-stats`, NULL for older rows); `anomaly_sensitivity` (tenant, source, level `low`/`medium`/`high`, set_by, set_at; PK (tenant, source); no row = `medium`) — see docs/ransomware-signals.md "Duration and dedup rate"; `users.eligible_role` (`admin`/`security_officer`, NULL = none), `sessions.elevated_role` + `sessions.elevated_until` — see "Role elevation" |
+| Phase 30 (v45) | `backup_stats.secs` (the backup's duration from `nexus-stats`, NULL for older rows); `anomaly_sensitivity` (tenant, source, level `low`/`medium`/`high`, set_by, set_at; PK (tenant, source); no row = `medium`) — see docs/ransomware-signals.md "Duration and dedup rate"; `users.eligible_role` (`admin`/`security_officer`, NULL = none), `sessions.elevated_role` + `sessions.elevated_until` — see "Role elevation"; `replication_peers.keyd_pub_pq` (docs/replication.md §5, ADR-014); `snapshots.offsite2` — see "Second offsite target" |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
 | `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant); v24: windows, sync_window (JSON), timezone, closed_until (-1 = until reopened), closed_by, closed_at |
 
@@ -674,6 +674,29 @@ offsite remote is S3 with `lock`), `posture.inbound` (`inbound.services.web.allo
 TOTP secret; OIDC accounts noted), `posture.grub` (`/etc/nexus/grub-user.cfg` exists — SELinux `getattr` on
 `nexus_grub_user_t` — and `/boot/grub2/user.cfg` is installed; an access denial on the latter is tolerated). The UI shows
 them in the **Security posture** card of Settings → Diagnostics (latest run).
+
+## Second offsite target (Phase 30, `web-api/src/offsite2.rs`, scheduler `offsite_*_n`)
+- **Config.** `tenants.offsite.second`: the shape of a tenant offsite config (`remote` sftp or s3, `uploaders`,
+  `bwlimit`, `windows`, `timezone`) plus `gfs` `{daily?, weekly?, monthly?, yearly?}` (also allowed on the first
+  target). `PUT /tenants/{name}/offsite2 {target | null}` (admins): needs a first target; validated like the first
+  target (`check_offsite`; `second` is refused inside it and in `PUT /tenants/{name}`, which keeps the stored second
+  target and refuses to remove the first while a second exists); the S3 secret is sealed at
+  `tenant/<t>/offsite/second/remote/secret_key` (bound to the endpoint fields) and kept when omitted for the same
+  endpoint. Setting it up is direct (audited `tenant.offsite2`); changing or removing an existing one is the quorum
+  `tenant.update` with the whole offsite config, unless only the bandwidth tightened.
+- **Retention (plan §2 decision, Phase 30).** Offsite retention stays identical to local by default and can only be
+  longer: the scheduler gives each target `max(policies' offsite GFS, the target's gfs)` per class (`offsite_gfs_of`),
+  so no target can keep less than local whatever its config says. Locks follow the kept classes as before (S3 Object
+  Lock per target, `remote.lock`).
+- **Jobs.** After a backup's retention one `offsite` job per configured target (`{"chain": true, "target": 2}` for
+  the second); each writes `offsite2.json` (and `offsite2.key`, `offsite2-s3.secret`, `offsite2-ca.pem`) with its own
+  state dir `<offsite_state_base>/.second/<tenant>` (a name no tenant can have). `gc` and `verify` run nexus-offsite on
+  every target; `offsite_list` / `offsite_restore` take `target` 2 (web-api checks the second target exists). The
+  `inventory` alert of the second target is `inventory:<tenant>:2`.
+- **Status.** The refresh lists every target: `snapshots.offsite` (first) and `snapshots.offsite2` (second, catalog
+  v45); a row disappears only when it is on no target and not local. `GET /snapshots` carries `offsite2`;
+  `offsite_lag` per target (`offsite_lag:<tenant>` / `offsite_lag:<tenant>:2`). The outbound firewall allows both
+  targets. Configuration backups still go to the first target only.
 
 ## Offsite in the UI (Phase 17d, `scheduler/src/offsite_ui.rs`, `web-api/src/offsite.rs`, `offsite/src/target/browse.rs`)
 No catalog migration. Job kinds (RBAC like restores: admin, operator, tenant_user in its tenant; never viewer or

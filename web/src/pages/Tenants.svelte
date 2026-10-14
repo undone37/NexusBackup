@@ -4,7 +4,7 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { t } from '../lib/i18n';
   import { fmtBytes, fmtTime } from '../lib/format';
-  import type { LockdownInfo, LoginResponse, OffsiteListed, Policy, QuorumRequest, Tenant, TenantOffsite, TenantTombstone, SftpRemote, S3Remote } from '../lib/types';
+  import type { LockdownInfo, LoginResponse, OffsiteGfs, OffsiteListed, Policy, QuorumRequest, Tenant, TenantOffsite, TenantTombstone, SftpRemote, S3Remote } from '../lib/types';
   import { copyText } from '../lib/clipboard';
   import { setSession } from '../lib/session.svelte';
   import Modal from '../components/Modal.svelte';
@@ -26,6 +26,7 @@
   import { route, navigate } from '../lib/router.svelte';
   import { runJob } from '../lib/jobs';
   import { fetchFromOffsite, listedStatus } from '../lib/offsite';
+  import SecondOffsite from '../components/SecondOffsite.svelte';
 
   let items: Tenant[] = $state([]);
   // Phase 23a: onboarding wizard, the tenant's own IdP
@@ -214,6 +215,9 @@
   let secretSet = $state(false);
   let uploaders = $state(4);
   let bwlimit = $state('');
+  // Phase 30: own retention of the (first) offsite target, empty = as the policies
+  const GFS_CLASSES = ['daily', 'weekly', 'monthly', 'yearly'] as const;
+  let ownGfs: Record<string, string> = $state({ daily: '', weekly: '', monthly: '', yearly: '' });
   // Phase 17a: bandwidth windows of the offsite uploads
   let windows: RateWindow[] = $state([]);
   let tz = $state('UTC');
@@ -252,6 +256,7 @@
     bwlimit = x?.offsite?.bwlimit ? String(Math.round(x.offsite.bwlimit / 1024)) : '';
     windows = $state.snapshot(x?.offsite?.windows ?? []);
     tz = x?.offsite?.timezone ?? 'UTC';
+    ownGfs = Object.fromEntries(GFS_CLASSES.map((c) => [c, x?.offsite?.gfs?.[c] == null ? '' : String(x.offsite.gfs[c])]));
     quota = x?.quota_bytes ? +(x.quota_bytes / GIB).toFixed(2) : null;
     if (attach) kind = 'sftp';
     open = true;
@@ -262,6 +267,9 @@
     const common: TenantOffsite = { uploaders: Number(uploaders) || 1, bwlimit: bwlimit ? Number(bwlimit) * 1024 : null };
     if (windows.length) common.windows = $state.snapshot(windows);
     if (windows.length || tz !== 'UTC') common.timezone = tz;
+    const g: OffsiteGfs = {};
+    for (const c of GFS_CLASSES) if (ownGfs[c] !== '' && ownGfs[c] != null) g[c] = Number(ownGfs[c]);
+    if (Object.keys(g).length) common.gfs = g;
     if (kind === 'sftp') {
       // The SSH key never goes through the API: the config references a key file on the appliance.
       const r: SftpRemote = { type: 'sftp', host: sftp.host.trim(), port: Number(sftp.port) || 23, user: sftp.user.trim(), key_file: sftp.key_file.trim(), host_key: sftp.host_key.trim() };
@@ -349,6 +357,14 @@
   const reqName = (q: QuorumRequest) => String(q.params.name ?? '');
   const reqTarget = (q: QuorumRequest) => summary(q.params.offsite as TenantOffsite | undefined);
 
+  // Phase 30: the second offsite target (own retention and lock)
+  let secondOpen = $state(false);
+  let secondOf: Tenant | null = $state(null);
+  const gfsText = (o: TenantOffsite | undefined) =>
+    o?.gfs ? (['daily', 'weekly', 'monthly', 'yearly'] as const).filter((c) => o.gfs?.[c]).map((c) => `${o.gfs?.[c]} ${t.p30.second.classShort[c]}`).join(', ') : '';
+  // which offsite target the copy dialog shows (2 = the second)
+  let copyTarget = $state(1);
+
   // Offsite copy of a tenant: `offsite_list` (what the target holds), fetch back
   let copyOpen = $state(false);
   let copyOf: Tenant | null = $state(null);
@@ -358,6 +374,7 @@
   let abort: AbortController | null = null;
   function openCopy(x: Tenant) {
     copyOf = x;
+    copyTarget = 1;
     listed = null;
     copyOpen = true;
     check();
@@ -368,7 +385,7 @@
     abort = new AbortController();
     checking = true;
     try {
-      const r = await runJob('offsite_list', copyOf.name, {}, abort.signal);
+      const r = await runJob('offsite_list', copyOf.name, copyTarget === 2 ? { target: 2 } : {}, abort.signal);
       if (r?.job.state === 'ok') {
         listed = (r.job.result?.snapshots as OffsiteListed[] | undefined) ?? [];
         listedAt = r.job.finished ?? Date.now() / 1000;
@@ -383,7 +400,7 @@
   });
   async function fetchBack(x: OffsiteListed) {
     if (!copyOf) return;
-    const id = await fetchFromOffsite(copyOf.name, x.source, x.time);
+    const id = await fetchFromOffsite(copyOf.name, x.source, x.time, copyTarget);
     if (id) navigate(`/jobs/${id}`);
   }
   // Phase 17f: deactivation needs approval (backups stop); reactivation applies at once
@@ -470,6 +487,15 @@
               <td class="mono">
                 {summary(x.offsite)}
                 {#if r?.type === 's3' && r.lock}<span class="chip ok">{t.tenants.locked}</span>{/if}
+                {#if x.offsite?.second?.remote}
+                  {@const r2 = remoteOf(x.offsite.second)}
+                  <div class="second">
+                    <span class="chip accent plain">{t.p30.second.chip}</span>
+                    {summary(x.offsite.second)}
+                    {#if r2?.type === 's3' && r2.lock}<span class="chip ok">{t.tenants.locked}</span>{/if}
+                    {#if gfsText(x.offsite.second)}<span class="muted small">{t.p30.second.keeps(gfsText(x.offsite.second))}</span>{/if}
+                  </div>
+                {/if}
               </td>
               <td>{r ? (x.offsite?.uploaders ?? 4) : '—'}</td>
               <td>{x.quota_bytes ? fmtBytes(x.quota_bytes) : '—'}</td>
@@ -498,6 +524,11 @@
                   >
                 {/if}
                 {#if can.configure(session.user)}<button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>{/if}
+                {#if can.configure(session.user) && r}
+                  <button type="button" class="small" onclick={() => ((secondOf = x), (secondOpen = true))} aria-label={t.p30.second.buttonLabel(x.name)}
+                    >{t.p30.second.button}</button
+                  >
+                {/if}
                 {#if can.configure(session.user)}
                 {#if x.disabled}
                   <button type="button" class="small" onclick={() => reactivate(x)}>{t.tdis.reactivate}</button>
@@ -759,6 +790,20 @@
           </select>
         </div>
         {#if weaker}<p class="banner warn" role="status">{t.windows.weaker}</p>{/if}
+        {#if !attaching}
+          <fieldset>
+            <legend>{t.p30.second.retention}</legend>
+            <p class="hint">{t.p30.second.retentionHint}</p>
+            <div class="form-grid">
+              {#each GFS_CLASSES as c (c)}
+                <div class="field">
+                  <label for="t-gfs-{c}">{t.p30.second.classes[c]}</label>
+                  <input id="t-gfs-{c}" type="number" min="0" max="10000" bind:value={ownGfs[c]} placeholder={t.p30.second.asLocal} />
+                </div>
+              {/each}
+            </div>
+          </fieldset>
+        {/if}
       {/if}
     </fieldset>
     <div class="form-actions">
@@ -792,8 +837,19 @@
   </form>
 </Modal>
 
+<SecondOffsite bind:open={secondOpen} tenant={secondOf} ondone={load} />
+
 <Modal bind:open={copyOpen} title={copyOf ? t.offsite.copyTitle(copyOf.name) : ''} wide>
   <p class="muted">{t.offsite.copyIntro}</p>
+  {#if copyOf?.offsite?.second?.remote}
+    <div class="field">
+      <label for="copy-target">{t.p30.second.which}</label>
+      <select id="copy-target" bind:value={copyTarget} onchange={check}>
+        <option value={1}>{t.p30.second.first}</option>
+        <option value={2}>{t.p30.second.chip}</option>
+      </select>
+    </div>
+  {/if}
   {#if checking}
     <p class="muted" aria-busy="true">{t.offsite.checking}</p>
   {:else if listed}

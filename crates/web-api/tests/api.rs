@@ -4125,6 +4125,8 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
         ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
         ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
+        // Phase 30: the second offsite target is the provider's (like the first)
+        ("PUT", "/tenants/{name}/offsite2", "/api/v1/tenants/acme/offsite2".into(), Some(json!({"target": null})), 'N'),
         // Phase 30: role elevation is for appliance-wide accounts (a tenant admin is never eligible)
         ("POST", "/auth/elevate", "/api/v1/auth/elevate".into(), Some(json!({"role": "admin", "minutes": 30, "reason": "x"})), 'N'),
         ("POST", "/auth/elevate/end", "/api/v1/auth/elevate/end".into(), e(), 'Y'),

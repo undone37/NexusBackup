@@ -929,7 +929,9 @@ ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 ///   that role until then; catalog::elevation);
 /// - hybrid post-quantum key wrapping: `replication_peers.keyd_pub_pq` (the
 ///   secondary keyd's X25519 | ML-KEM-768 public key, hex; NULL = an earlier
-///   secondary: X25519-only exports).
+///   secondary: X25519-only exports);
+/// - second offsite target: `snapshots.offsite2` (the snapshot is on the
+///   tenant's second offsite target, `tenants.offsite.second`).
 ///
 /// Purely additive: the previous release ignores the columns and tables.
 const SCHEMA_V45: &str = r#"
@@ -942,6 +944,7 @@ ALTER TABLE users ADD COLUMN eligible_role TEXT CHECK (eligible_role IN ('admin'
 ALTER TABLE sessions ADD COLUMN elevated_role TEXT;
 ALTER TABLE sessions ADD COLUMN elevated_until INTEGER;
 ALTER TABLE replication_peers ADD COLUMN keyd_pub_pq TEXT;
+ALTER TABLE snapshots ADD COLUMN offsite2 INTEGER NOT NULL DEFAULT 0;
 "#;
 
 const MIGRATIONS: &[&str] = &[
@@ -3368,5 +3371,10 @@ mod tests {
         .unwrap();
         // replication peers enrolled before have no hybrid key
         conn.prepare("SELECT keyd_pub_pq FROM replication_peers").unwrap();
+        // no snapshot is on a second offsite target yet
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots WHERE offsite2 != 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

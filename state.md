@@ -628,4 +628,14 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   both formats; UI chips (tenant recovery key, replication peers), manual 08/14, docs/adr.md ADR-014,
   docs/replication.md §5, control-plane, T68; fuzz target `keyd:hybrid_open`; tests in keyd, scheduler, web-api
   replication (hybrid export end to end), setup/offsite unchanged and passing
-- [ ] 5 second offsite copy with its own retention
+- [x] 5 second offsite copy with its own retention: `tenants.offsite.second` (remote, own lock, `gfs`;
+  `PUT /tenants/{name}/offsite2`, change/removal = approval `tenant.update`, S3 secret sealed at its own location),
+  own `gfs` on the first target too, retention per class = max(policies, target) (plan §2 updated, decision 5);
+  scheduler: one offsite job per target (`offsite2.json`, state `<base>/.second/<tenant>`), gc/verify on both,
+  `snapshots.offsite2` (catalog v45) from each target's listing, `offsite_lag` and `inventory` per target, egress to
+  both, browse/fetch with `target`; UI: Second target dialog, own retention in the tenant form, Offsite 2 column,
+  target choice in Offsite copy; mock; manual 07/11, control-plane "Second offsite target", T69
+- [ ] lab (5): two real targets (Storage Box + S3 with Object Lock) for one tenant: uploads, retention with a longer
+  monthly count on the second, listing, fetch back from the second, DR (`nexus-setup` attach) from the second
+- [ ] open (all): lab runs listed above; rollback of containers; per-policy offsite GFS; risk of a pre-rollback
+  backup of a paused Windows guest without guest-agent freeze (crash-consistent state kept)

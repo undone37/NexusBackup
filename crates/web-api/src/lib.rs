@@ -53,6 +53,7 @@ pub mod lockdown;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
+pub mod offsite2;
 pub mod oidc;
 pub mod openapi;
 pub mod ops;
@@ -567,6 +568,7 @@ pub fn router(st: St) -> Router {
         .route("/tenants/attach", post(offsite::request_attach))
         .route("/tenants/attach/{id}/run", post(offsite::run_attach))
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
+        .route("/tenants/{name}/offsite2", put(offsite2::put_second))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))

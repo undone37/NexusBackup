@@ -1587,6 +1587,14 @@ async function main() {
       await shot('restore-rollback', { height: 1400, scrolled: true });
       await closeDialogs();
     }],
+    // Phase 30: the second offsite target of acme (a Storage Box keeping monthly snapshots for 7 years)
+    ['p30-second-offsite', async () => {
+      await go('/tenants');
+      await ev(`$rowClick('acme', 'Second target'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #o2-gfs-monthly')`, 'second target dialog');
+      await shot('tenant-second-offsite', { height: 1200 });
+      await closeDialogs();
+    }],
   ];
 
   let failed = 0;

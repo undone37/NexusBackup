@@ -1,6 +1,7 @@
 # 07 Offsite copies
 
-Each tenant can have one offsite target: a **Hetzner Storage Box (SFTP)** or an **S3 object storage** bucket.
+Each tenant can have up to two offsite targets, each a **Hetzner Storage Box (SFTP)** or an **S3 object storage**
+bucket (the second one: [A second offsite target](#a-second-offsite-target)).
 The appliance uploads the tenant's snapshots there, encrypted and deduplicated. The copy is
 **self-describing**: with the storage credentials and the recovery key, a fresh appliance can restore it
 without the original one ([14 Disaster recovery](14-disaster-recovery.md)).
@@ -200,6 +201,32 @@ snapshot with its size, its offsite lock and a status:
 **Check offsite copy** reads the target again. Administrators, operators and the tenant's own users can open it.
 
 ![The offsite copy of tenant initech](images/tenant-offsite-copy.png)
+
+## A second offsite target
+
+A tenant can keep a **second offsite copy** on another target, for example a Storage Box for fast restores next to
+an S3 bucket with Object Lock for immutability, or a second provider in another region. Click **Second target** on
+the tenant row (**Configuration → Tenants**, administrators; the tenant needs a first target):
+
+- the **target**: a Storage Box or an S3 bucket, with the same fields as the first one, including its own **Object
+  Lock**;
+- **Retention on this target**: how many daily, weekly, monthly and yearly snapshots this target keeps. Empty means
+  as the policies. **Offsite retention is never shorter than local**: a value below the policies' has no effect, a
+  larger one keeps snapshots longer on this target only (for example **Monthly 84** = monthly snapshots for 7 years
+  while the appliance itself keeps a few months). The first target has the same fields in its own form.
+- uploads and bandwidth limit, like the first target.
+
+After every backup the scheduler runs one offsite job per target; each target has its own upload state, its own
+inventory check (alert `inventory`) and its own lag alert (`offsite_lag`, "second offsite copy of tenant … lags").
+**Snapshots** shows an **Offsite 2** column once snapshots are on the second target, and **Offsite copy** on the
+tenant row can list either target and fetch a snapshot back from it. Setting up the second target applies at once;
+changing or removing it needs a second person, like the first target. Garbage collection and verify cover both
+targets.
+
+![The second offsite target of tenant acme](images/tenant-second-offsite.png)
+
+> **Status:** Implemented in Phase 30 and tested in the API and the scheduler with a stand-in for the offsite tool;
+> not yet run against two real targets.
 
 ## Firewall
 
