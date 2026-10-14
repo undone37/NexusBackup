@@ -1,7 +1,7 @@
 <script lang="ts">
   import { del, post, act } from '../lib/api';
   import { askConfirm } from '../lib/confirm.svelte';
-  import { fmtAgo, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtTime, fmtUserAgent } from '../lib/format';
   import { t } from '../lib/i18n';
   import { secondFactor } from '../lib/passkey';
   import type { SessionInfo } from '../lib/types';
@@ -56,7 +56,7 @@
         <tr>
           {#if showUser}<td><strong>{s.user}</strong></td>{/if}
           <td class="nowrap"><code>{s.ip || '—'}</code></td>
-          <td class="ua" title={s.user_agent}>{s.user_agent || '—'}</td>
+          <td class="ua" title={s.user_agent}>{fmtUserAgent(s.user_agent)}</td>
           <td class="nowrap">{fmtTime(s.created)}</td>
           <td class="nowrap">{fmtAgo(s.last_seen)}</td>
           <td class="actions">

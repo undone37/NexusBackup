@@ -56,6 +56,37 @@ export function fmtRatio(x: number | null | undefined): string {
 }
 
 /** Bytes per second as decimal megabytes: "412 MB/s", "3.4 MB/s". */
+/** A browser's user agent as "Firefox on Windows" (the full string stays the tooltip). */
+export function fmtUserAgent(ua: string | null | undefined): string {
+  if (!ua) return '—';
+  const browser = /Edg\//.test(ua)
+    ? 'Edge'
+    : /Firefox\//.test(ua)
+      ? 'Firefox'
+      : /Chrome\//.test(ua)
+        ? /Headless/.test(ua)
+          ? 'Headless Chrome'
+          : 'Chrome'
+        : /Safari\//.test(ua)
+          ? 'Safari'
+          : /curl|python|Go-http|nexusctl/i.test(ua)
+            ? ua.split(/[ /]/)[0]
+            : null;
+  const os = /Windows/.test(ua)
+    ? 'Windows'
+    : /Android/.test(ua)
+      ? 'Android'
+      : /iPhone|iPad/.test(ua)
+        ? 'iOS'
+        : /Mac OS X|Macintosh/.test(ua)
+          ? 'macOS'
+          : /Linux|X11/.test(ua)
+            ? 'Linux'
+            : null;
+  if (!browser) return ua.length > 40 ? `${ua.slice(0, 40)}…` : ua;
+  return os ? `${browser} on ${os}` : browser;
+}
+
 /** Entries per second (jobs that count files instead of bytes: file index, agent scans). */
 export function fmtEntryRate(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '—';
