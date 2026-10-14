@@ -22,6 +22,24 @@
   // group names for the job subjects (none when the account may not list groups)
   let groups = $state(new Map<number, string>());
   let stateF = $state(route.query.get('state') ?? '');
+  // routine background work can be hidden (remembered in this browser); failed ones stay visible
+  const ROUTINE = new Set(['inventory', 'retention', 'gc', 'verify', 'file_index', 'config_backup', 'fleet_scan']);
+  let hideRoutine = $state(readHide());
+  function readHide(): boolean {
+    try {
+      return localStorage.getItem('nexus.jobs.hideRoutine') === '1';
+    } catch {
+      return false;
+    }
+  }
+  $effect(() => {
+    try {
+      localStorage.setItem('nexus.jobs.hideRoutine', hideRoutine ? '1' : '0');
+    } catch {
+      /* private window: not remembered */
+    }
+  });
+  const shown = $derived(hideRoutine ? jobs.filter((j) => !ROUTINE.has(j.kind) || j.state === 'failed') : jobs);
   let kind = $state(route.query.get('kind') ?? '');
 
   async function load() {
@@ -84,6 +102,10 @@
       {#each JOB_KINDS as k (k)}<option value={k}>{kindLabel(k)}</option>{/each}
     </select>
   </div>
+  <label class="check" title={t.jobs.hideRoutineHint}>
+    <input type="checkbox" bind:checked={hideRoutine} />
+    {t.jobs.hideRoutine}{#if hideRoutine && jobs.length !== shown.length}<span class="muted"> ({t.jobs.hiddenN(jobs.length - shown.length)})</span>{/if}
+  </label>
 </div>
 
 <ErrorBanner {error} />
@@ -91,7 +113,7 @@
 <div class="card">
   {#if !loaded}
     <p class="muted" aria-busy="true">{t.loading}</p>
-  {:else if jobs.length === 0}
+  {:else if shown.length === 0}
     <p class="empty">{t.none}</p>
   {:else}
     <div class="table-wrap">
@@ -110,7 +132,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each jobs as j (j.id)}
+          {#each shown as j (j.id)}
             {@const subject = jobSubject(j, groups)}
             {@const after = afterJob(j)}
             <tr use:rowLink={`/jobs/${j.id}`}>
