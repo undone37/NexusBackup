@@ -62,7 +62,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | **Multi-tenancy / MSP** | | | |
 | Tenants | Companies, tenant admins, per-tenant IdP | tenants, tenant admin, per-tenant OIDC, view-as-tenant, billing export, onboarding wizard | has |
 | Multi-site management | Global Command Center: aggregated dashboards/jobs/alerts over many CommCells, blueprints [21] | one appliance per UI | missing |
-| PSA integration | HaloPSA ticket creation from alerts [1] | e-mail and webhook templates (no ticket lifecycle) | partial |
+| PSA integration | HaloPSA ticket creation from alerts [1] | alert rule channel "PSA": tickets in HaloPSA, ConnectWise PSA, Autotask with notes and closing (Phase 33) | has |
 | **Cloud / SaaS** | Commvault Cloud SaaS, Air Gap Protect (vendor-hosted immutable storage), Clumio for S3/GCS | customer-owned Storage Box / S3 Object Lock / vault appliance; no vendor-operated service | different model |
 | **Compliance / governance** | Risk Analysis (classification, PII), FedRAMP, SEC 17a-4 claims [9][18] | backup ≠ archive (plan §1.2); legal hold; hash-chained audit with external anchor | partial (by design) |
 | **Licensing / deployment** | subscription; historically per front-end TB, per VM/socket or per user [22] | AGPL-3.0, no per-TB or per-VM licence, one bootc image | different model |
@@ -104,7 +104,7 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 | 3 | **Tenant lockdown.** Incident mode scoped to one tenant: legal holds on that tenant's snapshots, its groups paused, sessions and API tokens of its users ended, restores that overwrite, deletes and source edits for it refused; other tenants keep running. Entering by SO or admin at once, leaving needs approval (as incident mode) | Tenant Lockdown Mode [1] | S–M | `web-api/src/incident.rs` (tenant parameter, per-tenant setting), MSP manual chapter |
 | 4 | **New-device sign-in notice.** Remember (account, browser family, client network prefix) per account; the first sign-in from an unseen combination raises `login_new_device` (category security, warning for admin/SO, info otherwise), forwarded to SIEM sinks and e-mailed to the account when an address is known (OIDC claim or profile) | e-mail on login from a new device [15] | S | web-api auth, catalog table, alerts |
 
-### Tier 2: clear benefit, smaller audience or larger effort (proposed Phase 29)
+### Tier 2: clear benefit, smaller audience or larger effort (Phase 33, 2026-10-14; deviations: plan.md Phase 33)
 
 - **Synthetic (clean-file) restore** for file-tree snapshots (agents, NAS, shares): for a chosen snapshot, take each
   file's newest version that has no YARA or hash hit and is not in the 21a mass-rename / ransom-note set, falling

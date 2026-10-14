@@ -1467,6 +1467,8 @@ export interface Alert {
   auto: boolean;
   /** 15c: the snapshot a security officer may put on hold from the alert */
   snapshot?: SnapshotRef | null;
+  /** Phase 33: PSA tickets of the alert */
+  tickets?: AlertTicket[];
 }
 
 export interface LoginResponse {
@@ -1833,7 +1835,35 @@ export interface AlertRule {
   channels: {
     email: string[];
     webhook: { url: string; headers: Record<string, string | null>; template: string | null } | null;
+    /** Phase 33: tickets in a PSA (absent = none) */
+    psa?: PsaChannel | null;
   };
+}
+
+export type PsaVendor = 'halopsa' | 'connectwise' | 'autotask';
+
+/** Phase 33: PSA ticketing channel of a rule. `secret` is write-only (null = keep). */
+export interface PsaChannel {
+  vendor: PsaVendor;
+  url: string;
+  token_url?: string | null;
+  client_id?: string | null;
+  username?: string | null;
+  secret: string | null;
+  secret_set?: boolean;
+  company?: string | null;
+  account?: string | null;
+  board?: string | null;
+  integration_code?: string | null;
+  closed_status?: string | null;
+}
+
+/** Phase 33: a PSA ticket opened for an alert (GET /alerts `tickets`). */
+export interface AlertTicket {
+  rule: string;
+  vendor: PsaVendor;
+  ticket: string;
+  closed: number | null;
 }
 
 /** GET/PUT /settings/alerts (§3, 13f). `smtp.password` is write-only. */

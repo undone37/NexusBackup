@@ -1,7 +1,8 @@
 //! Alert lifecycle pieces shared by the scheduler (raises, resolves and
 //! delivers alerts) and the web-api (Alerts page, Settings → Alert delivery):
 //! the "what to do" hint per alert kind, the notification rules (setting
-//! `alert_rules`) and webhook body templates (docs/phase13-18-plan.md §13f).
+//! `alert_rules`), webhook body templates (docs/phase13-18-plan.md §13f) and the
+//! PSA ticketing channel (Phase 33, [`Psa`]).
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,7 @@ const HINTS: &[(&str, &str)] = &[
     ("login_new_device", "An account signed in from a browser family and client network it never used before (the message names both). If that was the account owner (new laptop, travel, a changed network), acknowledge and resolve the alert. If not, disable the account on the Users page, end its sessions and review the audit log for what it did."),
     ("change_tracking", "A scheduled full read of a source found data that changed since the previous snapshot although its change tracking (Proxmox VE dirty bitmap, agent metadata cache or USN journal, NAS metadata cache, ZFS diff) had not reported it (examples in the message and on the Dashboard, Change tracking). Snapshots taken with change tracking since the last verified full read may miss these changes. The newest snapshot is complete (it was read in full). Find the cause (storage or hypervisor bug, restored or cloned disks, tools that preserve timestamps, ransomware that does), keep the full-read interval short until it is understood, and resolve the alert by hand."),
     ("user_risk", "An account did something unusual for it (the message names the rule: sign-in at an hour it never used, a burst of requests that weaken protection, many deletes in a short time, far more downloads than usual). Until the mark ends or a security officer clears it, the account must re-enter its password and second factor before its next change in each session, and its API tokens cannot change anything. Ask the account owner; if it was not them, disable the account, end its sessions and review the audit log."),
+    ("psa", "Opening, updating or closing tickets in the PSA of the named alert rule has failed for 15 minutes (the message names the rule and the error). Check the rule under Settings → Alert delivery (URL, credentials, customer and board or queue, closed status) and that the PSA is reachable; use Test on the rule. Nothing is lost: tickets are opened, noted and closed when it works again. Resolves after the next successful round."),
     ("test", "A test alert from Settings → Alert delivery; nothing to do."),
 ];
 
@@ -176,6 +178,65 @@ pub struct Channels {
     pub email: Vec<String>,
     #[serde(default)]
     pub webhook: Option<Webhook>,
+    /// Phase 33; not written when absent, so a previous release still reads the rules
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psa: Option<Psa>,
+}
+
+/// PSA systems a rule can open tickets in.
+pub const PSA_VENDORS: &[&str] = &["halopsa", "connectwise", "autotask"];
+/// Alert kinds never sent to a PSA: its own failure notice and test alerts.
+pub const PSA_SKIP_KINDS: &[&str] = &["psa", "test"];
+
+/// PSA ticketing channel (Phase 33): one ticket per alert key, a note when the
+/// open alert repeats or escalates, closed when the alert is resolved. The
+/// fields mean per vendor (docs/control-plane.md "PSA ticketing"):
+///
+/// | field | HaloPSA | ConnectWise PSA | Autotask |
+/// |---|---|---|---|
+/// | `url` | API base (`https://x.halopsa.com/api`) | API base (`…/v4_6_release/apis/3.0`) | REST base (`…/atservicesrest/v1.0`) |
+/// | `token_url` | OAuth2 token endpoint (`…/auth/token`) | - | - |
+/// | `client_id` | OAuth2 client ID | `clientId` header | - |
+/// | `username` | - | API member public key | API user name |
+/// | `secret` | client secret | API member private key | API user secret |
+/// | `company` | tenant (hosted Halo, optional) | company ID of the login | - |
+/// | `account` | customer (`client_id`, number) | customer company identifier | `companyID` (number) |
+/// | `board` | ticket type (`tickettype_id`) | service board (ID or name) | `queueID` |
+/// | `integration_code` | - | - | API tracking identifier |
+/// | `closed_status` | status ID (default 9) | status name or ID (default `Closed`) | status (default 5 = Complete) |
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Psa {
+    pub vendor: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// in the catalog: sealed to the scheduler at [`psa_location`]
+    pub secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_status: Option<String>,
+}
+
+/// Where a PSA secret is sealed: bound to the rule and to every URL it is sent
+/// to (API and token endpoint), so it never follows the rule to another host.
+pub fn psa_location(rule: &str, p: &Psa) -> String {
+    format!(
+        "settings/alert_rules/{rule}/psa@{}|{}",
+        p.url,
+        p.token_url.as_deref().unwrap_or_default()
+    )
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -225,7 +286,11 @@ pub fn legacy_rules(alerts: &Value) -> Vec<Rule> {
         min_severity: alerts["min_severity"].as_str().unwrap_or("warning").to_owned(),
         kinds: Vec::new(),
         tenants: Vec::new(),
-        channels: Channels { email, webhook },
+        channels: Channels {
+            email,
+            webhook,
+            psa: None,
+        },
     }]
 }
 
@@ -426,6 +491,33 @@ mod tests {
                 .unwrap();
             assert_eq!(sql, category(kind), "{kind}");
         }
+    }
+
+    /// Phase 33: a rule without PSA serializes as before (a previous release reads
+    /// it); the secret's location binds the rule and both URLs.
+    #[test]
+    fn psa_channel() {
+        let r: Rule = serde_json::from_value(json!({"name": "ops", "channels": {"email": ["a@b.c"]}})).unwrap();
+        assert!(!serde_json::to_string(&r).unwrap().contains("psa"));
+        let r: Rule = serde_json::from_value(json!({"name": "halo", "channels": {"psa": {
+            "vendor": "halopsa", "url": "https://h.example/api", "token_url": "https://h.example/auth/token",
+            "client_id": "c", "secret": "s", "account": "12"}}}))
+        .unwrap();
+        let p = r.channels.psa.as_ref().unwrap();
+        assert_eq!(
+            psa_location("halo", p),
+            "settings/alert_rules/halo/psa@https://h.example/api|https://h.example/auth/token"
+        );
+        let mut moved = p.clone();
+        moved.token_url = Some("https://evil.example/token".into());
+        assert_ne!(psa_location("halo", p), psa_location("halo", &moved));
+        assert!(
+            !serde_json::to_string(p).unwrap().contains("board"),
+            "unset fields not written"
+        );
+        assert!(serde_json::from_value::<Psa>(json!({"vendor": "x", "url": "u", "secret": "s", "bogus": 1})).is_err());
+        assert_eq!(category("psa"), "system");
+        assert!(hint("psa").contains("PSA"));
     }
 
     #[test]

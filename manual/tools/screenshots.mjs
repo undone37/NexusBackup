@@ -1559,6 +1559,20 @@ async function main() {
       await settle();
       await login('admin');
     }],
+    // Phase 33 (Commvault Tier 2): a notification rule with a HaloPSA channel, the alert with its ticket
+    ['p33psa', async () => {
+      await login('admin');
+      await go('/settings?tab=alerts');
+      await ev(`$rowClick('msp-halo', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] [id$="-pv"]')`, 'rule editor');
+      await ev(`document.querySelector('dialog[open] [id$="-pv"]').closest('fieldset').scrollIntoView({ block: 'end' }); return true;`);
+      await shot('settings-alert-rule-psa', { height: 1300 });
+      await closeDialogs();
+      const withTicket = (await api('GET', '/alerts')).body.find((a) => a.tickets?.length);
+      await go(`/alerts?id=${withTicket.id}`);
+      await until(`return document.body.innerText.includes('HaloPSA ticket 48213')`, 'alert with ticket');
+      await shot('alerts-psa-ticket');
+    }],
   ];
 
   let failed = 0;

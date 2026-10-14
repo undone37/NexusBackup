@@ -584,3 +584,14 @@ so per node the guests run one after the other; parallelism comes from nodes, gr
   serialised by the node lock, needs a second PVE node to show the speed-up)
 - [ ] open: per-directory reuse of unchanged Windows volumes (31c) would cut the file index of a running system
   volume from 150 s to seconds
+
+## Phase 33 — Commvault Tier 2 (2026-10-14)
+Scope: docs/commvault-comparison.md Tier 2 (plan.md Phase 33); catalog v46 (`SCHEMA_V46`, after v44: v45 is
+Phase 30's), threat model T70–T75.
+- [x] PSA ticketing: rule channel `psa` (HaloPSA OAuth2 client credentials, ConnectWise API member keys, Autotask
+  API user), scheduler thread `psa.rs` (open per alert key, note on repeat/escalation/re-raise, close on resolve),
+  `psa_tickets` / `psa_state`, alert `psa`, sealed secret bound to rule + URLs, egress allow-list, test opens and
+  closes a ticket, tickets on the Alerts page; tests: scheduler `tests/phase33.rs` (mock HaloPSA / ConnectWise /
+  Autotask servers), web-api `tests/phase33.rs`, catalog migration; UI rule editor, mock, manual 11, screenshots
+  (scene `p33psa`)
+- [ ] lab: PSA ticketing against real HaloPSA / ConnectWise / Autotask sandboxes (needs vendor test instances)

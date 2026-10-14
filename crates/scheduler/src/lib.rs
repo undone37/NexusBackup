@@ -95,6 +95,7 @@ pub mod orphans;
 mod plugins;
 mod priority;
 pub mod progress;
+pub mod psa;
 mod recovery;
 mod renewal;
 pub mod repair;
@@ -238,6 +239,8 @@ pub struct Config {
     pub inventory_secs: i64,
     /// audit / alert forwarding round (forward.rs); 0 = no forwarder thread
     pub forward_poll_secs: u64,
+    /// PSA ticketing round (psa.rs); 0 = no ticketing thread
+    pub psa_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
     /// nexus-net status (interface roles for bound egress) and operations (network.rs)
@@ -319,6 +322,7 @@ impl Default for Config {
             cancel_grace_secs: 30,
             inventory_secs: 3600,
             forward_poll_secs: 5,
+            psa_poll_secs: 60,
             disks_dir: catalog::hardware::DIR.into(),
             net_dir: catalog::network::DIR.into(),
             agent_poll_secs: 120,
@@ -566,6 +570,16 @@ impl Scheduler {
         if cfg.forward_poll_secs > 0 {
             let poll = Duration::from_secs(cfg.forward_poll_secs);
             forward::spawn(db.clone(), secrets.clone(), alerts::hostname(), poll);
+        }
+        if cfg.psa_poll_secs > 0 {
+            let poll = Duration::from_secs(cfg.psa_poll_secs);
+            psa::spawn(
+                db.clone(),
+                secrets.clone(),
+                alerts::hostname(),
+                cfg.alerts_config.clone(),
+                poll,
+            )?;
         }
         let ctx = Arc::new(Ctx {
             keys,
@@ -855,6 +869,7 @@ impl Scheduler {
         self.log_err(|s| s.check_offsite_lag(now));
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
+        self.log_err(|s| s.check_psa(now));
         self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.audit_net_ops());
         self.log_err(|s| s.check_clock());

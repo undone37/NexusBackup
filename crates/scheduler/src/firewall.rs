@@ -111,11 +111,19 @@ pub fn offsite_targets(o: &Value) -> Vec<(String, u16)> {
     }
 }
 
-/// (host, port) of every alert rule's webhook and of the SMTP relay.
+/// (host, port) of every alert rule's webhook, PSA endpoints (Phase 33: API and
+/// token URL) and of the SMTP relay.
 pub fn alert_targets(a: &AlertsConfig) -> Vec<(String, u16)> {
     let mut out: Vec<(String, u16)> = Vec::new();
-    for w in a.rules.iter().filter_map(|r| r.channels.webhook.as_ref()) {
-        let (scheme, rest) = w.url.split_once("://").unwrap_or(("https", &w.url));
+    let psa = a.rules.iter().filter_map(|r| r.channels.psa.as_ref());
+    let urls = a
+        .rules
+        .iter()
+        .filter_map(|r| r.channels.webhook.as_ref())
+        .map(|w| w.url.as_str())
+        .chain(psa.flat_map(|p| std::iter::once(p.url.as_str()).chain(p.token_url.as_deref())));
+    for url in urls {
+        let (scheme, rest) = url.split_once("://").unwrap_or(("https", url));
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
         let authority = authority.rsplit('@').next().unwrap_or_default();
         let def = if scheme.eq_ignore_ascii_case("http") { 80 } else { 443 };

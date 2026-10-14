@@ -35,7 +35,7 @@ replicad); it streams replicad's answers to replication peers without opening st
     - nexus-setup creates the key. The web-api creates it only if it is missing and no encrypted seed exists.
     - Legacy plaintext seeds are encrypted at web-api startup (audit `secret.migrate`).
   - OIDC client secret (`settings.oidc.client_secret`, Phase 12): `enc:v1:` with the same web-api key but its own AAD (`nexus webapi v1\0oidc/client_secret`), because the web-api itself sends it to the IdP's token endpoint (client_secret_basic). Write-only in the API, `<redacted>` in quorum params.
-  - SMTP password of the alert delivery (`settings.alerts.smtp.password`, Phase 12): sealed to the scheduler like source secrets (owner `settings/alerts`, bound to the SMTP host, port and user). Phase 13f: webhook header values of the notification rules (`settings.alert_rules`), sealed at `settings/alert_rules/<rule>/<header>@<url>`.
+  - SMTP password of the alert delivery (`settings.alerts.smtp.password`, Phase 12): sealed to the scheduler like source secrets (owner `settings/alerts`, bound to the SMTP host, port and user). Phase 13f: webhook header values of the notification rules (`settings.alert_rules`), sealed at `settings/alert_rules/<rule>/<header>@<url>`. Phase 33: PSA secrets at `settings/alert_rules/<rule>/psa@<url>|<token_url>`.
 
 ## Catalog schema (crate `catalog`, migrations in code)
 | Table | Columns (main) |
@@ -187,7 +187,7 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET /audit.csv?actor=&action=&target=&from=&to=&after=&before=` | admin, security_officer | the filtered entries oldest first, streamed in pages of 1000, columns `seq,ts,actor,action,target,details,prev_hash,hash` (RFC 4180 quoting, values unchanged); audited `audit.export` with the filters; `order`/`limit` → 400 |
 | `GET /auth/oidc`, `GET /auth/oidc/start?next=`, `GET /auth/oidc/callback` | none | OIDC sign-in (§2, see Clarifications) |
 | `GET/PUT /settings/oidc`, `POST /settings/oidc/test` | read: admin, security_officer / admin (PUT → quorum `oidc.update`) | client secret write-only (`client_secret_set`); GET adds `redirect_uri` to register at the IdP; test → `{discovery, jwks}` |
-| `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; test `{rule?}` → `{webhook?, email?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
+| `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; Phase 33 `channels.psa` (see "PSA ticketing"); test `{rule?}` → `{webhook?, email?, psa?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
 | `GET /ssh-keys`, `POST /ssh-keys/{name}/rotate`, `POST /ssh-keys/{name}/retire` | admin, operator, security_officer read / admin (rotate → quorum `ssh_key.rotate`) | §4; only key files below `/etc/nexus/ssh` that PVE node or SFTP offsite configurations use; after a rotation the entry shows the new key and the old one as `previous` (still in use) until retire → 202 `{job_id}` (`ssh_key_retire`); 409 without a rotation |
 | `GET /updates`, `POST /updates/check`, `POST /updates/apply` | admin, security_officer, operator read / admin (apply → quorum `update.apply`) | §5; check/apply write the request file for `nexus-update.path` (apply = install now: stage if needed, reboot outside the window); status `checking` while a request waits, `blocked` (+ `blocked: [check]`) when failed pre-update checks refused the last stage/apply (docs/release.md) |
 | `GET/PUT/DELETE /updates/registry` | admin, security_officer, operator read / admin write | pull credential for a private image repository: `{username, token}` stored as `<update dir>/pull-auth.json` (0600); GET returns only `{configured, username}`; `nexus-update` writes `/run/ostree/auth.json` only during a fetch and removes it; audited `update.registry_auth` / `update.registry_auth_removed` |
@@ -1174,3 +1174,30 @@ At most 50 devices per account are kept.
   `change_tracking:<tenant>/<source>`) on unreported changes; a clean full read resolves it.
 - `GET /full-reads?tenant=&source=` (every reading role, tenant-scoped) returns the rows; `GET /dashboard` has
   `full_reads: {sources, verified, drift, never, oldest_verified}` (Dashboard card "Change tracking").
+
+## PSA ticketing (Phase 33, `crates/scheduler/src/psa.rs`)
+A notification rule may have a `psa` channel (`catalog::alerting::Psa`): `{vendor: halopsa|connectwise|autotask,
+url, token_url?, client_id?, username?, secret, company?, account?, board?, integration_code?, closed_status?}`
+(meaning per vendor: the table on `Psa`, manual chapter 11). `PUT /settings/alerts` validates it (https only, http
+just to loopback; required fields and numbers per vendor) and seals the secret to the scheduler at
+`settings/alert_rules/<rule>/psa@<url>|<token_url>`: bound to the rule and both URLs, so a changed URL needs the
+secret again (`secret: null` keeps it otherwise; shown as `secret: null, secret_set: true`). The scheduler's
+ticketing thread (`psa_poll_secs`, default 60 s) works per rule: an open alert matching the rule (kinds `psa` and
+`test` excluded) without an open ticket for its key → create (summary `[NexusBackup <host>] <severity> <kind>:
+<message>`, at most 100 characters; description with the hint, tenant and link); a repeat (`count` grew) → an internal
+note at most hourly, an escalation or a re-raised alert (new alert id, same key, ticket still open) → a note at once;
+no open alert for the key any more → a note ("resolved … by <who>") and the closed status. At most 50 operations per
+rule and round, the first PSA error ends the rule's round. `psa_tickets` (catalog v46) holds `(rule, key, vendor,
+ticket, alert_id, opened, noted_*, closed)`, one open ticket per rule and key; `psa_state` the rule's last success
+or failure; tickets and state of rules without a PSA channel are dropped. A rule failing for 15 minutes raises
+`psa` (warning, `psa:<rule>`), resolved by the next good round. Authentication: HaloPSA OAuth2 client credentials
+(`grant_type=client_credentials&scope=all`, `?tenant=` for hosted Halo; the token is cached until a minute before it
+expires); ConnectWise PSA API member keys (`Authorization: Basic base64(company+public:private)`, header `clientId`;
+ConnectWise has no client-credentials grant for integrations); Autotask API user headers (`UserName`, `Secret`,
+`ApiIntegrationCode`). Calls: Halo `POST /Tickets` (create and close, `status_id`), `POST /Actions` (note,
+`outcome: Note`, hidden from the user); ConnectWise `POST /service/tickets`, `POST /service/tickets/{id}/notes`
+(internal), `PATCH /service/tickets/{id}` (`status` by name or id); Autotask `POST /Tickets` (status 1, priority 1
+for critical else 2), `POST /Tickets/{id}/Notes`, `PATCH /Tickets` (`status`). Redirects are not followed; the API
+and token hosts are on the egress allow-list (`firewall::alert_targets`). `POST /settings/alerts/test {rule}` opens a
+ticket and closes it at once (`psa: "ok (ticket <id> opened and closed)"`). `GET /alerts` lists each alert's tickets
+(`tickets: [{rule, vendor, ticket, closed}]`).

@@ -1601,6 +1601,8 @@ function seed() {
     mkAlert({
       ts: nightly.finished! - 2 * 86400, last_ts: nightly.finished, count: 3, severity: 'critical', kind: 'job_failed',
       key: `job_failed:initech/backup/group/${gProd.id}`, tenant: 'initech', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
+      // Phase 33: the rule msp-halo opened a ticket in HaloPSA
+      tickets: [{ rule: 'msp-halo', vendor: 'halopsa', ticket: '48213', closed: null }],
     }),
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
@@ -4896,7 +4898,7 @@ function mkAlert(a: Json): Json {
   const hint = a.kind === 'job_failed' ? 'Open the job log on the Jobs page, fix the cause and run the job again.' : 'See the alerts chapter of the user manual.';
   return {
     id: nextId(), first_ts: a.ts, last_ts: a.ts, count: 1, key: `${a.kind}:${a.message}`, tenant: null, hint,
-    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, ...a,
+    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, tickets: [], ...a,
   };
 }
 /** Like catalog::alerting::category (Phase 18). */
@@ -5030,6 +5032,17 @@ function seedPhase12(t: number) {
       {
         name: 'siem', min_severity: 'critical', kinds: [], tenants: [],
         channels: { email: [], webhook: { url: 'https://siem.example.com/api/events', headers: { Authorization: 'sealed:demo' }, template: null } },
+      },
+      {
+        name: 'msp-halo', min_severity: 'warning', kinds: [], tenants: ['initech'],
+        channels: {
+          email: [], webhook: null,
+          psa: {
+            vendor: 'halopsa', url: 'https://msp.halopsa.example/api', token_url: 'https://msp.halopsa.example/auth/token',
+            client_id: 'nexus-backup', username: null, secret: 'sealed:demo', company: null, account: '214', board: '31',
+            integration_code: null, closed_status: null,
+          },
+        },
       },
     ],
     reminder_hours: 24,
@@ -5944,9 +5957,48 @@ const pubAlerts = () => {
   for (const r of a.rules) {
     const h = r.channels.webhook?.headers;
     if (h) for (const k of Object.keys(h)) h[k] = null;
+    if (r.channels.psa) {
+      r.channels.psa.secret = null;
+      r.channels.psa.secret_set = true;
+    }
   }
   return a;
 };
+/** Phase 33: like web-api settings::check_psa (secret sealed at rule + URLs). */
+function checkPsa(r: Json, prev: Json | undefined): Json {
+  const p = r.channels.psa;
+  const what = (m: string) => new HttpError(400, `rule ${r.name}: psa.${m}`);
+  if (!['halopsa', 'connectwise', 'autotask'].includes(p.vendor)) throw what('vendor: halopsa, connectwise or autotask');
+  const httpsUrl = (u: unknown) => /^https:\/\/[^@\s/]+\S*$/.test(String(u ?? ''));
+  if (!httpsUrl(p.url)) throw what('url: https://host[:port]/path, without user info');
+  const v = (x: unknown) => (String(x ?? '').trim() || null) as string | null;
+  const out: Json = {
+    vendor: p.vendor, url: p.url, token_url: p.vendor === 'halopsa' ? v(p.token_url) : null, client_id: v(p.client_id),
+    username: v(p.username), company: v(p.company), account: v(p.account), board: v(p.board),
+    integration_code: v(p.integration_code), closed_status: v(p.closed_status),
+  };
+  const need = (k: string) => {
+    if (!out[k]) throw what(`${k}: required for ${p.vendor}`);
+  };
+  const num = (k: string) => {
+    if (out[k] && !/^-?\d+$/.test(out[k])) throw what(`${k}: a number for this vendor`);
+  };
+  if (p.vendor === 'halopsa') {
+    need('token_url');
+    need('client_id');
+    if (!httpsUrl(out.token_url)) throw what('token_url: https://host[:port]/path, without user info');
+    ['account', 'board', 'closed_status'].forEach(num);
+  } else if (p.vendor === 'connectwise') ['company', 'username', 'client_id', 'account'].forEach(need);
+  else {
+    ['username', 'integration_code', 'account'].forEach(need);
+    ['account', 'board', 'closed_status'].forEach(num);
+  }
+  const loc = (x: Json) => `${x.url}|${x.token_url ?? ''}`;
+  if (p.secret) out.secret = 'sealed:demo';
+  else if (prev && loc(prev) === loc(out)) out.secret = prev.secret;
+  else throw what('secret: required (new channel or a URL changed)');
+  return out;
+}
 const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'category', 'message', 'hint', 'tenant', 'host', 'alert_url'];
 /** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
 function checkTemplate(tpl: string): string | null {
@@ -6003,6 +6055,7 @@ on('PUT', '/settings/alerts', async (c) => {
         w.headers[h] = v === null ? prev.headers[h] : 'sealed:demo';
       }
     }
+    if (r.channels?.psa) r.channels.psa = checkPsa(r, old.rules.find((o: Json) => o.name === r.name)?.channels.psa);
   }
   const reminder = Number(b.reminder_hours ?? 24);
   if (!(reminder >= 0 && reminder <= 720)) throw new HttpError(400, 'reminder_hours: 0 (never) ..= 720');
@@ -6024,6 +6077,8 @@ on('POST', '/settings/alerts/test', async (c) => {
     if (w) out[key('webhook')] = /bad|invalid/.test(w.url) ? 'error: HTTP 404 from the webhook' : 'ok';
     if (r.channels.email.length)
       out[key('email')] = !a.smtp ? 'error: no SMTP server configured' : /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+    const p = r.channels.psa;
+    if (p) out[key('psa')] = /bad|invalid/.test(p.url) ? 'error: create ticket: 401 Unauthorized' : `ok (ticket ${4700 + Math.floor(Math.random() * 99)} opened and closed)`;
   }
   await audit(u.name, 'job.create', 'job/0', { kind: 'alert_test', params: only ? { rule: only } : {} });
   return [200, out];

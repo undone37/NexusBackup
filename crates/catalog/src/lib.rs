@@ -916,12 +916,30 @@ ALTER TABLE users ADD COLUMN risk_reason TEXT;
 ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 "#;
 
+/// v46 (Phase 33, docs/commvault-comparison.md Tier 2):
+/// - PSA ticketing: `psa_tickets`, one row per ticket a rule's PSA channel
+///   opened for an alert key (`ticket` = the PSA's ID; `noted_*` = what the last
+///   note reported; `closed` set when the alert was resolved and the ticket
+///   closed; at most one open ticket per rule and key), and `psa_state`, the
+///   rule's last success / failure (the `psa` alert after 15 minutes).
+///
+/// Purely additive: the previous release ignores the tables.
+const SCHEMA_V46: &str = r#"
+CREATE TABLE psa_tickets (
+  id INTEGER PRIMARY KEY, rule TEXT NOT NULL, key TEXT NOT NULL, vendor TEXT NOT NULL, ticket TEXT NOT NULL,
+  alert_id INTEGER NOT NULL, opened INTEGER NOT NULL, noted_count INTEGER NOT NULL, noted_at INTEGER NOT NULL,
+  noted_severity TEXT NOT NULL, closed INTEGER);
+CREATE UNIQUE INDEX psa_tickets_open ON psa_tickets(rule, key) WHERE closed IS NULL;
+CREATE TABLE psa_state (
+  rule TEXT PRIMARY KEY, last_ok INTEGER, failing_since INTEGER, last_error TEXT);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V46,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3284,5 +3302,42 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM login_hours", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "hours go with the account");
+    }
+
+    /// v46 (Phase 33) on top of the catalog before it (whatever comes between
+    /// v44 and v46): no tickets; one open ticket per rule and key, closed ones
+    /// may repeat.
+    #[test]
+    fn migration_v46_psa_tickets() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V46).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch("INSERT INTO tenants (name) VALUES ('t');").unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM psa_tickets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        let add = |closed: Option<i64>| {
+            conn.execute(
+                "INSERT INTO psa_tickets (rule, key, vendor, ticket, alert_id, opened, noted_count, noted_at,
+                   noted_severity, closed) VALUES ('r', 'k', 'halopsa', '1', 1, 1, 1, 1, 'warning', ?1)",
+                [closed],
+            )
+        };
+        add(Some(5)).unwrap();
+        add(Some(6)).unwrap();
+        add(None).unwrap();
+        assert!(add(None).is_err(), "one open ticket per rule and key");
+        conn.execute("INSERT INTO psa_state (rule, failing_since) VALUES ('r', 3)", [])
+            .unwrap();
     }
 }

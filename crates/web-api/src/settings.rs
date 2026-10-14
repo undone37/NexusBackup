@@ -88,6 +88,35 @@ pub struct WebhookReq {
     template: Option<String>,
 }
 
+/// Phase 33 PSA channel (`catalog::alerting::Psa`; field meanings per vendor there).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PsaReq {
+    vendor: String,
+    url: String,
+    #[serde(default)]
+    token_url: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    /// write-only: null = keep the stored one (refused when a URL changes)
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default, rename = "secret_set")]
+    _secret_set: Option<bool>,
+    #[serde(default)]
+    company: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(default)]
+    board: Option<String>,
+    #[serde(default)]
+    integration_code: Option<String>,
+    #[serde(default)]
+    closed_status: Option<String>,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelsReq {
@@ -95,6 +124,8 @@ pub struct ChannelsReq {
     email: Vec<String>,
     #[serde(default)]
     webhook: Option<WebhookReq>,
+    #[serde(default)]
+    psa: Option<PsaReq>,
 }
 
 #[derive(Deserialize)]
@@ -152,6 +183,116 @@ fn check_webhook(u: &str, what: &str) -> ApiResult<()> {
     }
 }
 
+/// A PSA endpoint: https (http only to loopback, for tests and local relays:
+/// the secret travels with every request), without user info.
+fn check_psa_url(u: &str, what: &str) -> ApiResult<()> {
+    let ok = u.len() <= 2048
+        && reqwest::Url::parse(u).is_ok_and(|x| {
+            let local = matches!(x.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+            (x.scheme() == "https" || x.scheme() == "http" && local)
+                && x.host_str().is_some()
+                && x.username().is_empty()
+                && x.password().is_none()
+        });
+    if ok {
+        Ok(())
+    } else {
+        Err(ApiError::bad(format!(
+            "{what}: https://host[:port]/path, without user info"
+        )))
+    }
+}
+
+/// Validates a rule's PSA channel; the secret is sealed to the scheduler at
+/// `alerting::psa_location` (null keeps the stored one while both URLs stay).
+fn check_psa(st: &St, rule: &str, p: PsaReq, prev: Option<&alerting::Psa>) -> ApiResult<alerting::Psa> {
+    let what = |f: &str| format!("rule {rule}: psa.{f}");
+    if !alerting::PSA_VENDORS.contains(&p.vendor.as_str()) {
+        return Err(ApiError::bad(what("vendor: halopsa, connectwise or autotask")));
+    }
+    check_psa_url(&p.url, &what("url"))?;
+    let field = |v: Option<String>, f: &str, max: usize| -> ApiResult<Option<String>> {
+        match v.map(|x| x.trim().to_owned()).filter(|x| !x.is_empty()) {
+            Some(x) if x.len() > max || x.chars().any(char::is_control) => {
+                Err(ApiError::bad(what(&format!("{f}: 1..={max} printable characters"))))
+            }
+            x => Ok(x),
+        }
+    };
+    let token_url = field(p.token_url, "token_url", 2048)?;
+    let client_id = field(p.client_id, "client_id", 256)?;
+    let username = field(p.username, "username", 256)?;
+    let company = field(p.company, "company", 128)?;
+    let account = field(p.account, "account", 128)?;
+    let board = field(p.board, "board", 128)?;
+    let integration_code = field(p.integration_code, "integration_code", 256)?;
+    let closed_status = field(p.closed_status, "closed_status", 64)?;
+    let number = |v: &Option<String>, f: &str| -> ApiResult<()> {
+        if v.as_deref().is_some_and(|x| x.parse::<i64>().is_err()) {
+            return Err(ApiError::bad(what(&format!("{f}: a number for this vendor"))));
+        }
+        Ok(())
+    };
+    let need = |v: &Option<String>, f: &str| -> ApiResult<()> {
+        if v.is_none() {
+            return Err(ApiError::bad(what(&format!("{f}: required for {}", p.vendor))));
+        }
+        Ok(())
+    };
+    match p.vendor.as_str() {
+        "halopsa" => {
+            need(&token_url, "token_url")?;
+            need(&client_id, "client_id")?;
+            check_psa_url(token_url.as_deref().unwrap_or_default(), &what("token_url"))?;
+            number(&account, "account")?;
+            number(&board, "board")?;
+            number(&closed_status, "closed_status")?;
+        }
+        "connectwise" => {
+            need(&company, "company")?;
+            need(&username, "username")?;
+            need(&client_id, "client_id")?;
+            need(&account, "account")?;
+        }
+        _ => {
+            need(&username, "username")?;
+            need(&integration_code, "integration_code")?;
+            need(&account, "account")?;
+            number(&account, "account")?;
+            number(&board, "board")?;
+            number(&closed_status, "closed_status")?;
+        }
+    }
+    let token_url = token_url.filter(|_| p.vendor == "halopsa");
+    let mut out = alerting::Psa {
+        vendor: p.vendor,
+        url: p.url,
+        token_url,
+        client_id,
+        username,
+        secret: String::new(),
+        company,
+        account,
+        board,
+        integration_code,
+        closed_status,
+    };
+    let loc = alerting::psa_location(rule, &out);
+    out.secret = match p.secret.filter(|s| !s.is_empty()) {
+        Some(v) => {
+            if v.len() > 4096 || v.chars().any(char::is_control) {
+                return Err(ApiError::bad(what("secret: 1..=4096 printable characters")));
+            }
+            st.seal_key()?.seal(&loc, &v)?
+        }
+        None => match prev.filter(|o| alerting::psa_location(rule, o) == loc) {
+            Some(o) => o.secret.clone(),
+            None => return Err(ApiError::bad(what("secret: required (new channel or a URL changed)"))),
+        },
+    };
+    Ok(out)
+}
+
 /// The stored setting `alerts` (SMTP server; before 13f also webhook and recipients).
 pub fn load_alerts(c: &catalog::rusqlite::Connection) -> ApiResult<Value> {
     Ok(catalog::setting(c, ALERTS_SETTING)?
@@ -159,11 +300,15 @@ pub fn load_alerts(c: &catalog::rusqlite::Connection) -> ApiResult<Value> {
         .unwrap_or_else(|| json!({"smtp": null})))
 }
 
-/// Header values are write-only: shown as null.
+/// Header values and the PSA secret are write-only: shown as null (`secret_set`).
 fn public_rule(r: &Rule) -> Value {
     let mut v = json!(r);
     if let Some(h) = v["channels"]["webhook"]["headers"].as_object_mut() {
         h.values_mut().for_each(|x| *x = Value::Null);
+    }
+    if let Some(p) = v["channels"]["psa"].as_object_mut() {
+        p.insert("secret".into(), Value::Null);
+        p.insert("secret_set".into(), json!(true));
     }
     v
 }
@@ -298,12 +443,21 @@ fn check_rule(st: &St, r: RuleReq, old: &[Rule], smtp: bool) -> ApiResult<Rule> 
             })
         }
     };
+    let prev_psa = old
+        .iter()
+        .find(|o| o.name == r.name)
+        .and_then(|o| o.channels.psa.as_ref());
+    let psa = r
+        .channels
+        .psa
+        .map(|p| check_psa(st, &r.name, p, prev_psa))
+        .transpose()?;
     Ok(Rule {
         name: r.name,
         min_severity: min,
         kinds: r.kinds,
         tenants: r.tenants,
-        channels: alerting::Channels { email, webhook },
+        channels: alerting::Channels { email, webhook, psa },
     })
 }
 
@@ -348,6 +502,7 @@ pub async fn put_alerts(State(st): State<St>, ctx: Ctx, J(mut r): J<AlertsReq>) 
                         headers: BTreeMap::new(),
                         template: None,
                     }),
+                    psa: None,
                 },
             }]
         }

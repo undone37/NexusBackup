@@ -64,7 +64,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `change_tracking`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority`, `index_backlog` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
-| system | `capacity`, `quota`, `forwarding`, `report`, `tenant_disabled`, `index_space`, `test` and any kind not listed |
+| system | `capacity`, `quota`, `forwarding`, `psa`, `report`, `tenant_disabled`, `index_space`, `test` and any kind not listed |
 | audit | not an alert category: forwarded audit log entries carry it |
 
 | Kind | Severity | Raised when | Resolves itself when | What to do |
@@ -116,6 +116,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `disk` | critical: SMART failing, array degraded or failed, bad sectors growing; warning: bad sectors, NVMe wear ≥ 90 % or critical warning, media errors, too hot (HDD > 55 °C, SSD/NVMe > 70 °C), failed self-test, no disk status for 30 minutes; info: rebuild, resync or reshape running (with progress) | the scan of `nexus-disks` (every 5 minutes, SMART hourly) finds a problem; one alert per disk (`disk:<serial>`) and per array (`disk:md:<uuid>`, the rebuild as `disk:md:<uuid>:sync`) | the disk or array is healthy again (a rebuild finished, the disk was replaced) | open **Configuration → Hardware**; replace a failing disk, see [15 Troubleshooting](15-troubleshooting-faq.md#replacing-a-disk) |
 | `fleecing_space` | critical | the fleecing storage of a Proxmox node is below the guard of its source (the VM was skipped) or below the critical level (a running VM backup was cancelled); one alert per node and storage (`fleecing_space:<tenant>/<node>/<storage>`) | a later backup finds enough room on that storage | free space in the storage (usually `local-lvm`), or choose a larger fleecing storage or other limits on the source. See [04 Sources](04-sources.md#proxmox-ve) |
 | `clock_skew` | warning above 1 minute, critical above 10 minutes; info for a lag after a restart | system time and the compliance clock (the clock of retention locks, [01 Concepts](01-concepts.md#retention-locks-and-the-compliance-clock)) differ: system time jumped ahead while the appliance was running, or the compliance clock is ahead (system time moved back); info: the compliance clock was already behind when the scheduler started (the appliance was off) | the difference is under a minute | find out who or what changed the time (Diagnostics: `time.sync`, `time.nts`; the audit log). Locks are never shortened: the compliance clock moves towards system time by at most 0.1 % of the elapsed time. See [15 Troubleshooting](15-troubleshooting-faq.md#check-time-compliance) |
+| `psa` | warning | opening, noting or closing tickets in the PSA of a notification rule has failed for 15 minutes (`psa:<rule>`; the message names the rule and the error). Never sent to a PSA itself | the next round of that rule succeeds (or its PSA channel is removed) | check the rule's URL, credentials, customer and board or queue under **Settings → Alert delivery** and use **Send test**; nothing is lost, the tickets follow. See [PSA ticketing](#psa-ticketing-halopsa-connectwise-autotask) |
 | `forwarding` | warning | audit / alert forwarding to a syslog or HTTPS sink has failed for 15 minutes (one alert per sink; the message names the destination and the error) | the sink delivers again (or is disabled / removed) | check the receiver (reachable, certificate, token) and **Settings → Forwarding** (**Send test message**); nothing is lost, the backlog follows. See [10 Approvals and audit](10-approvals-and-audit.md#forwarding-to-a-siem) |
 
 ## Verification and repair
@@ -448,7 +449,8 @@ A **notification rule** decides which alerts go where. Each rule has:
 - **Alert kinds**: none ticked means every kind;
 - **Tenants**: none ticked means every tenant, including appliance-wide alerts such as `capacity`. With tenants
   ticked, the rule gets only those tenants' alerts. This way a tenant's own team can receive its alerts;
-- **Channels**: **E-mail recipients** (one per line) and/or a **Webhook URL**.
+- **Channels**: **E-mail recipients** (one per line), a **Webhook URL** and/or a **PSA** (tickets in HaloPSA,
+  ConnectWise PSA or Autotask, see [PSA ticketing](#psa-ticketing-halopsa-connectwise-autotask)).
 
 An alert goes to every rule it matches. If several matching rules have the same recipient, that person gets one
 e-mail.
@@ -530,10 +532,54 @@ Microsoft Teams (a Workflows webhook that posts an Adaptive Card):
 Other details:
 
 - Delivery is retried a few times (after 10 and 60 seconds).
-- The webhook host of every rule and the SMTP server are added to the outbound firewall allow-list automatically.
-- The settings are stored in the catalog. The SMTP password and the header values are sealed like other secrets.
+- The webhook host and PSA hosts of every rule and the SMTP server are added to the outbound firewall allow-list
+  automatically.
+- The settings are stored in the catalog. The SMTP password, the header values and PSA secrets are sealed like other
+  secrets.
 - An appliance upgraded from a release without rules keeps working: its single webhook and recipient list become
   one rule `default` (every kind and tenant, at the old minimum severity).
+
+### PSA ticketing (HaloPSA, ConnectWise, Autotask)
+
+A rule can open tickets in a professional services automation (PSA) system instead of, or as well as, sending mail.
+Pick the **PSA** in the rule's **PSA ticketing** section and fill in the fields for it:
+
+| Field | HaloPSA | ConnectWise PSA | Autotask |
+|---|---|---|---|
+| **API URL** | `https://<yours>.halopsa.com/api` | `https://<region>.myconnectwise.net/v4_6_release/apis/3.0` | `https://webservices<N>.autotask.net/atservicesrest/v1.0` |
+| **Token URL** | `https://<yours>.halopsa.com/auth/token` | — | — |
+| **Client ID** | client ID of an API application (client credentials) | your ConnectWise developer client ID | — |
+| user | — | **API member public key** | **API user name** |
+| secret | **Client secret** | **API member private key** | **API user secret** |
+| company | **Tenant** (hosted HaloPSA only, optional) | **Company ID** you sign in with | — |
+| — | — | — | **API tracking identifier** |
+| customer | **Customer ID** (number) | **Customer company identifier** | **Company ID** (number) |
+| board | **Ticket type ID** (optional) | **Service board** (ID or name, optional) | **Queue ID** (optional) |
+| **Closed status** | status ID, empty = 9 | status name or ID, empty = `Closed` | status value, empty = 5 (Complete) |
+
+![A rule with a HaloPSA channel](images/settings-alert-rule-psa.png)
+
+What happens:
+
+- **One ticket per alert**: when an alert that matches the rule is raised, a ticket is opened (summary
+  `[NexusBackup <appliance>] <severity> <kind>: <message>`, the description holds the message, what to do, the tenant
+  and the link to the alert). The **Alerts** page shows the ticket number under the message.
+  ![An alert with its HaloPSA ticket](images/alerts-psa-ticket.png)
+- **Repeats** of the open alert add an internal note at most once an hour ("Seen again: 5 times in total …"); a rise in
+  severity adds a note at once.
+- **Resolved**: when the alert is resolved (by the appliance or by a person), a note says so and the ticket is set to
+  the **Closed status**. If the alert comes back before that, the ticket continues; later it gets a new ticket.
+- The tickets are worked through once a minute, independently of e-mail and webhooks. If the PSA cannot be reached or
+  refuses, the next minute tries again; after 15 minutes the `psa` alert says so. Nothing is lost.
+- **Send test** opens a test ticket and closes it again at once; the result shows its number.
+- The secret is stored encrypted for the scheduler and never shown again; leave it empty to keep it. If you change the
+  **API URL** or the **Token URL**, enter it again (it is bound to them, so it never goes to another host).
+- The PSA must be reached over HTTPS; its hosts are added to the outbound firewall allow-list automatically.
+- Credentials: HaloPSA uses OAuth2 client credentials (create an API application with the **Client ID and Secret
+  (Services)** authentication method and permission to create and edit tickets). ConnectWise PSA has no
+  client-credentials sign-in for integrations: create an **API member** and use its public and private key.
+  Autotask uses an API-only user with its user name, secret and the API tracking identifier.
+- Alerts that were already open when the rule was added get tickets too (up to 50 per minute).
 
 ### Fallback: the file `/etc/nexus/alerts.json`
 

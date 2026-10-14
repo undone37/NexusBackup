@@ -893,6 +893,20 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
     reuse, content hashes: 31c (open). Lab runs on the PVE lab host (Windows Server / Windows 11 / DC VMs) not done
     (not allowed in this run); compared against the micro-VM on the restore-vm fixtures instead.
 
+### Phase 33 — Commvault Tier 2 (2026-10-14)
+The Tier 2 items of `docs/commvault-comparison.md` (never scheduled before; the comparison proposed them as
+"Phase 29", which became the NetBackup Tier 1). Order: PSA ticketing, tenant-side approvers, multi-appliance
+overview, synthetic restore, M365 compliance search / cases, VMware transport spike. Catalog v46, threat model
+T70–T75. Decisions and deviations:
+- **PSA ticketing** (implemented): alert rule channel `psa` for HaloPSA, ConnectWise PSA and Autotask, one ticket
+  per (rule, alert key), an internal note on repeats (at most hourly) and at once on escalation or re-raise, a note
+  and the closed status on resolve; own scheduler thread (every 60 s), `psa_tickets` / `psa_state`, alert `psa`
+  after 15 minutes of failures, egress allow-list, secret sealed to rule + API URL + token URL. Deviation: OAuth2
+  client credentials only for HaloPSA; ConnectWise PSA (API member keys, Basic auth + `clientId`) and Autotask (API
+  user headers) do not offer a client-credentials grant for integrations, so their native schemes are used. No
+  ticket templates (fixed summary and description). Alerts already open when a rule is added get tickets too
+  (rate-limited to 50 operations per rule and minute). Details: docs/control-plane.md "PSA ticketing".
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---

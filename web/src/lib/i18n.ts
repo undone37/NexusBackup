@@ -2006,7 +2006,7 @@ export const en = {
     testing: "Testing…",
     al: {
       intro:
-        "Notification rules decide which alerts go where: each rule picks alerts by severity, kind and tenant and sends them by e-mail and/or to a webhook. An alert goes out when it is raised, again when its severity rises, and as a reminder while nobody has acknowledged it. These settings take precedence over /etc/nexus/alerts.json.",
+        "Notification rules decide which alerts go where: each rule picks alerts by severity, kind and tenant and sends them by e-mail, to a webhook and/or as a ticket to a PSA (HaloPSA, ConnectWise, Autotask). An alert goes out when it is raised, again when its severity rises, and as a reminder while nobody has acknowledged it. These settings take precedence over /etc/nexus/alerts.json.",
       rules: "Notification rules",
       noRules: "No rules yet: alerts are only shown on the Alerts page.",
       addRule: "Add rule",
@@ -2068,12 +2068,67 @@ export const en = {
           ? "E-mail"
           : ch === "webhook"
             ? "Webhook"
-            : ch,
+            : ch === "psa"
+              ? "PSA"
+              : ch,
       noChannel: "none",
       summary: (sev: string, kinds: string, tenants: string) =>
         `${sev} · kinds: ${kinds} · tenants: ${tenants}`,
       invalidRule:
-        "Each rule needs a valid, unique name and at least one channel (e-mail recipients or a webhook URL).",
+        "Each rule needs a valid, unique name and at least one channel (e-mail recipients, a webhook URL or a PSA).",
+      // Phase 33: PSA ticketing
+      psa: "PSA ticketing",
+      psaHint:
+        "Opens one ticket per alert in your PSA, adds a note when the alert repeats (at most hourly) or escalates, and closes the ticket when the alert is resolved. The secret is stored encrypted and never shown again.",
+      psaVendor: "PSA",
+      psaNone: "No PSA",
+      psaVendors: {
+        halopsa: "HaloPSA",
+        connectwise: "ConnectWise PSA",
+        autotask: "Autotask",
+      } as Record<string, string>,
+      psaUrl: "API URL",
+      psaUrlHint: {
+        halopsa: "For example https://yourcompany.halopsa.com/api",
+        connectwise: "For example https://na.myconnectwise.net/v4_6_release/apis/3.0",
+        autotask: "For example https://webservices5.autotask.net/atservicesrest/v1.0",
+      } as Record<string, string>,
+      psaTokenUrl: "Token URL (OAuth2)",
+      psaClientId: "Client ID",
+      psaClientIdHint: {
+        halopsa: "Client ID of the API application (client credentials, permission to create and edit tickets).",
+        connectwise: "Your ConnectWise developer client ID (sent as the clientId header).",
+      } as Record<string, string>,
+      psaUsername: {
+        connectwise: "API member public key",
+        autotask: "API user name",
+      } as Record<string, string>,
+      psaSecret: {
+        halopsa: "Client secret",
+        connectwise: "API member private key",
+        autotask: "API user secret",
+      } as Record<string, string>,
+      psaCompany: {
+        halopsa: "Tenant (hosted HaloPSA, optional)",
+        connectwise: "Company ID (sign-in)",
+      } as Record<string, string>,
+      psaAccount: {
+        halopsa: "Customer ID (client_id)",
+        connectwise: "Customer company identifier",
+        autotask: "Company ID (companyID)",
+      } as Record<string, string>,
+      psaBoard: {
+        halopsa: "Ticket type ID (optional)",
+        connectwise: "Service board (ID or name, optional)",
+        autotask: "Queue ID (optional)",
+      } as Record<string, string>,
+      psaIntegration: "API tracking identifier",
+      psaClosed: "Closed status",
+      psaClosedHint: {
+        halopsa: "Status ID; empty = 9 (Closed).",
+        connectwise: "Status name or ID on the board; empty = Closed.",
+        autotask: "Status value; empty = 5 (Complete).",
+      } as Record<string, string>,
     },
     oidc: {
       intro:
@@ -2479,6 +2534,8 @@ export const en = {
     resolved: "Resolved",
     resolvedDone: "Alert resolved.",
     resolvedBy: (n: string, when: string) => `Resolved by ${n} ${when}`,
+    ticket: (vendor: string, id: string, closed: boolean) =>
+      `${vendor} ticket ${id}${closed ? " (closed)" : ""}`,
     auto: 'auto-resolved',
     autoTitle: 'The appliance resolved this alert because the problem went away.',
     filter: 'Show',
@@ -2572,6 +2629,8 @@ export const en = {
         "An agent update failed (signature, version, package install or the agent did not come back with the new version). Open the job log of the agent_update job and the agent's update state on Agents > Updates; fix the cause and update again. Resolves after the next successful update of that agent.",
       rollout_paused:
         "An agent rollout was paused: a canary failed or the failure threshold was reached. Check the failed agents on Agents > Updates, then resume or cancel the rollout. Resolves when the rollout is resumed, cancelled or done.",
+      psa:
+        "Opening, updating or closing tickets in the PSA of the named alert rule has failed for 15 minutes (the message names the rule and the error). Check the rule under Settings → Alert delivery (URL, credentials, customer and board or queue, closed status) and that the PSA is reachable; use Test on the rule. Nothing is lost: tickets are opened, noted and closed when it works again. Resolves after the next successful round.",
     } as Record<string, string>,
   },
   hw: {

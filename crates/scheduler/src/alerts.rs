@@ -62,7 +62,11 @@ impl From<FileConfig> for AlertsConfig {
                 min_severity: "info".into(),
                 kinds: Vec::new(),
                 tenants: Vec::new(),
-                channels: alerting::Channels { email, webhook },
+                channels: alerting::Channels {
+                    email,
+                    webhook,
+                    psa: None,
+                },
             }]
         };
         AlertsConfig { smtp: f.smtp, rules }
@@ -152,6 +156,11 @@ impl AlertsConfig {
         });
         let mut rules = rules;
         for r in &mut rules {
+            if let Some(p) = &mut r.channels.psa {
+                if catalog::secret::is_sealed(&p.secret) {
+                    p.secret = key.open(&alerting::psa_location(&r.name, p), &p.secret)?.to_string();
+                }
+            }
             if let Some(w) = &mut r.channels.webhook {
                 for (h, val) in &mut w.headers {
                     if catalog::secret::is_sealed(val) {
@@ -283,7 +292,8 @@ fn mail(cfg: &AlertsConfig, to: &BTreeSet<String>, a: &Alert) -> Result<()> {
 }
 
 /// One `test` alert through the channels of rule `only` (every rule if None),
-/// no retries: `"ok"` or `"error: …"` per channel (`webhook`, `email`); with
+/// no retries: `"ok"` or `"error: …"` per channel (`webhook`, `email`, `psa`:
+/// a ticket opened and closed again); with
 /// several rules the members are `<rule>/<channel>`.
 pub fn test(cfg: &AlertsConfig, host: &str, only: Option<&str>) -> Value {
     let a = Alert {
@@ -324,6 +334,13 @@ pub fn test(cfg: &AlertsConfig, host: &str, only: Option<&str>) -> Value {
         if !r.channels.email.is_empty() {
             let to = r.channels.email.iter().cloned().collect();
             out.insert(name(r, "email"), res(mail(cfg, &to, &a)));
+        }
+        if let Some(p) = &r.channels.psa {
+            let v = match crate::psa::test(p, &a) {
+                Ok(id) => json!(format!("ok (ticket {id} opened and closed)")),
+                Err(e) => json!(format!("error: {e:#}")),
+            };
+            out.insert(name(r, "psa"), v);
         }
     }
     Value::Object(out)

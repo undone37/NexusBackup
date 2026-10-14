@@ -165,6 +165,13 @@
                   <p>{hint(a)}</p>
                 </details>
                 {#if a.note}<div class="muted small">{t.alerts.noteLabel}: {a.note}</div>{/if}
+                {#if a.tickets?.length}
+                  <div class="muted small">
+                    {#each a.tickets as tk (tk.rule + tk.ticket)}
+                      <span class="ticket">{t.alerts.ticket(t.settings.al.psaVendors[tk.vendor] ?? tk.vendor, tk.ticket, !!tk.closed)}</span>
+                    {/each}
+                  </div>
+                {/if}
               </td>
               <td class="actions">
                 {#if a.resolved_at}
@@ -225,6 +232,9 @@
 {#if sb}<ScanBack bind:open={sbOpen} tenant={sb.tenant} source={sb.source} time={sb.time} />{/if}
 
 <style>
+  .ticket + .ticket::before {
+    content: ' · ';
+  }
   tr.resolved td {
     color: var(--muted);
   }
