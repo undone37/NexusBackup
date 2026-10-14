@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { href } from '../lib/router.svelte';
   import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
@@ -20,6 +21,8 @@
   const GFS: ('daily' | 'weekly' | 'monthly' | 'yearly')[] = ['daily', 'weekly', 'monthly', 'yearly'];
 
   let items: Policy[] = $state([]);
+  // how many protection groups use each policy (none listed: no access to groups)
+  let usedBy = $state(new Map<number, number>());
   let error: string | null = $state(null);
   let loaded = $state(false);
 
@@ -36,6 +39,13 @@
   let templates: PolicyTemplate[] = $state([]);
   onMount(() => {
     load();
+    get<{ policy_id: number }[]>('/groups')
+      .then((gs) => {
+        const m = new Map<number, number>();
+        for (const g of gs) m.set(g.policy_id, (m.get(g.policy_id) ?? 0) + 1);
+        usedBy = m;
+      })
+      .catch(() => {});
     get<PolicyTemplate[]>('/policies/templates')
       .then((x) => (templates = x))
       .catch(() => {});
@@ -160,6 +170,7 @@
         <thead>
           <tr>
             <th scope="col">{t.name}</th>
+            <th scope="col">{t.policies.usedBy}</th>
             <th scope="col">{t.policies.schedule}</th>
             <th scope="col" class="num" title={t.policies.recent}>{t.policies.recentShort}</th>
             {#each GFS as k (k)}<th scope="col" class="num">{t.policies[k]}</th>{/each}
@@ -176,6 +187,11 @@
           {#each items as x (x.id)}
             <tr use:rowClick={() => edit(x)}>
               <td><strong>{x.name}</strong>{#if x.tier}<span class="chip accent">{t.tiers.names[x.tier]}</span>{/if}</td>
+              <td class="nowrap">
+                {#if usedBy.get(x.id)}<a href={href('/groups')}>{t.policies.groupsN(usedBy.get(x.id)!)}</a>{:else}<span class="muted"
+                    >{t.policies.unused}</span
+                  >{/if}
+              </td>
               <td class="mono">{x.schedule}</td>
               <td class="num nowrap">{x.gfs?.recent ? t.policies.hours(x.gfs.recent) : '—'}</td>
               {#each GFS as k (k)}<td class="num">{x.gfs?.[k] ?? 0}</td>{/each}

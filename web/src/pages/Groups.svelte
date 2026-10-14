@@ -51,7 +51,14 @@
     }
     loaded = true;
   }
-  onMount(load);
+  onMount(() => {
+    load();
+    // last backup / next run stay current (nothing reloads while a dialog is open)
+    const iv = setInterval(() => {
+      if (document.visibilityState === 'visible' && !open) load();
+    }, 15000);
+    return () => clearInterval(iv);
+  });
   const kinds = $derived(pluginKinds(plugins));
   const kindTitle = (k: string) => t.sources.kinds[k] ?? kinds.get(k)?.kind.title ?? '—';
 

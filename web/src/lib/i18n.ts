@@ -1616,6 +1616,9 @@ export const en = {
     reopenDone: "Reopened.",
   },
   policies: {
+    usedBy: "Used by",
+    groupsN: (n: number) => `${n} group${n === 1 ? '' : 's'}`,
+    unused: "no group",
     title: "Policies",
     lede: "Schedules and grandfather-father-son retention for protection groups.",
     new: "New policy",
