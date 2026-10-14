@@ -21,3 +21,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints.rust]
+# cargo-fuzz builds with --cfg fuzzing (checksums are not verified then)
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }

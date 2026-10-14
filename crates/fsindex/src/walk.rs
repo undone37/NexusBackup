@@ -68,6 +68,17 @@ impl Out<'_> {
         Ok(true)
     }
 
+    /// Whether the time budget is spent (walkers check it where they may work long
+    /// without emitting entries); sets `stopped`.
+    pub fn out_of_time(&mut self) -> bool {
+        if Instant::now() > self.deadline {
+            self.stopped
+                .get_or_insert_with(|| format!("time budget ({} s) spent", self.limits.budget_secs));
+            return true;
+        }
+        false
+    }
+
     /// The walker's estimate of the volume's entries (live progress only).
     pub fn expect(&mut self, entries: u64) {
         if let Err(e) = self.driver.expect(entries) {
@@ -244,6 +255,10 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
             Kind::Exfat => {
                 info.fs = "exfat".into();
                 crate::exfat::walk
+            }
+            Kind::Xfs => {
+                info.fs = "xfs".into();
+                crate::xfs::walk
             }
             Kind::LvmPv => {
                 match (lvm::read_pv(vol), at) {
@@ -436,6 +451,7 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
         "ntfs" => crate::fs_ntfs::walk,
         "vfat" => crate::fat::walk,
         "exfat" => crate::exfat::walk,
+        "xfs" => crate::xfs::walk,
         _ => return Err(format!("unknown parser {fs}")),
     };
     let mut c = Count(0);

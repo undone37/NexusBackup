@@ -195,8 +195,8 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
     for x in &l {
         for r in &x.dirs {
             assert!(
-                x.volume.fs == "ntfs",
-                "{}: directory records only for NTFS",
+                matches!(x.volume.fs.as_str(), "ntfs" | "xfs"),
+                "{}: directory records only for NTFS and XFS",
                 x.volume.fs
             );
             assert!(!r.deps.is_empty(), "/{}: a record without what it read", r.rel);
@@ -229,7 +229,8 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
         }
         let read = again.bytes.load(std::sync::atomic::Ordering::Relaxed);
         // (with 3 helpers every one of them opens the volumes: on these tiny images that dominates)
-        if drop.is_none() && parts == 1 && l.iter().any(|x| !x.dirs.is_empty()) {
+        // (an empty volume reads its root directory anyway: XFS looks up etc/fstab)
+        if drop.is_none() && parts == 1 && l.iter().map(|x| x.dirs.len()).sum::<usize>() > 3 {
             assert!(
                 read < first,
                 "taken over ({parts}): {read} bytes read, {first} the first time"
@@ -244,7 +245,7 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
             "{}: last progress = all entries",
             x.volume.browse
         );
-        if matches!(x.volume.fs.as_str(), "ext4" | "ntfs") {
+        if matches!(x.volume.fs.as_str(), "ext4" | "ntfs" | "xfs") {
             let e = e.unwrap_or_else(|| panic!("{}: no estimate", x.volume.browse));
             assert!(e >= n / 2, "{}: estimate {e} for {n} entries", x.volume.browse);
         }
@@ -707,7 +708,7 @@ fn unsupported_volumes_are_reported() {
         |fs: &str, state: &str, why: &str| states.iter().any(|(f, s, r)| f == fs && s == state && r.contains(why));
     assert!(has("luks", "unsupported", "LUKS"), "{states:?}");
     if tool("mkfs.xfs").is_some() {
-        assert!(has("xfs", "unsupported", "XFS"), "{states:?}");
+        assert!(has("xfs", "indexed", ""), "{states:?}");
     }
     if tool("mkswap").is_some() {
         assert!(has("swap", "skipped", "swap"), "{states:?}");
@@ -742,15 +743,17 @@ fn hostile_volumes_fail_alone() {
     exf[3..11].copy_from_slice(b"EXFAT   ");
     exf[510] = 0x55;
     exf[511] = 0xaa;
+    let mut xfs = noise(4 << 20);
+    xfs[0..4].copy_from_slice(b"XFSB");
     let mut paths = Vec::new();
-    for (n, b) in [("ntfs", ntfs), ("ext", ext), ("exfat", exf)] {
+    for (n, b) in [("ntfs", ntfs), ("ext", ext), ("exfat", exf), ("xfs", xfs)] {
         let p = d.path().join(n);
         fs::write(&p, b).unwrap();
         paths.push(p);
     }
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
     let l = list(&refs);
-    assert_eq!(l.len(), 3, "{l:?}");
+    assert_eq!(l.len(), 4, "{l:?}");
     assert!(
         l.iter().all(|x| x.volume.state == "failed"),
         "{:?}",
@@ -919,4 +922,101 @@ fn windows_drive_letters_from_the_system_hive() {
     );
     assert_eq!(m.guest("vda2/Projekte/plan.txt"), "E:/Projekte/plan.txt");
     assert_eq!(m.guest("vdb1/alt.txt"), "F:/alt.txt");
+}
+
+/// Phase 31c: XFS through the own parser, v5 (4 KiB and 1 KiB blocks: directory
+/// blocks of several file system blocks) and v4 without file types; directories
+/// in short form, block, leaf, node and B+tree format (a protofile interleaves
+/// file data with the growing directories, so the big one gets fragmented).
+#[test]
+fn xfs_directory_formats() {
+    let d = tempfile::tempdir().unwrap();
+    let tree = d.path().join("tree");
+    let uuid = "5e1f0c3a-1111-4222-8333-444455556666";
+    let expect = sample(&tree, &format!("UUID={uuid} / xfs defaults 0 0\n"));
+    let blk = d.path().join("blk");
+    fs::write(&blk, vec![7u8; 5000]).unwrap();
+    // protofile: the sample tree, then the directory formats
+    let mut proto = vec!["/dev/null".to_string(), "0 0".into(), "d--755 0 0".into()];
+    // (a protofile cannot hold names with spaces)
+    let mut want: Vec<_> = expect.iter().map(|(p, k, n)| (p.replace(' ', "_"), *k, *n)).collect();
+    fn add(dir: &Path, rel: &str, proto: &mut Vec<String>) {
+        let mut names: Vec<_> = fs::read_dir(dir.join(rel)).unwrap().map(|e| e.unwrap()).collect();
+        names.sort_by_key(|e| e.file_name());
+        for e in names {
+            let real = e.file_name().into_string().unwrap();
+            let n = real.replace(' ', "_");
+            let p = if rel.is_empty() { real } else { format!("{rel}/{real}") };
+            if e.file_type().unwrap().is_dir() {
+                proto.push(format!("{n} d--755 0 0"));
+                add(dir, &p, proto);
+                proto.push("$".into());
+            } else {
+                // the source path may not contain spaces either
+                let src = dir.with_extension(format!("src{}", proto.len()));
+                fs::copy(dir.join(&p), &src).unwrap();
+                proto.push(format!("{n} ---644 0 0 {}", src.display()));
+            }
+        }
+    }
+    add(&tree, "", &mut proto);
+    for (dir, n) in [("block", 60), ("leaf", 300), ("node", 3000)] {
+        proto.push(format!("{dir} d--755 0 0"));
+        want.push((dir.into(), 1, 0));
+        for i in 0..n {
+            let f = format!("file-number-{i:05}.dat");
+            proto.push(format!("{f} ---644 0 0 {}", blk.display()));
+            want.push((format!("{dir}/{f}"), 0, 5000));
+        }
+        proto.push("$".into());
+    }
+    proto.push("link l--777 0 0 etc/fstab".into());
+    want.push(("link".into(), 2, 0));
+    proto.push("$".into());
+    want.sort();
+    let pf = d.path().join("proto");
+    fs::write(&pf, proto.join("\n") + "\n").unwrap();
+    let t0 = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut ran = 0;
+    for (name, args) in [
+        ("v5", vec![]),
+        ("v5-1k", vec!["-b", "size=1024"]),
+        ("v4", vec!["-m", "crc=0", "-n", "ftype=0", "-i", "size=256"]),
+    ] {
+        let img = d.path().join(format!("{name}.img"));
+        sized(&img, 320 << 20);
+        let mut a: Vec<&str> = vec!["-q", "-L", "data"];
+        a.extend(&args);
+        let u = format!("uuid={uuid}");
+        a.extend(["-m", &u, "-p", pf.to_str().unwrap(), img.to_str().unwrap()]);
+        if !run("mkfs.xfs", &a) {
+            continue;
+        }
+        ran += 1;
+        let l = list(&[&img]);
+        let v = vol(&l, "vda");
+        assert_eq!(
+            (v.volume.fs.as_str(), v.volume.state.as_str()),
+            ("xfs", "indexed"),
+            "{name}: {:?}",
+            v.volume
+        );
+        assert_eq!(got(v, &[]), want, "{name}");
+        assert!(
+            v.entries.iter().all(|e| (t0 - 120..t0 + 120).contains(&e.mtime)),
+            "{name}: mtimes"
+        );
+        assert_eq!(v.volume.label.as_deref(), Some("data"));
+        assert_eq!(v.volume.uuid.as_deref(), Some(uuid));
+        let mut vols = vec![v.volume.clone()];
+        fsindex::mapping::assign(&mut vols);
+        assert_eq!(vols[0].mount.as_deref(), Some("/"), "{name}: root from its own fstab");
+        assert!(!v.dirs.is_empty(), "{name}: directory records");
+    }
+    if tool("mkfs.xfs").is_some() {
+        assert!(ran >= 2, "mkfs.xfs ran");
+    }
 }

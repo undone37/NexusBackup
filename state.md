@@ -566,7 +566,12 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   GUID (`DMIO:ID:`) or MBR signature + offset (`win_id`); MBR partitions get `PARTUUID=<sig>-<nn>`; tests: unit
   (hostile hives, ri loops, byte flips), real GPT + MBR disks with mkntfs/ntfs-3g (C:, E:, F:); fuzz target
   `regf_hive`
-- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, owners/SIDs, content hashes
+- [x] 31c XFS walker (`fsindex::xfs`, own parser): v4/v5 (CRCs checked), inodes by number, big time stamps,
+  64-bit extent counters, local/extent/B+tree forks, short form/block/leaf/node/B+tree directories, bounded;
+  split between helpers and per-directory records + takeover as NTFS; the micro-VM fallback only for btrfs/ZFS;
+  tests: mkfs.xfs protofile images v5 4k, v5 1k (directory blocks of 4 fs blocks), v4 ftype=0, all five directory
+  formats, mount `/` from its fstab; hostile XFS volume fails alone; fuzz target `xfs_walk` (+ disk_walk seeds)
+- [ ] 31c: LVM thin, btrfs, Windows LDM, owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

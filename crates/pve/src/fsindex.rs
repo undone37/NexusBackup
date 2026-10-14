@@ -3,8 +3,8 @@
 //! the guest file systems; this side reads the snapshot from the chunk store
 //! (the helper gets bytes, never keys), reuses the listing of every volume
 //! whose metadata chunks did not change since the previous snapshot, falls
-//! back to the micro-VM for the volumes the helper cannot read (XFS, btrfs,
-//! ZFS) when its image is installed, and writes the sealed name index plus
+//! back to the micro-VM for the volumes the helper cannot read (btrfs, ZFS)
+//! when its image is installed, and writes the sealed name index plus
 //! the sealed volume report (`fsindex`).
 //!
 //! Name-index paths stay the file browser's paths (`vda1/etc/hosts`,
@@ -33,7 +33,7 @@ const CHUNK_CACHE: usize = 128;
 const VERSION: u32 = 1;
 
 /// File systems the micro-VM mounts that the helper does not parse.
-const VM_FALLBACK: &[&str] = &["xfs", "btrfs", "zfs_member"];
+const VM_FALLBACK: &[&str] = &["btrfs", "zfs_member"];
 
 /// (disk, chunk index) and the decoded chunk
 type Cached = ((usize, u64), Arc<Vec<u8>>);
@@ -495,7 +495,7 @@ pub fn summary(v: &Volume) -> Value {
     })
 }
 
-/// Lists the volumes only the micro-VM can read (XFS, btrfs, ZFS) through it,
+/// Lists the volumes only the micro-VM can read (btrfs, ZFS) through it,
 /// if its image is installed. Returns whether it ran.
 fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], limits: Limits) -> bool {
     let want: Vec<usize> = (0..listed.len())

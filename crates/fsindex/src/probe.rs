@@ -8,6 +8,7 @@ pub enum Kind {
     Ntfs,
     Fat,
     Exfat,
+    Xfs,
     LvmPv,
     Swap,
     /// recognized, not indexed: (fs name, reason)
@@ -62,7 +63,7 @@ pub fn probe(v: &Vol) -> Kind {
         return Kind::Unsupported("luks", "LUKS-encrypted volume");
     }
     if at(0, b"XFSB") {
-        return Kind::Unsupported("xfs", "XFS is not indexed yet");
+        return Kind::Xfs;
     }
     if le16(&head, 1024 + 56) == 0xEF53 && le32(&head, 1024 + 24) <= 6 {
         return Kind::Ext;

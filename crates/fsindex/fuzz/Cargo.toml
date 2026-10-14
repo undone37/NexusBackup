@@ -78,3 +78,10 @@ path = "fuzz_targets/regf_hive.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "xfs_walk"
+path = "fuzz_targets/xfs_walk.rs"
+test = false
+doc = false
+bench = false

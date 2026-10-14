@@ -458,4 +458,38 @@ put("fsindex", "regf_hive", "system", hive([
                         ("\\??\\Volume{x}", 3, "\\??\\SCSI#CdRom".encode("utf-16-le"))]),
 ]))
 
+
+def xfs_seed(extra):
+    """The first 64 KiB of a small XFS (1 KiB blocks, external log: the root inode chunk lies
+    within them) holding a few directories and files."""
+    exe = find_tool("mkfs.xfs")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        img, log, src, proto = (os.path.join(d, n) for n in ("img", "log", "src", "proto"))
+        for p, n in ((img, 32 << 20), (log, 16 << 20)):
+            with open(p, "wb") as f:
+                f.truncate(n)
+        with open(src, "wb") as f:
+            f.write(b"x" * 1500)
+        lines = ["/dev/null", "0 0", "d--755 0 0", "etc d--755 0 0", f"fstab ---644 0 0 {src}", "$",
+                 "home d--755 0 0"] + [f"f{i} ---644 0 0 {src}" for i in range(12)] + ["$",
+                 "link l--777 0 0 etc/fstab", "$"]
+        with open(proto, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        env = dict(os.environ, QA_CHECK_FS="1", TEST_DIR="1", TEST_DEV="1")
+        r = subprocess.run([exe, "-q", "-b", "size=1024", "-d", "agcount=1", "-l", f"logdev={log},size=10m",
+                            "-p", proto] + extra + [img], capture_output=True, env=env)
+        if r.returncode != 0:
+            return None
+        with open(img, "rb") as f:
+            return f.read(65536)
+
+
+for name, extra in [("v5-1k", []), ("v4-1k", ["-m", "crc=0", "-n", "ftype=0", "-i", "size=256"])]:
+    data = xfs_seed(extra)
+    if data:
+        put("fsindex", "xfs_walk", name, data)
+        put("fsindex", "disk_walk", "xfs-" + name, data)
+
 print("seeds written")

@@ -134,9 +134,10 @@ volume the browse name, device, file system, label, UUID, PARTUUID, state (`inde
 `LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows: drive letters from the system volume's
 SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
-key is the set of chunk ids, the granularity is the volume). XFS, btrfs and ZFS volumes are listed through the
-micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off); BitLocker, LUKS, ReFS, Windows dynamic
-disks (LDM), Storage Spaces, md RAID, LVM thin/cache/VDO/RAID5 are reported with their reason.
+key is the set of chunk ids, the granularity is the volume). btrfs and ZFS volumes (XFS until Phase 31c, see
+below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
+BitLocker, LUKS, ReFS, Windows dynamic disks (LDM), Storage Spaces, md RAID, LVM thin/cache/VDO/RAID5 are reported
+with their reason.
 
 Lab measurement (restore-vm fixtures, 1.1 GB GPT disk with ext4, XFS, NTFS, btrfs, vfat, LVM; 256 MB ZFS disk):
 the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and ext4-on-LVM in **0.14 s**
@@ -165,9 +166,24 @@ included: its index root and allocation blocks and its children's MFT records) a
 snapshot's record is unchanged (chunk ids compared, nothing decrypted) the parent adds the previous name index's
 entries of that directory and answers with its subdirectories, which the helper walks on without reading the
 directory. A renamed or moved directory has another path and is listed again. Volumes taken over whole carry their
-records on. ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
+records on. XFS directories get records the same way (see below). ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
 listing depends on; ext4 volumes are taken over per volume as before. The job log line says how many directories
 were taken over; the result has `dirs_taken_over`.
+
+**XFS (Phase 31c).** The helper reads XFS itself (`fsindex::xfs`, no maintained crate exists): the superblock (v4
+and v5; on v5 the superblock, inode, extent-tree and directory block CRC-32C checksums are checked and unknown
+incompatible features refuse the volume), inodes by number (an inode number encodes its AG, block and slot, so the AG
+inode B+trees are not needed; v5 inodes must carry their own number), big time stamps and 64-bit extent counters,
+data forks in local, extent and B+tree format, and directories in every format (short form in the inode; block, leaf,
+node and B+tree directories by their data blocks below 32 GiB, also when a directory block spans several file system
+blocks; leaf and free index blocks are not needed for a listing). Bounds: B+tree depth 10, 2^20 extents per fork,
+1 GiB of directory data per directory, every block number checked against the AG geometry, directories entered
+once, the time budget checked per directory. The XFS log is never replayed (as for the other file systems). XFS
+volumes are split between the helpers like NTFS and ext4, and every block goes through the helper's logged block
+cache, so XFS directories get records and are taken over unread like NTFS ones. The micro-VM fallback stays for
+btrfs and ZFS. Tests: mkfs.xfs with a protofile (no root), v5 with 4 KiB and 1 KiB blocks and v4 without file
+types, each with short form, block, leaf, node and B+tree directories; fuzz target `xfs_walk` (checksums are not
+verified in fuzz builds, `cfg(fuzzing)`, so the fuzzer reaches the parsers behind them).
 
 **Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
 reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)
