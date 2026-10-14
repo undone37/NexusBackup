@@ -5,7 +5,7 @@
 #     exact    VM $EXACT_VM (stopped for the test, started again afterwards) backed up, restored as VM $EXACT_TARGET,
 #              both disks compared on the host (sha256 of the zvols): the restore is byte-identical, including the
 #              regions the appliance did not transfer (zero / unallocated)
-#     windows  group "windows" backed up twice (full, then incremental): durations, bytes read vs logical,
+#     windows  group "windows" (VM 101 by default, deploy.sh) backed up twice (full, then incremental): durations, bytes read vs logical,
 #              warnings; then a restore test of $RT_VM (boot in an isolated network, guest agent answers)
 #     cleanup  remove the VMs this script restored (only names ending in -verify)
 # (cloud-init CD-ROMs are generated per VM and not compared)
