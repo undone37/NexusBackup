@@ -940,6 +940,9 @@ T70–T75. Decisions and deviations:
   entries not indexed under the tenant (no tip-off), closing a case keeps its holds, exports refused in vault mode and
   capped at 50 snapshots. The item metadata index (sender, recipients) is described as a design in docs/m365.md
   "Compliance search and cases".
+- **VMware vSphere source**: not implemented; transport spike document docs/vmware-transport-spike.md (open question
+  6 decided: no VDDK in the image; HTTPS datastore reads + `QueryChangedDiskAreas` first, nbdkit with a
+  customer-supplied VDDK later if needed; scheduled after the spike ran in a vSphere lab).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

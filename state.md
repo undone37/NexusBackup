@@ -621,3 +621,6 @@ Phase 30's), threat model T70–T75.
   T74; tests: web-api `tests/phase33.rs`, scheduler `tests/phase33.rs`, route classification, catalog migration
 - [ ] M365 item metadata search (sender, recipients) for cases: needs a plugin contract change (design in docs/m365.md)
 - [ ] lab: a case over a real M365 test tenant backup with a PST export
+- [x] VMware: transport spike document docs/vmware-transport-spike.md (HTTPS datastore + CBT vs. nbdkit + customer
+  VDDK, licensing, effort, recommendation, spike steps); not implemented by decision
+- [ ] VMware spike run in a vSphere lab (ESXi 8 with VMFS/NFS, vSAN if available), then schedule the plugin

@@ -165,7 +165,8 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 ## Proposed decisions and open questions
 
 1. **Phase 28 = Tier 1 (#1–#4)** after Phase 27, in the order 1, 2, 3, 4 (#4 can go first, it is days). Tier 2 as
-   Phase 29, each item decided separately.
+   Phase 29, each item decided separately. (Tier 2 became Phase 33, 2026-10-14: PSA ticketing, tenant-side approvers,
+   `nexusctl fleet`, synthetic restore and cases implemented; VMware as a transport spike document.)
 2. **Hash format for #2:** SHA-256 only (what IOC feeds publish) or also MD5/SHA-1 for older lists? Proposal:
    SHA-256 only; per-file hashing cost on agents to be measured (it is an extra pass over data already read).
 3. **VM file hashes for #2:** opt-in per group together with `index_files`, since the walk in the micro-VM would
@@ -178,7 +179,10 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
    split activation codes).
 6. **VMware transport:** VDDK is proprietary and cannot ship in the AGPL image; alternatives are HTTPS datastore
    reads of snapshot disks plus `QueryChangedDiskAreas`, or nbdkit with a customer-supplied VDDK. Needs a spike
-   before the item is scheduled.
+   before the item is scheduled. **Decided 2026-10-15 (Phase 33, docs/vmware-transport-spike.md): VDDK is never
+   shipped; the first version uses HTTPS datastore reads with `QueryChangedDiskAreas` (VMFS/NFS; vSAN/vVols and VMs
+   with existing snapshots not covered), nbdkit with a customer-supplied VDDK stays a later option; the source is
+   scheduled after the spike has run in a vSphere lab.**
 7. **Multi-appliance overview:** CLI only, or a separate small web service (another component to harden)? Proposal:
    CLI and a static HTML report first. **Decided 2026-10-14 (Phase 33): CLI and static HTML report** (`nexusctl
    fleet`, read-scoped tokens only).
