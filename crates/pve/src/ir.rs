@@ -379,7 +379,7 @@ impl Cluster {
             bail!("instant recovery cannot replace the original; use a full restore");
         }
         let start = Instant::now();
-        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, opts, None)?;
+        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, opts, None, false)?;
         let disks: Vec<(String, String)> = plan.disks.iter().map(|d| (d.key.clone(), d.device.clone())).collect();
         self.serve_ir(store, &m, node, target, &archive, &disks, |api| {
             let id = target.to_string();
@@ -447,6 +447,7 @@ impl Cluster {
         target_storage: &str,
         opts: &crate::restore::RestoreOpts,
         bridge: Option<&str>,
+        restore_test: bool,
     ) -> Result<(chunkstore::Manifest, String, IrConfig)> {
         let m = store.load_manifest(&source_name(vmid), time)?;
         let mut conf = read_config(store, &m, "qemu-server.conf")?.context("snapshot has no qemu-server.conf")?;
@@ -465,7 +466,8 @@ impl Cluster {
             &devices,
             target_storage,
             opts.link_down && bridge.is_none(),
-            bridge.is_some(),
+            // a restore test boots with a fresh vTPM, isolated on a bridge or with its links down
+            restore_test,
         )?;
         if !plan.dropped.is_empty() {
             eprintln!("not backed up, left out: {}", plan.dropped.join(", "));
@@ -515,7 +517,7 @@ impl Cluster {
             link_down: true,
             ..Default::default()
         };
-        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, &opts, bridge)?;
+        let (m, archive, plan) = self.ir_prepare(store, vmid, time, target, target_storage, &opts, bridge, true)?;
         let disks: Vec<(String, String)> = plan.disks.iter().map(|d| (d.key.clone(), d.device.clone())).collect();
         self.serve_ir(store, &m, node, target, &archive, &disks, |api| {
             let id = target.to_string();

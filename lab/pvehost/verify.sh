@@ -49,10 +49,10 @@ backup_group() { # name -> job json
 stats() { jq -r .log <<<"$1" | grep '^nexus-stats ' | sed 's/^nexus-stats //' | jq -c '{source, read, logical, new_stored}'; }
 wait_snapshot() { # source time
 	for _ in $(seq 90); do
-		api admin GET "/snapshots?tenant=lab" | jq -e --arg s "$1" --argjson t "$2" '.[] | select(.source==$s and .time==$t)' >/dev/null && return 0
+		api admin GET "/snapshots?tenant=lab" | jq -e --arg s "$1" --argjson t "$2" '.[] | select(.source==$s and .time==$t and .local)' >/dev/null && return 0
 		sleep 2
 	done
-	die "snapshot $1/$2 not in the catalog"
+	die "snapshot $1/$2 not in the catalog as local"
 }
 zvol_sha() { # vmid -> "key sha" per disk (scsi/virtio/sata disks, sorted by key)
 	pve "qm config $1 | grep -v media=cdrom | sed -n 's/^\(\(scsi\|virtio\|sata\)[0-9]*\): $STORAGE:\([^,]*\),.*/\1 \3/p' | sort |
