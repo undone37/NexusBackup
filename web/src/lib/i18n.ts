@@ -1666,6 +1666,7 @@ export const en = {
   },
   groups: {
     lastBackup: "Last backup",
+    moreLabel: (name: string) => `More actions for group ${name}`,
     neverBackedUp: "never backed up",
     nextBackup: (when: string) => `next ${when}`,
     title: "Protection groups",

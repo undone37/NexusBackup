@@ -849,7 +849,7 @@ async function main() {
       await ev(`$check('dialog[open] input[type="checkbox"][value="101"]'); return true;`);
       await shot('group-backup-guests');
       await closeDialogs();
-      await ev(`$rowClick('acme-vms', 'Pause'); return true;`);
+      await ev(`$rowMenu('acme-vms', 'Pause'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #pause-for')`, 'pause dialog');
       await ev(`$fill('#pause-for', '14'); return true;`);
       await shot('group-pause');

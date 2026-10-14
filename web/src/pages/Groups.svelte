@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
   import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount, onDestroy } from 'svelte';
@@ -431,6 +432,18 @@
     if (!(await askConfirm(t.confirmDelete(`${t.dash.group} "${x.name}"`)))) return;
     if (await act(del(`/groups/${x.id}`), t.deleted)) load();
   }
+  /** The other actions of a group row (Back up now and Edit are buttons of their own). */
+  function groupActions(x: Group): MenuItem[] {
+    const out: MenuItem[] = [];
+    if (can.backup(session.user))
+      out.push(
+        isPaused(x.paused_until)
+          ? { label: t.runctl.resume, onselect: () => resume(x) }
+          : { label: t.runctl.pause, onselect: () => ((target = x), (pauseOpen = true)) },
+      );
+    out.push({ label: t.delete, onselect: () => remove(x) });
+    return out;
+  }
 </script>
 
 <div class="page-head">
@@ -516,21 +529,9 @@
                       bnOpen = true;
                     }}><IconPlay aria-hidden="true" />{t.runctl.backupNow}</button
                   >
-                  {#if isPaused(x.paused_until)}
-                    <button type="button" class="small" onclick={() => resume(x)}>{t.runctl.resume}</button>
-                  {:else}
-                    <button
-                      type="button"
-                      class="small"
-                      onclick={() => {
-                        target = x;
-                        pauseOpen = true;
-                      }}>{t.runctl.pause}</button
-                    >
-                  {/if}
                 {/if}
                 <button type="button" class="small" data-group-edit onclick={() => edit(x)}>{t.edit}</button>
-                <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
+                <Menu label={t.agents.more} ariaLabel={t.groups.moreLabel(x.name)} items={groupActions(x)} />
               </td>
             </tr>
           {/each}
