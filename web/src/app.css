@@ -793,11 +793,19 @@ td.mono {
 td.mono.details {
   white-space: normal;
 }
+/* row buttons: on one line when there is room, wrapped (never cut off) when the table is tight */
 td.actions {
-  white-space: nowrap;
+  white-space: normal;
   text-align: right;
-  padding-top: 0.35rem;
-  padding-bottom: 0.35rem;
+  min-width: 6rem;
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
+td.actions > button,
+td.actions > a.button {
+  white-space: nowrap;
+  margin-top: 0.15rem;
+  margin-bottom: 0.15rem;
 }
 .field-label {
   display: block;
