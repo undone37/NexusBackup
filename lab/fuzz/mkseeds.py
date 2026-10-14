@@ -562,4 +562,93 @@ for name, extra in [("plain", []), ("subvol", ["-u", "rw:home/sub", "-u", "defau
     if data:
         put("fsindex", "btrfs_walk", name, data)
 
+
+# Windows dynamic disk (LDM), as crates/fsindex/src/ldm.rs `build` writes it
+def ldm_num(v):
+    b = v.to_bytes(8, "big").lstrip(b"\0") or b"\0"
+    return bytes([len(b)]) + b
+
+
+def ldm_text(s):
+    return bytes([len(s)]) + s.encode()
+
+
+def ldm_rec(ty, body, size):
+    return b"VBLK" + bytes(15) + bytes([ty]) + struct.pack(">I", size) + body
+
+
+def ldm_disk4(i, name, guid):
+    b = ldm_num(i) + ldm_text(name)
+    r = len(b)
+    return ldm_rec(0x44, (b + guid).ljust(r + 45, b"\0"), r + 45)
+
+
+def ldm_volume(i, name, kind, size, guid):
+    b = ldm_num(i) + ldm_text(name) + ldm_text(kind) + ldm_text("")
+    r_dis = len(b)
+    b = (b + b"ACTIVE").ljust(r_dis + 0x15, b"\0") + ldm_num(1)
+    r_child = len(b) - 0x15
+    b = b.ljust(r_child + 0x25, b"\0") + ldm_num(size)
+    r_size = len(b) - 0x25
+    b = (b.ljust(r_size + 0x29, b"\0") + b"\x07" + guid).ljust(r_size + 58, b"\0")
+    return ldm_rec(0x51, b, r_size + 58)
+
+
+def ldm_comp(i, name, kind, parent):
+    b = ldm_num(i) + ldm_text(name) + ldm_text("ACTIVE")
+    r_vstate = len(b)
+    b = (b + bytes([kind])).ljust(r_vstate + 5, b"\0") + ldm_num(1)
+    r_child = len(b) - 5
+    b = b.ljust(r_child + 0x15, b"\0") + ldm_num(parent)
+    r_parent = len(b) - 0x15
+    return ldm_rec(0x32, b.ljust(r_parent + 22, b"\0"), r_parent + 22)
+
+
+def ldm_part(i, name, start, off, size, parent, disk):
+    b = ldm_num(i) + ldm_text(name)
+    b = b + bytes(12) + struct.pack(">QQ", start, off) + ldm_num(size) + ldm_num(parent) + ldm_num(disk)
+    r = len(b) - 0x1c
+    return ldm_rec(0x33, b.ljust(r + 28, b"\0"), r + 28)
+
+
+def ldm_disk(sectors=128, cs=24, csize=100, slot=128):
+    g = bytes(range(16))
+    recs = [ldm_disk4(1, "Disk1", g), ldm_volume(2, "Volume1", "gen", 8, b"\x11" * 16),
+            ldm_comp(3, "Volume1-01", 2, 2), ldm_part(4, "Disk1-01", 0, 0, 8, 3, 1),
+            ldm_volume(5, "Volume2", "raid5", 8, b"\x22" * 16)]
+    d = bytearray(sectors * 512)
+    d[446 + 4] = 0x42
+    struct.pack_into("<II", d, 446 + 8, 1, sectors - 1)
+    d[510:512] = b"\x55\xaa"
+    ph = bytearray(512)
+    ph[0:8] = b"PRIVHEAD"
+    struct.pack_into(">HH", ph, 0x0c, 2, 12)
+    h = g.hex()
+    ph[0x30:0x30 + 36] = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}".encode()
+    struct.pack_into(">Q", ph, 0x11b, 100)
+    struct.pack_into(">QQ", ph, 0x12b, cs, csize)
+    d[6 * 512:7 * 512] = ph
+    base = cs * 512
+    d[base + 512:base + 520] = b"TOCBLOCK"
+    vm = base + 17 * 512
+    slots = [b""] * 4
+    for g_, r in enumerate(recs):
+        hdr = bytearray(r[:16])
+        struct.pack_into(">IHH", hdr, 8, g_ + 1, 0, 1)
+        slots.append(bytes(hdr) + r[16:])
+    last = len(slots) + 4
+    d[vm:vm + 4] = b"VMDB"
+    struct.pack_into(">III", d, vm + 4, last, slot, 512)
+    struct.pack_into(">HH", d, vm + 0x12, 4, 10)
+    for k in range(4, last):
+        at = vm + k * slot
+        d[at:at + 4] = b"VBLK"
+        if k < len(slots):
+            d[at:at + len(slots[k])] = slots[k]
+    return bytes(d)
+
+
+put("fsindex", "ldm_db", "simple", ldm_disk())
+put("fsindex", "disk_walk", "ldm", ldm_disk())
+
 print("seeds written")

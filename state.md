@@ -580,7 +580,13 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   bounded; no directory records (copy-on-write: read sets always change), split between helpers; multi-device btrfs
   -> probe "unsupported" -> micro-VM fallback; tests: mkfs.btrfs --rootdir with nested subvolumes, default
   subvolume + 4 KiB nodes, zstd; hostile btrfs fails alone; fuzz target `btrfs_walk` (sparse disk records)
-- [ ] 31c: Windows LDM, owners/SIDs, content hashes
+- [x] 31c Windows dynamic disks (`fsindex::ldm`, as the kernel's ldm.c): private header, TOCBLOCK, VMDB, VBLKs
+  (fragments), disks/volumes/components/partitions; simple + spanned (+ mirrored by first plex) volumes as
+  `ldm/<name>`, striped / RAID-5 / missing disk reported; volume GUID as `win_id` (hive drive letters apply);
+  test: two MBR disks, NTFS system volume (C: from the hive), ext4 spanned over both disks (D:), striped + RAID-5,
+  second disk missing; fuzz target `ldm_db`. Open: GPT dynamic disks unverified against Windows; the micro-VM does
+  not assemble dynamic volumes (restore through the Windows agent)
+- [ ] 31c: owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

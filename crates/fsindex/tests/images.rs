@@ -1242,3 +1242,147 @@ fn btrfs_subvolumes() {
         assert!(ran >= 1, "mkfs.btrfs ran");
     }
 }
+
+/// Phase 31c: Windows dynamic disks (LDM) on two MBR disks: a simple NTFS
+/// volume (the system volume, whose SYSTEM hive names the dynamic volumes by
+/// their GUIDs), an ext4 spanned over both disks, a striped and a RAID-5 volume
+/// (reported). The database is written by the test (no tool builds one).
+#[test]
+fn ldm_simple_and_spanned_volumes() {
+    use fsindex::ldm::build::{component, database, disk4, partition, privhead, volume};
+    use fsindex::regf::{build, dmio};
+    let d = tempfile::tempdir().unwrap();
+    let p = |n: &str| d.path().join(n);
+    let guid = |b: u8| -> [u8; 16] { [b; 16] };
+    let text = |g: &[u8; 16]| {
+        let h = fsindex::hex(g);
+        format!(
+            "{}-{}-{}-{}-{}",
+            &h[0..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..32]
+        )
+    };
+    let (ga, gb) = (guid(0xa1), guid(0xb2));
+    let (g1, g2) = (guid(0x11), guid(0x22));
+    // MountedDevices: DMIO:ID: + the volume GUID bytes
+    let id = |g: &[u8; 16]| {
+        let mut v = b"DMIO:ID:".to_vec();
+        v.extend(g);
+        v
+    };
+    let _ = dmio;
+    let hive = build(&[(
+        "MountedDevices",
+        vec![("\\DosDevices\\C:", 3, id(&g1)), ("\\DosDevices\\D:", 3, id(&g2))],
+    )]);
+    let tree = p("tree");
+    // (no etc/fstab: a volume with one would be taken for a Linux root)
+    let mut expect = sample(&tree, "");
+    fs::remove_file(tree.join("etc/fstab")).unwrap();
+    expect.retain(|e| e.0 != "etc/fstab");
+    // users' files: enough MFT records that taking the directories over saves reads
+    let mut files: Vec<(String, Vec<u8>)> = vec![("Windows/System32/config/SYSTEM".into(), hive)];
+    for u in ["ann", "bob", "eve"] {
+        for i in 0..150 {
+            files.push((format!("Users/{u}/Documents/{i:03}.txt"), b"x".to_vec()));
+        }
+    }
+    let files: Vec<(&str, Vec<u8>)> = files.iter().map(|(n, d)| (n.as_str(), d.clone())).collect();
+    if !ntfs_img(&p("sys.img"), 8 << 20, "System", &files)
+        || !run(
+            "mkfs.ext4",
+            &[
+                "-q",
+                "-F",
+                "-d",
+                tree.to_str().unwrap(),
+                p("ext.img").to_str().unwrap(),
+                "8M",
+            ],
+        )
+    {
+        return;
+    }
+    let recs = vec![
+        disk4(1, "Disk1", &ga),
+        disk4(2, "Disk2", &gb),
+        volume(10, "Volume1", "gen", 1, 16384, &g1),
+        component(11, "Volume1-01", 2, 1, 10),
+        partition(12, "Disk1-01", 1985, 0, 16384, 11, 1),
+        volume(20, "Volume2", "gen", 1, 16384, &g2),
+        component(21, "Volume2-01", 2, 2, 20),
+        partition(22, "Disk1-02", 18369, 0, 2048, 21, 1),
+        partition(23, "Disk2-01", 1985, 2048, 14336, 21, 2),
+        volume(30, "Volume3", "gen", 1, 100, &guid(0x33)),
+        component(31, "Volume3-01", 1, 2, 30),
+        volume(40, "Volume4", "raid5", 1, 100, &guid(0x44)),
+        component(41, "Volume4-01", 3, 3, 40),
+    ];
+    let db = database(&recs, 128, 2048);
+    let disk = |sectors: usize, g: &[u8; 16]| {
+        let mut b = vec![0u8; sectors * 512];
+        b[446 + 4] = 0x42;
+        b[446 + 8..446 + 12].copy_from_slice(&63u32.to_le_bytes());
+        b[446 + 12..446 + 16].copy_from_slice(&(sectors as u32 - 63).to_le_bytes());
+        b[510] = 0x55;
+        b[511] = 0xaa;
+        let cs = sectors - 2048;
+        b[6 * 512..7 * 512].copy_from_slice(&privhead(&text(g), 63, cs as u64, 2048));
+        b[cs * 512..].copy_from_slice(&db);
+        b
+    };
+    let (mut a, mut b) = (disk(28672, &ga), disk(20480, &gb));
+    let ntfs = fs::read(p("sys.img")).unwrap();
+    let ext = fs::read(p("ext.img")).unwrap();
+    a[2048 * 512..2048 * 512 + ntfs.len()].copy_from_slice(&ntfs);
+    // the first MiB on the first disk, the rest (inode tables, directories) on the second
+    a[18432 * 512..18432 * 512 + (1 << 20)].copy_from_slice(&ext[..1 << 20]);
+    b[2048 * 512..2048 * 512 + (7 << 20)].copy_from_slice(&ext[1 << 20..]);
+    let (pa, pb) = (p("a.img"), p("b.img"));
+    fs::write(&pa, &a).unwrap();
+    fs::write(&pb, &b).unwrap();
+
+    let l = list(&[&pa, &pb]);
+    let v1 = vol(&l, "ldm/Volume1");
+    assert_eq!(
+        (v1.volume.fs.as_str(), v1.volume.state.as_str()),
+        ("ntfs", "indexed"),
+        "{:?}",
+        v1.volume
+    );
+    assert!(v1.volume.windows);
+    let v2 = vol(&l, "ldm/Volume2");
+    assert_eq!(
+        (v2.volume.fs.as_str(), v2.volume.state.as_str()),
+        ("ext4", "indexed"),
+        "{:?}",
+        v2.volume
+    );
+    assert_eq!(got(v2, &["lost+found"]), expect);
+    assert!(v2.reads.iter().any(|r| r.0 == 0) && v2.reads.iter().any(|r| r.0 == 1));
+    for (n, why) in [("ldm/Volume3", "striped"), ("ldm/Volume4", "RAID-5")] {
+        let v = vol(&l, n);
+        assert_eq!(v.volume.state, "unsupported");
+        assert!(v.volume.reason.as_deref().unwrap().contains(why), "{:?}", v.volume);
+    }
+    // the LDM partitions themselves are containers, not reported
+    assert!(l.iter().all(|x| !x.volume.browse.starts_with("vd")), "{l:?}");
+    let mut vols: Vec<Volume> = l.iter().map(|x| x.volume.clone()).collect();
+    fsindex::mapping::assign(&mut vols);
+    let m = fsindex::mapping::Mapper::new(&vols);
+    assert_eq!(m.guest("ldm/Volume1/Windows"), "C:/Windows");
+    assert_eq!(m.guest("ldm/Volume2/var/lib"), "D:/var/lib");
+    // the second disk missing: the spanned volume is reported, the simple one still listed
+    let l = list(&[&pa]);
+    assert_eq!(vol(&l, "ldm/Volume1").volume.state, "indexed");
+    let v2 = vol(&l, "ldm/Volume2");
+    assert_eq!(v2.volume.state, "unsupported");
+    assert!(
+        v2.volume.reason.as_deref().unwrap().contains("missing"),
+        "{:?}",
+        v2.volume
+    );
+}

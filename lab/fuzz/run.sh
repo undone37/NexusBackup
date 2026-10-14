@@ -21,7 +21,7 @@ all=(nbd:nbd_client nbd:nbd_server chunkstore:sealed_open chunkstore:meta_decode
      nas:helper_request replication:hostile_primary plugin-host:hostile_plugin
      fsindex:part_table fsindex:lvm_meta fsindex:ext4_walk fsindex:ntfs_walk fsindex:fat_walk
      fsindex:exfat_walk fsindex:helper_frames fsindex:disk_walk fsindex:regf_hive fsindex:xfs_walk
-     fsindex:lvm_thin fsindex:btrfs_walk)
+     fsindex:lvm_thin fsindex:btrfs_walk fsindex:ldm_db)
 if [ $# -gt 0 ]; then targets=("$@"); else targets=("${all[@]}"); fi
 san=${SANITIZER:-none}
 logs=target/fuzz-logs

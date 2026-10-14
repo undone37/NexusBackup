@@ -3,7 +3,7 @@
 use crate::disk::{Io, Segment, Vol};
 use crate::part::{PType, Table};
 use crate::probe::Kind;
-use crate::{disk_name, dm_name, lvm, Limits, Volume};
+use crate::{disk_name, dm_name, ldm, lvm, Limits, Volume};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
@@ -219,13 +219,8 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         };
         match ptype {
             PType::Reserved => return,
-            PType::Ldm => {
-                return reports.push(unsupported(
-                    info,
-                    "ldm",
-                    "Windows dynamic disk (LDM) is not indexed yet",
-                ))
-            }
+            // dynamic disks: their volumes come from the LDM database (below)
+            PType::Ldm | PType::LdmMeta => return,
             PType::StorageSpaces => {
                 return reports.push(unsupported(info, "storage_spaces", "Storage Spaces are not indexed"))
             }
@@ -299,6 +294,90 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         };
         todo.push((vol.clone(), info, walker));
     };
+    // Phase 31c: Windows dynamic disks (the private header: MBR disks at sector 6, GPT disks
+    // at the end of the LDM metadata partition)
+    let mut ldm_members: Vec<(ldm::Member, Volume)> = Vec::new();
+    for c in &cands {
+        let (disk, start) = c.vol_disk_offset();
+        let at = match (&c.ptype, &c.info.partuuid) {
+            (PType::Ldm, p) if p.as_deref().is_none_or(|p| !p.contains('-') || p.len() < 36) => 6 * 512,
+            (PType::LdmMeta, _) => start + c.vol.size().saturating_sub(512),
+            _ => continue,
+        };
+        if ldm_members.iter().all(|(m, _)| m.disk != disk) {
+            ldm_members.push((ldm::Member { disk, privhead: at }, c.info.clone()));
+        }
+    }
+    let ldm_vols = if ldm_members.is_empty() {
+        Ok(Vec::new())
+    } else {
+        ldm::volumes(&io, &ldm_members.iter().map(|m| m.0).collect::<Vec<_>>())
+    };
+    match ldm_vols {
+        Err(why) => {
+            for (_, info) in ldm_members {
+                reports.push(Volume {
+                    fs: "ldm".into(),
+                    state: "unsupported".into(),
+                    reason: Some(format!("Windows dynamic disk: {why}")),
+                    ..info
+                });
+            }
+        }
+        Ok(vols) => {
+            let mut names = std::collections::HashSet::new();
+            for dv in vols {
+                let mut name: String = dv
+                    .name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                if name.is_empty() || !names.insert(name.clone()) {
+                    name = dv.guid.clone();
+                    names.insert(name.clone());
+                }
+                let info = Volume {
+                    browse: format!("ldm/{name}"),
+                    device: format!("ldm/{name}"),
+                    size: dv.size,
+                    win_id: Some(format!("guid:{}", dv.guid)),
+                    ..Default::default()
+                };
+                match dv.map {
+                    Err(why) => reports.push(Volume {
+                        key: format!("ldm:{}", dv.guid),
+                        fs: "ldm".into(),
+                        state: "unsupported".into(),
+                        reason: Some(why),
+                        ..info
+                    }),
+                    Ok(segs) => {
+                        let vol = Vol::new(io.clone(), segs.clone());
+                        let info = Volume {
+                            key: format!("ldm:{}:{}", dv.guid, seg_key(&segs)),
+                            ..info
+                        };
+                        classify(
+                            &vol,
+                            info,
+                            &PType::Data,
+                            &mut texts,
+                            &mut pvs,
+                            &mut todo,
+                            &mut reports,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+    }
     for c in cands {
         let at = c.vol_disk_offset();
         classify(

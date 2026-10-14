@@ -14,8 +14,10 @@ pub enum PType {
     Data,
     Lvm,
     Swap,
-    /// Windows dynamic disk (LDM): not indexed (31c)
+    /// Windows dynamic disk (LDM): the MBR partition 0x42 or the GPT LDM data partition
     Ldm,
+    /// GPT LDM metadata partition (its last sector holds the private header)
+    LdmMeta,
     StorageSpaces,
     /// Microsoft reserved, BIOS boot: no file system, not reported
     Reserved,
@@ -87,7 +89,8 @@ fn gpt_type(g: &str) -> Option<PType> {
         "00000000-0000-0000-0000-000000000000" => return None,
         "e6d6d379-f507-44c2-a23c-238f2a3df928" => PType::Lvm,
         "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" => PType::Swap,
-        "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3" | "af9b60a0-1431-4f62-bc68-3311714a69ad" => PType::Ldm,
+        "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3" => PType::LdmMeta,
+        "af9b60a0-1431-4f62-bc68-3311714a69ad" => PType::Ldm,
         "e75caf8f-f680-4cee-afa3-b001e56efc2d" => PType::StorageSpaces,
         "e3c9e316-0b5c-4db8-817d-f92df00215ae" | "21686148-6449-6e6f-744e-656564454649" => PType::Reserved,
         "a19d880f-05fc-4d3b-a006-743f0f84911e" => PType::LinuxRaid,

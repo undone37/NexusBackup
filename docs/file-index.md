@@ -136,8 +136,8 @@ SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse rea
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
 key is the set of chunk ids, the granularity is the volume). ZFS and multi-device btrfs volumes (XFS and btrfs
 until Phase 31c, see below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
-BitLocker, LUKS, ReFS, Windows dynamic disks (LDM), Storage Spaces, md RAID, LVM cache/VDO/RAID5 are reported with
-their reason (LVM thin volumes are read since Phase 31c, see below).
+BitLocker, LUKS, ReFS, striped and RAID-5 dynamic volumes, Storage Spaces, md RAID, LVM cache/VDO/RAID5 are reported
+with their reason (LVM thin volumes and simple / spanned dynamic volumes are read since Phase 31c, see below).
 
 Lab measurement (restore-vm fixtures, 1.1 GB GPT disk with ext4, XFS, NTFS, btrfs, vfat, LVM; 256 MB ZFS disk):
 the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and ext4-on-LVM in **0.14 s**
@@ -212,6 +212,22 @@ listed"). The metadata is read as committed on disk (dm-thin writes it transacti
 hash of the mapping, so a thin LV whose mapping changed is parsed again (its old read set no longer describes it).
 Test: LVM metadata, pool metadata and an ext4 spread over the pool in reverse block order, written by the test
 (lvcreate needs root); a damaged node and a device missing from the metadata are reported. Fuzz target `lvm_thin`.
+
+**Windows dynamic disks (Phase 31c).** The LDM database is read as the Linux kernel's `block/partitions/ldm.c` reads
+it (`fsindex::ldm`): the private header (MBR disks with partition type 0x42: sector 6; GPT disks: the last sector of
+the LDM metadata partition), the table of contents, the database header (`VMDB` 4.10) and its `VBLK` records
+(fragmented records joined; disks `DSK3`/`DSK4`, volumes `VOL5`, components `CMP3`, partitions `PRT3`; every
+variable-length field and record size checked as the kernel checks it). Of the disks of the snapshot, the newest
+database copy wins; disks are matched by the GUIDs of their private headers. Simple and spanned volumes become
+volumes `ldm/<name>` (segments on one or several disks); mirrored volumes are read by their first plex; striped and
+RAID-5 volumes, volumes whose disk is missing and damaged databases are reported. Each dynamic volume carries its
+volume GUID as `win_id`, so the drive letters of the SYSTEM hive (`DMIO:ID:` + volume GUID) apply to them. Browse
+paths of dynamic volumes (`ldm/<name>/…`) are the index's own: the restore micro-VM does not assemble dynamic volumes,
+so their files are found by the search and listed, but are restored through the Windows agent. Several disk groups
+in one VM: only the newest database's group is read. The layout of GPT dynamic disks follows libldm and is not yet
+checked against a Windows-made disk (MBR layout as the kernel). Test: two MBR disks with a database written by the
+test (simple NTFS system volume whose hive names the dynamic volumes C: and D:, an ext4 spanned over both disks, a
+striped and a RAID-5 volume; the second disk missing). Fuzz target `ldm_db`.
 
 **Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
 reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)

@@ -99,3 +99,10 @@ path = "fuzz_targets/btrfs_walk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ldm_db"
+path = "fuzz_targets/ldm_db.rs"
+test = false
+doc = false
+bench = false
