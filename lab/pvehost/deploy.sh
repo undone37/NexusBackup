@@ -15,7 +15,7 @@
 # nexus@pve!backup) is set up as in manual/04 "Proxmox VE"; state.md lists what was done on the lab host.
 # env: PVE_HOST (10.2.34.200), NODE (pve-test), SSH_KEY (~/nexus-lab/pve-lab-key), VMID (201),
 #      ADDR (10.2.34.211/24), GW (10.2.34.254), DNS (10.2.34.253), BRIDGE (vmbr0), STORAGE (vmpool),
-#      LAB (~/nexus-lab/pvehost), PORT (28444), MEM (8192), CPUS (4)
+#      LAB (~/nexus-lab/pvehost), PORT (28444), MEM (16384), CPUS (8)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -31,8 +31,8 @@ STORAGE=${STORAGE:-vmpool}
 export LAB=${LAB:-$HOME/nexus-lab/pvehost}
 export PORT=${PORT:-28444}
 export ROOT=$LAB/appliance/root CONSOLE=$LAB/appliance/console.sock
-MEM=${MEM:-8192}
-CPUS=${CPUS:-4}
+MEM=${MEM:-16384}
+CPUS=${CPUS:-8}
 D=$LAB/appliance
 mkdir -p "$D"
 pve() { ssh -i "$SSH_KEY" -o BatchMode=yes "root@$PVE_HOST" "$@"; }
