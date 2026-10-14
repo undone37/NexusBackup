@@ -511,14 +511,16 @@ fn dashboard_paused_is_not_a_breach() {
 async fn job_detail_lists_its_follow_ups() {
     let t = T::new();
     let (otto, tina) = (t.login("otto").await, t.login("tina").await);
-    t.st.cat.conn().execute_batch(
-        "INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created) VALUES
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created) VALUES
            (50, 'backup', 'acme', '{\"group_id\":1}', 'ok', 'scheduler', 10),
            (51, 'retention', 'acme', '{\"chain\":true,\"group_id\":1,\"after_job\":50}', 'ok', 'scheduler', 11),
            (52, 'file_index', 'acme', '{\"source\":\"vm-101\",\"time\":5,\"after_job\":50}', 'queued', 'scheduler', 11),
            (53, 'offsite', 'acme', '{\"chain\":true,\"after_job\":51}', 'queued', 'scheduler', 12);",
-    )
-    .unwrap();
+        )
+        .unwrap();
     let r = t.get("/api/v1/jobs/50", &otto).await;
     let f: Vec<(i64, String)> = r.body["followups"]
         .as_array()
@@ -554,8 +556,14 @@ async fn groups_show_last_and_next_backup() {
         .unwrap();
     let list = t.get("/api/v1/groups", &alice).await.body;
     let g = |id: i64| list.as_array().unwrap().iter().find(|g| g["id"] == id).unwrap().clone();
-    assert_eq!((g(1)["last_backup"]["id"].clone(), g(1)["last_backup"]["state"].clone()), (json!(61), json!("ok")));
+    assert_eq!(
+        (g(1)["last_backup"]["id"].clone(), g(1)["last_backup"]["state"].clone()),
+        (json!(61), json!("ok"))
+    );
     assert!(g(2)["last_backup"].is_null(), "never backed up");
     let next = g(1)["next_backup"].as_i64().unwrap();
-    assert!(next > catalog::now() && next <= catalog::now() + 86400, "daily 22:00: within a day");
+    assert!(
+        next > catalog::now() && next <= catalog::now() + 86400,
+        "daily 22:00: within a day"
+    );
 }
