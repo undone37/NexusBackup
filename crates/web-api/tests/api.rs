@@ -4083,6 +4083,8 @@ async fn tenant_admin_routes_classified() {
         ("DELETE", "/restore-priority", "/api/v1/restore-priority".into(), none(), 'N'),
         ("POST", "/sources/{id}/split", format!("/api/v1/sources/{src}/split"), Some(json!({"roots": ["/a", "/b"]})), 'Y'),
         ("GET", "/jobs/{id}/skipped.csv", "/api/v1/jobs/999/skipped.csv".into(), none(), 'Y'),
+        // Phase 33: the report of a synthetic restore (own tenant)
+        ("GET", "/jobs/{id}/synthetic.csv", "/api/v1/jobs/999/synthetic.csv".into(), none(), 'Y'),
         ("GET", "/vault", "/api/v1/vault".into(), none(), 'Y'),
         ("PUT", "/vault", "/api/v1/vault".into(), Some(json!({"enabled": true})), 'N'),
         ("GET", "/tenants/tombstones", "/api/v1/tenants/tombstones".into(), none(), 'N'),

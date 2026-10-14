@@ -17,6 +17,8 @@
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import RestoreFiles from '../components/RestoreFiles.svelte';
+  import SyntheticRestore from '../components/SyntheticRestore.svelte';
+  import IconClean from '@lucide/svelte/icons/file-check';
   import SchemaForm from '../components/SchemaForm.svelte';
   import Menu, { type MenuItem } from '../components/Menu.svelte';
   import IconFolder from '@lucide/svelte/icons/folder-open';
@@ -433,10 +435,24 @@
     rfOpen = true;
   }
 
+  // Phase 33: clean-file restore of agent, NAS and share snapshots (the chosen snapshot, not the clean one:
+  // the clean-file restore itself steps back per file)
+  let synOpen = $state(false);
+  let synSnap: Snapshot | null = $state(null);
+  const synthetic = (s: Snapshot): MenuItem => ({
+    label: t.synth.menu,
+    hint: t.synth.menuHint,
+    icon: IconClean,
+    onselect: () => ((synSnap = s), (synOpen = true)),
+  });
+
   // Restore options of a snapshot, offered in one menu (long plugin restore titles fit there).
   function restoreItems(s: Snapshot): MenuItem[] {
     if (hostAgentId(s.source))
-      return [{ label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) }];
+      return [
+        { label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) },
+        ...(s.local ? [synthetic(s)] : []),
+      ];
     // any file tree onto a host with an agent of the tenant (Phase 15b)
     const toHost: MenuItem = { label: t.snap.restoreToHost, hint: t.snap.restoreToHostHint, icon: IconHost, onselect: () => openRestoreFiles(s) };
     const pl = pluginOf(s);
@@ -449,7 +465,7 @@
       return items;
     }
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
-    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return [toHost];
+    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return s.local ? [toHost, synthetic(s)] : [toHost];
     const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
     if (s.source.startsWith('vm-')) {
       items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
@@ -1011,6 +1027,10 @@
   <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents}>
     {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={rfSnap} onswitch={(x) => (rfSnap = x)} />{/if}
   </RestoreFiles>
+{/if}
+
+{#if synSnap}
+  <SyntheticRestore bind:open={synOpen} tenant={synSnap.tenant} source={synSnap.source} time={synSnap.time} {agents} />
 {/if}
 
 <ScanResults bind:open={scanOpen} snap={scanSnap} />

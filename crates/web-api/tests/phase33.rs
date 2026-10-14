@@ -562,3 +562,162 @@ async fn tenant_approvers_need_an_approver() {
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     assert_eq!(quorum_row(&t, q).0, "pending");
 }
+
+// ---------------------------------------------------------------- synthetic restore
+
+const AGENT: &str = "0123456789abcdef";
+
+fn synthetic(source: &str, mode: Value) -> Value {
+    let mut p = json!({"source": source, "time": 3000});
+    p.as_object_mut().unwrap().extend(mode.as_object().unwrap().clone());
+    json!({"kind": "synthetic_restore", "tenant": "acme", "params": p})
+}
+
+/// Synthetic restores: file-tree snapshots only, download (privilege, tokens
+/// refused) or onto an agent (confirmed by its name); the report CSV and the
+/// download for their requester's scope; a flagged snapshot onto production
+/// needs `restore.infected`.
+#[tokio::test]
+async fn synthetic_restore_requests_report_and_download() {
+    let mut t = T::new();
+    t.add_user("vera", "viewer", None, 0);
+    t.exec(&format!(
+        "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+           ('acme', 'share-4', 3000, 5, 1, 0), ('acme', 'host-{AGENT}', 3000, 5, 1, 0);
+         INSERT INTO agents (id, tenant, name, host, port, cert_sha256) VALUES ('{AGENT}', 'acme', 'fs02', '10.0.0.5', 7444, 'ab');"
+    ));
+    let (alice, otto, tina, vera) = (
+        t.login("alice").await,
+        t.login("otto").await,
+        t.login("tina").await,
+        t.login("vera").await,
+    );
+    for (body, why) in [
+        (synthetic("vm-100", json!({"mode": "download"})), "file-tree"),
+        (synthetic("share-4", json!({"mode": "copy"})), "mode"),
+        (
+            synthetic("share-4", json!({"mode": "download", "format": "rar"})),
+            "format",
+        ),
+        (synthetic("share-4", json!({"mode": "download", "depth": 0})), "depth"),
+        (
+            synthetic("share-4", json!({"mode": "download", "target": "/x"})),
+            "only with mode host",
+        ),
+        (
+            synthetic("share-4", json!({"mode": "host", "target": "/r", "confirm": "fs02"})),
+            "agent_id",
+        ),
+        (
+            synthetic(
+                &format!("host-{AGENT}"),
+                json!({"mode": "host", "target": "/r", "confirm": "nope"}),
+            ),
+            "confirm",
+        ),
+    ] {
+        let r = t.post("/api/v1/jobs", &alice, body).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}");
+        assert!(r.body["error"].as_str().unwrap().contains(why), "{why}: {:?}", r.body);
+    }
+    assert_eq!(
+        t.post("/api/v1/jobs", &vera, synthetic("share-4", json!({"mode": "download"})))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // a download by a tenant user of acme
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &tina,
+            synthetic("share-4", json!({"mode": "download", "format": "zip"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let (id, dl, rep) = (
+        r.body["id"].as_i64().unwrap(),
+        r.body["download_token"].as_str().unwrap().to_owned(),
+        r.body["report_token"].as_str().unwrap().to_owned(),
+    );
+    let p: Value = serde_json::from_str(&t.one::<String>(&format!("SELECT params FROM jobs WHERE id = {id}"))).unwrap();
+    assert_eq!((p["paths"].clone(), p["format"].clone()), (json!(["/"]), json!("zip")));
+    // without the download privilege: refused
+    t.exec("UPDATE users SET can_download = 0 WHERE name = 'otto'");
+    let otto2 = t.login("otto").await;
+    assert_eq!(
+        t.post(
+            "/api/v1/jobs",
+            &otto2,
+            synthetic("share-4", json!({"mode": "download"}))
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    drop(otto);
+    // the report and the download once the scheduler wrote them
+    let downloads = t.st.downloads.clone();
+    let report = format!("/api/v1/jobs/{id}/synthetic.csv");
+    assert_eq!(
+        t.get(&report, &tina).await.status,
+        StatusCode::NOT_FOUND,
+        "not written yet"
+    );
+    std::fs::write(
+        downloads.join(format!("{rep}.csv")),
+        "path,action,version,reason\r\n/a,left_out,,x\r\n",
+    )
+    .unwrap();
+    std::fs::write(downloads.join(format!("{dl}.zip")), b"PK").unwrap();
+    let r = t.get(&report, &tina).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&r.raw).contains("/a,left_out"));
+    assert_eq!(t.get(&report, &vera).await.status, StatusCode::FORBIDDEN);
+    let r = t.get(&format!("/api/v1/downloads/{dl}"), &tina).await;
+    assert_eq!((r.status, r.raw.as_slice()), (StatusCode::OK, &b"PK"[..]));
+    assert_eq!(
+        t.get(&format!("/api/v1/downloads/{dl}"), &alice).await.status,
+        StatusCode::NOT_FOUND,
+        "the requester's only"
+    );
+    // onto the snapshot's own agent (default), confirmed by its name
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            synthetic(
+                &format!("host-{AGENT}"),
+                json!({"mode": "host", "target": "/srv/clean", "confirm": "fs02", "depth": 10}),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let id = r.body["id"].as_i64().unwrap();
+    let p: Value = serde_json::from_str(&t.one::<String>(&format!("SELECT params FROM jobs WHERE id = {id}"))).unwrap();
+    assert_eq!(
+        (p["agent_id"].clone(), p["overwrite"].clone(), p["depth"].clone()),
+        (json!(AGENT), json!("never"), json!(10))
+    );
+    assert!(p.get("download_token").is_none());
+    // a flagged snapshot back into the original paths needs approval restore.infected
+    t.exec(&format!(
+        "UPDATE snapshots SET anomaly = 'YARA: 3 matches (Evil)' WHERE source = 'host-{AGENT}'"
+    ));
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            synthetic(
+                &format!("host-{AGENT}"),
+                json!({"mode": "host", "target": "/", "confirm": "fs02"}),
+            ),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert!(r.body["quorum_id"].is_i64(), "{:?}", r.body);
+    assert_eq!(
+        t.one::<String>("SELECT action FROM quorum ORDER BY id DESC LIMIT 1"),
+        "restore.infected"
+    );
+}

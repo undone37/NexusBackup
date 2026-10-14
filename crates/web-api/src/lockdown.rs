@@ -76,6 +76,7 @@ pub fn refuse_job(c: &Connection, tenant: &str, kind: &str, params: &Value) -> A
         "backup" | "agent_update" | "agent_renew" | "plugin_restore" => true,
         "restore" | "restore_ct" => params.get("replace").is_some(),
         "restore_files" => params["overwrite"].as_str().is_some_and(|o| o != "never"),
+        "synthetic_restore" => params["mode"] == "host" && params["overwrite"].as_str().is_some_and(|o| o != "never"),
         _ => false,
     };
     if overwrites {

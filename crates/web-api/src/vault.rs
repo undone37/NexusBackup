@@ -41,6 +41,7 @@ pub const GATED_KINDS: &[&str] = &[
     "instant_disk",
     "files_get",
     "restore_files",
+    "synthetic_restore",
     "plugin_restore",
     "plugin_mount",
     "offsite_restore",

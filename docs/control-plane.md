@@ -1249,3 +1249,40 @@ exit code 2 when an appliance is unreachable, in incident mode, or has a critica
 breach. Network: workstation → each appliance's web port (inbound allow-list); the appliances need no egress for it.
 No blueprints, no write actions (docs/commvault-comparison.md decision 7: CLI and a static HTML report first; a
 separate web service was not built).
+
+## Synthetic restore (Phase 33, `scheduler/src/synthetic.rs`, `chunkstore::synthetic`, `nexus-agentctl synthetic`)
+Job `synthetic_restore {source, time, paths? (default ["/"]), depth? (1..=100, default 30), mode: download|host,
+format? (download: tar|zip), target?, overwrite?, confirm?, agent_id? (host, as restore_files)}` for file-tree
+snapshots of agents (`host-`), TrueNAS (`nas-`) and shares (`share-`); the web-api adds `report_token` (always) and
+`download_token` (download; needs `can_download`, never through an API token) and answers both. Roles and gates as
+`restore_files` / `files_get`: tenant users may request it, vault mode gates it, a lockdown refuses host mode with
+overwriting, host mode onto the original paths or overwriting is a production restore (`catalog::incident`:
+`restore.infected` for a flagged snapshot, incident restore freezes).
+- **Decision** (scheduler, `Step::Store` with the tenant keyring, name indexes only): snapshots of the source up to
+  `time`, newest first, at most `depth + 1`, local only. Catalog inputs: the newest `snapshot_scans` row per snapshot
+  (matched paths and rules; `matches_total` above the listed matches = the whole snapshot is suspect), every IOC hash
+  list, the ransom-note globs (built-in plus the anomaly setting). Per snapshot k the mass rename against k+1 is
+  recomputed with the 21a rules (`changes::signals`/`finding`); its output = added files whose new extension is the
+  dominant one (count at least half of the most frequent) or whose name is a deleted path plus an extension; its
+  deleted files are wanted back unless the chosen snapshot has them. A version is unusable when its name is a ransom
+  note, it is rename output, a YARA match, on a hash list, or has the content (size + mtime, or SHA-256) of a version
+  flagged for YARA or a hash (content flags carry over to older snapshots). Every file of the chosen snapshot that is
+  unusable, and every wanted deleted file, takes the newest usable version found walking back; none = left out.
+  Output: `synthetic.json` in the job directory (`chunkstore::synthetic::Plan {source, time, paths, take: {time:
+  [paths]}, drop, stats}`) and `<downloads>/<report_token>.csv` (`path,action,version,reason`; actions
+  `substituted`, `restored`, `left_out`; cells starting with `= + - @` are prefixed with `'`).
+- **Composition** (`nexus-agentctl <cfg> synthetic`, the connector that already reads tree snapshots with the
+  keyring): `chunkstore::synthetic::compose` = the chosen tree without dropped and substituted paths plus the planned
+  entries of the older trees (their parent directories when the chosen tree lacks them; hard links to a left-out file
+  are left out; planned paths no longer in their snapshot are reported as `missing`). Download: `files::extract`
+  (tar/zip like `files_get`) into `<downloads>/<download_token>.<format>`; host: `restore::restore_tree` (same
+  protocol, confirmation and target rules as `restore_files`). Progress on stderr, the result (the scheduler's
+  `stats` plus `entries` or `written`, `missing`, `dangling`) as the last stdout line (captured). Nothing left to
+  restore fails the job (the CSV is written first).
+- **Result**: `{files, substituted, restored, left_out, snapshots_examined, from_unscanned, missing, dangling,
+  report_token, download_token?, format?, size?, expires?, entries? | written?}`; `GET /downloads/{token}` serves the
+  archive to the requester (kind `files_get` or `synthetic_restore`); `GET /jobs/{id}/synthetic.csv` (admin,
+  operator, tenant admin, tenant user, in scope; audited `synthetic.report`) the CSV. Both expire with the downloads
+  (24 h).
+- Not covered: VM/CT disks (no per-file versions without a file index walk per snapshot), plugin and M365
+  snapshots. Versions from never-scanned snapshots count as clean (`from_unscanned` counts them).

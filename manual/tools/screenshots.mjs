@@ -1581,6 +1581,22 @@ async function main() {
       await shot('approvals-tenant-side', { height: 1150 });
       await login('admin');
     }],
+    // Phase 33: clean-file (synthetic) restore of the infected file server fs02, its dialog and the finished job
+    ['p33synthetic', async () => {
+      await login('admin');
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return [...document.querySelectorAll('tbody tr')].some((tr) => tr.textContent.includes('Restore'))`, 'snapshot rows');
+      await ev(`const tr = [...document.querySelectorAll('tbody tr')].find((x) => /Restore/.test(x.textContent)); $click('Restore', tr); return true;`);
+      await until(`return !!$button('Clean-file restore')`, 'restore menu');
+      await ev(`$click('Clean-file restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] [id$="-depth"]')`, 'clean-file dialog');
+      await shot('synthetic-restore-dialog', { height: 1000 });
+      await ev(`$click('Start clean-file restore', document.querySelector('dialog[open]')); return true;`);
+      await until(`return location.hash.includes('/jobs/') && document.body.innerText.includes('Snapshots examined')`, 'finished clean-file restore', 40000);
+      await settle();
+      await shot('synthetic-restore-result', { height: 1100 });
+    }],
   ];
 
   let failed = 0;

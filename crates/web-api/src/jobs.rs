@@ -21,6 +21,8 @@ const RESTORE_KINDS: &[&str] = &[
     "files_list",
     "files_get",
     "restore_files",
+    // Phase 33: newest clean version of each file (download or onto an agent)
+    "synthetic_restore",
     "plugin_restore",
     "plugin_mount",
     // Phase 17d: browse the offsite copy, fetch a snapshot back for a restore
@@ -204,6 +206,42 @@ struct FilesGetP {
     /// set by the web-api: the scheduler writes `<downloads>/<token>.<format>`
     #[serde(default, skip_deserializing)]
     download_token: String,
+}
+
+/// Phase 33 synthetic restore (scheduler `synthetic.rs`): a file-tree snapshot
+/// of an agent, NAS or share with the newest clean version of each file.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticP {
+    source: String,
+    time: i64,
+    /// paths inside the snapshot (default: everything)
+    #[serde(default = "root_path")]
+    paths: Vec<String>,
+    /// older snapshots examined (1..=100, default 30)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    depth: Option<u64>,
+    /// `download` (tar or zip) or `host` (onto an agent, like restore_files)
+    mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overwrite: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    confirm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    /// set by the web-api: the download (`mode: download`) and the CSV of substituted files
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    download_token: Option<String>,
+    #[serde(default, skip_deserializing)]
+    report_token: String,
+}
+
+fn root_path() -> Vec<String> {
+    vec!["/".into()]
 }
 
 #[derive(Deserialize, Serialize)]
@@ -489,6 +527,74 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             f.download_token = random_hex();
             json!(f)
         }
+        "synthetic_restore" => {
+            let mut r: SyntheticP = parse(p)?;
+            if !["host-", "nas-", "share-"].iter().any(|x| r.source.starts_with(x)) {
+                return Err(ApiError::bad(
+                    "source: synthetic restores take file-tree snapshots of agents, NAS (TrueNAS) and shares",
+                ));
+            }
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            if r.paths.is_empty() || r.paths.len() > 1000 {
+                return Err(ApiError::bad("paths: 1..=1000 entries"));
+            }
+            for x in &mut r.paths {
+                if let Some(c) = validate::windows_canonical(x) {
+                    *x = c;
+                }
+                validate::host_path(x, "paths")?;
+            }
+            if r.depth.is_some_and(|d| !(1..=100).contains(&d)) {
+                return Err(ApiError::bad("depth: 1..=100 older snapshots"));
+            }
+            match r.mode.as_str() {
+                "download" => {
+                    if r.target.is_some() || r.overwrite.is_some() || r.confirm.is_some() || r.agent_id.is_some() {
+                        return Err(ApiError::bad(
+                            "target, overwrite, confirm, agent_id: only with mode host",
+                        ));
+                    }
+                    let f = r.format.get_or_insert_with(|| "tar".into());
+                    if f != "tar" && f != "zip" {
+                        return Err(ApiError::bad("format: tar or zip"));
+                    }
+                    r.download_token = Some(random_hex());
+                }
+                "host" => {
+                    if r.format.is_some() {
+                        return Err(ApiError::bad("format: only with mode download"));
+                    }
+                    let target = r
+                        .target
+                        .as_deref()
+                        .ok_or_else(|| ApiError::bad("target: required with mode host"))?;
+                    validate::host_path(target, "target")?;
+                    let ow = r.overwrite.get_or_insert_with(|| "never".into());
+                    if !["never", "if_older", "always"].contains(&ow.as_str()) {
+                        return Err(ApiError::bad("overwrite: never, if_older or always"));
+                    }
+                    let agent = match (r.agent_id.clone(), r.source.strip_prefix("host-")) {
+                        (Some(a), _) => a,
+                        (None, Some(a)) => a.to_owned(),
+                        (None, None) => {
+                            return Err(ApiError::bad(
+                                "agent_id: choose the agent to restore to (snapshots of NAS and shares)",
+                            ))
+                        }
+                    };
+                    let name = agent_name(st, tenant, &agent)?;
+                    if r.confirm.as_deref() != Some(name.as_str()) {
+                        return Err(ApiError::bad(format!(
+                            "confirm: type the target agent's name ({name}) to confirm the restore"
+                        )));
+                    }
+                    r.agent_id = Some(agent);
+                }
+                _ => return Err(ApiError::bad("mode: download or host")),
+            }
+            r.report_token = random_hex();
+            json!(r)
+        }
         "plugin_validate" | "plugin_guests" | "plugin_backup" => {
             let mut r: PluginSourceP = parse(p)?;
             if kind == "plugin_backup" {
@@ -668,6 +774,18 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     if let Some(s) = scan_first {
         params["scan_first"] = json!(s);
     }
+    // Phase 33: a synthetic download is a download (privilege, never through a token)
+    if r.kind == "synthetic_restore" && params["mode"] == "download" {
+        if !ctx.user.can_download {
+            return Err(ApiError::forbidden());
+        }
+        if ctx.token.is_some() {
+            return Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "API tokens cannot start downloads or mounts".into(),
+            ));
+        }
+    }
     // Phase 28: a locked-down tenant gets no backups and no restores that overwrite
     crate::lockdown::refuse_job(&st.cat.conn(), &r.tenant, &r.kind, &params)?;
     // Phase 29: frozen restores to production; flagged snapshots to production need approval
@@ -700,8 +818,10 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
         json!({"kind": r.kind, "tenant": r.tenant, "params": params}),
     )?;
     let mut body = json!({"id": id});
-    if let Some(t) = params.get("download_token") {
-        body["download_token"] = t.clone();
+    for k in ["download_token", "report_token"] {
+        if let Some(t) = params.get(k) {
+            body[k] = t.clone();
+        }
     }
     Ok((StatusCode::ACCEPTED, Json(body)).into_response())
 }
@@ -810,6 +930,53 @@ pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
     Ok(Json(job))
 }
 
+/// `GET /jobs/{id}/synthetic.csv` (Phase 33): the files a synthetic restore
+/// substituted, brought back or left out (written by the scheduler next to the
+/// downloads, kept as long as a download). Roles that may request restores, in
+/// their scope; audited `synthetic.report`.
+pub async fn synthetic_report(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Response> {
+    ctx.require(&["admin", "operator", "tenant_admin", "tenant_user"])?;
+    let token: Option<String> = st
+        .cat
+        .conn()
+        .query_row(
+            "SELECT json_extract(params, '$.report_token') FROM jobs
+             WHERE id = ?1 AND kind = 'synthetic_restore' AND (?2 IS NULL OR tenant = ?2)",
+            params![id, ctx.scope()],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let token = token
+        .filter(|t| t.len() == 64 && t.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+        .ok_or_else(ApiError::not_found)?;
+    let path = st.downloads.join(format!("{token}.csv"));
+    let csv = tokio::fs::read(&path).await.map_err(|_| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            "no report (the job has not decided yet, or it expired)".into(),
+        )
+    })?;
+    st.audit(
+        ctx.name(),
+        "synthetic.report",
+        &format!("job/{id}"),
+        json!({"bytes": csv.len()}),
+    )?;
+    let mut res = Body::from(csv).into_response();
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"synthetic-restore-{id}.csv\""))
+            .map_err(|_| ApiError::not_found())?,
+    );
+    Ok(res)
+}
+
 /// Queued jobs are cancelled here; running jobs get a cancel request
 /// (`jobs.cancel_by`) that the scheduler carries out (Phase 13b: SIGTERM, then
 /// SIGKILL after 30 s; the job ends `cancelled`). Answers the state after the
@@ -900,7 +1067,7 @@ pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>)
         .conn()
         .query_row(
             "SELECT id, requested_by, json_extract(params, '$.format') FROM jobs
-             WHERE kind = 'files_get' AND json_extract(params, '$.download_token') = ?1",
+             WHERE kind IN ('files_get', 'synthetic_restore') AND json_extract(params, '$.download_token') = ?1",
             [&token],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
         )

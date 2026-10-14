@@ -890,7 +890,8 @@ export type JobKind =
   | 'offsite_attach'
   | 'fleet_scan'
   | 'hash_hunt'
-  | 'scan_back';
+  | 'scan_back'
+  | 'synthetic_restore';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -1053,6 +1054,17 @@ export interface JobResult {
   summary?: string;
   /** plugin_mount: how to reach the mount (plugin-defined) */
   info?: unknown;
+  /** Phase 33 synthetic_restore: files of the chosen snapshot and what was done with them */
+  files?: number;
+  substituted?: number;
+  left_out?: number;
+  snapshots_examined?: number;
+  from_unscanned?: number;
+  /** files a mass rename deleted, brought back */
+  restored?: number;
+  /** mode host: what the agent wrote */
+  written?: { target: string; files: number; dirs: number; bytes: number; errors: number };
+  report_token?: string;
 }
 
 export interface Job {

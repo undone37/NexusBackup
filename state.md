@@ -606,3 +606,12 @@ Phase 30's), threat model T70–T75.
   tests: unit (config, token file mode, rendering and escaping), `crates/nexusctl/tests/fleet.rs` (two real web-api
   routers, operator token refused, unreachable appliance); manual 09, control-plane, threat model T72
 - [ ] lab: `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs
+- [x] synthetic (clean-file) restore: `synthetic_restore` job (web-api params, gates like restore_files / files_get,
+  download + report tokens, `GET /jobs/{id}/synthetic.csv`), scheduler decision (`synthetic.rs`), plan + CSV,
+  `chunkstore::synthetic::compose`, `nexus-agentctl synthetic` (tar/zip or `restore_tree` onto an agent); tests:
+  chunkstore compose, scheduler selection unit tests + `tests/phase33.rs` (real store, faked connector), agent-conn
+  `synthetic_restore_download_and_to_host` (fake agent), web-api `tests/phase33.rs`, catalog production rule; UI
+  (Snapshots menu, dialog, job result with report and download), mock, manual 06, screenshots (scene `p33synthetic`),
+  threat model T73
+- [ ] lab: clean-file restore of a real agent / share snapshot after a simulated ransomware run (lockbit-style rename
+  plus a YARA rule), download and to host

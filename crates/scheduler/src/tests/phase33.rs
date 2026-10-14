@@ -1,5 +1,6 @@
 //! Phase 33 (Commvault Tier 2): PSA ticketing against mock HaloPSA,
-//! ConnectWise and Autotask servers.
+//! ConnectWise and Autotask servers; new tenant approvers; synthetic restores
+//! (the decision from a real store, the connector faked).
 
 use super::*;
 use crate::psa::{Ticketing, ALERT_AFTER_SECS, NOTE_EVERY_SECS};
@@ -492,4 +493,184 @@ fn new_tenant_approver_alert() {
             })
             .unwrap();
     assert_eq!(n, 1);
+}
+
+// ---------------------------------------------------------------- synthetic restore
+
+fn tree_file(path: &str, size: u64, mtime: i64) -> chunkstore::TreeEntry {
+    chunkstore::TreeEntry {
+        path: path.as_bytes().to_vec(),
+        kind: chunkstore::TreeKind::File,
+        mode: 0o644,
+        uid: 0,
+        gid: 0,
+        size,
+        mtime_ns: mtime * 1_000_000_000,
+        ctime_ns: 0,
+        inode: 0,
+        rdev: 0,
+        link_target: None,
+        xattrs: Vec::new(),
+        chunks: Vec::new(),
+        inconsistent: false,
+    }
+}
+
+/// A share snapshot hit by ransomware (60 files renamed to `.lockbit`, a ransom
+/// note) whose other file a YARA rule matched: the scheduler decides from the
+/// name indexes and the catalog, writes the plan and the CSV, and hands the
+/// download to the connector; the job result carries its counts and the download.
+#[test]
+fn synthetic_restore_plan_csv_and_download() {
+    let mut e = env(1);
+    e.cfg.psa_poll_secs = 0;
+    let d = e.d.path().to_path_buf();
+    e.cfg.agentctl_bin = d.join("agentctl");
+    script(
+        &e.cfg.agentctl_bin,
+        &format!(
+            "cp \"$1\" {0}/syn-cfg.json\ncp \"$(dirname \"$1\")/synthetic.json\" {0}/syn-plan.json\necho reading >&2\necho '{{\"files\": 62, \"entries\": 64}}'",
+            d.display()
+        ),
+    );
+    fs::create_dir_all(&e.cfg.downloads).unwrap();
+    let store = chunkstore::Store::open(
+        e.cfg.store_base.join("t1"),
+        Keyring::new("t1", &[(1, [7; 32])]),
+        test_opts(),
+    )
+    .unwrap();
+    let docs: Vec<String> = (0..60).map(|i| format!("docs/f{i:02}.docx")).collect();
+    let mut day1: Vec<chunkstore::TreeEntry> = docs.iter().map(|p| tree_file(p, 10, 1)).collect();
+    day1.push(tree_file("docs/tool.exe", 5, 1));
+    day1.push(tree_file("docs/keep.txt", 3, 1));
+    let mut day2 = day1.clone();
+    day2[60] = tree_file("docs/tool.exe", 6, 2);
+    let mut day3: Vec<chunkstore::TreeEntry> = docs.iter().map(|p| tree_file(&format!("{p}.lockbit"), 12, 3)).collect();
+    day3.push(tree_file("docs/tool.exe", 6, 2));
+    day3.push(tree_file("docs/keep.txt", 3, 1));
+    day3.push(tree_file("docs/HOW_TO_DECRYPT.txt", 1, 3));
+    for (t, v) in [(1u64, day1), (2, day2), (3, day3)] {
+        store
+            .commit_snapshot("share-5", t, &[("tree", chunkstore::Index::Tree { entries: v })])
+            .unwrap();
+        s_snap(&e, t);
+    }
+    e.db.conn()
+        .execute(
+            "INSERT INTO snapshot_scans (job_id, tenant, source, time, finished, rules, files, skipped, errors, complete,
+               matches_total, matches) VALUES (900, 't1', 'share-5', 3, 3, 'r', 63, 0, 0, 1, 1, ?1)",
+            [json!([{"rule": "Dropper", "path": "/docs/tool.exe"}]).to_string()],
+        )
+        .unwrap();
+    let mut s = sched(&e);
+    let (dl, rep) = ("a".repeat(64), "b".repeat(64));
+    let id = manual(
+        &s,
+        "synthetic_restore",
+        "t1",
+        json!({"source": "share-5", "time": 3, "mode": "download", "format": "tar",
+               "download_token": dl, "report_token": rep}),
+    );
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    let log: String =
+        s.db.conn()
+            .query_row("SELECT log FROM jobs WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+    assert_eq!(state(&s, id), "ok", "{log}");
+    let plan: Value = serde_json::from_slice(&fs::read(d.join("syn-plan.json")).unwrap()).unwrap();
+    // tool.exe: version 2 has the flagged content, version 1 is clean; the renamed
+    // documents come back from 2, just before the rename
+    assert_eq!(plan["take"]["1"], json!(["docs/tool.exe"]), "{plan}");
+    assert_eq!(plan["take"]["2"].as_array().unwrap().len(), 60);
+    assert_eq!(
+        plan["drop"].as_array().unwrap().len(),
+        61,
+        "60 renamed outputs and the note"
+    );
+    assert_eq!(plan["paths"], json!(["/"]));
+    assert_eq!(
+        (
+            plan["stats"]["substituted"].clone(),
+            plan["stats"]["restored"].clone(),
+            plan["stats"]["left_out"].clone()
+        ),
+        (json!(1), json!(60), json!(61))
+    );
+    let cfg: Value = serde_json::from_slice(&fs::read(d.join("syn-cfg.json")).unwrap()).unwrap();
+    assert_eq!(
+        cfg["synthetic"]["out"],
+        json!(e.cfg.downloads.join(format!("{dl}.tar")))
+    );
+    assert!(cfg["agent"].is_null(), "a download needs no agent");
+    let csv = fs::read_to_string(e.cfg.downloads.join(format!("{rep}.csv"))).unwrap();
+    assert!(csv.starts_with("path,action,version,reason\r\n"), "{csv}");
+    assert!(
+        csv.contains("/docs/tool.exe,substituted,1,YARA rule Dropper matched in snapshot 3"),
+        "{csv}"
+    );
+    assert!(
+        csv.contains("/docs/f00.docx,restored,2,\"deleted by a mass rename in snapshot 3 (mass rename: 60 of 62"),
+        "{csv}"
+    );
+    assert!(
+        csv.contains("/docs/HOW_TO_DECRYPT.txt,left_out,,ransom-note file name"),
+        "{csv}"
+    );
+    let r = result_of(&s, id);
+    assert_eq!(
+        (
+            r["files"].clone(),
+            r["download_token"].clone(),
+            r["report_token"].clone()
+        ),
+        (json!(62), json!(dl), json!(rep))
+    );
+    // to a host: the agent of the tenant, restore options in the connector's config
+    s.db.conn()
+        .execute(
+            "INSERT INTO agents (id, tenant, name, host, port, cert_sha256) VALUES ('0123456789abcdef','t1','srv','10.0.0.9',7444,'ab')",
+            [],
+        )
+        .unwrap();
+    let id = manual(
+        &s,
+        "synthetic_restore",
+        "t1",
+        json!({"source": "share-5", "time": 3, "mode": "host", "agent_id": "0123456789abcdef", "target": "/srv/clean",
+               "overwrite": "never", "confirm": "srv", "paths": ["/docs/keep.txt"], "depth": 5, "report_token": rep}),
+    );
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let cfg: Value = serde_json::from_slice(&fs::read(d.join("syn-cfg.json")).unwrap()).unwrap();
+    assert_eq!(cfg["agent"]["id"], "0123456789abcdef");
+    assert_eq!(
+        cfg["synthetic"]["restore"],
+        json!({"target": "/srv/clean", "overwrite": "never", "confirm": "srv"})
+    );
+    let plan: Value = serde_json::from_slice(&fs::read(d.join("syn-plan.json")).unwrap()).unwrap();
+    assert_eq!(plan["stats"]["files"], 1, "only the selected path");
+    assert!(plan["take"].as_object().unwrap().is_empty() && plan["drop"].as_array().unwrap().is_empty());
+    // not a file tree: refused
+    let id = manual(
+        &s,
+        "synthetic_restore",
+        "t1",
+        json!({"source": "vm-100", "time": 3, "mode": "download", "download_token": dl, "report_token": rep}),
+    );
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert_eq!(state(&s, id), "failed");
+}
+
+/// The catalog row of a share snapshot (the scheduler lists local snapshots).
+fn s_snap(e: &Env, t: u64) {
+    e.db.conn()
+        .execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('t1', 'share-5', ?1, 1, 1, 0)",
+            [t as i64],
+        )
+        .unwrap();
 }

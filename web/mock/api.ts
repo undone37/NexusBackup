@@ -441,6 +441,15 @@ function planFor(kind: string, p: Json): string[] {
     }
     case 'replica_enroll':
       return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
+    case 'synthetic_restore':
+      return [
+        `reading the file name indexes of ${src} (${p.time} and up to ${p.depth ?? 30} older snapshots)`,
+        'YARA results of 2 snapshots, 1 IOC hash list, 15 ransom-note name patterns',
+        'mass rename in snapshot ' + p.time + ': 412 files deleted, 412 added with new extensions (.lockbit)',
+        'decided: 1,284 files, 3 substituted, 412 brought back, 413 left out',
+        p.mode === 'download' ? `writing <downloads>/<token>.${p.format}` : `connecting to agent ${agName} over mTLS`,
+        ...(p.mode === 'host' ? [`RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`, 'restored 1,283 files (48.1 MiB)'] : ['1,699 entries written']),
+      ];
     case 'restore_files':
       return [
         ...(/^(vm|ct)-/.test(src)
@@ -625,6 +634,7 @@ function tick() {
       if (j.kind === 'agent_renew' && ag)
         Object.assign(ag, { cert_sha256: rand(32), cert_issued: t, cert_expires: t + 3650 * 86400, cert_renewal_pending: false, last_seen: t });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
+      if (j.kind === 'synthetic_restore') syntheticDone(j, t);
       if (j.kind === 'files_get') {
         j.result = { download_token: j.params.download_token, format: j.params.format, entries: (j.params.paths ?? []).length };
         db.downloads.set(String(j.params.download_token), {
@@ -2642,7 +2652,7 @@ on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
 });
 
 // Phase 17c: vault mode (web-api `vault.rs`)
-const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
 function vaultRefuse(what: string) {
   if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
 }
@@ -4314,6 +4324,37 @@ on('GET', '/jobs', (c) => {
   return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
 });
 // Phase 22b (web-api nasops.rs): the `error …` lines of a backup log as CSV
+// Phase 33: what a synthetic restore substituted, brought back or left out (web-api jobs::synthetic_report)
+function syntheticDone(j: Job, t: number) {
+  j.result = {
+    files: 1284, substituted: 3, restored: 412, left_out: 413, snapshots_examined: Math.min(31, Number(j.params.depth ?? 30) + 1),
+    from_unscanned: 410, missing: 0, dangling: 0, report_token: j.params.report_token,
+    ...(j.params.mode === 'download'
+      ? { download_token: j.params.download_token, format: j.params.format, entries: 1699, size: 50_398_208, expires: t + 86400 }
+      : { written: { target: j.params.target, files: 1283, dirs: 211, bytes: 50_398_208, errors: 0 } }),
+  };
+  if (j.params.mode === 'download')
+    db.downloads.set(String(j.params.download_token), {
+      owner: j.requested_by,
+      filename: `${j.params.source}-${j.params.time}-clean.${j.params.format}`,
+      body: 'mock archive of the clean-file restore\n',
+      expires: t + 86400,
+    });
+}
+on('GET', '/jobs/:id/synthetic.csv', (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  const j = find(byTenant(u, db.jobs), (x) => x.id === Number(id) && x.kind === 'synthetic_restore', 'job');
+  if (!j.result) throw new HttpError(404, 'no report (the job has not decided yet, or it expired)');
+  const rows = [
+    ['/srv/data/finance/budget-2026.xlsx', 'substituted', String(Number(j.params.time) - 86400), 'YARA rule Ransom_Lockbit_Note matched in snapshot ' + j.params.time],
+    ['/srv/data/finance/budget-2026.xlsx.lockbit', 'left_out', '', 'output of a mass rename in snapshot ' + j.params.time + '; no clean version in the 31 snapshots examined'],
+    ['/srv/data/finance/report-q3.docx', 'restored', String(Number(j.params.time) - 86400), 'deleted by a mass rename in snapshot ' + j.params.time],
+    ['/srv/data/README-RESTORE.txt', 'left_out', '', 'ransom-note file name; no clean version in the 31 snapshots examined'],
+  ];
+  const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
+  c.res.setHeader('Content-Disposition', `attachment; filename="synthetic-restore-${j.id}.csv"`);
+  return [200, 'path,action,version,reason\r\n' + rows.map((r) => r.map(f).join(',')).join('\r\n') + '\r\n', 'text/csv; charset=utf-8'];
+});
 on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
   const j = find(byTenant(need(c.user), db.jobs), (x) => x.id === Number(id), 'job');
   if (j.kind !== 'backup') throw new HttpError(400, 'skipped files: backup jobs only');
@@ -4339,7 +4380,7 @@ on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
   return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -4427,6 +4468,29 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
+  if (kind === 'synthetic_restore') {
+    // Phase 33 (web-api jobs.rs SyntheticP)
+    const src = String(p.source ?? '');
+    if (!/^(host|nas|share)-/.test(src)) throw new HttpError(400, 'source: synthetic restores take file-tree snapshots of agents, NAS (TrueNAS) and shares');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+    p.paths ??= ['/'];
+    if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))
+      throw new HttpError(400, 'paths: absolute paths required');
+    if (p.depth !== undefined && !(Number.isInteger(p.depth) && p.depth >= 1 && p.depth <= 100)) throw new HttpError(400, 'depth: 1..=100 older snapshots');
+    if (p.mode === 'download') {
+      if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+      p.format ??= 'tar';
+      if (!['tar', 'zip'].includes(p.format)) throw new HttpError(400, 'format: tar or zip');
+    } else if (p.mode === 'host') {
+      if (!src.startsWith('host-') && !p.agent_id) throw new HttpError(400, 'agent_id: choose the agent to restore to (snapshots of NAS and shares)');
+      if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
+      if (!String(p.target ?? '').startsWith('/')) throw new HttpError(400, 'target: must be absolute');
+      p.overwrite ??= 'never';
+      if (!OVERWRITE.includes(p.overwrite)) throw new HttpError(400, 'overwrite: never, if_older or always');
+      const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
+      if (p.confirm !== a.name) throw new HttpError(400, `confirm: type the target agent's name (${a.name}) to confirm the restore`);
+    } else throw new HttpError(400, 'mode: download or host');
+  }
   if (kind === 'restore_files') {
     const src = String(p.source ?? '');
     // Phase 15b: host, TrueNAS, share, plugin (with a download restore), VM and CT snapshots
@@ -4484,8 +4548,13 @@ on('POST', '/jobs', async (c) => {
     const { replace: _r, ...rest } = params;
     return quorum(u, 'restore.replace', { tenant, kind, params: rest });
   }
-  // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
-  const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
+  // Like web-api: files_get gets a server-generated download token, returned in the 202 body;
+  // Phase 33: a synthetic restore also its report token
+  const p =
+    kind === 'files_get' || (kind === 'synthetic_restore' && params.mode === 'download')
+      ? { ...params, download_token: rand(32) }
+      : { ...params };
+  if (kind === 'synthetic_restore') p.report_token = rand(32);
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
   // Phase 23a: "back up now, keep until" (web-api keep.rs): beyond the limit an approval
@@ -4500,7 +4569,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
-  return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
+  return [202, { id: j.id, ...(p.download_token ? { download_token: p.download_token } : {}), ...(p.report_token ? { report_token: p.report_token } : {}) }];
 });
 // Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
 on('POST', '/restores', async (c) => {
@@ -9030,7 +9099,8 @@ function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
   const overwrites =
     ['backup', 'agent_update', 'agent_renew', 'plugin_restore'].includes(kind) ||
     ((kind === 'restore' || kind === 'restore_ct') && !!p.replace) ||
-    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never');
+    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never') ||
+    (kind === 'synthetic_restore' && p.mode === 'host' && !!p.overwrite && p.overwrite !== 'never');
   if (overwrites) lockdownRefuse(tenant, `${kind} jobs that change its data`);
 }
 
@@ -9384,7 +9454,8 @@ function productionRestore(kind: string, p: Json): boolean {
   if (kind === 'restore' || kind === 'restore_ct') return !!p.replace || !p.link_down;
   if (kind === 'instant_recover') return !p.link_down;
   if (kind === 'instant_disk' || kind === 'plugin_restore') return true;
-  if (kind === 'restore_files') return p.target === '/' || (!!p.overwrite && p.overwrite !== 'never');
+  if (kind === 'restore_files' || (kind === 'synthetic_restore' && p.mode === 'host'))
+    return p.target === '/' || (!!p.overwrite && p.overwrite !== 'never');
   return false;
 }
 const restoresFrozen = (tenant: string) =>

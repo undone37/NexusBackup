@@ -921,6 +921,17 @@ T70–T75. Decisions and deviations:
   `/auth/me` now reports the token's scope and anything but `read` is refused; dashboard, open alerts, failed jobs
   of the last N hours; parallel, unreachable appliances listed; `--html` (no scripts, escaped, 0600), `--json`,
   `--check` (exit 2 for monitoring). No figures from `crates/reports` (the dashboard JSON has them already).
+- **Synthetic (clean-file) restore** (implemented): job `synthetic_restore` for `host-`/`nas-`/`share-`
+  snapshots; the scheduler decides per file from the sealed name indexes (YARA matches of each snapshot's newest scan,
+  IOC lists, ransom-note names, mass-rename output recomputed per step with the 21a rules), walking back up to 30
+  (1..=100) snapshots; files a mass rename deleted come back from before it; the CSV goes next to the downloads;
+  `nexus-agentctl synthetic` composes (`chunkstore::synthetic`) and writes tar/zip or restores to an agent.
+  Decisions taken: a version with the content of a YARA/hash-flagged version (size + mtime or SHA-256) is flagged in
+  older snapshots too; a scan listing fewer matches than it found distrusts its whole snapshot; unscanned snapshots
+  count as clean (reported as `from_unscanned`; the UI recommends scanning back first); rename output = dominant new
+  extension or a deleted name plus an extension (an unrelated new file type in the same snapshot is kept); host
+  restores of a flagged snapshot to production keep needing `restore.infected` (conservative: unknown malware may
+  remain); not for VM/CT disks, plugins or M365 (no per-file versions without a per-snapshot file index walk).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

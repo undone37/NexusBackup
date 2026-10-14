@@ -114,6 +114,7 @@ mod selection;
 mod snapmeta;
 pub mod sshkeys;
 pub mod stats;
+pub mod synthetic;
 mod tenant_key;
 mod tenants;
 pub mod threat;
@@ -1672,6 +1673,7 @@ impl Scheduler {
     /// Structured result of a successful job (`jobs.result`, docs/control-plane.md).
     fn result(&self, job: &Job, stdout: Option<&str>, log: &mut String) -> Option<Value> {
         match job.kind.as_str() {
+            "synthetic_restore" => self.synthetic_result(job, stdout, log),
             "files_list" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out) {
@@ -2934,7 +2936,8 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
-            "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
+            "synthetic_restore" => return self.plan_synthetic(job, plan), // synthetic.rs
+            "instant_disk" => return self.plan_instant_disk(job, plan),   // restore.rs
             k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {

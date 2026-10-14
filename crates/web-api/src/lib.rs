@@ -689,6 +689,7 @@ pub fn router(st: St) -> Router {
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/jobs/{id}/skipped.csv", get(nasops::skipped))
+        .route("/jobs/{id}/synthetic.csv", get(jobs::synthetic_report))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
         .route("/console/unlock", get(console::list).post(console::request_unlock))

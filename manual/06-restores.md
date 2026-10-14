@@ -33,9 +33,9 @@ The snapshot name tells you what was backed up. The menu follows from it:
 |---|---|---|---|
 | `vm-<id>` | Proxmox VE virtual machine | **Full restore to a new VM / container**, **Instant recover**, **Restore files to a host…** | **Browse files** |
 | `ct-<id>` | Proxmox VE container | **Full restore to a new VM / container**, **Restore files to a host…** | **Browse files** |
-| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path** | **Browse files** |
-| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…** | **Browse files** |
-| `share-<source>` | NFS / SMB share | **Restore to a host…** | **Browse files** |
+| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Clean-file restore…** | **Browse files** |
+| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
+| `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
@@ -537,6 +537,59 @@ written.
 > shares, TrueNAS, plugins and VM/CT files onto a host (Phase 15b) are tested against a fake agent, and restores onto
 > another host also against the real Linux agent; the VM lab run is pending. Restores with the Windows agent were tested
 > on Windows Server 2022 and Windows 11 (ACLs, owners, streams, links, junctions, long paths, confinement).
+
+## Clean-file restore (agents, NAS, shares)
+
+After ransomware or malware hit a file server, the newest snapshot holds encrypted or infected files next to many
+clean ones, and the snapshot before the attack lacks the work of the last days. A **clean-file restore** (also called
+synthetic restore) combines both: for every file of the snapshot you choose, it takes the **newest version that is
+clean**, and walks back through older snapshots of the same source only for the files that are not.
+
+A file version is not clean when
+
+- a **YARA** rule matched it in a scan of that snapshot ([11 Alerts](11-alerts-and-monitoring.md#malware-scan-yara)),
+- its **SHA-256** is on an uploaded IOC hash list ([IOC hash hunt](11-alerts-and-monitoring.md#ioc-hash-hunt)),
+- its name is a **ransom note** (the same names as the
+  [file-level change signals](11-alerts-and-monitoring.md#file-level-change-signals)),
+- it is the **output of a mass rename** (a file added with the dominant new extension, or a deleted file's name plus
+  an extension, in a snapshot where a mass rename happened),
+- it has the **same content** as a version flagged for one of the first two reasons (same size and modification
+  time, or the same SHA-256): an unchanged infected file is not taken from an older, unscanned snapshot,
+- or the scan of that snapshot found more matches than it lists (more than 1000): then no file of it is trusted.
+
+Files that a **mass rename deleted** (the originals of `report.docx.lockbit`) come back from the snapshot before the
+rename. Files without any clean version within the searched snapshots (ransom notes, renamed copies, files that were
+infected from the start) are **left out**.
+
+Open **Snapshots**, pick the snapshot (usually the newest one), **Restore** → **Clean-file restore…**:
+
+![The clean-file restore dialog](images/synthetic-restore-dialog.png)
+
+- **Only below this path**: `/` for the whole snapshot, or a directory.
+- **Older snapshots to search**: 1 to 100 (default 30).
+- **Result**: **Download (tar or zip)** (needs the download privilege, as **Browse files**) or **Restore onto a host
+  (agent)** with the target directory, existing-file handling, the target agent and its typed name, as in
+  [Restore files to a host](#restore-files-to-a-host-agents).
+
+The job page shows how many files were substituted, brought back and left out, how many snapshots were examined and
+how many chosen versions come from snapshots that were never scanned. **Report (CSV)** lists every substituted,
+brought back and left-out file with the snapshot it came from and the reason; **Download** fetches the archive.
+
+![A finished clean-file restore with its report](images/synthetic-restore-result.png)
+
+Good to know:
+
+- Versions from **unscanned snapshots** count as clean when nothing else flags them. For the most reliable result, scan
+  the older snapshots first (**Scan back**,
+  [11 Alerts](11-alerts-and-monitoring.md#scan-back-to-the-last-clean-snapshot)). A clean-file restore never finds
+  malware that no rule and no hash list knows.
+- Restoring a **flagged snapshot** onto the original paths or with overwriting is a production restore and needs the
+  approval **restore of a flagged snapshot to production**, like any restore of it
+  ([above](#flagged-snapshots-restores-to-production-need-approval)). A download or a restore into a new directory
+  does not.
+- Only file-tree snapshots of agents, TrueNAS datasets and NFS/SMB shares: VM and container disks, plugins and
+  Microsoft 365 have no per-file versions to combine here.
+- The report is kept as long as downloads are (24 hours).
 
 ## Bare-metal recovery (Linux hosts)
 
