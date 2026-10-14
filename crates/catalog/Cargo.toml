@@ -11,6 +11,9 @@ argon2 = "0.5"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
 crypto_box = { version = "0.9", features = ["seal"] }
+# Phase 30: the ML-KEM-768 half of a tenant recovery key (same derivation as keyd::hybrid)
+blake3 = "1"
+ml-kem = "0.3"
 rand = "0.8"
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

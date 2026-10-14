@@ -41,6 +41,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 
 const ADMIN: &[&str] = &["admin"];
 const READ: &[&str] = &["admin", "security_officer", "operator"];
+/// `keyd::hybrid::PUBLIC_LEN` (the web-api does not link keyd): X25519 + ML-KEM-768 encapsulation key
+const PQ_PUBLIC_LEN: usize = 32 + 1184;
 
 /// Paths of the replicad interface (None = replication serving disabled).
 #[derive(Clone, Debug, Default)]
@@ -507,6 +509,15 @@ pub async fn enroll(State(st): State<St>, pc: PeerConn, J(r): J<EnrollRequest>) 
     if !valid_peer_id(&r.peer_id) || !valid_hex64(&r.keyd_pub) || !valid_hex64(&r.proof) || r.csr_pem.len() > 16 << 10 {
         return Err(ApiError::bad("invalid enrollment request"));
     }
+    // Phase 30: the hybrid key must extend the X25519 key (keyd validates the ML-KEM part)
+    if let Some(pq) = &r.keyd_pub_pq {
+        let ok = pq.len() == 2 * PQ_PUBLIC_LEN
+            && pq.bytes().all(|b| b.is_ascii_hexdigit())
+            && pq[..64].eq_ignore_ascii_case(&r.keyd_pub);
+        if !ok {
+            return Err(ApiError::bad("invalid enrollment request"));
+        }
+    }
     type Row = (String, String, String, Option<String>, Option<i64>, String);
     let row: Option<Row> = st
         .cat
@@ -567,8 +578,9 @@ pub async fn enroll(State(st): State<St>, pc: PeerConn, J(r): J<EnrollRequest>) 
     let now = catalog::now();
     let n = st.cat.conn().execute(
         "UPDATE replication_peers SET state = 'enrolled', cert_sha256 = ?2, keyd_pub = ?3, token_hash = NULL,
-         token_expires = NULL, enrolled_at = ?4, last_seen = ?4 WHERE id = ?1 AND state = 'approved' AND token_hash IS NOT NULL",
-        params![r.peer_id, out.cert_sha256, r.keyd_pub, now],
+         token_expires = NULL, enrolled_at = ?4, last_seen = ?4, keyd_pub_pq = ?5
+         WHERE id = ?1 AND state = 'approved' AND token_hash IS NOT NULL",
+        params![r.peer_id, out.cert_sha256, r.keyd_pub, now, r.keyd_pub_pq],
     )?;
     if n != 1 {
         return Err(refused());
@@ -602,7 +614,7 @@ pub async fn enroll(State(st): State<St>, pc: PeerConn, J(r): J<EnrollRequest>) 
 // ================================================================ management: peers (primary)
 
 const PEER_COLS: &str = "id, name, tenants, state, cert_sha256, keyd_pub, token_expires, enrolled_at, last_seen, \
-                         revoked, created, created_by, key_exports, enroll_failures";
+                         revoked, created, created_by, key_exports, enroll_failures, keyd_pub_pq IS NOT NULL";
 
 fn peer_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     let keyd: Option<String> = r.get(5)?;
@@ -611,7 +623,13 @@ fn peer_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         .as_object()
         .map(|o| {
             o.iter()
-                .map(|(t, e)| (t.clone(), json!({"versions": e["versions"], "created": e["created"]})))
+                .map(|(t, e)| {
+                    let pq = e["post_quantum"].as_bool().unwrap_or(false);
+                    (
+                        t.clone(),
+                        json!({"versions": e["versions"], "created": e["created"], "post_quantum": pq}),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -624,6 +642,8 @@ fn peer_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         "last_seen": r.get::<_, Option<i64>>(8)?, "revoked": r.get::<_, Option<i64>>(9)?,
         "created": r.get::<_, i64>(10)?, "created_by": r.get::<_, String>(11)?, "keys": keys,
         "enroll_failures": r.get::<_, i64>(13)?,
+        // Phase 30: the secondary's keyd has a hybrid key: DEK exports are X25519 + ML-KEM-768
+        "post_quantum": r.get::<_, bool>(14)?,
     }))
 }
 

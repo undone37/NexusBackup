@@ -940,6 +940,12 @@ appliance **without** the appliance recovery key (which opens every tenant).
   exports) of `NXTRK1\0\0 ‖ u8 len ‖ tenant ‖ u32 LE v ‖ DEK`. Every later DEK version (`keyd tenant-rotate`, a
   replica import, a tenant-level DR install) is sealed the moment keyd stores it, using only the public key. A changed
   or removed key deletes the old `tenant-escrow.*` files first; the scheduler drops them from the escrow dir.
+- **Post-quantum (Phase 30, ADR-014).** Keys shown since Phase 30 also get an ML-KEM-768 half derived from the same
+  32 bytes (`catalog::tenant_key::pq_public`, the same derivation as `keyd::tenant_key::RECOVERY_CONTEXT`); the setting
+  carries it as `public_pq` (hex), the scheduler hands keyd `X25519 | ML-KEM-768` (`tenant-recovery-pq <t> <len>` +
+  the key) and the escrow files become hybrid boxes (`keyd::hybrid`, label `tenant-escrow`, same names and `kid`).
+  `keyd tenant-open` / tenant-level DR open both formats. Keys set before stay X25519-only until replaced (the
+  appliance never has the secret to derive the ML-KEM half); `GET /tenants/{t}/recovery-key` reports `post_quantum`.
 - **Offsite.** The files travel with the normal escrow (`escrow <t>` answer) to `keys/tenants/<t>/tenant-escrow.<kid>.<v>`
   (put if missing; locked like the other escrow files on S3 with Object Lock). The `kid` in the name means a replaced
   key never collides with the old files; after the upload `nexus-offsite` deletes `tenant-escrow.*` objects of other
@@ -1005,7 +1011,9 @@ Daily sealed bundle of the appliance configuration, so a replacement appliance c
   (clear) | u32 n | kek.recovery | u32 n | sealed bundle key | nonce | AEAD(zstd(entries))`, AAD = everything before
   the nonce. Entries: path relative to `/`, file/dir, mode, user and group **names**, data. Opening: recovery key →
   `kek.recovery` → KEK → X25519 secret → bundle key. The appliance creates bundles without the recovery key; the
-  helper never holds anything that opens one.
+  helper never holds anything that opens one. **Phase 30 (ADR-014):** `config-backup.pub` is the hybrid key (X25519 |
+  ML-KEM-768, the ML-KEM seed derived from the same KEK-derived secret) and bundles are `NXCFGB2\0` with the bundle
+  key in a hybrid box (label `config-bundle`); v1 bundles still open.
 - **Contents** (`cfgbackup::INCLUDE`): catalog snapshot (`VACUUM INTO` the helper's private /tmp, read-only
   connection: consistent while the services write), `webapi/totp.key`, `scheduler/secrets.key`,
   `scheduler/agent-ca/`, `scheduler/replica/`, `replicad/`, `/etc/nexus/ssh/`, `/etc/nexus/tls/{cert,key,web}.pem`,

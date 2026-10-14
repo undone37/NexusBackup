@@ -62,6 +62,8 @@ pub struct EnrollParams<'a> {
     /// where client.key / client.pem / ca.pem go (0600)
     pub cred_dir: &'a Path,
     pub keyd_pub: [u8; 32],
+    /// Phase 30: hybrid public key (`keyd::replica_pubkey_pq`), if keyd has one
+    pub keyd_pub_pq: Option<Vec<u8>>,
 }
 
 #[derive(Serialize, Debug)]
@@ -72,6 +74,15 @@ pub struct Enrolled {
 }
 
 pub fn enroll(p: &EnrollParams) -> Result<Enrolled> {
+    match enroll_once(p, p.keyd_pub_pq.as_deref()) {
+        // a primary of an earlier release refuses the unknown field: enroll without it
+        // (its DEK exports stay X25519-only until both run Phase 30)
+        Err(e) if p.keyd_pub_pq.is_some() && format!("{e:#}").contains("keyd_pub_pq") => enroll_once(p, None),
+        r => r,
+    }
+}
+
+fn enroll_once(p: &EnrollParams, pq: Option<&[u8]>) -> Result<Enrolled> {
     let mut c = Conn::connect(p.target, client_config(&p.target.pin, ALPN_ENROLL, None)?)?;
     let ex = c.exporter(EXPORTER_LABEL)?;
     let (key_pem, csr_pem) = new_key_and_csr(&format!("{CN_PREFIX}{}", p.peer_id))?;
@@ -81,6 +92,7 @@ pub fn enroll(p: &EnrollParams) -> Result<Enrolled> {
         csr_pem,
         keyd_pub: hex(&p.keyd_pub),
         proof: hex(&proof(p.token_digest, "secondary", &ex)),
+        keyd_pub_pq: pq.map(hex),
     };
     let r: EnrollResponse = c
         .request(

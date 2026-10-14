@@ -255,7 +255,12 @@
                   {#each Object.entries(p.keys) as [tn, k] (tn)}<div>{tn}: v{k.versions.join(', v')}</div>{/each}
                 {:else}<span class="muted">{t.repl.noKeys}</span>{/if}
               </td>
-              <td class="mono">{p.keyd_fingerprint ?? '—'}</td>
+              <td class="mono">
+                {p.keyd_fingerprint ?? '—'}
+                {#if p.state === 'enrolled'}
+                  {#if p.post_quantum}<span class="chip accent" title={t.p30.pq.hint}>{t.p30.pq.chip}</span>{:else}<span class="chip" title={t.p30.pq.peerLegacyHint}>{t.p30.pq.legacy}</span>{/if}
+                {/if}
+              </td>
               <td class="mono" title={p.cert_sha256 ?? ''}>{shortFp(p.cert_sha256)}</td>
               <td class="nowrap" title={fmtTime(p.last_seen)}>{fmtAgo(p.last_seen, now)}</td>
               {#if admin}

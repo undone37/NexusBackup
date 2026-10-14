@@ -1706,8 +1706,8 @@ function seed() {
   db.replPeers.push({
     id: peerId, name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: rand(32),
     keyd_fingerprint: peerKeyd, token_expires: null, enrolled_at: t - 86400 * 20, last_seen: t - 1800,
-    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20 } },
-    enroll_failures: 0,
+    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20, post_quantum: true } },
+    enroll_failures: 0, post_quantum: true,
   });
   db.replSources.push({
     id: 1, name: 'hq-primary', url: 'backup-hq.example.com:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: rand(32),
@@ -7789,7 +7789,7 @@ function seedHolds(t: number) {
 // The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
 
 const TKEY_TTL = 24 * 3600;
-const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string }>();
+const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum: boolean }>();
 function tkeyStatus(q: Json, t = now()): string {
   if (q.state === 'pending' || q.state === 'rejected') return q.state;
   if (q.state === 'approved') return q.decided_at && q.decided_at + TKEY_TTL > t ? 'approved' : 'expired';
@@ -7811,7 +7811,8 @@ function seedTenantKeys(t: number) {
     requested_by: 'admin', created: t - 86400 * 21, decided_by: 'so', decided_at: t - 86400 * 21 + 900, state: 'executed',
   };
   db.quorum.push(q);
-  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so' });
+  // set before Phase 30: X25519-only escrow
+  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so', post_quantum: false });
 }
 on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
   const tenant = decodeURIComponent(tn);
@@ -7848,7 +7849,8 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   const kid = rand(8);
   const replaced = tenantKeys.get(tenant)?.kid ?? null;
   q.state = 'executed';
-  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by });
+  // Phase 30: new keys seal the escrow X25519 + ML-KEM-768
+  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by, post_quantum: true });
   await audit(u.name, 'tenant.recovery_key_shown', `tenant/${tenant}/recovery-key`, {
     kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
   });

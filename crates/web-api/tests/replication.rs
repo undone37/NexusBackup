@@ -322,6 +322,8 @@ impl Secondary {
             name: "secondary",
             cred_dir: &self.creds(),
             keyd_pub: keyd::fetch_replica_pubkey(&self.keyd_sock).unwrap(),
+            // Phase 30: hybrid DEK exports
+            keyd_pub_pq: Some(keyd::fetch_replica_pubkey_pq(&self.keyd_sock).unwrap()),
         })
     }
 
@@ -837,6 +839,19 @@ fn key_export_needs_an_approved_quorum_and_follows_rotation() {
             })
             .unwrap();
     assert!(exports.contains("\"versions\":[1]"), "{exports}");
+    // Phase 30: sealed hybrid (X25519 + ML-KEM-768) to the secondary's keyd
+    let ex: serde_json::Value = serde_json::from_str(&exports).unwrap();
+    assert_eq!(ex["acme"]["post_quantum"], true);
+    let blob = repl_proto::unhex(ex["acme"]["blob"].as_str().unwrap()).unwrap();
+    assert!(keyd::hybrid::is_hybrid(&blob));
+    let pq: Option<String> =
+        p.st.cat
+            .conn()
+            .query_row("SELECT keyd_pub_pq FROM replication_peers WHERE name = 'dr'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    assert_eq!(pq.map(|h| h.len()), Some(2 * keyd::hybrid::PUBLIC_LEN));
     assert_eq!(s.sync(&t, "acme").unwrap().imported.len(), 1);
 
     // rotation on the primary: the new snapshot is skipped and reported until re-export

@@ -4258,6 +4258,13 @@ export const en = {
   },
   // Phase 30: NetBackup Tier 2
   p30: {
+    pq: {
+      chip: "Post-quantum",
+      hint: "Sealed with X25519 and ML-KEM-768 together: copies harvested today stay closed even if one of the two is broken later (for example by a quantum computer).",
+      legacy: "X25519 only",
+      legacyHint: "This key was created before post-quantum sealing. Create a new tenant recovery key to seal its escrow with X25519 and ML-KEM-768.",
+      peerLegacyHint: "This secondary enrolled before post-quantum sealing (or runs an earlier release): key exports to it use X25519 only. Update it and enroll it again.",
+    },
     rollback: {
       label: "Roll back in place (changed blocks only)",
       hint: (vmid: string) =>

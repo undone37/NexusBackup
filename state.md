@@ -619,5 +619,13 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   --replace --rollback` (vzdump of a paused VM with bitmap reuse, the real PVE module calls of the root service,
   qemu-nbd on LVM-thin / ZFS / dir qcow2 / RBD, socket unit after `apt install ./nexusbackup-pve_*.deb`); compare
   the rolled-back disk with `nexus-pve dump` of the snapshot
-- [ ] 4 hybrid post-quantum key wrapping
+- [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
+  secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
+  existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:
+  no new crate, `cargo deny check` ok); tenant recovery escrow (new keys: `public_pq` in the catalog,
+  `tenant-recovery-pq`), replication DEK exports (`keyd_pub_pq` at enrollment, catalog column, `replica-pubkey-pq`,
+  `export-for-pq`, retry without it at an older primary), configuration bundles (`NXCFGB2`); every opener reads
+  both formats; UI chips (tenant recovery key, replication peers), manual 08/14, docs/adr.md ADR-014,
+  docs/replication.md §5, control-plane, T68; fuzz target `keyd:hybrid_open`; tests in keyd, scheduler, web-api
+  replication (hybrid export end to end), setup/offsite unchanged and passing
 - [ ] 5 second offsite copy with its own retention

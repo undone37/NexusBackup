@@ -23,6 +23,7 @@ use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
 
 pub mod config_bundle;
+pub mod hybrid;
 pub mod tenant_key;
 
 pub type Key = Zeroizing<[u8; 32]>;
@@ -397,6 +398,9 @@ const REPLICA_KEY: &str = "replica-x25519";
 /// `tenants/<t>/origin`: the tenant's DEKs were imported from this primary.
 const ORIGIN: &str = "origin";
 const EXPORT_MAGIC: &[u8; 8] = b"NXDEKX1\0";
+/// ML-KEM-768 seed of the replication key (derived from its X25519 secret, Phase 30).
+const REPLICA_PQ_CONTEXT: &str = "NexusBackup 2026 replica ml-kem-768 v1";
+const EXPORT_LABEL: &[u8] = b"dek-export";
 /// Upper bound for an export blob (a tenant with ~1000 key versions).
 pub const MAX_EXPORT: usize = 64 << 10;
 
@@ -420,10 +424,27 @@ pub fn replica_pubkey(dir: &Path) -> io::Result<[u8; 32]> {
     Ok(*replica_secret(dir)?.public_key().as_bytes())
 }
 
-/// All DEK versions of `tenant`, sealed (anonymous X25519 box) to a secondary
-/// keyd's public key: `NXDEKX1\0 | u8 len | tenant | N x (u32 LE version, DEK)`.
-/// The caller (the scheduler) has checked the approved quorum request.
-pub fn export_for(dir: &Path, tenant: &str, peer_pub: &[u8; 32]) -> io::Result<Vec<u8>> {
+fn replica_hybrid(dir: &Path) -> io::Result<hybrid::Secret> {
+    let kek = unseal(dir)?;
+    let sk = Zeroizing::new(unwrap_key(&kek, &fs::read(dir.join(REPLICA_KEY))?, REPLICA_KEY)?);
+    Ok(hybrid::Secret::derive(&sk, REPLICA_PQ_CONTEXT))
+}
+
+/// Phase 30: the hybrid public key (X25519 | ML-KEM-768) for DEK exports; its
+/// X25519 half is [`replica_pubkey`].
+pub fn replica_pubkey_pq(dir: &Path) -> io::Result<Vec<u8>> {
+    replica_pubkey(dir)?; // creates the key pair on first use
+    Ok(replica_hybrid(dir)?.public().to_bytes())
+}
+
+/// [`export_for`] sealed hybrid (X25519 + ML-KEM-768, `crate::hybrid`) to a
+/// secondary's [`replica_pubkey_pq`].
+pub fn export_for_pq(dir: &Path, tenant: &str, peer: &[u8]) -> io::Result<Vec<u8>> {
+    let peer = hybrid::Public::from_bytes(peer)?;
+    hybrid::seal(&peer, EXPORT_LABEL, &export_plain(dir, tenant)?)
+}
+
+fn export_plain(dir: &Path, tenant: &str) -> io::Result<Zeroizing<Vec<u8>>> {
     let deks = tenant_deks(dir, tenant)?;
     let mut pt = Zeroizing::new(Vec::with_capacity(9 + tenant.len() + deks.len() * 36));
     pt.extend_from_slice(EXPORT_MAGIC);
@@ -433,6 +454,14 @@ pub fn export_for(dir: &Path, tenant: &str, peer_pub: &[u8; 32]) -> io::Result<V
         pt.extend_from_slice(&v.to_le_bytes());
         pt.extend_from_slice(&k[..]);
     }
+    Ok(pt)
+}
+
+/// All DEK versions of `tenant`, sealed (anonymous X25519 box) to a secondary
+/// keyd's public key: `NXDEKX1\0 | u8 len | tenant | N x (u32 LE version, DEK)`.
+/// The caller (the scheduler) has checked the approved quorum request.
+pub fn export_for(dir: &Path, tenant: &str, peer_pub: &[u8; 32]) -> io::Result<Vec<u8>> {
+    let pt = export_plain(dir, tenant)?;
     crypto_box::PublicKey::from_bytes(*peer_pub)
         .seal(&mut rand::rngs::OsRng, &pt)
         .map_err(|_| err(io::ErrorKind::Other, "sealing failed"))
@@ -444,11 +473,12 @@ fn open_export(dir: &Path, blob: &[u8]) -> io::Result<(String, Vec<(u32, Key)>)>
     if blob.len() > MAX_EXPORT {
         return Err(bad());
     }
-    let pt = Zeroizing::new(
-        replica_secret(dir)?
-            .unseal(blob)
-            .map_err(|_| err(io::ErrorKind::InvalidData, "key export not sealed to this appliance"))?,
-    );
+    let not_ours = || err(io::ErrorKind::InvalidData, "key export not sealed to this appliance");
+    let pt = if hybrid::is_hybrid(blob) {
+        hybrid::open(&replica_hybrid(dir)?, EXPORT_LABEL, blob).map_err(|_| not_ours())?
+    } else {
+        Zeroizing::new(replica_secret(dir)?.unseal(blob).map_err(|_| not_ours())?)
+    };
     let rest = pt.strip_prefix(EXPORT_MAGIC.as_slice()).ok_or_else(bad)?;
     let (&n, rest) = rest.split_first().ok_or_else(bad)?;
     let tenant = std::str::from_utf8(rest.get(..n as usize).ok_or_else(bad)?).map_err(|_| bad())?;
@@ -591,9 +621,12 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 /// - `escrow <tenant>\n` → wrapped escrow files: N x (u16 BE name len, name, u32 BE len, bytes)
 /// - `replica-pubkey\n` → 32-byte X25519 public key for DEK exports (docs/replication.md)
 /// - `export-for <tenant> <peer-pubkey hex> <quorum id>\n` → DEK export sealed to that key
+/// - `replica-pubkey-pq\n` → the hybrid public key (X25519 | ML-KEM-768) for DEK exports (Phase 30)
+/// - `export-for-pq <tenant> <quorum id> <len>\n` + a hybrid public key → DEK export sealed hybrid
 /// - `import-sealed <tenant> <origin> <len>\n` + `len` bytes → N x u32 LE versions now present
 /// - `tenant-recovery <tenant> <pubkey hex | none>\n` → `1` (changed) or `0`: sets the
 ///   tenant recovery public key (`tenant_key::set`)
+/// - `tenant-recovery-pq <tenant> <len>\n` + the hybrid public key (Phase 30) → the same
 /// - `import-wrapped <tenant> <len>\n` + escrow files encoded like the `escrow` answer
 ///   (`dek.<v>` under this KEK, after a configuration restore) → N x u32 LE versions ([`import_wrapped`])
 /// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
@@ -642,7 +675,13 @@ fn body_len(line: &str) -> io::Result<Option<usize>> {
     let (rest, max) = match (line.strip_prefix("import-sealed "), line.strip_prefix("attach-escrow ")) {
         (Some(r), _) => (Some(r), MAX_EXPORT),
         (_, Some(r)) => (Some(r), MAX_ATTACH),
-        _ => (line.strip_prefix("import-wrapped "), MAX_ATTACH),
+        _ => match (
+            line.strip_prefix("tenant-recovery-pq "),
+            line.strip_prefix("export-for-pq "),
+        ) {
+            (Some(r), _) | (_, Some(r)) => (Some(r), hybrid::PUBLIC_LEN),
+            _ => (line.strip_prefix("import-wrapped "), MAX_ATTACH),
+        },
     };
     match rest {
         Some(rest) => {
@@ -668,6 +707,26 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
     let line = line.trim_end_matches('\n');
     if line == "replica-pubkey" {
         return Ok(Zeroizing::new(replica_pubkey(dir)?.to_vec()));
+    }
+    if line == "replica-pubkey-pq" {
+        return Ok(Zeroizing::new(replica_pubkey_pq(dir)?));
+    }
+    if let Some(rest) = line.strip_prefix("export-for-pq ") {
+        let [tenant, quorum, _len] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(
+                io::ErrorKind::InvalidInput,
+                "export-for-pq <tenant> <quorum> <len>",
+            ));
+        };
+        let q: u64 = quorum
+            .parse()
+            .map_err(|_| err(io::ErrorKind::InvalidInput, "invalid quorum id"))?;
+        let blob = export_for_pq(dir, tenant, body)?;
+        eprintln!(
+            "keyd: exported DEKs of tenant {tenant} to replication peer key {} (X25519 + ML-KEM-768, quorum {q})",
+            hex(body[..32].try_into().unwrap())
+        );
+        return Ok(Zeroizing::new(blob));
     }
     if let Some(rest) = line.strip_prefix("export-for ") {
         let [tenant, pk, quorum] = rest.split(' ').collect::<Vec<_>>()[..] else {
@@ -719,6 +778,19 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
         eprintln!("keyd: restored DEKs of tenant {tenant} from its offsite escrow: versions {vs:?}");
         return Ok(Zeroizing::new(vs.iter().flat_map(|v| v.to_le_bytes()).collect()));
     }
+    if let Some(rest) = line.strip_prefix("tenant-recovery-pq ") {
+        let [tenant, _len] = rest.split(' ').collect::<Vec<_>>()[..] else {
+            return Err(err(io::ErrorKind::InvalidInput, "tenant-recovery-pq <tenant> <len>"));
+        };
+        let changed = tenant_key::set(dir, tenant, Some(body))?;
+        if changed {
+            eprintln!(
+                "keyd: tenant {tenant}: tenant recovery key set (id {}, X25519 + ML-KEM-768)",
+                tenant_key::key_id(body)
+            );
+        }
+        return Ok(Zeroizing::new(vec![if changed { b'1' } else { b'0' }]));
+    }
     if let Some(rest) = line.strip_prefix("tenant-recovery ") {
         let [tenant, pk] = rest.split(' ').collect::<Vec<_>>()[..] else {
             return Err(err(
@@ -730,7 +802,7 @@ pub fn answer_with_body(dir: &Path, line: &str, body: &[u8]) -> io::Result<Zeroi
             "none" => None,
             h => Some(parse_hex(h).ok_or_else(|| err(io::ErrorKind::InvalidInput, "invalid public key"))?),
         };
-        let changed = tenant_key::set(dir, tenant, pk.as_ref())?;
+        let changed = tenant_key::set(dir, tenant, pk.as_ref().map(|p| &p[..]))?;
         if changed {
             eprintln!(
                 "keyd: tenant {tenant}: tenant recovery key {}",
@@ -821,8 +893,12 @@ fn request_raw(socket: &Path, line: &str, body: &[u8]) -> io::Result<Vec<u8>> {
 
 /// Scheduler: sets (or removes) the tenant recovery public key from the
 /// catalog; keyd seals all DEK versions to it. Returns whether it changed.
-pub fn request_tenant_recovery(socket: &Path, tenant: &str, public: Option<&[u8; 32]>) -> io::Result<bool> {
-    let pk = public.map_or_else(|| "none".to_owned(), hex);
+/// `public`: 32 bytes (X25519) or a hybrid public key (Phase 30).
+pub fn request_tenant_recovery(socket: &Path, tenant: &str, public: Option<&[u8]>) -> io::Result<bool> {
+    if let Some(p) = public.filter(|p| p.len() != 32) {
+        return Ok(request_raw(socket, &format!("tenant-recovery-pq {tenant} {}", p.len()), p)? == b"1");
+    }
+    let pk = public.map_or_else(|| "none".to_owned(), |p| p.iter().map(|b| format!("{b:02x}")).collect());
     Ok(request_raw(socket, &format!("tenant-recovery {tenant} {pk}"), &[])? == b"1")
 }
 
@@ -831,6 +907,21 @@ pub fn fetch_replica_pubkey(socket: &Path) -> io::Result<[u8; 32]> {
     request_raw(socket, "replica-pubkey", &[])?
         .try_into()
         .map_err(|_| err(io::ErrorKind::InvalidData, "malformed keyd answer"))
+}
+
+/// Secondary: the hybrid public key for DEK exports (Phase 30).
+pub fn fetch_replica_pubkey_pq(socket: &Path) -> io::Result<Vec<u8>> {
+    let b = request_raw(socket, "replica-pubkey-pq", &[])?;
+    hybrid::Public::from_bytes(&b).map(|_| b)
+}
+
+/// Primary: DEKs of `tenant` sealed hybrid to a secondary keyd's hybrid public key.
+pub fn request_export_pq(socket: &Path, tenant: &str, peer: &[u8], quorum_id: i64) -> io::Result<Vec<u8>> {
+    request_raw(
+        socket,
+        &format!("export-for-pq {tenant} {quorum_id} {}", peer.len()),
+        peer,
+    )
 }
 
 /// Primary (scheduler, after an approved quorum request): DEKs of `tenant`
@@ -1135,6 +1226,16 @@ mod tests {
         );
         // primary rotates: the re-export adds v2
         rotate_tenant(p.path(), "acme").unwrap();
+        // Phase 30: a hybrid export to the same keyd opens as well
+        let hpk = replica_pubkey_pq(s.path()).unwrap();
+        assert_eq!(hpk[..32], spk[..]);
+        let hb = export_for_pq(p.path(), "acme", &hpk).unwrap();
+        assert!(hybrid::is_hybrid(&hb));
+        assert_eq!(import_sealed(s.path(), "acme", "fp1", &hb).unwrap(), vec![1, 2]);
+        assert!(
+            import_sealed(x.path(), "acme", "fp1", &hb).is_err(),
+            "another keyd cannot open it"
+        );
         let blob2 = export_for(p.path(), "acme", &spk).unwrap();
         assert_eq!(import_sealed(s.path(), "acme", "fp1", &blob2).unwrap(), vec![1, 2]);
         assert_eq!(deks(s.path(), "acme"), deks(p.path(), "acme"));

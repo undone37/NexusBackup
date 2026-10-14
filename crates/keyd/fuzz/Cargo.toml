@@ -22,3 +22,10 @@ path = "fuzz_targets/keyd_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "hybrid_open"
+path = "fuzz_targets/hybrid_open.rs"
+test = false
+doc = false
+bench = false

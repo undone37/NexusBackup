@@ -152,10 +152,12 @@ pub fn collect(root: &Path, tmp: &Path) -> Result<Vec<Entry>> {
 
 /// Makes one sealed bundle: (bytes, header).
 pub fn create(root: &Path, keyd_run: &Path, tmp: &Path, appliance: &str, now: i64) -> Result<(Vec<u8>, Value)> {
-    let pk: [u8; 32] = fs::read(keyd_run.join(config_bundle::PUB_FILE))
-        .context("the key service has not published its configuration backup key (is nexus-keyd running?)")?
-        .try_into()
-        .map_err(|_| anyhow!("{} is corrupt", config_bundle::PUB_FILE))?;
+    // X25519 (earlier keyd) or hybrid X25519 + ML-KEM-768 (Phase 30)
+    let pk = fs::read(keyd_run.join(config_bundle::PUB_FILE))
+        .context("the key service has not published its configuration backup key (is nexus-keyd running?)")?;
+    if pk.len() != 32 && keyd::hybrid::Public::from_bytes(&pk).is_err() {
+        bail!("{} is corrupt", config_bundle::PUB_FILE);
+    }
     let kr = fs::read(keyd_run.join(config_bundle::KEK_RECOVERY_FILE)).context("kek.recovery")?;
     let entries = collect(root, tmp)?;
     let header = json!({

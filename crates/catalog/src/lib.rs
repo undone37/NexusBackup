@@ -926,7 +926,10 @@ ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 /// - just-in-time role elevation: `users.eligible_role` (`admin` |
 ///   `security_officer` an operator or viewer may elevate to, NULL = none) and
 ///   `sessions.elevated_role` / `sessions.elevated_until` (the session acts in
-///   that role until then; catalog::elevation).
+///   that role until then; catalog::elevation);
+/// - hybrid post-quantum key wrapping: `replication_peers.keyd_pub_pq` (the
+///   secondary keyd's X25519 | ML-KEM-768 public key, hex; NULL = an earlier
+///   secondary: X25519-only exports).
 ///
 /// Purely additive: the previous release ignores the columns and tables.
 const SCHEMA_V45: &str = r#"
@@ -938,6 +941,7 @@ CREATE TABLE anomaly_sensitivity (
 ALTER TABLE users ADD COLUMN eligible_role TEXT CHECK (eligible_role IN ('admin','security_officer'));
 ALTER TABLE sessions ADD COLUMN elevated_role TEXT;
 ALTER TABLE sessions ADD COLUMN elevated_until INTEGER;
+ALTER TABLE replication_peers ADD COLUMN keyd_pub_pq TEXT;
 "#;
 
 const MIGRATIONS: &[&str] = &[
@@ -3362,5 +3366,7 @@ mod tests {
             [],
         )
         .unwrap();
+        // replication peers enrolled before have no hybrid key
+        conn.prepare("SELECT keyd_pub_pq FROM replication_peers").unwrap();
     }
 }

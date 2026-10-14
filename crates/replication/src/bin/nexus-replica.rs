@@ -75,6 +75,8 @@ fn run() -> Result<()> {
         "enroll" => {
             let digest = std::fs::read_to_string(c.token_file.as_ref().context("token_file")?)?;
             let keyd_pub = keyd::fetch_replica_pubkey(&c.keyd_socket).context("keyd replica-pubkey")?;
+            // Phase 30: hybrid DEK exports (a keyd of an earlier release has none)
+            let keyd_pub_pq = keyd::fetch_replica_pubkey_pq(&c.keyd_socket).ok();
             let e = enroll(&EnrollParams {
                 target: &target,
                 peer_id: &c.peer_id,
@@ -82,6 +84,7 @@ fn run() -> Result<()> {
                 name: &c.name,
                 cred_dir: &c.cred_dir,
                 keyd_pub,
+                keyd_pub_pq,
             })?;
             println!("enrolled {}", serde_json::to_string(&e)?);
         }

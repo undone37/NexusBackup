@@ -883,6 +883,10 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   pre-rollback incremental backup of the paused VM (which also keeps the old state in the store, instead of a PVE
   snapshot); the VM's configuration is not rolled back. Fallback to the full replace when the VM is stopped, its
   identity or disk layout changed, or a bitmap cannot be reused.
+- **Post-quantum** (open question 7, proposal taken: keyd hybrid wrapping first, TLS later): ADR-014. RustCrypto
+  `ml-kem` (already in the tree through russh) rather than another implementation; the ML-KEM keys are derived from
+  the existing X25519 secrets, so tenant recovery keys stay one 64-hex-digit secret. Existing tenant recovery keys and
+  replication peers stay X25519-only until replaced or enrolled again (the appliance cannot derive their ML-KEM half).
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed

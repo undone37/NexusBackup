@@ -1356,6 +1356,8 @@ export interface ReplicationPeer {
   state: 'pending' | 'approved' | 'enrolled' | 'revoked';
   cert_sha256: string | null;
   keyd_fingerprint: string | null;
+  /** Phase 30: DEK exports to this peer are sealed X25519 + ML-KEM-768 */
+  post_quantum?: boolean;
   token_expires: number | null;
   enrolled_at: number | null;
   last_seen: number | null;
@@ -1594,7 +1596,8 @@ export type TenantKeyRequestStatus = 'pending' | 'rejected' | 'approved' | 'expi
 export interface TenantKeyInfo {
   tenant: string;
   /** null: no tenant recovery key (only the appliance recovery key restores this tenant) */
-  key: { kid: string; set_at: number; requested_by: string; approved_by: string } | null;
+  /** `post_quantum` (Phase 30): the escrow is sealed X25519 + ML-KEM-768 (keys set before: X25519 only) */
+  key: { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum?: boolean } | null;
   requests: {
     id: number;
     requested_by: string;

@@ -87,6 +87,11 @@ keys at its next sync and stores them under its own key-encryption key. Until th
 fail with "approve the key export on the primary". The peer table on the primary shows the exported key
 versions under **Keys exported**.
 
+A secondary that enrolled with this release sends a post-quantum key as well: the exports are sealed with
+X25519 and ML-KEM-768 together, so a copy of the primary's catalog taken today stays closed even if one of the
+two methods is broken later. The peer table marks such peers **Post-quantum**; a peer marked **X25519 only**
+enrolled with an earlier release: update it, revoke it and enroll it again to switch.
+
 ## Syncing
 
 - The secondary runs one **Replication sync** job per tenant on the source's **Schedule**. Click

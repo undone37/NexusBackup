@@ -472,13 +472,14 @@ impl Scheduler {
         let peer_id = p["peer_id"].as_str().context("params: peer_id")?;
         let keyd_pub = p["keyd_pub"].as_str().context("params: keyd_pub")?;
         let tenants: Vec<String> = serde_json::from_value(p["tenants"].clone()).context("params: tenants")?;
-        let (state, cur_pub, scope, exports): (String, Option<String>, String, String) = self
+        type Peer = (String, Option<String>, String, String, Option<String>);
+        let (state, cur_pub, scope, exports, pq): Peer = self
             .db
             .conn()
             .query_row(
-                "SELECT state, keyd_pub, tenants, key_exports FROM replication_peers WHERE id=?1",
+                "SELECT state, keyd_pub, tenants, key_exports, keyd_pub_pq FROM replication_peers WHERE id=?1",
                 [peer_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?
             .with_context(|| format!("replication peer {peer_id} not found"))?;
@@ -492,6 +493,10 @@ impl Scheduler {
         let pk: [u8; 32] = replication::unhex(keyd_pub)
             .and_then(|b| b.try_into().ok())
             .context("invalid keyd public key")?;
+        // Phase 30: hybrid (X25519 + ML-KEM-768) when the secondary sent its hybrid key
+        let pq: Option<Vec<u8>> = pq
+            .and_then(|h| replication::unhex(&h))
+            .filter(|b| b.len() == keyd::hybrid::PUBLIC_LEN && b[..32] == pk[..]);
         let mut exports: Value = serde_json::from_str(&exports).unwrap_or(json!({}));
         if !exports.is_object() {
             exports = json!({});
@@ -502,10 +507,13 @@ impl Scheduler {
             let versions = (self.ctx.keys)(t)
                 .with_context(|| format!("keyd: keys of tenant {t}"))?
                 .versions();
-            let blob = keyd::request_export(&self.cfg.keyd_socket, t, &pk, qid)
-                .with_context(|| format!("keyd: export of tenant {t}"))?;
+            let blob = match &pq {
+                Some(h) => keyd::request_export_pq(&self.cfg.keyd_socket, t, h, qid),
+                None => keyd::request_export(&self.cfg.keyd_socket, t, &pk, qid),
+            }
+            .with_context(|| format!("keyd: export of tenant {t}"))?;
             exports[t] = json!({"versions": versions, "blob": replication::hex(&blob), "quorum_id": qid,
-                                "created": catalog::now()});
+                                "created": catalog::now(), "post_quantum": pq.is_some()});
             done.insert(t.clone(), versions);
         }
         let n = self.db.conn().execute(
@@ -524,7 +532,7 @@ impl Scheduler {
             "replication.key_export",
             &format!("replication-peer/{peer_id}"),
             &json!({"quorum_id": qid, "requested_by": by, "approved_by": decided, "versions": done,
-                    "keyd_fingerprint": replication::key_fingerprint(&pk)}),
+                    "keyd_fingerprint": replication::key_fingerprint(&pk), "post_quantum": pq.is_some()}),
         )?;
         Ok(())
     }

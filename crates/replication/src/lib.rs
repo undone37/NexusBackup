@@ -148,6 +148,10 @@ pub struct EnrollRequest {
     pub keyd_pub: String,
     /// hex of `proof(digest, "secondary", exporter)`
     pub proof: String,
+    /// Phase 30: the secondary keyd's hybrid public key (X25519 | ML-KEM-768, hex);
+    /// the primary then seals DEK exports hybrid
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyd_pub_pq: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
