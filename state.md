@@ -546,8 +546,16 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   tmpfiles, Containerfile, setup enables nexus-index
 - [x] UI: instant Find files with filters + version timeline, group search scope, Storage index section, snapshot
   index chips, alert texts; mock; manual 03/05/06/11 + screenshots; ui-smoke
-- [ ] Lab on the PVE host (Windows Server 2022 / Windows 11 / DC VMs, Debian LVM + XFS) not run; image build of the
-  full appliance not run (only the SELinux stage)
+- [x] Lab on the PVE host (2026-10-14, appliance image built from main and deployed as VM 201, SELinux enforcing,
+  nexus-index in `nexus_index_t`): file index of the Windows DC, member server (Server 2022) and Windows 11 client
+  without the micro-VM: EFI vfat + both NTFS volumes indexed, system volume mapped to `C:`, 391k / 391k / 258k
+  entries in 150-290 s per snapshot (vTPM and EFI disks skipped as "no known file system"); Debian VM 200 ext4 `/`
+  + vfat `/boot/efi` (26k entries, 1 s). Instant search over 6 snapshots: 50-70 ms, guest paths
+  (`C:/Users/Admin/Desktop/desktop.ini`), the default scope keeps 6916 of about 1.4 M entries (system folders out)
+- [ ] Lab: Debian LVM + XFS guest (XFS through the micro-VM fallback) not run; incremental re-parse took 150 s
+  for an unchanged-looking C: (the volume's chunks change with every Windows snapshot, so per-volume reuse rarely
+  applies to a running Windows system volume: per-directory reuse is 31c)
+- [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14)
 - [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, per-directory
   reuse, content hashes
 
