@@ -13,6 +13,8 @@
   import { can } from '../lib/roles';
   import { session } from '../lib/session.svelte';
   import AgentEndpoint from '../components/AgentEndpoint.svelte';
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import { rowClick } from '../lib/rowlink';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import Fleet from './agents/Fleet.svelte';
@@ -59,10 +61,25 @@
 
   const statusCls = { enrolled: 'ok', pending: 'info', expired: 'warn' };
   const hasToken = (a: Agent) => a.token_expires !== null && a.token_expires > now;
-  const shortFp = (fp: string) => (fp.length > 12 ? `${fp.slice(0, 12)}…` : fp);
   // Phase 19a: bare-metal recovery / P2V (Linux agents only)
   let rescue: ReturnType<typeof AgentsRescue> | undefined = $state();
   const bmrOk = (a: Agent) => can.backup(session.user) && !a.os?.startsWith('Windows');
+  // the row's other actions (the main one is a button of its own)
+  function agentActions(a: Agent, st: ReturnType<typeof agentStatus>): MenuItem[] {
+    const out: MenuItem[] = [];
+    if (st === 'enrolled') {
+      if (hasToken(a)) out.push({ label: t.agents.reenroll, onselect: () => enroll(a) });
+      out.push({ label: t.agents.renew, onselect: () => renew(a) });
+      out.push({ label: t.agents.update, onselect: () => update(a) });
+      out.push({ label: t.agents.reenrollToken, onselect: () => newToken(a) });
+    } else if (hasToken(a)) {
+      out.push({ label: t.agents.newToken, onselect: () => newToken(a) });
+    }
+    out.push({ label: t.agents.limits, onselect: () => limits(a) });
+    if (bmrOk(a)) out.push({ label: t.bmr.action, onselect: () => rescue?.openFor(a) });
+    out.push({ label: t.delete, onselect: () => remove(a) });
+    return out;
+  }
 
   // Create
   let open = $state(false);
@@ -240,32 +257,34 @@
           <tr>
             <th scope="col">{t.name}</th>
             <th scope="col">{t.tenant}</th>
-            <th scope="col">{t.agents.hostShort}</th>
             <th scope="col">{t.agents.status}</th>
-            <th scope="col">{t.agents.lastSeen}</th>
             <th scope="col">{t.ep.column}</th>
             <th scope="col">{t.agents.version} / {t.agents.os}</th>
-            <th scope="col">{t.agents.cert}</th>
-            <th scope="col">{t.agents.limits}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
           </tr>
         </thead>
         <tbody>
           {#each items as a (a.id)}
             {@const st = agentStatus(a, now)}
-            <tr>
-              <td><strong>{a.name}</strong> <div class="muted mono">{a.id}</div></td>
+            <tr use:rowClick={st === 'enrolled' ? () => endpoint(a) : null}>
+              <td>
+                <strong>{a.name}</strong>
+                <div class="muted mono small">{a.host}:{a.port}</div>
+                <div class="muted mono small">{a.id}</div>
+              </td>
               <td>{a.tenant}</td>
-              <td class="mono">{a.host}:{a.port}</td>
               <td>
                 <span class="chip {statusCls[st]}">{t.agents.statuses[st]}</span>
                 {#if st === 'enrolled' && hasToken(a)}
-                  <div class="muted">{t.agents.tokenUntil(fmtTime(a.token_expires))}</div>
+                  <div class="muted small">{t.agents.tokenUntil(fmtTime(a.token_expires))}</div>
                 {:else if st === 'pending'}
-                  <div class="muted">{t.agents.expires}: {fmtTime(a.token_expires)}</div>
+                  <div class="muted small">{t.agents.expires}: {fmtTime(a.token_expires)}</div>
                 {/if}
+                {#if a.cert_expires}<div class="muted small" title={a.cert_sha256 ? `SHA-256 ${a.cert_sha256}` : undefined}>
+                    {t.agents.certUntil(fmtTime(a.cert_expires))}
+                  </div>{/if}
+                {#if a.cert_renewal_pending}<div><span class="chip info">{t.agents.renewalPending}</span></div>{/if}
               </td>
-              <td class="nowrap" title={fmtTime(a.last_seen)}>{fmtAgo(a.last_seen, now)}</td>
               <td>
                 {#if st === 'enrolled'}
                   {#if a.reachable === true}
@@ -276,54 +295,36 @@
                     <span class="chip info">{t.ep.neverPolled}</span>
                   {/if}
                   {#if a.via === 'edge'}<span class="chip info">{t.ep.viaEdge}</span>{/if}
+                {/if}
+                <div class="muted small" title={fmtTime(a.last_seen)}>{t.agents.lastSeen}: {fmtAgo(a.last_seen, now)}</div>
+                {#if st === 'enrolled'}
                   {#if a.power?.on_battery}
-                    <div class="muted">{t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}</div>
+                    <div class="muted small">{t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}</div>
                   {/if}
-                  {#if a.power?.metered}<div class="muted">{t.ep.metered}{a.power.network_name ? ` (${a.power.network_name})` : ''}</div>{/if}
+                  {#if a.power?.metered}<div class="muted small">{t.ep.metered}{a.power.network_name ? ` (${a.power.network_name})` : ''}</div>{/if}
                   {#if pendingRequest(a)}
                     <div><span class="chip info">{t.ep.requested(fmtAgo(a.last_request!.received, now))}</span></div>
                   {:else if a.last_request?.refused && now - a.last_request.received < 3600}
-                    <div class="muted">{t.ep.requestRefused(a.last_request.refused)}</div>
+                    <div class="muted small">{t.ep.requestRefused(a.last_request.refused)}</div>
                   {/if}
-                  {#if a.missed_at}<div class="muted">{t.ep.missed(fmtTime(a.missed_at))}</div>{/if}
-                {:else}—{/if}
+                  {#if a.missed_at}<div class="muted small">{t.ep.missed(fmtTime(a.missed_at))}</div>{/if}
+                {/if}
+                {#if limitText(a) !== t.agents.limitsNone}<div class="muted small">{t.agents.limits}: {limitText(a)}</div>{/if}
               </td>
               <td>
                 <span class="mono">{a.version ?? '—'}</span>
-                {#if a.os}<div class="muted">{a.os}</div>{/if}
+                {#if a.os}<div class="muted small">{a.os}</div>{/if}
               </td>
-              <td class="mono">
-                {#if a.cert_sha256}<span title="SHA-256 {a.cert_sha256}">{shortFp(a.cert_sha256)}</span>{:else}—{/if}
-                {#if a.cert_expires}<div class="muted">{t.agents.certUntil(fmtTime(a.cert_expires))}</div>{/if}
-                {#if a.cert_renewal_pending}<div><span class="chip info">{t.agents.renewalPending}</span></div>{/if}
-              </td>
-              <td class="nowrap">{limitText(a)}</td>
               <td class="actions">
-                <!-- Enrolling needs a valid one-time token; enrolled agents can re-enroll after "New token". -->
-                {#if st !== 'enrolled' || hasToken(a)}
-                  <button
-                    type="button"
-                    class="small"
-                    disabled={!hasToken(a)}
-                    title={hasToken(a) ? undefined : t.agents.enrollNeedsToken}
-                    onclick={() => enroll(a)}>{st === 'enrolled' ? t.agents.reenroll : t.agents.enroll}</button
-                  >
-                {/if}
-                <button type="button" class="small" onclick={() => newToken(a)}
-                  >{st === 'enrolled' ? t.agents.reenrollToken : t.agents.newToken}</button
-                >
-                {#if st === 'enrolled'}
-                  <button type="button" class="small" onclick={() => renew(a)}>{t.agents.renew}</button>
-                  <button type="button" class="small" onclick={() => update(a)}>{t.agents.update}</button>
-                {/if}
-                <button type="button" class="small" onclick={() => limits(a)}>{t.agents.limits}</button>
-                {#if bmrOk(a)}
-                  <button type="button" class="small" data-bmr={a.id} onclick={() => rescue?.openFor(a)}>{t.bmr.action}</button>
-                {/if}
+                <!-- the main action visible, everything else in the menu -->
                 {#if st === 'enrolled'}
                   <button type="button" class="small" onclick={() => endpoint(a)}>{t.ep.button}</button>
+                {:else if hasToken(a)}
+                  <button type="button" class="small primary" onclick={() => enroll(a)}>{t.agents.enroll}</button>
+                {:else}
+                  <button type="button" class="small" onclick={() => newToken(a)}>{t.agents.newToken}</button>
                 {/if}
-                <button type="button" class="small danger" onclick={() => remove(a)}>{t.delete}</button>
+                <Menu label={t.agents.more} ariaLabel={t.agents.moreLabel(a.name)} items={agentActions(a, st)} />
               </td>
             </tr>
           {/each}

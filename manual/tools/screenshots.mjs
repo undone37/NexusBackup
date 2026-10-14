@@ -251,6 +251,15 @@ async function main() {
         if (!tr) throw new Error('no row ' + rowText);
         window.$click(text, tr);
       };
+      // an action in the row's "More" menu (components/Menu.svelte: a popover outside the row)
+      window.$rowMenu = (rowText, text) => {
+        const tr = window.$row(rowText);
+        if (!tr) throw new Error('no row ' + rowText);
+        window.$click('More', tr);
+        const pop = document.querySelector('[popover]:popover-open');
+        if (!pop) throw new Error('no open menu in row ' + rowText);
+        window.$click(text, pop);
+      };
       window.$idle = () => !document.querySelector('[aria-busy="true"]');
     })();`,
   });
@@ -695,7 +704,7 @@ async function main() {
     ['agents', async () => {
       await go('/agents');
       await shot('agents');
-      await ev(`$rowClick('db01', 'New token'); return true;`);
+      await ev(`$rowMenu('db01', 'New token'); return true;`);
       await confirmOk();
       await until(`return document.body.innerText.includes('One-time token')`, 'token dialog');
       // Phase 27: the signed installers of the recommended release below the token
@@ -703,7 +712,7 @@ async function main() {
       await shot('agent-token', { height: 1350 });
       await closeDialogs();
       // Phase 15f: appliance-side limits of an agent (renewal and re-enroll are row actions)
-      await ev(`$rowClick('web01', 'Limits'); return true;`);
+      await ev(`$rowMenu('web01', 'Limits'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #l-bw')`, 'limits dialog');
       await shot('agent-limits');
       await closeDialogs();
@@ -716,7 +725,7 @@ async function main() {
     // Phase 19a: bare-metal recovery of web01, whose rescue console checked in (seeded session "waiting")
     ['agents-bmr', async () => {
       await go('/agents');
-      await ev(`$rowClick('web01', 'Bare-metal recovery'); return true;`);
+      await ev(`$rowMenu('web01', 'Bare-metal recovery'); return true;`);
       await until(`return !!document.querySelector('dialog[open] select[id^="bmr-snap-"]')`, 'recovery dialog with snapshot picker');
       await shot('agents-bmr', { height: 1500 });
       await closeDialogs();

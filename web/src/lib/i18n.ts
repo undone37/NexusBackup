@@ -1054,6 +1054,8 @@ export const en = {
     job: (id: number) => `job #${id}`,
   },
   agents: {
+    more: "More",
+    moreLabel: (name: string) => `More actions for agent ${name}`,
     title: "Agents",
     new: "New agent",
     intro:
@@ -1097,7 +1099,7 @@ export const en = {
     renew: "Renew certificate",
     renewConfirm: (n: string) =>
       `Renew the certificate of "${n}" now? The agent generates a new key over the existing session; the appliance signs it and pins the new certificate. Renewal also happens automatically 30 days (or 10 % of the lifetime) before expiry.`,
-    certUntil: (s: string) => `valid until ${s}`,
+    certUntil: (s: string) => `certificate valid until ${s}`,
     renewalPending:
       "Renewal issued, waiting for the next session to confirm it",
     limits: "Limits",
