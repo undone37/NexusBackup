@@ -25,7 +25,7 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route, navigate } from '../lib/router.svelte';
-  import { runJob } from '../lib/jobs';
+  import { runJob, jobLink } from '../lib/jobs';
   import { fetchFromOffsite, listedStatus } from '../lib/offsite';
 
   let items: Tenant[] = $state([]);
@@ -339,6 +339,7 @@
     busy = true;
     const r = await act(post<{ id: number }>(`/tenants/attach/${keyReq.id}/run`, { recovery_key: recoveryKey }), (d) =>
       t.offsite.runStarted(d.id),
+      jobLink,
     );
     busy = false;
     recoveryKey = '';

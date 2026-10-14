@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, act, errText } from '../lib/api';
@@ -90,7 +91,7 @@
 
   async function runGc(g: GcPending) {
     if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
-    const ok = await act(post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }), (d) => t.quorum.gcQueued(d.job_id));
+    const ok = await act(post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }), (d) => t.quorum.gcQueued(d.job_id), (d) => jobLink({ id: d.job_id }));
     if (ok) load();
   }
 </script>

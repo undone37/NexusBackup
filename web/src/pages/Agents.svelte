@@ -4,7 +4,7 @@
   import { get, post, put, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
   import { navigate, route } from '../lib/router.svelte';
-  import { agentStatus } from '../lib/jobs';
+  import { agentStatus, jobLink } from '../lib/jobs';
   import { fmtAgo, fmtBytes, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Agent, AgentToken, Tenant } from '../lib/types';
@@ -133,7 +133,7 @@
   }
 
   async function enroll(a: Agent) {
-    const r = await act(post<{ id: number }>(`/agents/${encodeURIComponent(a.id)}/enroll`), (d) => t.snap.jobStarted(d.id));
+    const r = await act(post<{ id: number }>(`/agents/${encodeURIComponent(a.id)}/enroll`), (d) => t.snap.jobStarted(d.id), jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 

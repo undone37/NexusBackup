@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../../lib/jobs';
   // Phase 24d: fleet secrets (admins), agents found by fleet scans (accept / reject), CSV bulk enrollment.
   import { onMount } from 'svelte';
   import { get, post, del, act, errText } from '../../lib/api';
@@ -104,7 +105,7 @@
     if (await act(del(`/fleets/${encodeURIComponent(x.id)}`), t.saved)) load();
   }
   async function scan(x: Fleet) {
-    const r = await act(post<{ id: number }>(`/fleets/${encodeURIComponent(x.id)}/scan`), (d) => t.snap.jobStarted(d.id));
+    const r = await act(post<{ id: number }>(`/fleets/${encodeURIComponent(x.id)}/scan`), (d) => t.snap.jobStarted(d.id), jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function accept(c: FleetCandidate) {

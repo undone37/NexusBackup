@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../../lib/jobs';
   // Phase 26: edge proxies for roaming agents (admins; docs/edge.md). Add an edge → one-time
   // token for its console, Connect (enrollment job), health / log from the control link.
   import { onMount } from 'svelte';
@@ -68,7 +69,7 @@
     load();
   }
   async function connect(x: Edge) {
-    const r = await act(post<{ id: number }>(`/edges/${encodeURIComponent(x.id)}/enroll`), (d) => t.edges.connected(d.id));
+    const r = await act(post<{ id: number }>(`/edges/${encodeURIComponent(x.id)}/enroll`), (d) => t.edges.connected(d.id), jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function remove(x: Edge) {

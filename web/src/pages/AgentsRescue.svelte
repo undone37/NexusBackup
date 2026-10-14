@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   // Phase 19a: bare-metal recovery and P2V of Linux agent hosts (docs/bmr.md).
   // The per-agent dialog (token, sessions, P2V form) and the "Recoveries" overview of the Agents page.
   import { onMount } from 'svelte';
@@ -119,6 +120,7 @@
     if (!(await askConfirm(t.bmr.startConfirm(`${s.host}:${s.port}`, diskList(s) || '—')))) return;
     const r = await act(post<{ id: number }>(`/rescue/${encodeURIComponent(s.id)}/start`, { time: Number(pick), reboot: s.reboot }), (d) =>
       t.bmr.started(d.id),
+      jobLink,
     );
     if (r) load();
   }

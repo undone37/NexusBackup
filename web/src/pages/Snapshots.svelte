@@ -284,7 +284,7 @@
   async function startScan(s: Snapshot) {
     if (!(await askConfirm(t.scan.scanConfirm(s.source, fmtTime(s.time))))) return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/scan`;
-    const r = await act(post<{ id: number }>(path, {}), (d) => t.scan.started(d.id));
+    const r = await act(post<{ id: number }>(path, {}), (d) => t.scan.started(d.id), jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 
