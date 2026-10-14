@@ -77,7 +77,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 info.skipped_entries += u64::from(own);
                 continue;
             }
-            let (kind, size, mtime) = match e.metadata() {
+            let (kind, size, mtime, owner) = match e.metadata() {
                 Ok(m) => {
                     let ft = m.file_type();
                     let k = if ft.is_dir() {
@@ -89,14 +89,19 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     } else {
                         KIND_OTHER
                     };
-                    (k, if k == KIND_FILE { m.len() } else { 0 }, m.modified().seconds())
+                    (
+                        k,
+                        if k == KIND_FILE { m.len() } else { 0 },
+                        m.modified().seconds(),
+                        format!("{}:{}", m.uid(), m.gid()),
+                    )
                 }
                 Err(_) => {
                     info.skipped_entries += u64::from(own);
                     continue;
                 }
             };
-            if own && !out.emit(info, &path, size, mtime, kind)? {
+            if own && !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), None)? {
                 return Ok(());
             }
             if kind == KIND_DIR && out.walks(&path, depth + 1) {

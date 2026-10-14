@@ -123,19 +123,14 @@ fn history(store: &Store, pm: &Manifest, pr: &Report, names: &[String], cur: &[&
         .filter_map(|k| Some((format!("{}/", browse.get(k.as_str())?), k)))
         .collect();
     let names_idx = store.load_names(pm)?.unwrap_or_default();
-    for (p, size, mtime, kind) in names_idx.iter() {
+    for (i, (p, size, mtime, kind)) in names_idx.iter().enumerate() {
         for (pre, key) in &prefixes {
             let Some(rest) = p.strip_prefix(pre.as_str()) else {
                 continue;
             };
             let dir = rest.rsplit_once('/').map_or("", |(d, _)| d);
             if let Some((entries, _)) = out.get_mut(&(key.clone(), dir.to_owned())) {
-                entries.push(Entry {
-                    path: rest.to_owned(),
-                    size,
-                    mtime,
-                    kind,
-                });
+                entries.extend(entry_at(&names_idx, i, p, size, mtime, kind, pre));
             }
             break;
         }
@@ -143,6 +138,19 @@ fn history(store: &Store, pm: &Manifest, pr: &Report, names: &[String], cur: &[&
     // a volume the previous report does not know by its key has no entries to take over
     out.retain(|(k, _), _| browse.contains_key(k.as_str()));
     Ok(out)
+}
+
+/// Entry `i` (`p`, …) of a name index below `prefix` (`vda1/`), with its owner and hash.
+#[allow(clippy::too_many_arguments)]
+fn entry_at(n: &NameIndex, i: usize, p: &str, size: u64, mtime: i64, kind: u8, prefix: &str) -> Option<Entry> {
+    Some(Entry {
+        path: p.strip_prefix(prefix)?.to_owned(),
+        size,
+        mtime,
+        kind,
+        owner: n.owner(i).map(str::to_owned),
+        sha256: n.hash(i).copied(),
+    })
 }
 
 impl StoreSource<'_> {
@@ -382,14 +390,8 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             let pre = format!("{}/", rec.volume.browse);
             l.entries = names
                 .iter()
-                .filter_map(|(p, size, mtime, kind)| {
-                    p.strip_prefix(&pre).map(|rest| fsindex::Entry {
-                        path: rest.to_owned(),
-                        size,
-                        mtime,
-                        kind,
-                    })
-                })
+                .enumerate()
+                .filter_map(|(i, (p, size, mtime, kind))| entry_at(&names, i, p, size, mtime, kind, &pre))
                 .collect();
             let browse = l.volume.browse.clone();
             l.volume = Volume {
@@ -422,8 +424,11 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     for (l, v) in listed.iter_mut().zip(&vols) {
         l.volume.mount = v.mount.clone();
     }
-    // name index: the browse paths, with the directories above the volumes
+    // name index: the browse paths, with the directories above the volumes; owners
+    // (Phase 31c) as a table, each text once
     let mut names = NameIndex::default();
+    let (mut owners, mut owner_no): (Vec<String>, HashMap<String, u32>) = (Vec::new(), HashMap::new());
+    let mut owner: Vec<u32> = Vec::new();
     let mut dirs = BTreeSet::new();
     let mut complete = true;
     for l in &listed {
@@ -439,11 +444,29 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             acc.push_str(c);
             if dirs.insert(acc.clone()) {
                 names.push(&acc, 0, 0, KIND_DIR);
+                owner.push(0);
             }
         }
         for e in &l.entries {
+            let i = names.len();
             names.push(&format!("{}/{}", l.volume.browse, e.path), e.size, e.mtime, e.kind);
+            if names.len() == i {
+                continue;
+            }
+            if let Some(h) = e.sha256.filter(|_| e.kind == chunkstore::names::KIND_FILE) {
+                names.set_hash(i, h);
+            }
+            owner.push(match &e.owner {
+                Some(o) => *owner_no.entry(o.clone()).or_insert_with(|| {
+                    owners.push(o.clone());
+                    owners.len() as u32
+                }),
+                None => 0,
+            });
         }
+    }
+    if !owners.is_empty() {
+        names.set_owners(owners, owner);
     }
     let report = Report {
         version: VERSION,
@@ -555,6 +578,7 @@ fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], li
                     size,
                     mtime,
                     kind,
+                    ..Default::default()
                 })
             })
             .collect();

@@ -546,9 +546,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 None => (ty == 2).then_some((tree, loc.0)),
             };
             if own {
-                let (kind, size, mtime) = match target {
+                let (kind, size, mtime, owner) = match target {
                     Some((t, d)) => match fs.inode(t, d) {
-                        Ok(i) => (KIND_DIR, 0, i.mtime),
+                        Ok(i) => (KIND_DIR, 0, i.mtime, format!("{}:{}", i.uid, i.gid)),
                         Err(_) => {
                             info.skipped_entries += 1;
                             continue;
@@ -557,7 +557,8 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     None => match fs.inode(tree, loc.0) {
                         Ok(i) => {
                             let k = i.kind();
-                            (k, if k == KIND_FILE { i.size } else { 0 }, i.mtime)
+                            let o = format!("{}:{}", i.uid, i.gid);
+                            (k, if k == KIND_FILE { i.size } else { 0 }, i.mtime, o)
                         }
                         Err(_) => {
                             info.skipped_entries += 1;
@@ -565,7 +566,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                         }
                     },
                 };
-                if !out.emit(info, &path, size, mtime, kind)? {
+                if !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), None)? {
                     return Ok(());
                 }
             } else if type_kind(ty) != KIND_DIR && target.is_none() {

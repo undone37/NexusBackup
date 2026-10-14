@@ -612,7 +612,8 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             };
             let kind = ino.kind();
             let size = if kind == KIND_FILE { ino.size } else { 0 };
-            if !out.emit(info, &path, size, ino.mtime, kind)? {
+            let owner = format!("{}:{}", ino.uid, ino.gid);
+            if !out.emit_ext(info, &path, size, ino.mtime, kind, Some(&owner), None)? {
                 return Ok(());
             }
             if kind == KIND_DIR {

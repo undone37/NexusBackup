@@ -183,7 +183,22 @@ fn index_reuse_and_change() {
         (Some(0), Some(2)),
         "{r2}"
     );
-    assert_eq!(paths(&s.load_names(&m2).unwrap().unwrap()), paths(&n1));
+    let n2 = s.load_names(&m2).unwrap().unwrap();
+    assert_eq!(paths(&n2), paths(&n1));
+    // Phase 31c: owners (uid:gid) in name index v3, carried over with a reused volume
+    let owner_of = |n: &NameIndex, p: &str| {
+        n.iter()
+            .position(|e| e.0 == p)
+            .and_then(|i| n.owner(i).map(str::to_owned))
+    };
+    let me = {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(d.path()).unwrap();
+        format!("{}:{}", m.uid(), m.gid())
+    };
+    assert_eq!(owner_of(&n1, "vda1/etc/fstab").as_deref(), Some(me.as_str()));
+    assert_eq!(owner_of(&n1, "vda1"), None, "the volume directories have none");
+    assert_eq!(owner_of(&n2, "vda2/bob/x.bin"), owner_of(&n1, "vda2/bob/x.bin"));
     // Phase 31c: ext4 keeps no directory records (its crate caches blocks: the read sets would
     // be incomplete); the table is still written, without volumes
     let table = |m: &chunkstore::Manifest| s.read_snap_file(&m.source, m.time, "fsindex-dirs").unwrap().unwrap();

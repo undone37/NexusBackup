@@ -159,13 +159,23 @@ pub struct VolumeRec {
 pub const REPORT_FILE: &str = "fsindex";
 
 /// One listed entry; `path` relative to the volume root, `/`-separated.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Entry {
     pub path: String,
     pub size: u64,
     /// seconds since the epoch
     pub mtime: i64,
     pub kind: u8,
+    /// Phase 31c: the owner (Windows SID `S-1-5-21-…`, Linux `uid:gid`)
+    pub owner: Option<String>,
+    /// Phase 31c: SHA-256 of a regular file's content (when hashes were asked for)
+    pub sha256: Option<[u8; 32]>,
+}
+
+/// Whether an owner text is one the walkers write (SID or `uid:gid`): checked by
+/// the parent, the text comes from the guest.
+pub fn valid_owner(s: &str) -> bool {
+    (1..=184).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b':')
 }
 
 /// Limits of one listing (all volumes of a snapshot together).

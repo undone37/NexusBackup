@@ -14,6 +14,19 @@ pub trait Driver {
     /// listing of the previous snapshot, or a parser crashed on it before).
     fn begin(&mut self, v: &Volume) -> io::Result<bool>;
     fn entry(&mut self, path: &str, size: u64, mtime: i64, kind: u8) -> io::Result<()>;
+    /// An entry with its owner and content hash (Phase 31c); default: without them.
+    fn entry_ext(
+        &mut self,
+        path: &str,
+        size: u64,
+        mtime: i64,
+        kind: u8,
+        owner: Option<&str>,
+        sha256: Option<&[u8; 32]>,
+    ) -> io::Result<()> {
+        let _ = (owner, sha256);
+        self.entry(path, size, mtime, kind)
+    }
     /// The volume is done (`state` set); also called for volumes that are
     /// not parsed (unsupported, skipped, reused).
     fn end(&mut self, v: &Volume) -> io::Result<()>;
@@ -51,6 +64,21 @@ pub struct Out<'a> {
 impl Out<'_> {
     /// Emits one entry. `Ok(false)`: a limit was hit, stop walking.
     pub fn emit(&mut self, info: &mut Volume, path: &str, size: u64, mtime: i64, kind: u8) -> Result<bool, String> {
+        self.emit_ext(info, path, size, mtime, kind, None, None)
+    }
+
+    /// [`Self::emit`] with the entry's owner and content hash (Phase 31c).
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_ext(
+        &mut self,
+        info: &mut Volume,
+        path: &str,
+        size: u64,
+        mtime: i64,
+        kind: u8,
+        owner: Option<&str>,
+        sha256: Option<&[u8; 32]>,
+    ) -> Result<bool, String> {
         if self.total >= self.limits.max_entries {
             self.stopped = Some(format!("entry limit ({}) reached", self.limits.max_entries));
             return Ok(false);
@@ -59,7 +87,7 @@ impl Out<'_> {
             self.stopped = Some(format!("time budget ({} s) spent", self.limits.budget_secs));
             return Ok(false);
         }
-        if let Err(e) = self.driver.entry(path, size, mtime, kind) {
+        if let Err(e) = self.driver.entry_ext(path, size, mtime, kind, owner, sha256) {
             self.fatal = Some(e);
             return Err("output closed".into());
         }

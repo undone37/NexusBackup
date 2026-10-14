@@ -2,13 +2,16 @@
 //! their `$I30` indexes; size and modification time come from each file's own
 //! record (`$DATA` length, `$STANDARD_INFORMATION`), not from the index copy
 //! of `$FILE_NAME` (Windows updates that lazily). DOS 8.3 aliases and the NTFS
-//! metadata files are left out. `$LogFile` is never replayed.
+//! metadata files are left out. `$LogFile` is never replayed. Owners (Phase
+//! 31c): the security id of `$STANDARD_INFORMATION` names a descriptor in
+//! `$Secure:$SDS`, read once per volume, whose owner SID is the entry's owner.
 
-use crate::disk::{Padded, Vol};
+use crate::disk::{le16, le32, le64, Padded, Vol};
 use crate::walk::Out;
 use crate::{nt_to_unix, Volume, KIND_DIR, KIND_FILE, KIND_SYMLINK, MAX_DEPTH, MAX_PATH};
 use ntfs::structured_values::{NtfsFileAttributeFlags, NtfsFileNamespace, NtfsStandardInformation, NtfsVolumeFlags};
 use ntfs::{Ntfs, NtfsAttributeType, NtfsFile, NtfsReadSeek};
+use std::collections::HashMap;
 
 const TAG_DEDUP: u32 = 0x8000_0013;
 const TAG_SYMLINK: u32 = 0xA000_000C;
@@ -17,6 +20,84 @@ const TAG_MOUNT_POINT: u32 = 0xA000_0003;
 /// $BadClus, $Secure, $UpCase, $Extend, reserved
 const FIRST_USER_RECORD: u64 = 16;
 const ROOT: u64 = 5;
+/// `$Secure`, whose `$SDS` stream holds the security descriptors.
+const SECURE: u64 = 9;
+/// Bytes of `$SDS` read for the owner table.
+const MAX_SDS: u64 = 32 << 20;
+/// `$SDS` is written in 256 KiB blocks, each followed by its mirror copy.
+const SDS_BLOCK: usize = 256 << 10;
+
+/// A SID as text (`S-1-5-21-…`), from its binary form.
+pub fn sid_text(b: &[u8]) -> Option<String> {
+    let (rev, n) = (*b.first()?, *b.get(1)? as usize);
+    if rev != 1 || n > 15 {
+        return None;
+    }
+    let auth = b.get(2..8)?.iter().fold(0u64, |a, x| a << 8 | u64::from(*x));
+    let mut s = format!("S-1-{auth}");
+    for i in 0..n {
+        s.push_str(&format!("-{}", crate::disk::le32(b.get(8 + i * 4..12 + i * 4)?, 0)));
+    }
+    Some(s)
+}
+
+/// The owner SIDs of the security descriptors in a `$SDS` stream, by security id.
+pub fn parse_sds(d: &[u8], out: &mut HashMap<u32, String>) {
+    let mut block = 0;
+    while block < d.len() {
+        let end = (block + SDS_BLOCK).min(d.len());
+        let mut at = block;
+        // entry: hash, security id, its own offset, length, then the self-relative descriptor
+        while at + 20 <= end {
+            let (id, off, len) = (le32(d, at + 4), le64(d, at + 8), le32(d, at + 16) as usize);
+            if len < 20 + 20 || off != at as u64 || at + len > end {
+                break;
+            }
+            let sd = &d[at + 20..at + len];
+            // revision 1, self-relative (control 0x8000), owner offset
+            let owner = le32(sd, 4) as usize;
+            if sd[0] == 1 && le16(sd, 2) & 0x8000 != 0 && owner >= 20 {
+                if let Some(s) = sd.get(owner..).and_then(sid_text) {
+                    out.insert(id, s);
+                }
+            }
+            if out.len() > 1 << 20 {
+                return;
+            }
+            at += len.div_ceil(16) * 16;
+        }
+        block += 2 * SDS_BLOCK; // skip the mirror copy
+    }
+}
+
+/// security id -> owner SID of the volume (`$Secure:$SDS`); empty when it cannot be read.
+fn owners(ntfs: &Ntfs, fs: &mut Padded) -> HashMap<u32, String> {
+    let mut out = HashMap::new();
+    let Ok(f) = ntfs.file(fs, SECURE) else { return out };
+    // the named $DATA stream "$SDS" (looked up by hand: the crate's name lookup needs $UpCase)
+    let mut attrs = f.attributes();
+    while let Some(item) = attrs.next(fs) {
+        let Ok(item) = item else { break };
+        let Ok(a) = item.to_attribute() else { continue };
+        let named = a.name().is_ok_and(|n| n.to_string_lossy() == "$SDS");
+        if a.ty().ok() != Some(NtfsAttributeType::Data) || !named {
+            continue;
+        }
+        let Ok(mut v) = a.value(fs) else { break };
+        let mut d = vec![0u8; v.len().min(MAX_SDS) as usize];
+        let mut done = 0;
+        while done < d.len() {
+            match v.read(fs, &mut d[done..]) {
+                Ok(n) if n > 0 => done += n,
+                _ => break,
+            }
+        }
+        d.truncate(done);
+        parse_sds(&d, &mut out);
+        break;
+    }
+    out
+}
 
 fn reparse_tag(f: &NtfsFile, fs: &mut Padded) -> Option<u32> {
     let mut attrs = f.attributes();
@@ -49,6 +130,8 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             out.expect(records.saturating_sub(FIRST_USER_RECORD));
         }
     }
+    // Phase 31c: owners (security id in $STANDARD_INFORMATION -> descriptor in $Secure)
+    let owner_of = owners(&ntfs, &mut fs);
     let mut stack: Vec<(u64, String, usize)> = vec![(ROOT, String::new(), 0)];
     // NTFS has no directory hard links: a directory seen twice is a loop
     let mut visited = std::collections::HashSet::from([ROOT]);
@@ -196,7 +279,12 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             {
                 info.windows = true;
             }
-            if own && !out.emit(info, &path, size, nt_to_unix(mtime), kind)? {
+            let owner = si
+                .as_ref()
+                .and_then(|s| s.security_id())
+                .and_then(|id| owner_of.get(&id))
+                .map(String::as_str);
+            if own && !out.emit_ext(info, &path, size, nt_to_unix(mtime), kind, owner, None)? {
                 return Ok(());
             }
             if kind == KIND_DIR {
@@ -284,4 +372,57 @@ fn drives(ntfs: &Ntfs, fs: &mut Padded) -> Result<Vec<(String, String)>, String>
     let attr = item.to_attribute().map_err(e)?;
     let v = attr.value(fs).map_err(e)?;
     crate::regf::drive_letters(HiveFile { v, fs })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `$SDS` entry for security id `id` at `at` whose descriptor's owner is `sid`.
+    fn entry(id: u32, at: usize, sid: &[u8]) -> Vec<u8> {
+        let mut sd = vec![1u8, 0, 0, 0x80];
+        sd.extend(20u32.to_le_bytes()); // owner offset
+        sd.extend([0u8; 12]);
+        sd.extend(sid);
+        let mut e = vec![0u8; 4];
+        e.extend(id.to_le_bytes());
+        e.extend((at as u64).to_le_bytes());
+        e.extend(((20 + sd.len()) as u32).to_le_bytes());
+        e.extend(sd);
+        e.resize(e.len().div_ceil(16) * 16, 0);
+        e
+    }
+
+    #[test]
+    fn owners_from_sds() {
+        // S-1-5-21-1-2-3-1001
+        let mut sid = vec![1u8, 5, 0, 0, 0, 0, 0, 5];
+        for x in [21u32, 1, 2, 3, 1001] {
+            sid.extend(x.to_le_bytes());
+        }
+        assert_eq!(sid_text(&sid).as_deref(), Some("S-1-5-21-1-2-3-1001"));
+        assert_eq!(sid_text(&[1, 9, 0]), None);
+        let admins = [1u8, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0];
+        let mut d = entry(0x100, 0, &admins);
+        let n = d.len();
+        d.extend(entry(0x101, n, &sid));
+        // the mirror copy of the first block, then the next block
+        d.resize(2 * SDS_BLOCK, 0);
+        d.extend(entry(0x102, 2 * SDS_BLOCK, &sid));
+        let mut m = HashMap::new();
+        parse_sds(&d, &mut m);
+        assert_eq!(m.len(), 3, "{m:?}");
+        assert_eq!(m[&0x100], "S-1-5-32-544");
+        assert_eq!(m[&0x102], "S-1-5-21-1-2-3-1001");
+        // hostile: wrong self offsets, lengths beyond the block, truncation
+        for i in 0..d.len().min(200) {
+            for x in [0u8, 0xff, 0x7f] {
+                let mut h = d.clone();
+                h[i] = x;
+                let mut m = HashMap::new();
+                parse_sds(&h, &mut m);
+                parse_sds(&h[..i], &mut m);
+            }
+        }
+    }
 }

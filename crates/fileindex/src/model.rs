@@ -45,6 +45,8 @@ pub struct Fields {
     pub gone: Field,
     pub fkey: Field,
     pub okey: Field,
+    /// Phase 31c: the owner of the version (stored only)
+    pub owner: Field,
 }
 
 pub fn schema() -> (Schema, Fields) {
@@ -70,6 +72,7 @@ pub fn schema() -> (Schema, Fields) {
         gone: b.add_u64_field("gone", INDEXED | STORED | FAST),
         fkey: b.add_u64_field("fkey", INDEXED | FAST),
         okey: b.add_u64_field("okey", INDEXED),
+        owner: b.add_text_field("owner", STRING | STORED),
     };
     (b.build(), f)
 }
@@ -183,6 +186,7 @@ struct Open {
     size: u64,
     mtime: i64,
     kind: u8,
+    owner: Option<String>,
 }
 
 pub struct TenantIndex {
@@ -284,6 +288,9 @@ impl TenantIndex {
         if gone == 0 {
             d.add_u64(f.okey, vkey(source, &v.browse, v.size, v.mtime, v.kind));
         }
+        if let Some(o) = &v.owner {
+            d.add_text(f.owner, o);
+        }
         d
     }
 
@@ -294,7 +301,7 @@ impl TenantIndex {
         };
         let g = Guest::for_snapshot(r, source, time, &names);
         let mut out = HashMap::with_capacity(names.len());
-        for (p, size, mtime, kind) in names.iter() {
+        for (i, (p, size, mtime, kind)) in names.iter().enumerate() {
             let path = g.path(p);
             if !rules.allows(&path) {
                 continue;
@@ -313,6 +320,7 @@ impl TenantIndex {
                     size,
                     mtime,
                     kind,
+                    owner: names.owner(i).map(str::to_owned),
                 },
             );
         }
@@ -460,6 +468,7 @@ impl TenantIndex {
             size: u(self.f.size),
             mtime: d.get_first(self.f.mtime).and_then(|v| v.as_i64()).unwrap_or_default(),
             kind: u(self.f.kind) as u8,
+            owner: d.get_first(self.f.owner).and_then(|v| v.as_str()).map(str::to_owned),
         }
     }
 

@@ -180,6 +180,10 @@ pub struct Version {
     /// first later indexed snapshot without it; `None`: still in the newest
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gone: Option<u64>,
+    /// owner when the name index records one (Phase 31c: VM disks; Windows SID
+    /// `S-1-5-21-…`, Linux `uid:gid`), as of the version's first snapshot
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// One file (or directory) of one source, with its versions, newest first.

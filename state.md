@@ -586,7 +586,15 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   test: two MBR disks, NTFS system volume (C: from the hive), ext4 spanned over both disks (D:), striped + RAID-5,
   second disk missing; fuzz target `ldm_db`. Open: GPT dynamic disks unverified against Windows; the micro-VM does
   not assemble dynamic volumes (restore through the Windows agent)
-- [ ] 31c: owners/SIDs, content hashes
+- [x] 31c owners: NTFS owner SID ($STANDARD_INFORMATION security id -> $Secure:$SDS), ext4/XFS/btrfs `uid:gid`;
+  entry frame `extra` byte (owner, later hash), validated by the parent; name index v3 (`names3:` context, owner
+  table + per-entry index, written only with owners; readers v3 -> v2 -> v1; mismatching owner columns refused);
+  carried over on directory takeover / volume reuse; fileindex stores the owner per version and returns it in hits
+  (`versions[].owner`, schema change = one rebuild); tests: chunkstore v3 round trip + older contexts refused +
+  forged columns, ext4/NTFS (ntfs-3g `permissions`) owners, $SDS parser with mirror blocks and byte flips, frame
+  round trip + hostile owners, pve owners after reuse, fileindex hit owners. Open: owner search filter (web-api
+  parameter + UI), SID / uid names
+- [ ] 31c: content hashes for VM disk files
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

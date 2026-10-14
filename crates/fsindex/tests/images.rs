@@ -170,7 +170,7 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
         let mut e: Vec<_> = x
             .entries
             .iter()
-            .map(|e| (e.path.clone(), e.size, e.mtime, e.kind))
+            .map(|e| (e.path.clone(), e.size, e.mtime, e.kind, e.owner.clone(), e.sha256))
             .collect();
         e.sort();
         (
@@ -379,6 +379,14 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
         root.entries
     );
     assert_eq!(root.volume.uuid.as_deref(), Some(ext_uuid));
+    // Phase 31c: owners uid:gid (mkfs.ext4 -d keeps the files' owners)
+    let me = {
+        use std::os::unix::fs::MetadataExt;
+        let m = fs::metadata(tree.join("etc/fstab")).unwrap();
+        format!("{}:{}", m.uid(), m.gid())
+    };
+    let fstab = root.entries.iter().find(|e| e.path == "etc/fstab").unwrap();
+    assert_eq!(fstab.owner.as_deref(), Some(me.as_str()));
     assert!(root.volume.fstab.as_deref().unwrap().contains("/boot/efi"));
     let esp = vol(&l, "vda1");
     assert_eq!(
@@ -416,7 +424,11 @@ fn ntfs_whole_disk_windows_volume() {
     }
     let mnt = d.path().join("m");
     fs::create_dir(&mnt).unwrap();
-    if !run("ntfs-3g", &[img.to_str().unwrap(), mnt.to_str().unwrap()]) {
+    // permissions: ntfs-3g gives every new file a security id and descriptor (as Windows does)
+    if !run(
+        "ntfs-3g",
+        &["-o", "permissions", img.to_str().unwrap(), mnt.to_str().unwrap()],
+    ) {
         return;
     }
     let expect = (|| {
@@ -456,6 +468,8 @@ fn ntfs_whole_disk_windows_volume() {
     }
     let doc = v.entries.iter().find(|x| x.path.ends_with(".docx")).unwrap();
     assert_eq!(doc.mtime, MTIME);
+    // Phase 31c: owners from $Secure (with `permissions` ntfs-3g gives files a security id)
+    assert!(doc.owner.as_deref().is_some_and(|o| o.starts_with("S-1-")), "{doc:?}");
     let mut vols = vec![v.volume.clone()];
     fsindex::mapping::assign(&mut vols);
     assert_eq!(vols[0].mount.as_deref(), Some("C:"));

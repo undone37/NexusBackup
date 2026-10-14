@@ -387,15 +387,22 @@ def fx_frame(tag, payload):
     return tag + struct.pack("<I", len(payload)) + payload
 
 
-def fx_ent(path, kind=0, size=5, mtime=1700000000):
+def fx_ent(path, kind=0, size=5, mtime=1700000000, owner=None, sha=None):
     p = path.encode()
-    return bytes([kind]) + struct.pack("<QqH", size, mtime, len(p)) + p
+    extra = (1 if owner else 0) | (2 if sha else 0)
+    tail = bytes([extra])
+    if owner:
+        tail += bytes([len(owner)]) + owner.encode()
+    if sha:
+        tail += sha
+    return bytes([kind]) + struct.pack("<QqH", size, mtime, len(p)) + p + tail
 
 
 vol_json = json.dumps({"key": "drive-scsi0@0+1", "browse": "vda1", "device": "drive-scsi0", "fs": "ext4",
                        "size": 1, "state": "indexed"}).encode()
 put("fsindex", "helper_frames", "listing",
-    fx_frame(b"B", vol_json) + fx_frame(b"E", fx_ent("etc", 1) + fx_ent("etc/hosts")) + fx_frame(b"Z", vol_json)
+    fx_frame(b"B", vol_json) + fx_frame(b"E", fx_ent("etc", 1, owner="0:0") + fx_ent("etc/hosts", owner="S-1-5-32-544",
+                                                     sha=bytes(range(32)))) + fx_frame(b"Z", vol_json)
     + fx_frame(b"Q", b""))
 put("fsindex", "helper_frames", "hostile",
     fx_frame(b"B", vol_json.replace(b"vda1", b"../x")) + fx_frame(b"E", fx_ent("../etc/passwd") + fx_ent("/abs")))

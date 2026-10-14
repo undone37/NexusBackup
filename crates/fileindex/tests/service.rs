@@ -119,6 +119,8 @@ fn versions_rules_paths_retention_paging() {
     ] {
         n.push(p, 11, 50, k);
     }
+    // Phase 31c: owners (name index v3)
+    n.set_owners(vec!["1000:1000".into()], vec![0, 0, 0, 0, 0, 1]);
     store.write_names("vm-100", 160, &n).unwrap();
     let vol = |b: &str, m: &str| fsindex::VolumeRec {
         volume: fsindex::Volume {
@@ -170,6 +172,13 @@ fn versions_rules_paths_retention_paging() {
     let mut pdfs: Vec<_> = ext.hits.iter().map(|h| h.path.as_str()).collect();
     pdfs.sort();
     assert_eq!(pdfs, ["/home/ann/cv.pdf", "D:/Data/x.pdf"]);
+    let owners: Vec<_> = ext
+        .hits
+        .iter()
+        .map(|h| (h.path.as_str(), h.versions[0].owner.as_deref()))
+        .collect();
+    assert!(owners.contains(&("/home/ann/cv.pdf", Some("1000:1000"))), "{owners:?}");
+    assert!(owners.contains(&("D:/Data/x.pdf", None)), "{owners:?}");
     let del = s
         .search(&SearchReq {
             tenant: "acme".into(),

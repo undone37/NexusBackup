@@ -95,8 +95,9 @@ in the sealed name index, so a hunt for known-bad hashes (IOC feeds) needs no re
 
 - **Format:** name index v2 (`chunkstore::names`): the v1 columns plus a sparse list `(entry index, SHA-256)`,
   sealed with the context `names2:<source>/<time>` (v1: `names:<source>/<time>`). An index without hashes is still
-  written as v1, so the previous release reads every snapshot taken without the option. Readers try v2, then v1;
-  out-of-range or unordered hash entries are refused. Never offsite (derived data, rebuilt from the snapshot).
+  written as v1, so the previous release reads every snapshot taken without the option. Readers try v3 (owners,
+  Phase 31c, below), v2, then v1; out-of-range or unordered hash entries are refused. Never offsite (derived data,
+  rebuilt from the snapshot).
 - **Where the hashes come from** (`Store::enable_file_hashes`, at commit): computed while reading by the connector
   (NAS shares, TrueNAS, plugin file trees: `store_file*`) or by the agent (`file-hash` capability,
   docs/agent-protocol.md); carried over from the previous snapshot of the source for files with the same chunk
@@ -228,6 +229,20 @@ in one VM: only the newest database's group is read. The layout of GPT dynamic d
 checked against a Windows-made disk (MBR layout as the kernel). Test: two MBR disks with a database written by the
 test (simple NTFS system volume whose hive names the dynamic volumes C: and D:, an ext4 spanned over both disks, a
 striped and a RAID-5 volume; the second disk missing). Fuzz target `ldm_db`.
+
+**Owners (Phase 31c).** The helper records each entry's owner: NTFS the owner SID of the security descriptor its
+`$STANDARD_INFORMATION` security id names (`$Secure:$SDS`, read once per volume and helper, at most 32 MiB, the 256
+KiB mirror blocks skipped, every entry's self offset and length checked; NTFS 1.x files without a security id have
+none), ext4 / XFS / btrfs `uid:gid` (numbers: the guest's `/etc/passwd` is not consulted); FAT and exFAT have none.
+The entry frame carries it (`E`: an `extra` byte, then `[u8 len][owner]`); the parent accepts only `A-Z a-z 0-9 - :`
+up to 184 bytes. The name index stores owners as **v3** (context `names3:<source>/<time>`: the v2 columns plus a
+table of owner texts and per entry its position + 1, 0 = none), written only when there are owners, so the previous
+release keeps reading every v1/v2 snapshot and fails cleanly on a v3 one (no misreading); readers try v3, v2, v1 and
+refuse owner columns that do not match the entries. Directories taken over and volumes reused carry their owners
+from the previous name index. The search index (`nexus-index`, crate `fileindex`) stores the owner per file version
+(stored field, the schema change rebuilds the tenant indexes once) and returns it with each version of a hit
+(`versions[].owner`). Not yet: a search filter by owner (needs the web-api parameter and the UI, Phase 33 area) and
+names for SIDs / uids (the guest's SAM / `passwd`).
 
 **Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
 reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)

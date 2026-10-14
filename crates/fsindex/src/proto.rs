@@ -9,7 +9,8 @@
 //!
 //! Helper → parent: `R` read request (`u32 disk, u64 offset, u32 length`, at
 //! most 1 MiB), `B` volume begins (JSON [`Volume`]), `E` entries
-//! (`[u8 kind][u64 size][i64 mtime][u16 len][path]`…), `Z` volume done (JSON
+//! (`[u8 kind][u64 size][i64 mtime][u16 len][path][u8 extra]`, then with bit 0
+//! of `extra` `[u8 len][owner]`, with bit 1 `[32 bytes SHA-256]`…), `Z` volume done (JSON
 //! [`Volume`]), `Q` finished, `X` fatal error (UTF-8 message).
 
 use crate::disk::{invalid, DiskIo};
@@ -62,13 +63,31 @@ pub fn read_frame(r: &mut dyn Read) -> io::Result<(u8, Vec<u8>)> {
     Ok((h[0], p))
 }
 
-pub fn encode_entry(buf: &mut Vec<u8>, path: &str, size: u64, mtime: i64, kind: u8) {
+#[allow(clippy::too_many_arguments)]
+pub fn encode_entry(
+    buf: &mut Vec<u8>,
+    path: &str,
+    size: u64,
+    mtime: i64,
+    kind: u8,
+    owner: Option<&str>,
+    sha256: Option<&[u8; 32]>,
+) {
     let p = &path.as_bytes()[..path.len().min(u16::MAX as usize)];
     buf.push(kind);
     buf.extend_from_slice(&size.to_le_bytes());
     buf.extend_from_slice(&mtime.to_le_bytes());
     buf.extend_from_slice(&(p.len() as u16).to_le_bytes());
     buf.extend_from_slice(p);
+    let owner = owner.filter(|o| o.len() <= u8::MAX as usize);
+    buf.push(u8::from(owner.is_some()) | u8::from(sha256.is_some()) << 1);
+    if let Some(o) = owner {
+        buf.push(o.len() as u8);
+        buf.extend_from_slice(o.as_bytes());
+    }
+    if let Some(h) = sha256 {
+        buf.extend_from_slice(h);
+    }
 }
 
 /// Decodes an `E` payload (hostile input on the parent side).
@@ -90,13 +109,37 @@ pub fn decode_entries(mut b: &[u8], out: &mut Vec<Entry>) -> io::Result<()> {
         {
             return Err(invalid("malformed entry"));
         }
+        let extra = *b.get(19 + n).ok_or_else(|| invalid("truncated entry"))?;
+        let mut at = 20 + n;
+        if extra & !3 != 0 {
+            return Err(invalid("malformed entry"));
+        }
+        let mut owner = None;
+        if extra & 1 != 0 {
+            let k = *b.get(at).ok_or_else(|| invalid("truncated entry"))? as usize;
+            let o = b.get(at + 1..at + 1 + k).ok_or_else(|| invalid("truncated entry"))?;
+            let o = std::str::from_utf8(o).ok().filter(|o| crate::valid_owner(o));
+            owner = Some(o.ok_or_else(|| invalid("malformed owner"))?.to_owned());
+            at += 1 + k;
+        }
+        let mut sha256 = None;
+        if extra & 2 != 0 {
+            let h = b.get(at..at + 32).ok_or_else(|| invalid("truncated entry"))?;
+            sha256 = Some(h.try_into().unwrap());
+            at += 32;
+            if kind != crate::KIND_FILE {
+                return Err(invalid("a hash for an entry that is not a file"));
+            }
+        }
         out.push(Entry {
             path,
             size,
             mtime,
             kind,
+            owner,
+            sha256,
         });
-        b = &b[19 + n..];
+        b = &b[at..];
     }
     Ok(())
 }
@@ -279,7 +322,19 @@ impl<R: Read, W: Write> Driver for HelperDriver<R, W> {
     }
 
     fn entry(&mut self, path: &str, size: u64, mtime: i64, kind: u8) -> io::Result<()> {
-        encode_entry(&mut self.batch, path, size, mtime, kind);
+        self.entry_ext(path, size, mtime, kind, None, None)
+    }
+
+    fn entry_ext(
+        &mut self,
+        path: &str,
+        size: u64,
+        mtime: i64,
+        kind: u8,
+        owner: Option<&str>,
+        sha256: Option<&[u8; 32]>,
+    ) -> io::Result<()> {
+        encode_entry(&mut self.batch, path, size, mtime, kind, owner, sha256);
         if self.batch.len() >= BATCH {
             self.flush_batch()?;
         }
@@ -339,4 +394,47 @@ pub fn serve<R: Read + 'static, W: Write + 'static>(r: R, w: W) -> io::Result<()
         Err(e) => write_frame(&mut c.w, b'X', e.to_string().as_bytes())?,
     }
     c.w.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entries_with_owner_and_hash() {
+        let mut b = Vec::new();
+        encode_entry(
+            &mut b,
+            "a/b.txt",
+            5,
+            7,
+            crate::KIND_FILE,
+            Some("S-1-5-21-1-1001"),
+            Some(&[3; 32]),
+        );
+        encode_entry(&mut b, "a", 0, 7, crate::KIND_DIR, Some("0:0"), None);
+        encode_entry(&mut b, "a/c", 1, 7, crate::KIND_FILE, None, None);
+        let mut out = Vec::new();
+        decode_entries(&b, &mut out).unwrap();
+        assert_eq!(out[0].owner.as_deref(), Some("S-1-5-21-1-1001"));
+        assert_eq!(out[0].sha256, Some([3; 32]));
+        assert_eq!((out[1].owner.as_deref(), out[2].owner.as_deref()), (Some("0:0"), None));
+        // hostile: an owner with other characters, a hash on a directory, unknown extra bits
+        for (owner, kind, extra) in [
+            ("../x", crate::KIND_FILE, None),
+            ("0:0", crate::KIND_DIR, None),
+            ("0:0", 0, Some(4u8)),
+        ] {
+            let mut b = Vec::new();
+            encode_entry(&mut b, "x", 1, 1, kind, Some(owner), Some(&[0; 32]));
+            if let Some(x) = extra {
+                b[1 + 8 + 8 + 2 + 1] |= x;
+            }
+            assert!(decode_entries(&b, &mut Vec::new()).is_err(), "{owner} {kind}");
+        }
+        // truncated anywhere: an error, never a panic
+        for n in 0..b.len() {
+            let _ = decode_entries(&b[..n], &mut Vec::new());
+        }
+    }
 }
