@@ -609,6 +609,8 @@ export const en = {
       "Queued by this job when it finished. Retention, the offsite copy and the file index of new snapshots run as jobs of their own, so a backup ends (and frees the Proxmox VE node) without waiting for them.",
     groupN: (id: number) => `group #${id}`,
     openN: (id: number) => `Open job #${id}`,
+    whatWentWrong: "What went wrong",
+    retried: "The scheduler tries again as job",
     waitingFor: "Waiting",
     // job parameters shown by name (others keep their technical key)
     paramLabels: {

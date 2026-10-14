@@ -40,6 +40,11 @@
   // logs written before the time marks (and plain logs) show without a time column
   const logView = $derived(logLines(job?.log));
   const logTimed = $derived(logView.some((l) => l.time !== null));
+  // a line that reports a problem (highlighted, and summarised for failed jobs)
+  const isError = (s: string) => /\b(ERROR|FAIL|failed|error:|refused)\b/.test(s) && !/^\s*\[scheduler\] attempt/.test(s);
+  const errorLines = $derived(job?.state === 'failed' ? logView.filter((l) => isError(l.text)).slice(-5) : []);
+  // "retry as job 179": the job the scheduler queued to try again
+  const retryJob = $derived(Number(/retry as job (\d+)/.exec(job?.log ?? '')?.[1]) || null);
   const prog = $derived(job?.state === 'running' ? (job.progress ?? null) : null);
   // the connector reports about every 2 s while data flows; a long gap means it waits (vzdump start, a slow source)
   const quiet = $derived(prog?.updated ? Math.max(0, Date.now() / 1000 - prog.updated) : 0);
@@ -88,6 +93,15 @@
   {#if job.result?.warnings}<p class="banner warn">
       {t.jobs.skipped(job.result.warnings, skipped.map((x) => x.source).join(', '))}
     </p>{/if}
+  {#if job.state === 'failed' && (errorLines.length || retryJob)}
+    <section class="card failure" aria-labelledby="jfail">
+      <h2 id="jfail">{t.jobs.whatWentWrong}</h2>
+      {#each errorLines as l, i (i)}<p class="mono small err-line">{l.text}</p>{/each}
+      {#if retryJob}
+        <p>{t.jobs.retried} <a href={href(`/jobs/${retryJob}`)}>#{retryJob}</a></p>
+      {/if}
+    </section>
+  {/if}
   <div class="two-col">
     <section class="card">
       <dl class="kv">
@@ -336,7 +350,7 @@
         >
       </p>
     {/if}
-    <pre class="log" bind:this={logEl} aria-labelledby="jl">{#if job.log}{#each logView as l, i (i)}{#if logTimed}<span class="log-time">{l.time === null ? '        ' : clock(l.time)}</span> {/if}{l.text}
+    <pre class="log" bind:this={logEl} aria-labelledby="jl">{#if job.log}{#each logView as l, i (i)}{#if logTimed}<span class="log-time">{l.time === null ? '        ' : clock(l.time)}</span> {/if}{#if isError(l.text)}<span class="log-err">{l.text}</span>{:else}{l.text}{/if}
 {/each}{:else}…{/if}</pre>
   </section>
 {:else if !error}
