@@ -690,3 +690,60 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   monthly count on the second, listing, fetch back from the second, DR (`nexus-setup` attach) from the second
 - [ ] open (all): lab runs listed above; rollback of containers; per-policy offsite GFS; risk of a pre-rollback
   backup of a paused Windows guest without guest-agent freeze (crash-consistent state kept)
+
+## Phase 33 — Commvault Tier 2 (2026-10-14)
+Scope: docs/commvault-comparison.md Tier 2 (plan.md Phase 33); catalog v46 (`SCHEMA_V46`, after v44: v45 is
+Phase 30's), threat model T70–T75.
+- [x] PSA ticketing: rule channel `psa` (HaloPSA OAuth2 client credentials, ConnectWise API member keys, Autotask
+  API user), scheduler thread `psa.rs` (open per alert key, note on repeat/escalation/re-raise, close on resolve),
+  `psa_tickets` / `psa_state`, alert `psa`, sealed secret bound to rule + URLs, egress allow-list, test opens and
+  closes a ticket, tickets on the Alerts page; tests: scheduler `tests/phase33.rs` (mock HaloPSA / ConnectWise /
+  Autotask servers), web-api `tests/phase33.rs`, catalog migration; UI rule editor, mock, manual 11, screenshots
+  (scene `p33psa`)
+- [ ] lab: PSA ticketing against real HaloPSA / ConnectWise / Autotask sandboxes (needs vendor test instances)
+- [x] tenant-side approvers: `tenant_approvals`, `quorum_tenants`, `quorum.approved_by/at`, `users.approver_since` +
+  trigger (catalog v46, `catalog::approvers`), quorum co-approval (any order, refusal final, 24 h wait, approvals-off
+  path, own consent, impersonation refused), `GET/PUT /tenants/{name}/approvers`, scheduler `tenant_approver` alert;
+  tests: catalog unit + migration, web-api `tests/phase33.rs` (three scenarios), tenant-admin route classification,
+  scheduler `tests/phase33.rs`; UI (Approvals page box and tenant decisions, Tenants page Approvers dialog + chip),
+  mock, manual 10/11, screenshot (scene `p33approvers`), threat model T71
+- [x] multi-appliance overview: `nexusctl fleet` (config with token_file/token_env, read scope enforced through
+  `/auth/me` `token`, parallel pull of dashboard / open alerts / failed jobs, text, JSON, static HTML, `--check`);
+  tests: unit (config, token file mode, rendering and escaping), `crates/nexusctl/tests/fleet.rs` (two real web-api
+  routers, operator token refused, unreachable appliance); manual 09, control-plane, threat model T72
+- [ ] lab: `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs
+- [x] synthetic (clean-file) restore: `synthetic_restore` job (web-api params, gates like restore_files / files_get,
+  download + report tokens, `GET /jobs/{id}/synthetic.csv`), scheduler decision (`synthetic.rs`), plan + CSV,
+  `chunkstore::synthetic::compose`, `nexus-agentctl synthetic` (tar/zip or `restore_tree` onto an agent); tests:
+  chunkstore compose, scheduler selection unit tests + `tests/phase33.rs` (real store, faked connector), agent-conn
+  `synthetic_restore_download_and_to_host` (fake agent), web-api `tests/phase33.rs`, catalog production rule; UI
+  (Snapshots menu, dialog, job result with report and download), mock, manual 06, screenshots (scene `p33synthetic`),
+  threat model T73
+- [ ] lab: clean-file restore of a real agent / share snapshot after a simulated ransomware run (lockbit-style rename
+  plus a YARA rule), download and to host
+- [x] cases (M365 compliance search on the name index; item metadata search not built, design in docs/m365.md):
+  catalog `cases` / `case_snapshots`, `file_search` `source_prefix` + case bookkeeping, web-api `/cases` (create,
+  search, hold, export, close), Cases page, mock, manual 06, screenshot (scene `p33cases`), ui-smoke, threat model
+  T74; tests: web-api `tests/phase33.rs`, scheduler `tests/phase33.rs`, route classification, catalog migration
+- [ ] M365 item metadata search (sender, recipients) for cases: needs a plugin contract change (design in docs/m365.md)
+- [ ] lab: a case over a real M365 test tenant backup with a PST export
+- [x] VMware: transport spike document docs/vmware-transport-spike.md (HTTPS datastore + CBT vs. nbdkit + customer
+  VDDK, licensing, effort, recommendation, spike steps); not implemented by decision
+- [ ] VMware spike run in a vSphere lab (ESXi 8 with VMFS/NFS, vSAN if available), then schedule the plugin
+
+## Web UI usability pass (2026-10-14/15)
+Goal (maintainer): every running task explains itself, states visible everywhere, rows clickable.
+- [x] Jobs: subject per job (group, source, snapshot), follow-up jobs show "after #N" and are listed under their
+  backup, queued jobs say what they wait for (scheduler progress `{"waiting": ...}`), file index jobs show
+  entries/s and an entry-based ETA instead of 0 MB/s, parameters by name, whole rows clickable, "Hide routine
+  jobs" (remembered in the browser), failed jobs: "What went wrong" card, retry link, error lines in red
+- [x] Running jobs: dashboard "Running now" card, top bar indicator on every page, every action that starts a
+  job links it in its notice ("Open job #N")
+- [x] Lists: rows clickable (web/src/lib/rowlink.ts), More menus instead of button rows (agents, tenants,
+  snapshots, sources, groups, replication), long cells wrap
+- [x] Groups: last backup state + next run, auto-refresh; policies: Used by; sources: Protection column with a
+  warning for sources no group backs up; snapshots: guest names; alerts: readable titles + job links;
+  approvals: changed fields first; audit: details folded + target links; sessions: browser and system
+- [x] Replication: queued / running syncs per tenant with job links, Sync now greyed out while one runs,
+  15 s refresh; offsite uploads log per-snapshot progress
+- [ ] Not reviewed in depth: Plugins, Hardware (already live), Quorum, Search pages

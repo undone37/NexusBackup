@@ -12,6 +12,7 @@ pub mod access;
 pub mod agent_updates;
 pub mod alerting;
 pub mod anomaly;
+pub mod approvers;
 pub mod auth;
 pub mod console;
 pub mod elevation;
@@ -947,12 +948,65 @@ ALTER TABLE replication_peers ADD COLUMN keyd_pub_pq TEXT;
 ALTER TABLE snapshots ADD COLUMN offsite2 INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v46 (Phase 33, docs/commvault-comparison.md Tier 2):
+/// - PSA ticketing: `psa_tickets`, one row per ticket a rule's PSA channel
+///   opened for an alert key (`ticket` = the PSA's ID; `noted_*` = what the last
+///   note reported; `closed` set when the alert was resolved and the ticket
+///   closed; at most one open ticket per rule and key), and `psa_state`, the
+///   rule's last success / failure (the `psa` alert after 15 minutes);
+/// - tenant-side approvers (`catalog::approvers`): `tenant_approvals` (tenants
+///   that opted in), `quorum_tenants` (per request the tenants that must
+///   co-approve and their decision: `approved`, `rejected`, or `requested` when
+///   the requester is an eligible approver of it), `quorum.approved_by/at` (the
+///   provider's approval while tenant decisions are still open) and
+///   `users.approver_since` (when the account last became a tenant admin, was
+///   activated or re-enabled; NULL = `created`), kept by a trigger;
+/// - cases (compliance search over the name indexes, M365 first): `cases` (the
+///   saved criteria, state, the last search job) and `case_snapshots` (the
+///   snapshots the last search matched, with the number of matched items and the
+///   legal hold the case placed on it).
+///
+/// Purely additive: the previous release ignores the tables and columns (and
+/// would execute requests without the tenants' approval: no rollback while
+/// tenant-side approvers are in use).
+const SCHEMA_V46: &str = r#"
+CREATE TABLE tenant_approvals (tenant TEXT PRIMARY KEY, enabled_at INTEGER NOT NULL, enabled_by TEXT NOT NULL);
+CREATE TABLE quorum_tenants (
+  quorum_id INTEGER NOT NULL REFERENCES quorum(id) ON DELETE CASCADE, tenant TEXT NOT NULL,
+  decided_by TEXT, decided_at INTEGER, decision TEXT CHECK (decision IN ('approved','rejected','requested')),
+  PRIMARY KEY (quorum_id, tenant));
+ALTER TABLE quorum ADD COLUMN approved_by TEXT;
+ALTER TABLE quorum ADD COLUMN approved_at INTEGER;
+ALTER TABLE users ADD COLUMN approver_since INTEGER;
+CREATE TRIGGER users_approver_since AFTER UPDATE OF role, tenant, activation_hash, disabled ON users
+  WHEN NEW.role IS NOT OLD.role OR NEW.tenant IS NOT OLD.tenant
+    OR (OLD.activation_hash IS NOT NULL AND NEW.activation_hash IS NULL) OR (OLD.disabled = 1 AND NEW.disabled = 0)
+BEGIN
+  UPDATE users SET approver_since = CAST(strftime('%s', 'now') AS INTEGER) WHERE id = NEW.id;
+END;
+CREATE TABLE cases (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  criteria TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('open','closed')), created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL, closed_by TEXT, closed_at INTEGER, last_job INTEGER, searched_at INTEGER,
+  truncated INTEGER NOT NULL DEFAULT 0, UNIQUE (tenant, name));
+CREATE TABLE case_snapshots (
+  case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE, source TEXT NOT NULL, time INTEGER NOT NULL,
+  items INTEGER NOT NULL, hold_id INTEGER, PRIMARY KEY (case_id, source, time));
+CREATE TABLE psa_tickets (
+  id INTEGER PRIMARY KEY, rule TEXT NOT NULL, key TEXT NOT NULL, vendor TEXT NOT NULL, ticket TEXT NOT NULL,
+  alert_id INTEGER NOT NULL, opened INTEGER NOT NULL, noted_count INTEGER NOT NULL, noted_at INTEGER NOT NULL,
+  noted_severity TEXT NOT NULL, closed INTEGER);
+CREATE UNIQUE INDEX psa_tickets_open ON psa_tickets(rule, key) WHERE closed IS NULL;
+CREATE TABLE psa_state (
+  rule TEXT PRIMARY KEY, last_ok INTEGER, failing_since INTEGER, last_error TEXT);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3374,6 +3428,80 @@ mod tests {
         // no snapshot is on a second offsite target yet
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM snapshots WHERE offsite2 != 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    /// v46 (Phase 33) on top of the catalog before it (whatever comes between
+    /// v44 and v46): no tickets; one open ticket per rule and key, closed ones
+    /// may repeat.
+    #[test]
+    fn migration_v46_psa_approvers_cases() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V46).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch("INSERT INTO tenants (name) VALUES ('t');").unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM psa_tickets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        let add = |closed: Option<i64>| {
+            conn.execute(
+                "INSERT INTO psa_tickets (rule, key, vendor, ticket, alert_id, opened, noted_count, noted_at,
+                   noted_severity, closed) VALUES ('r', 'k', 'halopsa', '1', 1, 1, 1, 1, 'warning', ?1)",
+                [closed],
+            )
+        };
+        add(Some(5)).unwrap();
+        add(Some(6)).unwrap();
+        add(None).unwrap();
+        assert!(add(None).is_err(), "one open ticket per rule and key");
+        conn.execute("INSERT INTO psa_state (rule, failing_since) VALUES ('r', 3)", [])
+            .unwrap();
+        // tenant-side approvers: no tenant opted in, no approver_since yet; decisions go with the request
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tenant_approvals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        conn.execute_batch(
+            "INSERT INTO quorum (id, action, params, requested_by, created, state) VALUES (1, 'x', '{}', 'a', 1, 'pending');
+             INSERT INTO quorum_tenants (quorum_id, tenant) VALUES (1, 't');",
+        )
+        .unwrap();
+        assert!(conn
+            .execute("UPDATE quorum_tenants SET decision = 'maybe'", [])
+            .is_err());
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute("DELETE FROM quorum", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM quorum_tenants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "decisions go with the request");
+        // cases: unique per tenant, their snapshots go with them
+        conn.execute_batch(
+            "INSERT INTO cases (id, tenant, name, criteria, state, created_by, created_at)
+               VALUES (1, 't', 'c', '{}', 'open', 'a', 1);
+             INSERT INTO case_snapshots (case_id, source, time, items) VALUES (1, 'plugin-m365-1-u.x', 5, 2);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO cases (tenant, name, criteria, state, created_by, created_at) VALUES ('t', 'c', '{}', 'open', 'a', 1)",
+                [],
+            )
+            .is_err());
+        conn.execute("DELETE FROM cases", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM case_snapshots", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
     }

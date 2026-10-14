@@ -224,6 +224,7 @@ impl Scheduler {
                             channels: alerting::Channels {
                                 email: vec![to.clone()],
                                 webhook: None,
+                                psa: None,
                             },
                         }],
                     };

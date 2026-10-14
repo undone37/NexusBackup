@@ -114,7 +114,7 @@ pub fn diff<'a>(base: &'a NameIndex, cur: &'a NameIndex) -> Vec<Change<'a>> {
 
 /// Lower-case extension of the last component (`report.docx.locked` →
 /// `locked`); none for dot files and names without a dot.
-fn ext(path: &str) -> Option<String> {
+pub(crate) fn ext(path: &str) -> Option<String> {
     let name = path.rsplit('/').next()?;
     let (stem, e) = name.rsplit_once('.')?;
     (!stem.is_empty() && !e.is_empty() && e.len() <= 16).then(|| e.to_lowercase())

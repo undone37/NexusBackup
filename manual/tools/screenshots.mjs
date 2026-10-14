@@ -1621,6 +1621,59 @@ async function main() {
       await shot('tenant-second-offsite', { height: 1200 });
       await closeDialogs();
     }],
+    // Phase 33 (Commvault Tier 2): a notification rule with a HaloPSA channel, the alert with its ticket
+    ['p33psa', async () => {
+      await login('admin');
+      await go('/settings?tab=alerts');
+      await ev(`$rowClick('msp-halo', 'Edit'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] [id$="-pv"]')`, 'rule editor');
+      await ev(`document.querySelector('dialog[open] [id$="-pv"]').closest('fieldset').scrollIntoView({ block: 'end' }); return true;`);
+      await shot('settings-alert-rule-psa', { height: 1300 });
+      await closeDialogs();
+      const withTicket = (await api('GET', '/alerts')).body.find((a) => a.tickets?.length);
+      await go(`/alerts?id=${withTicket.id}`);
+      await until(`return document.body.innerText.includes('HaloPSA ticket 48213')`, 'alert with ticket');
+      await shot('alerts-psa-ticket');
+    }],
+    // Phase 33: tenant-side approvers as seen by the tenant admin of acme (a snapshot delete waits for acme)
+    ['p33approvers', async () => {
+      await login('tara');
+      await go('/quorum');
+      await until(`return document.body.innerText.includes('Tenant approvers') && document.body.innerText.includes('Approve for my tenant')`, 'tenant approvals');
+      await shot('approvals-tenant-side', { height: 1150 });
+      await login('admin');
+    }],
+    // Phase 33: clean-file (synthetic) restore of the infected file server fs02, its dialog and the finished job
+    ['p33synthetic', async () => {
+      await login('admin');
+      const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
+      await go(`/snapshots?source=host-${fs02.id}`);
+      await until(`return [...document.querySelectorAll('tbody tr')].some((tr) => tr.textContent.includes('Restore'))`, 'snapshot rows');
+      await ev(`const tr = [...document.querySelectorAll('tbody tr')].find((x) => /Restore/.test(x.textContent)); $click('Restore', tr); return true;`);
+      await until(`return !!$button('Clean-file restore')`, 'restore menu');
+      await ev(`$click('Clean-file restore'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] [id$="-depth"]')`, 'clean-file dialog');
+      await shot('synthetic-restore-dialog', { height: 1000 });
+      await ev(`$click('Start clean-file restore', document.querySelector('dialog[open]')); return true;`);
+      await until(`return location.hash.includes('/jobs/') && document.body.innerText.includes('Snapshots examined')`, 'finished clean-file restore', 40000);
+      await settle();
+      await shot('synthetic-restore-result', { height: 1100 });
+    }],
+    // Phase 33: a compliance case over Microsoft 365 snapshots, held by a security officer
+    ['p33cases', async () => {
+      await login('so');
+      await go('/cases');
+      await until(`return document.body.innerText.includes('matter-2026-17')`, 'case list');
+      await ev(`$rowClick('matter-2026-17', 'Open'); return true;`);
+      await until(`return document.body.innerText.includes('Matched snapshots') && !!$button('Hold matched snapshots')`, 'case detail');
+      await ev(`$click('Hold matched snapshots'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input')`, 'hold dialog');
+      await ev(`$fill('dialog[open] input', 'Litigation hold, counsel K. Weber'); document.querySelector('dialog[open] form').requestSubmit(); return true;`);
+      await until(`return !document.querySelector('dialog[open]') && document.body.innerText.includes('active')`, 'held');
+      await settle();
+      await shot('case-detail', { height: 1300 });
+      await login('admin');
+    }],
   ];
 
   let failed = 0;

@@ -2152,6 +2152,8 @@ mod offsite_ui;
 mod phase29;
 /// Phase 30 duration and dedup-rate anomalies, rollback, offsite targets.
 mod phase30;
+/// Phase 33 PSA ticketing, synthetic restores.
+mod phase33;
 /// Phase 22b restore priority.
 mod priority;
 /// Phase 25 restore tests and recovery plans.

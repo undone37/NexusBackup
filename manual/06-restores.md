@@ -33,9 +33,9 @@ The snapshot name tells you what was backed up. The menu follows from it:
 |---|---|---|---|
 | `vm-<id>` | Proxmox VE virtual machine | **Full restore to a new VM / container**, **Instant recover**, **Restore files to a host…** | **Browse files** |
 | `ct-<id>` | Proxmox VE container | **Full restore to a new VM / container**, **Restore files to a host…** | **Browse files** |
-| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path** | **Browse files** |
-| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…** | **Browse files** |
-| `share-<source>` | NFS / SMB share | **Restore to a host…** | **Browse files** |
+| `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Clean-file restore…** | **Browse files** |
+| `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
+| `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
@@ -576,6 +576,59 @@ written.
 > another host also against the real Linux agent; the VM lab run is pending. Restores with the Windows agent were tested
 > on Windows Server 2022 and Windows 11 (ACLs, owners, streams, links, junctions, long paths, confinement).
 
+## Clean-file restore (agents, NAS, shares)
+
+After ransomware or malware hit a file server, the newest snapshot holds encrypted or infected files next to many
+clean ones, and the snapshot before the attack lacks the work of the last days. A **clean-file restore** (also called
+synthetic restore) combines both: for every file of the snapshot you choose, it takes the **newest version that is
+clean**, and walks back through older snapshots of the same source only for the files that are not.
+
+A file version is not clean when
+
+- a **YARA** rule matched it in a scan of that snapshot ([11 Alerts](11-alerts-and-monitoring.md#malware-scan-yara)),
+- its **SHA-256** is on an uploaded IOC hash list ([IOC hash hunt](11-alerts-and-monitoring.md#ioc-hash-hunt)),
+- its name is a **ransom note** (the same names as the
+  [file-level change signals](11-alerts-and-monitoring.md#file-level-change-signals)),
+- it is the **output of a mass rename** (a file added with the dominant new extension, or a deleted file's name plus
+  an extension, in a snapshot where a mass rename happened),
+- it has the **same content** as a version flagged for one of the first two reasons (same size and modification
+  time, or the same SHA-256): an unchanged infected file is not taken from an older, unscanned snapshot,
+- or the scan of that snapshot found more matches than it lists (more than 1000): then no file of it is trusted.
+
+Files that a **mass rename deleted** (the originals of `report.docx.lockbit`) come back from the snapshot before the
+rename. Files without any clean version within the searched snapshots (ransom notes, renamed copies, files that were
+infected from the start) are **left out**.
+
+Open **Snapshots**, pick the snapshot (usually the newest one), **Restore** → **Clean-file restore…**:
+
+![The clean-file restore dialog](images/synthetic-restore-dialog.png)
+
+- **Only below this path**: `/` for the whole snapshot, or a directory.
+- **Older snapshots to search**: 1 to 100 (default 30).
+- **Result**: **Download (tar or zip)** (needs the download privilege, as **Browse files**) or **Restore onto a host
+  (agent)** with the target directory, existing-file handling, the target agent and its typed name, as in
+  [Restore files to a host](#restore-files-to-a-host-agents).
+
+The job page shows how many files were substituted, brought back and left out, how many snapshots were examined and
+how many chosen versions come from snapshots that were never scanned. **Report (CSV)** lists every substituted,
+brought back and left-out file with the snapshot it came from and the reason; **Download** fetches the archive.
+
+![A finished clean-file restore with its report](images/synthetic-restore-result.png)
+
+Good to know:
+
+- Versions from **unscanned snapshots** count as clean when nothing else flags them. For the most reliable result, scan
+  the older snapshots first (**Scan back**,
+  [11 Alerts](11-alerts-and-monitoring.md#scan-back-to-the-last-clean-snapshot)). A clean-file restore never finds
+  malware that no rule and no hash list knows.
+- Restoring a **flagged snapshot** onto the original paths or with overwriting is a production restore and needs the
+  approval **restore of a flagged snapshot to production**, like any restore of it
+  ([above](#flagged-snapshots-restores-to-production-need-approval)). A download or a restore into a new directory
+  does not.
+- Only file-tree snapshots of agents, TrueNAS datasets and NFS/SMB shares: VM and container disks, plugins and
+  Microsoft 365 have no per-file versions to combine here.
+- The report is kept as long as downloads are (24 hours).
+
 ## Bare-metal recovery (Linux hosts)
 
 Rebuilds a Linux host from a snapshot onto empty disks: after a disk failure, on new hardware, or as a new
@@ -969,6 +1022,43 @@ clicks **Apply hold…** (or **Apply hold** on the alert). See
 > **Status:** Retention reads the holds when a job starts; a hold set while a retention job is already running
 > applies from the next run. The VM lab verifies that a hold blocks retention; the offsite and replication paths are
 > covered by integration tests.
+
+## Cases (compliance search)
+
+For legal and compliance requests ("all mails about invoice 4711 since March"), administrators and security
+officers keep **cases** under **Governance → Cases**. A case saves what you look for, finds the snapshots holding
+matching items, puts them on legal hold and exports the items.
+
+![A case with its matched Microsoft 365 snapshots on hold](images/case-detail.png)
+
+- **New case**: tenant, a name (unique in the tenant), an optional description and the search: **Search for** is a
+  part of the item name or a pattern with `*` and `?` (with a `/` the whole path, e.g. `mail/Inbox/*invoice*`).
+  **Sources**: **Microsoft 365** (every user, site, team and group of the tenant, the default) or **All sources of
+  the tenant**; optionally a snapshot date range. **Create and search** saves the case and starts its search.
+- What is searched: the file name index of every snapshot. For Microsoft 365 that is the folder, the **subject**
+  (the mail's file name) and the date of each mail, calendar item and contact, and the names of OneDrive,
+  SharePoint and Teams files. Sender, recipients and the message text are **not** searched (see
+  [Limits](#case-limits)).
+- The case page lists the **matched snapshots** with the number of matched items and their hold, and the matched
+  items of the last search (up to 2000). **Search again** repeats the search with the saved criteria, for example
+  after new backups.
+- **Hold matched snapshots** (security officers): a legal hold on every matched snapshot that has none, with the
+  reason `case <name>: <your reason>`. Releasing a hold needs approval as always ([Legal hold](#legal-hold)).
+- **Export matched items** (accounts with the download privilege): one download job per matched snapshot (at most
+  50, newest first) with exactly the matched items, as tar or zip; Microsoft 365 mail as **eml**, **mbox** or
+  **PST** like the plugin's download ([Export formats for mail](#export-formats-for-mail)). The jobs appear on the
+  case page and under **Jobs**; each download is for you only.
+- **Close case**: no further searches, holds or exports. Its holds stay until they are released one by one.
+
+### Case limits
+
+- Item names only: a Microsoft 365 search by sender, recipient or text needs an item metadata index, which the
+  appliance does not build yet (docs/m365.md "Compliance search and cases").
+- Case entries in the audit log (`case.create`, `case.view`, `case.search`, `case.hold`, `case.export`,
+  `case.close`) are not shown in the tenant's own audit view, so an investigation is not announced to the tenant's
+  admins. The holds (with their reason) and the export jobs are ordinary ones that the tenant's admins can see:
+  choose a neutral hold reason.
+- In vault mode exports are refused; use single restores with approval there.
 
 ## Restore from the offsite copy
 

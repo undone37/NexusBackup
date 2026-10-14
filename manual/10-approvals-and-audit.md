@@ -37,9 +37,10 @@ Rules:
   lockdown freezes (`lift freezes`, action `incident.freeze.lift`) always need a second person, also with approvals
   disabled ([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)).
 - **Tenant admins** need the same approvals as administrators for the same actions (for example deleting a group or
-  moving it to a weaker policy). The approvers are always the provider's administrators and security officers: a
-  tenant admin never approves or rejects anything. The **Approvals** page of a tenant admin lists only their own
-  requests and their state.
+  moving it to a weaker policy). The approvers are the provider's administrators and security officers. The
+  **Approvals** page of a tenant admin lists their own requests and their state. A tenant that requires its own
+  approval ([Tenant-side approvers](#tenant-side-approvers)) also decides the requests that delete or weaken its
+  backups.
 - A request expires after **72 hours** without a decision.
 - Approving runs the action immediately and cannot be undone. Some actions (the replication key export, a large GC, a snapshot delete, a restore that replaces the original, attaching an offsite copy)
   are carried out by the scheduler shortly after the approval; their state goes from **Approved** to **Executed**.
@@ -83,7 +84,52 @@ Administrators see the same page and can decide requests of others:
 
 ![Approvals as seen by the administrator who made the requests](images/approvals-admin.png)
 
-Operators can read the page but not decide; tenant admins see their own requests only.
+Operators can read the page but not decide; tenant admins see their own requests and those their tenant must approve.
+
+## Tenant-side approvers
+
+A service provider runs the appliance for its customers. A customer (tenant) can require that nothing deletes or
+weakens its backups without its own consent: with **tenant-side approvers** switched on, such a request needs, in
+addition to the provider's approver, the approval of one of the tenant's own administrators (role **Tenant admin**).
+
+These requests concerning the tenant wait for it:
+
+| Request | Shown as |
+|---|---|
+| deleting one of its snapshots | `snapshot delete` |
+| releasing a legal hold on one of its snapshots | `snapshot hold release` |
+| weakening or deleting one of its protection groups | `group update`, `group delete` |
+| weakening a policy that one of its groups uses | `policy update` |
+| changing its offsite target, deactivating or deleting the tenant | `tenant update`, `tenant disable`, `tenant delete` |
+| exporting its keys to a replication partner | `replication key export` |
+| switching tenant-side approvers off | `stop requiring the tenant's approval` |
+
+**Switching it on.** A tenant admin opens **Approvals**; the **Tenant approvers** box at the top shows whether the
+tenant's approval is required and who may decide. **Require tenant approvals** switches it on at once (it only adds
+protection). Provider administrators can do the same for a customer: **Tenants**, **More** > **Approvers** in the tenant's row.
+The tenant needs at least one activated tenant admin. The **Tenants** page marks such tenants with **tenant
+approves**.
+
+![The Approvals page of a tenant admin: the tenant's approvers and a request waiting for it](images/approvals-tenant-side.png)
+
+**Deciding.** The request shows **Provider approval** (who approved on the provider's side while the tenant has not
+decided yet) and **Tenant approval** with the tenant's name (waiting, approved or refused). The order does not
+matter: the request runs when both sides have approved. A tenant admin of that tenant sees **Approve for my tenant**
+and **Refuse**.
+
+- **A refusal by the tenant is final.** The request ends as **Rejected**; the provider cannot approve it any more. If
+  the provider must protect data against the customer's will (a legal order), a security officer can still put
+  snapshots on a legal hold: holds only add protection and need no approval.
+- **A new tenant approver waits 24 hours.** An account may decide only 24 hours after it became a tenant admin of the
+  tenant, was activated or re-enabled. During the wait the `tenant_approver` alert names the account and the time it
+  may decide from, so that the provider and the customer can object before it could approve anything. A provider
+  administrator therefore cannot quickly create a tenant admin and approve with it.
+- When a tenant admin makes such a request themselves (and has been an approver for more than 24 hours), the request
+  counts as the tenant's consent; the provider's approver still has to approve it.
+- With approvals **disabled** these requests still wait for the tenant; the requester's own decision stands for the
+  provider side.
+- A provider administrator viewing the tenant ("view as tenant", also as its admin) cannot decide for the tenant.
+- **Switching it off** is itself a request: it needs the provider's approver and the tenant's approval.
 
 ## Enabling and disabling approvals
 

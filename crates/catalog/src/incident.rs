@@ -94,6 +94,8 @@ pub fn production_restore(kind: &str, p: &Value) -> bool {
             let target = p["target"].as_str().unwrap_or("/");
             target.trim_end_matches('/').is_empty() || p["overwrite"].as_str().is_some_and(|o| o != "never")
         }
+        // Phase 33: onto a host like restore_files; downloads are isolated
+        "synthetic_restore" if p["mode"] == "host" => production_restore("restore_files", p),
         _ => false,
     }
 }
@@ -166,6 +168,17 @@ mod tests {
                 true,
             ),
             ("files_get", json!({}), false),
+            (
+                "synthetic_restore",
+                json!({"mode": "host", "target": "/", "overwrite": "never"}),
+                true,
+            ),
+            (
+                "synthetic_restore",
+                json!({"mode": "host", "target": "/r", "overwrite": "never"}),
+                false,
+            ),
+            ("synthetic_restore", json!({"mode": "download"}), false),
             ("plugin_mount", json!({}), false),
             ("restore_test", json!({}), false),
         ] {

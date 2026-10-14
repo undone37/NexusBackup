@@ -17,8 +17,14 @@ export const can = {
   // approvers: admins and security officers (never the requester — the server checks)
   decideQuorum: (u: User | null) => u?.role === 'admin' || u?.role === 'security_officer',
   viewQuorum: (u: User | null) => !!u && u.role !== 'tenant_user' && u.role !== 'viewer' && !u.tenant,
-  // Tenant admins list their own requests (Phase 19b); they never decide.
+  // Tenant admins list their own requests (Phase 19b) and, Phase 33, decide the tenant side of requests
+  // concerning their tenant when it requires its own approval (never while impersonating: the server checks).
   viewOwnQuorum: (u: User | null) => u?.role === 'tenant_admin',
+  decideTenantSide: (u: User | null) => u?.role === 'tenant_admin',
+  // Phase 33: compliance cases: the provider's administrators and security officers; holds by officers
+  cases: (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer'),
+  // Phase 33: switching tenant-side approvers on (admins, the tenant's own admins)
+  tenantApprovers: (u: User | null) => u?.role === 'admin' || u?.role === 'tenant_admin',
   // Alerts are appliance-wide (no tenant column); tenant-scoped users get an empty list.
   viewAlerts: (u: User | null) => !!u && !u.tenant,
   // tenant admins: the entries concerning their tenant only (server-side filter, Phase 19b)

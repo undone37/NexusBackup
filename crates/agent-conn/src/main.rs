@@ -10,6 +10,10 @@
 //! for VM/CT files, the tar `restore.tar` written by `nexus-pve` (then removed);
 //! `restored {json}`; `fleet-agent {json}` per agent found by `fleet-scan`;
 //! `files … ls` prints the JSON listing only.
+//! `synthetic` (Phase 33) composes a synthetic restore from the scheduler's plan
+//! (`synthetic.plan`) and writes it to `synthetic.out` (tar/zip) or restores it to
+//! `agent` (`synthetic.restore`); progress on stderr, the result as the last
+//! stdout line.
 
 use agent_conn::backup::{self, Spec as BackupSpec};
 use agent_conn::ca::Ca;
@@ -66,6 +70,30 @@ struct Config {
     /// `edge-enroll` / `edge-link` (docs/edge.md)
     #[serde(default)]
     edge: Option<EdgeCfg>,
+    /// Phase 33 synthetic restore
+    #[serde(default)]
+    synthetic: Option<SyntheticCfg>,
+}
+
+/// `synthetic`: the scheduler's plan and where it goes.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticCfg {
+    plan: PathBuf,
+    /// download (`.tar` / `.zip` in the downloads directory)
+    #[serde(default)]
+    out: Option<PathBuf>,
+    /// or onto the agent of `agent`
+    #[serde(default)]
+    restore: Option<SyntheticRestoreCfg>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticRestoreCfg {
+    target: String,
+    overwrite: String,
+    confirm: String,
 }
 
 #[derive(Deserialize)]
@@ -524,6 +552,7 @@ fn main() -> Result<()> {
                 bail!("{} entries could not be restored", st.errors.len());
             }
         }
+        ("synthetic", []) => synthetic(&cfg)?,
         ("update", []) if cfg.update.is_some() => update_release(&cfg)?,
         ("update", []) => {
             let dir = cfg.update_dir.as_ref().context("config: update_dir missing")?;
@@ -585,6 +614,82 @@ fn main() -> Result<()> {
         }
         _ => bail!("{usage}"),
     }
+    Ok(())
+}
+
+/// `synthetic`: composes the tree the plan names and writes or restores it.
+fn synthetic(cfg: &Config) -> Result<()> {
+    let sc = cfg.synthetic.as_ref().context("config: synthetic missing")?;
+    let plan: chunkstore::synthetic::Plan =
+        serde_json::from_slice(&fs::read(&sc.plan).with_context(|| format!("{}", sc.plan.display()))?)
+            .context("synthetic plan")?;
+    if plan.source.starts_with("plugin-") || restore::tree_index(&plan.source).is_none() {
+        bail!(
+            "invalid source {:?}: not a file-tree snapshot of an agent, NAS or share",
+            plan.source
+        );
+    }
+    let store = cfg.store()?;
+    let base = restore::load_source_tree(&store, &plan.source, plan.time)?;
+    let c = chunkstore::synthetic::compose(&plan, base, &mut |t| {
+        eprintln!("synthetic: reading versions from {}/{t}", plan.source);
+        restore::load_source_tree(&store, &plan.source, t).map_err(std::io::Error::other)
+    })?;
+    for m in &c.missing {
+        eprintln!("synthetic: /{m} is no longer in its snapshot: left out");
+    }
+    for d in &c.dangling {
+        eprintln!("synthetic: /{d} is a hard link to a left-out file: left out");
+    }
+    let mut result = plan.stats.clone();
+    if !result.is_object() {
+        result = json!({});
+    }
+    result["missing"] = json!(c.missing.len());
+    result["dangling"] = json!(c.dangling.len());
+    let nothing = || anyhow::anyhow!("nothing to restore: every selected file was left out (see the CSV of the job)");
+    match (&sc.out, &sc.restore) {
+        (Some(out), None) => {
+            let n = files::extract(
+                &store,
+                &c.entries,
+                &plan.paths,
+                Format::from_path(out)?,
+                fs::File::create_new(out)?,
+            )
+            .map_err(|e| if c.entries.is_empty() { nothing() } else { e })?;
+            eprintln!("{n} entries written to {}", out.display());
+            result["entries"] = json!(n);
+        }
+        (None, Some(r)) => {
+            if c.entries.is_empty() {
+                return Err(nothing());
+            }
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let spec = RestoreSpec {
+                job: cfg.job,
+                source: plan.source.clone(),
+                time: plan.time,
+                paths: plan.paths.clone(),
+                target: r.target.clone(),
+                overwrite: parse_overwrite(&r.overwrite)?,
+                confirm: r.confirm.clone(),
+                target_agent: cfg.agent()?.id.clone(),
+            };
+            let map = MapDb::open(cfg.store.as_deref().context("config: store missing")?)?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let st = restore::restore_tree(&store, &map, &mut s, &spec, &c.entries, &mut |l| eprintln!("{l}"))?;
+            s.close();
+            result["written"] = json!({"target": r.target, "files": st.files, "dirs": st.dirs, "bytes": st.bytes,
+                                        "errors": st.errors.len()});
+            if !st.errors.is_empty() {
+                println!("{result}");
+                bail!("{} entries could not be restored", st.errors.len());
+            }
+        }
+        _ => bail!("config: synthetic needs exactly one of out or restore"),
+    }
+    println!("{result}");
     Ok(())
 }
 
@@ -771,6 +876,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         poll: None,
         fleet: None,
         edge: None,
+        synthetic: None,
         timeout_secs: cfg.timeout_secs,
     };
     let end = Instant::now() + Duration::from_secs(60);

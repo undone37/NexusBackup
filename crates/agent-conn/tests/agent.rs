@@ -1002,3 +1002,105 @@ fn full_read_finds_what_the_metadata_cache_missed() {
     let d = r.full_read.unwrap();
     assert_eq!((d.tracker.as_str(), d.changed, d.unreported), ("usn", 0, 0));
 }
+
+/// Phase 33 synthetic restore: the planned composition of a share snapshot
+/// (an infected file from the version before, a ransom note left out, a file a
+/// mass rename deleted brought back) as a download and onto an agent.
+#[test]
+fn synthetic_restore_download_and_to_host() {
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let old = vec![
+        tentry("data", TreeKind::Dir, 0o40755, None, &[]),
+        tentry("data/a.txt", TreeKind::File, 0o100644, Some((&store, b"clean a")), &[]),
+        tentry("data/b.txt", TreeKind::File, 0o100644, Some((&store, b"b")), &[]),
+        tentry("data/old", TreeKind::Dir, 0o40700, None, &[]),
+        tentry(
+            "data/old/c.doc",
+            TreeKind::File,
+            0o100600,
+            Some((&store, b"report")),
+            &[],
+        ),
+    ];
+    let new = vec![
+        tentry("data", TreeKind::Dir, 0o40755, None, &[]),
+        tentry("data/a.txt", TreeKind::File, 0o100644, Some((&store, b"EVIL")), &[]),
+        tentry("data/b.txt", TreeKind::File, 0o100644, Some((&store, b"b")), &[]),
+        tentry(
+            "data/HOW_TO_DECRYPT.txt",
+            TreeKind::File,
+            0o100644,
+            Some((&store, b"pay")),
+            &[],
+        ),
+    ];
+    for (t, entries) in [(100, old), (200, new)] {
+        store
+            .commit_snapshot("share-7", t, &[(TREE_INDEX, Index::Tree { entries })])
+            .unwrap();
+    }
+    let plan = chunkstore::synthetic::Plan {
+        source: "share-7".into(),
+        time: 200,
+        paths: vec!["/".into()],
+        take: std::collections::BTreeMap::from([(100, vec!["data/a.txt".into(), "data/old/c.doc".into()])]),
+        drop: vec!["data/HOW_TO_DECRYPT.txt".into()],
+        stats: serde_json::Value::Null,
+    };
+    let base = restore::load_source_tree(&store, "share-7", 200).unwrap();
+    let c = chunkstore::synthetic::compose(&plan, base, &mut |t| {
+        restore::load_source_tree(&store, "share-7", t).map_err(std::io::Error::other)
+    })
+    .unwrap();
+    assert!(c.missing.is_empty() && c.dangling.is_empty());
+    let d = tempfile::tempdir().unwrap();
+    let tarp = d.path().join("s.tar");
+    files::extract(
+        &store,
+        &c.entries,
+        &plan.paths,
+        Format::Tar,
+        fs::File::create(&tarp).unwrap(),
+    )
+    .unwrap();
+    let mut got = std::collections::BTreeMap::new();
+    for en in tar::Archive::new(fs::File::open(&tarp).unwrap()).entries().unwrap() {
+        let mut en = en.unwrap();
+        let p = en.path().unwrap().to_string_lossy().into_owned();
+        let mut b = String::new();
+        en.read_to_string(&mut b).unwrap();
+        got.insert(p, b);
+    }
+    assert_eq!(
+        got.into_iter().collect::<Vec<_>>(),
+        [
+            ("data".into(), String::new()),
+            ("data/a.txt".into(), "clean a".into()),
+            ("data/b.txt".into(), "b".into()),
+            ("data/old".into(), String::new()),
+            ("data/old/c.doc".into(), "report".into()),
+        ]
+    );
+    // onto the agent
+    let map = MapDb::open(&e.store_dir).unwrap();
+    let mut s = e.session(&pin);
+    let spec = RestoreSpec {
+        job: 33,
+        source: "share-7".into(),
+        time: 200,
+        paths: vec!["/".into()],
+        target: "/srv/clean".into(),
+        overwrite: Overwrite::Never,
+        confirm: "web01".into(),
+        target_agent: ID.into(),
+    };
+    let st = restore::restore_tree(&store, &map, &mut s, &spec, &c.entries, &mut |_| {}).unwrap();
+    s.close();
+    assert_eq!(st.files, 3);
+    let out = e.restored.join("srv/clean/data");
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"clean a");
+    assert_eq!(fs::read(out.join("old/c.doc")).unwrap(), b"report");
+    assert!(!out.join("HOW_TO_DECRYPT.txt").exists());
+}

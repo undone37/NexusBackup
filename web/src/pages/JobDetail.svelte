@@ -146,7 +146,7 @@
     <section class="card" aria-labelledby="jp">
       <h2 id="jp">{t.jobs.params}</h2>
       <dl class="kv">
-        {#each Object.entries(job.params ?? {}).filter(([k]) => k !== 'download_token') as [k, v] (k)}
+        {#each Object.entries(job.params ?? {}).filter(([k]) => k !== 'download_token' && k !== 'report_token') as [k, v] (k)}
           <dt title={k}>{t.jobs.paramLabels[k] ?? k}</dt>
           <dd>
             {#if k === 'group_id' && typeof v === 'number'}
@@ -277,6 +277,40 @@
     </section>
   {/if}
   {@const res = job.result}
+  {#if job.kind === 'synthetic_restore' && (res || job.state === 'failed')}
+    <!-- Phase 33: what the clean-file restore did; the CSV exists once it decided, also when the restore failed -->
+    <section class="card" aria-labelledby="jr-syn">
+      <h2 id="jr-syn">{t.synth.result}</h2>
+      {#if res}
+        <dl class="kv">
+          <dt>{t.synth.files}</dt>
+          <dd>{res.files ?? '—'}</dd>
+          <dt>{t.synth.substituted}</dt>
+          <dd>{res.substituted ?? 0}</dd>
+          <dt>{t.synth.restored}</dt>
+          <dd>{res.restored ?? 0}</dd>
+          <dt>{t.synth.leftOut}</dt>
+          <dd>{res.left_out ?? 0}</dd>
+          <dt>{t.synth.examined}</dt>
+          <dd>{res.snapshots_examined ?? '—'}</dd>
+          <dt>{t.synth.fromUnscanned}</dt>
+          <dd>{res.from_unscanned ?? 0}</dd>
+          {#if res.written}
+            <dt>{t.synth.written}</dt>
+            <dd>{t.synth.writtenText(res.written.files, fmtBytes(res.written.bytes), res.written.target)}</dd>
+          {/if}
+        </dl>
+      {/if}
+      <p class="row">
+        <a class="button small" href={`${API}/jobs/${job.id}/synthetic.csv`} download={`synthetic-restore-${job.id}.csv`} title={t.synth.reportHint}
+          >{t.synth.report}</a
+        >
+        {#if job.state === 'ok' && typeof job.params.download_token === 'string' && job.requested_by === session.user?.name}
+          <a class="button primary small" href={downloadUrl(job.params.download_token)}>{t.files.get}</a>
+        {/if}
+      </p>
+    </section>
+  {/if}
   {#if res && job.kind === 'scan_back' && Array.isArray((res as unknown as ScanBackResultData).scanned)}
     <section class="card" aria-labelledby="jr-sb">
       <h2 id="jr-sb">{t.jobs.result}</h2>

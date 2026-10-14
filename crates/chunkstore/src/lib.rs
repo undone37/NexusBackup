@@ -11,6 +11,7 @@ pub mod snapfile;
 /// GFS retention (its own crate so the web-api can preview it without linking the store)
 pub use retention;
 pub mod store;
+pub mod synthetic;
 
 pub use crypto::{ChunkId, Keyring};
 pub use names::NameIndex;

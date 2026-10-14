@@ -41,6 +41,8 @@ fn overwrites(job: &Job) -> bool {
     match job.kind.as_str() {
         "restore" | "restore_ct" => p["replace"] == true,
         "restore_files" => p["overwrite"].as_str().is_some_and(|o| o != "never"),
+        // Phase 33: a synthetic restore onto a host behaves like restore_files
+        "synthetic_restore" => p["mode"] == "host" && p["overwrite"].as_str().is_some_and(|o| o != "never"),
         "plugin_restore" => true,
         _ => false,
     }

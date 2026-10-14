@@ -50,7 +50,11 @@ pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -
     let rows = c
         .prepare(&format!(
             "SELECT id, ts, COALESCE(last_ts, ts), count, severity, kind, key, tenant, message, acked_by,
-                    resolved_at, resolved_by, note, auto FROM alerts
+                    resolved_at, resolved_by, note, auto,
+                    (SELECT json_group_array(json_object('rule', t.rule, 'vendor', t.vendor, 'ticket', t.ticket,
+                       'closed', t.closed)) FROM psa_tickets t WHERE t.key = alerts.key
+                       AND (t.closed IS NULL OR t.closed >= alerts.ts)
+                       AND t.opened <= COALESCE(alerts.resolved_at, 9223372036854775807)) FROM alerts
              WHERE (?1 IS NULL OR (acked_by IS NOT NULL) = ?1) AND (?2 IS NULL OR (resolved_at IS NOT NULL) = ?2)
                AND (?3 IS NULL OR id = ?3) AND (?4 IS NULL OR {} = ?4)
              ORDER BY id DESC LIMIT 1000",
@@ -72,6 +76,9 @@ pub async fn list_alerts(State(st): State<St>, ctx: Ctx, Q(f): Q<AlertFilter>) -
                 "key": key, "tenant": tenant, "message": message, "acked_by": r.get::<_, Option<String>>(9)?,
                 "resolved_at": r.get::<_, Option<i64>>(10)?, "resolved_by": r.get::<_, Option<String>>(11)?,
                 "note": r.get::<_, Option<String>>(12)?, "auto": r.get::<_, i64>(13)? != 0,
+                // Phase 33: the PSA tickets of the alert's key while it was open
+                "tickets": r.get::<_, Option<String>>(14)?.and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                    .unwrap_or_else(|| json!([])),
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;

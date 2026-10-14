@@ -24,7 +24,9 @@ pub mod agent_updates;
 pub mod agents;
 pub mod alerts;
 pub mod approvals;
+pub mod approvers;
 pub mod auth;
+pub mod cases;
 pub mod certs;
 pub mod changes;
 pub mod config_backup;
@@ -692,6 +694,7 @@ pub fn router(st: St) -> Router {
         .route("/jobs/{id}", get(get_job))
         .route("/jobs/{id}/cancel", post(cancel_job))
         .route("/jobs/{id}/skipped.csv", get(nasops::skipped))
+        .route("/jobs/{id}/synthetic.csv", get(jobs::synthetic_report))
         .route("/downloads/{token}", get(download))
         .route("/quorum", get(list_quorum))
         .route("/console/unlock", get(console::list).post(console::request_unlock))
@@ -745,6 +748,8 @@ pub fn router(st: St) -> Router {
         .merge(hardware::routes())
         .merge(network::routes())
         .merge(tenants::routes())
+        .merge(approvers::routes())
+        .merge(cases::routes())
         .merge(tenant_idp::routes())
         .merge(tenancy::routes())
         .merge(vault::routes())

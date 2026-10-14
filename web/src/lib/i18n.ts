@@ -106,6 +106,7 @@ export const en = {
     jobs: "Jobs",
     alerts: "Alerts",
     quorum: "Approvals",
+    cases: "Cases",
     audit: "Audit log",
     config: "Configuration",
     tenants: "Tenants",
@@ -571,6 +572,39 @@ export const en = {
       "The files come from another machine: they are owned by the agent’s restore user (owners and groups from the backup are not mapped), setuid/setgid bits are cleared, device nodes are skipped, and only extended attributes the target can store are kept (no ACLs or SELinux labels of the other machine).",
     start: "Start restore",
   },
+  // Phase 33: synthetic (clean-file) restore of agent, NAS and share snapshots
+  synth: {
+    menu: "Clean-file restore…",
+    menuHint: "Newest clean version of each file",
+    title: (s: string) => `Clean-file restore from ${s}`,
+    intro:
+      "For every file of this snapshot the newest version is restored that has no YARA match, is not on an IOC hash list, is no ransom note and is not the output of a mass rename. Older snapshots are searched for clean versions; files a mass rename deleted come back from before it. Files without a clean version are left out. A CSV lists every file that was substituted, brought back or left out.",
+    unscannedNote:
+      "Versions from snapshots that were never scanned count as clean when nothing else flags them: scan the older snapshots first for the most reliable result.",
+    below: "Only below this path",
+    belowHint: "/ restores the whole snapshot.",
+    depth: "Older snapshots to search",
+    depthHint: "1 to 100; default 30.",
+    mode: "Result",
+    modes: {
+      download: "Download (tar or zip)",
+      host: "Restore onto a host (agent)",
+    } as Record<string, string>,
+    format: "Format",
+    start: "Start clean-file restore",
+    started: (id: number) => `Clean-file restore started (job #${id}).`,
+    result: "Clean-file restore",
+    files: "Files in the snapshot",
+    substituted: "Substituted by an older clean version",
+    restored: "Brought back (deleted by a mass rename)",
+    leftOut: "Left out (no clean version)",
+    examined: "Snapshots examined",
+    fromUnscanned: "Versions from unscanned snapshots",
+    written: "Written",
+    writtenText: (files: number, bytes: string, target: string) => `${files} files (${bytes}) to ${target}`,
+    report: "Report (CSV)",
+    reportHint: "Every substituted, brought back and left-out file with the reason.",
+  },
   jobs: {
     title: "Jobs",
     lede: "Backups, restores, copies and maintenance runs. Open a job to follow its log.",
@@ -679,6 +713,7 @@ export const en = {
       gc: "Garbage collection",
       verify: "Verify",
       restore_files: "Restore files to host",
+      synthetic_restore: "Clean-file restore",
       agent_update: "Update agent",
       agent_enroll: "Enroll agent",
       agent_renew: "Renew agent certificate",
@@ -2097,7 +2132,7 @@ export const en = {
     testing: "Testing…",
     al: {
       intro:
-        "Notification rules decide which alerts go where: each rule picks alerts by severity, kind and tenant and sends them by e-mail and/or to a webhook. An alert goes out when it is raised, again when its severity rises, and as a reminder while nobody has acknowledged it. These settings take precedence over /etc/nexus/alerts.json.",
+        "Notification rules decide which alerts go where: each rule picks alerts by severity, kind and tenant and sends them by e-mail, to a webhook and/or as a ticket to a PSA (HaloPSA, ConnectWise, Autotask). An alert goes out when it is raised, again when its severity rises, and as a reminder while nobody has acknowledged it. These settings take precedence over /etc/nexus/alerts.json.",
       rules: "Notification rules",
       noRules: "No rules yet: alerts are only shown on the Alerts page.",
       addRule: "Add rule",
@@ -2159,12 +2194,67 @@ export const en = {
           ? "E-mail"
           : ch === "webhook"
             ? "Webhook"
-            : ch,
+            : ch === "psa"
+              ? "PSA"
+              : ch,
       noChannel: "none",
       summary: (sev: string, kinds: string, tenants: string) =>
         `${sev} · kinds: ${kinds} · tenants: ${tenants}`,
       invalidRule:
-        "Each rule needs a valid, unique name and at least one channel (e-mail recipients or a webhook URL).",
+        "Each rule needs a valid, unique name and at least one channel (e-mail recipients, a webhook URL or a PSA).",
+      // Phase 33: PSA ticketing
+      psa: "PSA ticketing",
+      psaHint:
+        "Opens one ticket per alert in your PSA, adds a note when the alert repeats (at most hourly) or escalates, and closes the ticket when the alert is resolved. The secret is stored encrypted and never shown again.",
+      psaVendor: "PSA",
+      psaNone: "No PSA",
+      psaVendors: {
+        halopsa: "HaloPSA",
+        connectwise: "ConnectWise PSA",
+        autotask: "Autotask",
+      } as Record<string, string>,
+      psaUrl: "API URL",
+      psaUrlHint: {
+        halopsa: "For example https://yourcompany.halopsa.com/api",
+        connectwise: "For example https://na.myconnectwise.net/v4_6_release/apis/3.0",
+        autotask: "For example https://webservices5.autotask.net/atservicesrest/v1.0",
+      } as Record<string, string>,
+      psaTokenUrl: "Token URL (OAuth2)",
+      psaClientId: "Client ID",
+      psaClientIdHint: {
+        halopsa: "Client ID of the API application (client credentials, permission to create and edit tickets).",
+        connectwise: "Your ConnectWise developer client ID (sent as the clientId header).",
+      } as Record<string, string>,
+      psaUsername: {
+        connectwise: "API member public key",
+        autotask: "API user name",
+      } as Record<string, string>,
+      psaSecret: {
+        halopsa: "Client secret",
+        connectwise: "API member private key",
+        autotask: "API user secret",
+      } as Record<string, string>,
+      psaCompany: {
+        halopsa: "Tenant (hosted HaloPSA, optional)",
+        connectwise: "Company ID (sign-in)",
+      } as Record<string, string>,
+      psaAccount: {
+        halopsa: "Customer ID (client_id)",
+        connectwise: "Customer company identifier",
+        autotask: "Company ID (companyID)",
+      } as Record<string, string>,
+      psaBoard: {
+        halopsa: "Ticket type ID (optional)",
+        connectwise: "Service board (ID or name, optional)",
+        autotask: "Queue ID (optional)",
+      } as Record<string, string>,
+      psaIntegration: "API tracking identifier",
+      psaClosed: "Closed status",
+      psaClosedHint: {
+        halopsa: "Status ID; empty = 9 (Closed).",
+        connectwise: "Status name or ID on the board; empty = Closed.",
+        autotask: "Status value; empty = 5 (Complete).",
+      } as Record<string, string>,
     },
     oidc: {
       intro:
@@ -2506,6 +2596,7 @@ export const en = {
     actions: {
       'restore.infected': "restore of a flagged snapshot to production",
       'incident.freeze.lift': "lift freezes",
+      'tenant.approvers.disable': "stop requiring the tenant's approval",
     } as Record<string, string>,
     states: {
       pending: "Pending",
@@ -2514,6 +2605,103 @@ export const en = {
       executed: "Executed",
       expired: "Expired",
     } as Record<string, string>,
+    // Phase 33: tenant-side approvers
+    providerApproved: "Provider approval",
+    tenantSide: "Tenant approval",
+    decisions: {
+      approved: "approved",
+      rejected: "refused",
+      requested: "requested by its approver",
+    } as Record<string, string>,
+    waiting: "waiting",
+    waitingFor: (tenants: string) => `Approved on your side. The request now waits for the approvers of ${tenants}.`,
+    ownTenantIntro:
+      "Your requests, and requests of the provider that delete or weaken your tenant's backups: they need your approval as well, and your refusal is final.",
+    approveTenant: "Approve for my tenant",
+    refuseTenant: "Refuse",
+    refuseConfirm: (id: number, action: string) =>
+      `Refuse request #${id} (${action})? A refusal is final: the provider cannot approve the request any more.`,
+  },
+  // Phase 33: compliance search and cases (name indexes, Microsoft 365 by default)
+  cases: {
+    title: "Cases",
+    lede: "Compliance search over the backups of a tenant: save what you look for as a case, see which snapshots hold matching items, put them on legal hold and export the items. Microsoft 365 snapshots are searched by default (folder, subject and date of mails, file names); any file-tree source can be searched.",
+    none: "No cases yet.",
+    newCase: "New case",
+    name: "Case name",
+    nameHint: "Letters, digits, dot, dash and underscore; unique within the tenant.",
+    description: "Description (optional)",
+    query: "Search for",
+    queryHint:
+      "A part of the name (for mail: the subject), or a pattern with * and ?; with a / the whole path is matched (e.g. mail/Inbox/*invoice*).",
+    prefix: "Sources",
+    prefixes: {
+      'plugin-m365-': "Microsoft 365 (all users, sites, teams, groups)",
+      '': "All sources of the tenant",
+    } as Record<string, string>,
+    from: "Snapshots from",
+    to: "Snapshots until",
+    caseSensitive: "Case-sensitive",
+    create: "Create and search",
+    created: (n: string) => `Case ${n} created; the search runs.`,
+    state: { open: "open", closed: "closed" } as Record<string, string>,
+    snapshots: "Snapshots",
+    items: "Matched items",
+    held: "On hold",
+    searched: "Last search",
+    searching: "searching…",
+    neverSearched: "not yet",
+    truncated: "More matches than shown: narrow the search.",
+    open: "Open",
+    back: "All cases",
+    criteria: "Criteria",
+    searchAgain: "Search again",
+    searchQueued: "Search started.",
+    hold: "Hold matched snapshots",
+    holdReason: "Reason (visible on the holds)",
+    holdHint:
+      "Puts a legal hold on every matched snapshot that has none. Holds are visible to the tenant's admins with this reason; releasing one needs approval.",
+    holdDone: (n: number) => `${n} snapshot(s) put on hold.`,
+    export: "Export matched items",
+    exportHint: (n: number) =>
+      `One download per snapshot (at most ${n}, newest first) with the items the last search matched. Microsoft 365 mail can be exported as eml, mbox or PST.`,
+    format: "Archive",
+    mailFormat: "Microsoft 365 mail",
+    exportDone: (n: number) => `${n} download job(s) started.`,
+    exportJobs: "Export jobs",
+    close: "Close case",
+    closeConfirm: (n: string) => `Close case ${n}? It can no longer be searched, held or exported; its holds stay.`,
+    closed: "Case closed.",
+    snapshotList: "Matched snapshots",
+    matches: "Matched items (last search)",
+    hold_: "Hold",
+    noHold: "none",
+    privacy:
+      "Case entries in the audit log are not shown to the tenant's own admins; holds and export jobs are ordinary ones and visible to them.",
+  },
+  // Phase 33: tenant-side approvers
+  tappr: {
+    title: "Tenant approvers",
+    button: "Approvers",
+    label: (n: string) => `Tenant approvers of ${n}`,
+    intro:
+      "With tenant approvers, deleting snapshots, releasing legal holds, weakening retention, deactivating or deleting the tenant, changing its offsite target and exporting its keys to a replication partner also need the approval of one of the tenant's own administrators. Their refusal is final. A new tenant administrator may decide 24 hours after the account became one (or was activated or re-enabled).",
+    on: "Required",
+    off: "Not required",
+    since: (who: string, when: string) => `Required since ${when} (switched on by ${who}).`,
+    approvers: "Approvers",
+    none: "The tenant has no activated tenant administrator.",
+    eligible: "may decide",
+    eligibleFrom: (when: string) => `may decide from ${when}`,
+    enable: "Require tenant approvals",
+    enableConfirm: (n: string) =>
+      `Require the approval of ${n}'s administrators for deleting or weakening changes? Switching it off later needs their approval too.`,
+    enabled: "Tenant approvals are now required.",
+    disable: "Request to stop requiring them",
+    disableConfirm:
+      "Request to stop requiring tenant approvals? The provider and one of the tenant's administrators must approve it.",
+    disablePending: (id: number) => `A request to stop requiring them is pending (#${id}).`,
+    chip: "tenant approves",
   },
   audit: {
     title: "Audit log",
@@ -2572,6 +2760,8 @@ export const en = {
     resolved: "Resolved",
     resolvedDone: "Alert resolved.",
     resolvedBy: (n: string, when: string) => `Resolved by ${n} ${when}`,
+    ticket: (vendor: string, id: string, closed: boolean) =>
+      `${vendor} ticket ${id}${closed ? " (closed)" : ""}`,
     auto: 'auto-resolved',
     autoTitle: 'The appliance resolved this alert because the problem went away.',
     filter: 'Show',
@@ -2711,6 +2901,10 @@ export const en = {
         "An agent update failed (signature, version, package install or the agent did not come back with the new version). Open the job log of the agent_update job and the agent's update state on Agents > Updates; fix the cause and update again. Resolves after the next successful update of that agent.",
       rollout_paused:
         "An agent rollout was paused: a canary failed or the failure threshold was reached. Check the failed agents on Agents > Updates, then resume or cancel the rollout. Resolves when the rollout is resumed, cancelled or done.",
+      tenant_approver:
+        "An account becomes a tenant-side approver of a tenant that requires its own approval for deleting or weakening changes (the message names the account and from when it may decide: 24 hours after it became a tenant administrator, was activated or re-enabled). If the tenant's administrators expected it, resolve the alert. If not, disable the account at once on the Users page and review the audit log.",
+      psa:
+        "Opening, updating or closing tickets in the PSA of the named alert rule has failed for 15 minutes (the message names the rule and the error). Check the rule under Settings → Alert delivery (URL, credentials, customer and board or queue, closed status) and that the PSA is reachable; use Test on the rule. Nothing is lost: tickets are opened, noted and closed when it works again. Resolves after the next successful round.",
     } as Record<string, string>,
   },
   hw: {

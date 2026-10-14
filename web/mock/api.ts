@@ -129,6 +129,8 @@ interface User {
   can_download?: boolean | null;
   expires?: number | null;
   last_login?: number | null;
+  /** Phase 33: when it last became a tenant admin, was activated or re-enabled (unset = created) */
+  approver_since?: number | null;
   /** Phase 29: risk-signal mark (step-up required until `risk_until`) */
   risk_since?: number | null;
   risk_until?: number | null;
@@ -293,6 +295,10 @@ const db = {
   /** Phase 15c legal holds (catalog v18 `legal_holds`, with history) */
   holds: [] as Json[],
   quorum: [] as Json[],
+  // Phase 33: tenants whose own admins co-approve destroying or weakening requests
+  tenantApprovals: {} as Record<string, { enabled_at: number; enabled_by: string }>,
+  // Phase 33: compliance cases (web-api cases.rs)
+  cases: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
   sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number; elev?: { role: Role; until: number } }>(),
@@ -443,6 +449,15 @@ function planFor(kind: string, p: Json): string[] {
     }
     case 'replica_enroll':
       return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
+    case 'synthetic_restore':
+      return [
+        `reading the file name indexes of ${src} (${p.time} and up to ${p.depth ?? 30} older snapshots)`,
+        'YARA results of 2 snapshots, 1 IOC hash list, 15 ransom-note name patterns',
+        'mass rename in snapshot ' + p.time + ': 412 files deleted, 412 added with new extensions (.lockbit)',
+        'decided: 1,284 files, 3 substituted, 412 brought back, 413 left out',
+        p.mode === 'download' ? `writing <downloads>/<token>.${p.format}` : `connecting to agent ${agName} over mTLS`,
+        ...(p.mode === 'host' ? [`RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`, 'restored 1,283 files (48.1 MiB)'] : ['1,699 entries written']),
+      ];
     case 'restore_files':
       return [
         ...(/^(vm|ct)-/.test(src)
@@ -640,6 +655,7 @@ function tick() {
       if (j.kind === 'agent_renew' && ag)
         Object.assign(ag, { cert_sha256: rand(32), cert_issued: t, cert_expires: t + 3650 * 86400, cert_renewal_pending: false, last_seen: t });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
+      if (j.kind === 'synthetic_restore') syntheticDone(j, t);
       if (j.kind === 'files_get') {
         j.result = { download_token: j.params.download_token, format: j.params.format, entries: (j.params.paths ?? []).length };
         db.downloads.set(String(j.params.download_token), {
@@ -1627,6 +1643,8 @@ function seed() {
     mkAlert({
       ts: nightly.finished! - 2 * 86400, last_ts: nightly.finished, count: 3, severity: 'critical', kind: 'job_failed',
       key: `job_failed:initech/backup/group/${gProd.id}`, tenant: 'initech', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
+      // Phase 33: the rule msp-halo opened a ticket in HaloPSA
+      tickets: [{ rule: 'msp-halo', vendor: 'halopsa', ticket: '48213', closed: null }],
     }),
     mkAlert({
       ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
@@ -1686,6 +1704,18 @@ function seed() {
   q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
   q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
+  // Phase 33: acme requires its own approval (tara); a snapshot delete the provider approved waits for it
+  db.tenantApprovals.acme = { enabled_at: t - 86400 * 10, enabled_by: 'tara' };
+  {
+    const s = (db.snapshots as any[]).filter((x) => x.tenant === 'acme' && x.local && !x.origin).sort((a, b) => a.time - b.time)[0];
+    if (s) {
+      const x = q('snapshot.delete', { tenant: 'acme', source: s.source, time: s.time }, 'admin', t - 3 * 3600);
+      Object.assign(x, {
+        approved_by: 'so', approved_at: t - 2 * 3600,
+        tenant_approvals: [{ tenant: 'acme', decided_by: null, decided_at: null, decision: null }],
+      });
+    }
+  }
   // Phase 17d: an approved "attach offsite copy" waiting for the requester's recovery key
   q('tenant.attach_offsite', {
     name: 'umbrella',
@@ -1830,6 +1860,16 @@ function seedM365(t: number) {
       result: { snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }], source: user, time: start, consistent: true, warnings: 2 },
     });
   }
+  // Phase 33: a compliance case over acme's Microsoft 365 snapshots (its search finished)
+  const cs: Json = {
+    id: nextId(), tenant: 'acme', name: 'matter-2026-17', description: 'Contract dispute with Initrode (counsel: K. Weber)',
+    criteria: { query: 'Invoice 4711', case_sensitive: false, source_prefix: 'plugin-m365-' }, state: 'open',
+    created_by: 'so', created_at: t - 3 * 3600, closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+  };
+  db.cases.push(cs);
+  caseSearch(cs, 'so');
+  Object.assign(db.jobs.find((j) => j.id === cs.last_job)!, { state: 'ok', created: t - 3 * 3600, started: t - 3 * 3600 + 1, finished: t - 3 * 3600 + 4 });
+  cs.searched_at = t - 3 * 3600 + 4;
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -2067,7 +2107,37 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 const SCHEDULER_ACTIONS = ['recovery_plan.execute', 'replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
+// Phase 33 (catalog::approvers): the opted-in tenants an action destroys or weakens
+const APPROVER_WAIT = 86400;
+function gatedTenants(action: string, p: Json): string[] {
+  let ts: string[] = [];
+  if (['snapshot.delete', 'snapshot.hold_release', 'tenant.approvers.disable'].includes(action)) ts = [p.tenant];
+  else if (['tenant.disable', 'tenant.delete', 'tenant.update'].includes(action)) ts = [p.name];
+  else if (['group.update', 'group.delete'].includes(action)) ts = db.groups.filter((g) => g.id === Number(p.id)).map((g) => g.tenant);
+  else if (action === 'policy.update') ts = db.groups.filter((g) => g.policy_id === Number(p.id)).map((g) => g.tenant);
+  else if (action === 'replication.key_export') ts = p.tenants ?? [];
+  return [...new Set(ts.filter((t) => t && db.tenantApprovals[t]))].sort();
+}
+const tenantApprovers = (tenant: string) =>
+  db.users
+    .filter((x) => x.role === 'tenant_admin' && x.tenant === tenant && !x.disabled && !x.act)
+    .map((x) => ({ name: x.name, eligible_from: (x.approver_since ?? x.created ?? 0) + APPROVER_WAIT }));
+const ownConsent = (tenant: string, by: string) => tenantApprovers(tenant).some((a) => a.name === by && a.eligible_from <= now());
+const tenantRows = (action: string, p: Json, by: string) =>
+  gatedTenants(action, p).map((tenant) =>
+    ownConsent(tenant, by)
+      ? { tenant, decided_by: by, decided_at: now(), decision: 'requested' }
+      : { tenant, decided_by: null, decided_at: null, decision: null },
+  );
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
+  const tenant_approvals = tenantRows(action, params, u.name);
+  if (!db.approvals && tenant_approvals.some((x) => !x.decision)) {
+    const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
+                approved_by: u.name, approved_at: now(), tenant_approvals };
+    db.quorum.push(q);
+    await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params, tenant_approvers: tenant_approvals.map((x) => x.tenant) });
+    return [202, { quorum_id: q.id, ...extra }];
+  }
   if (!db.approvals) {
     if (SCHEDULER_ACTIONS.includes(action)) {
       const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
@@ -2079,7 +2149,8 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
     await audit(u.name, action, action, { approvals: 'disabled', params });
     return [200, { approvals: 'disabled', executed: true, ...extra }];
   }
-  const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
+              approved_by: null, approved_at: null, tenant_approvals };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params });
   return [202, { quorum_id: q.id, ...extra }];
@@ -2357,6 +2428,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.lockdown.lift':
       liftLockdown(p, by, decider);
       break;
+    case 'tenant.approvers.disable':
+      delete db.tenantApprovals[p.tenant];
+      break;
     // Phase 29
     case 'restore.infected':
       if (restoresFrozen(p.tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen');
@@ -2608,8 +2682,41 @@ on('GET', '/tenants', (c) => [
   200,
   db.tenants
     .filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)
-    .map((t) => ({ ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name) })),
+    .map((t) => ({
+      ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name),
+      tenant_approvals: !!db.tenantApprovals[t.name],
+    })),
 ]);
+// Phase 33: tenant-side approvers (web-api approvers.rs)
+const approversView = (tenant: string) => {
+  const on = db.tenantApprovals[tenant];
+  return {
+    tenant, enabled: !!on, enabled_at: on?.enabled_at ?? null, enabled_by: on?.enabled_by ?? null, wait_hours: 24,
+    approvers: tenantApprovers(tenant).map((a) => ({ ...a, eligible: a.eligible_from <= now() })),
+    disable_request: db.quorum.find((q) => q.action === 'tenant.approvers.disable' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null,
+  };
+};
+on('GET', '/tenants/:name/approvers', (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer', 'tenant_admin');
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  return [200, approversView(tn)];
+});
+on('PUT', '/tenants/:name/approvers', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  if (c.body?.enabled === true) {
+    if (db.tenantApprovals[tn]) throw new HttpError(409, 'tenant-side approvers are already required');
+    if (!tenantApprovers(tn).length) throw new HttpError(409, 'the tenant has no activated tenant admin who could approve');
+    db.tenantApprovals[tn] = { enabled_at: now(), enabled_by: u.name };
+    await audit(u.name, 'tenant.approvers', `tenant/${tn}`, { tenant: tn, enabled: true });
+    return [200, approversView(tn)];
+  }
+  if (!db.tenantApprovals[tn]) throw new HttpError(409, 'tenant-side approvers are not required');
+  if (approversView(tn).disable_request) throw new HttpError(409, 'a request to switch them off is already pending');
+  return quorum(u, 'tenant.approvers.disable', { tenant: tn });
+});
 on('GET', '/tenants/tombstones', (c) => (need(c.user, 'admin', 'security_officer'), [200, db.tombstones]));
 on('PUT', '/tenants/:name/policies', async (c, [name]) => {
   const u = need(c.user, 'admin');
@@ -2745,7 +2852,7 @@ on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
 });
 
 // Phase 17c: vault mode (web-api `vault.rs`)
-const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
 function vaultRefuse(what: string) {
   if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
 }
@@ -4439,6 +4546,37 @@ on('GET', '/jobs', (c) => {
   return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
 });
 // Phase 22b (web-api nasops.rs): the `error …` lines of a backup log as CSV
+// Phase 33: what a synthetic restore substituted, brought back or left out (web-api jobs::synthetic_report)
+function syntheticDone(j: Job, t: number) {
+  j.result = {
+    files: 1284, substituted: 3, restored: 412, left_out: 413, snapshots_examined: Math.min(31, Number(j.params.depth ?? 30) + 1),
+    from_unscanned: 410, missing: 0, dangling: 0, report_token: j.params.report_token,
+    ...(j.params.mode === 'download'
+      ? { download_token: j.params.download_token, format: j.params.format, entries: 1699, size: 50_398_208, expires: t + 86400 }
+      : { written: { target: j.params.target, files: 1283, dirs: 211, bytes: 50_398_208, errors: 0 } }),
+  };
+  if (j.params.mode === 'download')
+    db.downloads.set(String(j.params.download_token), {
+      owner: j.requested_by,
+      filename: `${j.params.source}-${j.params.time}-clean.${j.params.format}`,
+      body: 'mock archive of the clean-file restore\n',
+      expires: t + 86400,
+    });
+}
+on('GET', '/jobs/:id/synthetic.csv', (c, [id]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
+  const j = find(byTenant(u, db.jobs), (x) => x.id === Number(id) && x.kind === 'synthetic_restore', 'job');
+  if (!j.result) throw new HttpError(404, 'no report (the job has not decided yet, or it expired)');
+  const rows = [
+    ['/srv/data/finance/budget-2026.xlsx', 'substituted', String(Number(j.params.time) - 86400), 'YARA rule Ransom_Lockbit_Note matched in snapshot ' + j.params.time],
+    ['/srv/data/finance/budget-2026.xlsx.lockbit', 'left_out', '', 'output of a mass rename in snapshot ' + j.params.time + '; no clean version in the 31 snapshots examined'],
+    ['/srv/data/finance/report-q3.docx', 'restored', String(Number(j.params.time) - 86400), 'deleted by a mass rename in snapshot ' + j.params.time],
+    ['/srv/data/README-RESTORE.txt', 'left_out', '', 'ransom-note file name; no clean version in the 31 snapshots examined'],
+  ];
+  const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
+  c.res.setHeader('Content-Disposition', `attachment; filename="synthetic-restore-${j.id}.csv"`);
+  return [200, 'path,action,version,reason\r\n' + rows.map((r) => r.map(f).join(',')).join('\r\n') + '\r\n', 'text/csv; charset=utf-8'];
+});
 on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
   const j = find(byTenant(need(c.user), db.jobs), (x) => x.id === Number(id), 'job');
   if (j.kind !== 'backup') throw new HttpError(400, 'skipped files: backup jobs only');
@@ -4470,7 +4608,7 @@ on('GET', '/jobs/:id', (c, [id]) => {
     .map((x) => ({ id: x.id, kind: x.kind, state: x.state, created: x.created, started: x.started, finished: x.finished }));
   return [200, { ...pubJob(j, true), followups }];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
+const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
@@ -4561,6 +4699,29 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
+  if (kind === 'synthetic_restore') {
+    // Phase 33 (web-api jobs.rs SyntheticP)
+    const src = String(p.source ?? '');
+    if (!/^(host|nas|share)-/.test(src)) throw new HttpError(400, 'source: synthetic restores take file-tree snapshots of agents, NAS (TrueNAS) and shares');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+    p.paths ??= ['/'];
+    if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))
+      throw new HttpError(400, 'paths: absolute paths required');
+    if (p.depth !== undefined && !(Number.isInteger(p.depth) && p.depth >= 1 && p.depth <= 100)) throw new HttpError(400, 'depth: 1..=100 older snapshots');
+    if (p.mode === 'download') {
+      if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+      p.format ??= 'tar';
+      if (!['tar', 'zip'].includes(p.format)) throw new HttpError(400, 'format: tar or zip');
+    } else if (p.mode === 'host') {
+      if (!src.startsWith('host-') && !p.agent_id) throw new HttpError(400, 'agent_id: choose the agent to restore to (snapshots of NAS and shares)');
+      if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
+      if (!String(p.target ?? '').startsWith('/')) throw new HttpError(400, 'target: must be absolute');
+      p.overwrite ??= 'never';
+      if (!OVERWRITE.includes(p.overwrite)) throw new HttpError(400, 'overwrite: never, if_older or always');
+      const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
+      if (p.confirm !== a.name) throw new HttpError(400, `confirm: type the target agent's name (${a.name}) to confirm the restore`);
+    } else throw new HttpError(400, 'mode: download or host');
+  }
   if (kind === 'restore_files') {
     const src = String(p.source ?? '');
     // Phase 15b: host, TrueNAS, share, plugin (with a download restore), VM and CT snapshots
@@ -4618,8 +4779,13 @@ on('POST', '/jobs', async (c) => {
     const { replace: _r, ...rest } = params;
     return quorum(u, 'restore.replace', { tenant, kind, params: rest });
   }
-  // Like web-api: files_get gets a server-generated download token, returned in the 202 body.
-  const p = kind === 'files_get' ? { ...params, download_token: rand(32) } : params;
+  // Like web-api: files_get gets a server-generated download token, returned in the 202 body;
+  // Phase 33: a synthetic restore also its report token
+  const p =
+    kind === 'files_get' || (kind === 'synthetic_restore' && params.mode === 'download')
+      ? { ...params, download_token: rand(32) }
+      : { ...params };
+  if (kind === 'synthetic_restore') p.report_token = rand(32);
   const gated = await vaultGate(u, tenant, [{ kind, params: p }]);
   if (gated) return gated;
   // Phase 23a: "back up now, keep until" (web-api keep.rs): beyond the limit an approval
@@ -4634,7 +4800,7 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
-  return [202, p.download_token ? { id: j.id, download_token: p.download_token } : { id: j.id }];
+  return [202, { id: j.id, ...(p.download_token ? { download_token: p.download_token } : {}), ...(p.report_token ? { report_token: p.report_token } : {}) }];
 });
 // Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
 on('POST', '/restores', async (c) => {
@@ -5014,17 +5180,44 @@ on('PUT', '/groups/:id/index-rules', async (c, [id]) => {
 on('GET', '/quorum', (c) => {
   const u = need(c.user, 'admin', 'security_officer', 'operator', 'tenant_admin');
   for (const q of db.quorum) if (q.state === 'pending' && now() - q.created > 72 * 3600) q.state = 'expired';
-  // Phase 19b: tenant admins see the requests they made, nothing else
-  const mine = (q: (typeof db.quorum)[number]) => u.role !== 'tenant_admin' || q.requested_by === u.name;
-  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ ...q, expires: q.created + 72 * 3600 }))];
+  // Phase 19b: tenant admins see the requests they made; Phase 33: and those their tenant co-approves
+  const mine = (q: (typeof db.quorum)[number]) =>
+    u.role !== 'tenant_admin' || q.requested_by === u.name || (q.tenant_approvals ?? []).some((x: Json) => x.tenant === u.tenant);
+  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ approved_by: null, approved_at: null, tenant_approvals: [], ...q, expires: q.created + 72 * 3600 }))];
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
-    const u = need(c.user, 'admin', 'security_officer');
+    const u = need(c.user, 'admin', 'security_officer', 'tenant_admin');
     const q = find(db.quorum, (x) => x.id === Number(id), 'quorum request');
     if (q.state !== 'pending') throw new HttpError(409, `request is ${q.state}`);
     if (q.requested_by === u.name) throw new HttpError(403, 'the requester cannot decide their own request');
-    Object.assign(q, { decided_by: u.name, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
+    // Phase 33: tenant side (final refusal) and the provider's approval while tenants still decide
+    const rows: Json[] = q.tenant_approvals ?? [];
+    if (u.role === 'tenant_admin') {
+      if (db.sessions.get(c.sid!)?.imp) throw new HttpError(403, 'forbidden');
+      const row = rows.find((x) => x.tenant === u.tenant && !x.decision);
+      if (!row) throw new HttpError(409, "this request does not wait for your tenant's decision");
+      const from = tenantApprovers(u.tenant!).find((a) => a.name === u.name)?.eligible_from ?? Infinity;
+      if (from > now()) throw new HttpError(403, `a new tenant approver may decide 24 hours after becoming one, from ${from} (unix time)`);
+      Object.assign(row, { decided_by: u.name, decided_at: now(), decision: verb === 'approve' ? 'approved' : 'rejected' });
+      await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action, side: 'tenant', tenant: u.tenant });
+      if (verb === 'reject') {
+        Object.assign(q, { decided_by: u.name, decided_at: now(), state: 'rejected' });
+        return [200, q];
+      }
+      const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
+      if (waiting.length || !q.approved_by) return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: !!q.approved_by }];
+    } else if (verb === 'approve') {
+      const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
+      if (waiting.length) {
+        if (q.approved_by) throw new HttpError(409, `already approved by the provider; waiting for the approvers of ${waiting.join(', ')}`);
+        Object.assign(q, { approved_by: u.name, approved_at: now() });
+        await audit(u.name, 'quorum.approve', `quorum/${q.id}`, { action: q.action, state: 'pending', waiting_for: waiting });
+        return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: true }];
+      }
+    }
+    const decider = u.role === 'tenant_admin' ? q.approved_by : u.name;
+    Object.assign(q, { decided_by: decider, decided_at: now(), state: verb === 'approve' ? 'approved' : 'rejected' });
     await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action });
     if (verb === 'reject' && q.action === 'plugin.install') {
       const e = db.plugins.find((x) => x.id === q.params.id && x.version === q.params.version);
@@ -5115,7 +5308,7 @@ function mkAlert(a: Json): Json {
   const hint = a.kind === 'job_failed' ? 'Open the job log on the Jobs page, fix the cause and run the job again.' : 'See the alerts chapter of the user manual.';
   return {
     id: nextId(), first_ts: a.ts, last_ts: a.ts, count: 1, key: `${a.kind}:${a.message}`, tenant: null, hint,
-    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, ...a,
+    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, tickets: [], ...a,
   };
 }
 /** Like catalog::alerting::category (Phase 18). */
@@ -5249,6 +5442,17 @@ function seedPhase12(t: number) {
       {
         name: 'siem', min_severity: 'critical', kinds: [], tenants: [],
         channels: { email: [], webhook: { url: 'https://siem.example.com/api/events', headers: { Authorization: 'sealed:demo' }, template: null } },
+      },
+      {
+        name: 'msp-halo', min_severity: 'warning', kinds: [], tenants: ['initech'],
+        channels: {
+          email: [], webhook: null,
+          psa: {
+            vendor: 'halopsa', url: 'https://msp.halopsa.example/api', token_url: 'https://msp.halopsa.example/auth/token',
+            client_id: 'nexus-backup', username: null, secret: 'sealed:demo', company: null, account: '214', board: '31',
+            integration_code: null, closed_status: null,
+          },
+        },
       },
     ],
     reminder_hours: 24,
@@ -6163,9 +6367,48 @@ const pubAlerts = () => {
   for (const r of a.rules) {
     const h = r.channels.webhook?.headers;
     if (h) for (const k of Object.keys(h)) h[k] = null;
+    if (r.channels.psa) {
+      r.channels.psa.secret = null;
+      r.channels.psa.secret_set = true;
+    }
   }
   return a;
 };
+/** Phase 33: like web-api settings::check_psa (secret sealed at rule + URLs). */
+function checkPsa(r: Json, prev: Json | undefined): Json {
+  const p = r.channels.psa;
+  const what = (m: string) => new HttpError(400, `rule ${r.name}: psa.${m}`);
+  if (!['halopsa', 'connectwise', 'autotask'].includes(p.vendor)) throw what('vendor: halopsa, connectwise or autotask');
+  const httpsUrl = (u: unknown) => /^https:\/\/[^@\s/]+\S*$/.test(String(u ?? ''));
+  if (!httpsUrl(p.url)) throw what('url: https://host[:port]/path, without user info');
+  const v = (x: unknown) => (String(x ?? '').trim() || null) as string | null;
+  const out: Json = {
+    vendor: p.vendor, url: p.url, token_url: p.vendor === 'halopsa' ? v(p.token_url) : null, client_id: v(p.client_id),
+    username: v(p.username), company: v(p.company), account: v(p.account), board: v(p.board),
+    integration_code: v(p.integration_code), closed_status: v(p.closed_status),
+  };
+  const need = (k: string) => {
+    if (!out[k]) throw what(`${k}: required for ${p.vendor}`);
+  };
+  const num = (k: string) => {
+    if (out[k] && !/^-?\d+$/.test(out[k])) throw what(`${k}: a number for this vendor`);
+  };
+  if (p.vendor === 'halopsa') {
+    need('token_url');
+    need('client_id');
+    if (!httpsUrl(out.token_url)) throw what('token_url: https://host[:port]/path, without user info');
+    ['account', 'board', 'closed_status'].forEach(num);
+  } else if (p.vendor === 'connectwise') ['company', 'username', 'client_id', 'account'].forEach(need);
+  else {
+    ['username', 'integration_code', 'account'].forEach(need);
+    ['account', 'board', 'closed_status'].forEach(num);
+  }
+  const loc = (x: Json) => `${x.url}|${x.token_url ?? ''}`;
+  if (p.secret) out.secret = 'sealed:demo';
+  else if (prev && loc(prev) === loc(out)) out.secret = prev.secret;
+  else throw what('secret: required (new channel or a URL changed)');
+  return out;
+}
 const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'category', 'message', 'hint', 'tenant', 'host', 'alert_url'];
 /** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
 function checkTemplate(tpl: string): string | null {
@@ -6222,6 +6465,7 @@ on('PUT', '/settings/alerts', async (c) => {
         w.headers[h] = v === null ? prev.headers[h] : 'sealed:demo';
       }
     }
+    if (r.channels?.psa) r.channels.psa = checkPsa(r, old.rules.find((o: Json) => o.name === r.name)?.channels.psa);
   }
   const reminder = Number(b.reminder_hours ?? 24);
   if (!(reminder >= 0 && reminder <= 720)) throw new HttpError(400, 'reminder_hours: 0 (never) ..= 720');
@@ -6243,6 +6487,8 @@ on('POST', '/settings/alerts/test', async (c) => {
     if (w) out[key('webhook')] = /bad|invalid/.test(w.url) ? 'error: HTTP 404 from the webhook' : 'ok';
     if (r.channels.email.length)
       out[key('email')] = !a.smtp ? 'error: no SMTP server configured' : /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+    const p = r.channels.psa;
+    if (p) out[key('psa')] = /bad|invalid/.test(p.url) ? 'error: create ticket: 401 Unauthorized' : `ok (ticket ${4700 + Math.floor(Math.random() * 99)} opened and closed)`;
   }
   await audit(u.name, 'job.create', 'job/0', { kind: 'alert_test', params: only ? { rule: only } : {} });
   return [200, out];
@@ -7809,6 +8055,138 @@ function holdOne(tenant: string, source: string, time: number, reason: string, b
   db.holds.push(h);
   return { id: h.id };
 }
+// ---------------------------------------------------------------- cases (Phase 33, web-api cases.rs)
+/** The case's search: a file_search job; the matches are made up from the tenant's snapshots. */
+function caseSearch(cs: Json, by: string) {
+  const crit = cs.criteria;
+  const word = String(crit.query).replace(/[*?\[\]]/g, '').trim() || 'match';
+  const snaps = (db.snapshots as Json[])
+    .filter((s) => s.tenant === cs.tenant && s.local && String(s.source).startsWith(crit.source_prefix ?? ''))
+    .filter((s) => (!crit.from || s.time >= crit.from) && (!crit.to || s.time <= crit.to))
+    .sort((a, b) => b.time - a.time);
+  const bySource = new Map<string, number[]>();
+  for (const s of snaps) bySource.set(s.source, [...(bySource.get(s.source) ?? []), s.time]);
+  cs.matches = [...bySource.entries()].flatMap(([source, times], i) => [
+    { source, path: `mail/Inbox/${word} ~${(4711 + i).toString(16)}a1.eml`, kind: 'file', size: 48_211 + i, mtime: times[times.length - 1], times },
+    ...(i % 2 ? [] : [{ source, path: `mail/Sent Items/RE ${word} ~${(9311 + i).toString(16)}c7.eml`, kind: 'file', size: 21_904, mtime: times[0], times: times.slice(0, 2) }]),
+  ]);
+  const held = new Map((cs.snapshot_list ?? []).filter((x: Json) => x.hold).map((x: Json) => [`${x.source}/${x.time}`, x.hold]));
+  const items = new Map<string, number>();
+  for (const m of cs.matches) for (const t of m.times) items.set(`${m.source}/${t}`, (items.get(`${m.source}/${t}`) ?? 0) + 1);
+  cs.snapshot_list = [...items.entries()]
+    .map(([k, n]) => {
+      const i = k.lastIndexOf('/');
+      return { source: k.slice(0, i), time: Number(k.slice(i + 1)), items: n, hold: held.get(k) ?? null };
+    })
+    .sort((a, b) => b.time - a.time || a.source.localeCompare(b.source));
+  const j = addJob('file_search', cs.tenant, { ...crit, limit: 2000, case_id: cs.id }, by);
+  j.duration = 3;
+  Object.assign(cs, { last_job: j.id, searched_at: now(), truncated: false });
+}
+function caseView(cs: Json, full = false): Json {
+  const list: Json[] = cs.snapshot_list ?? [];
+  for (const x of list) if (x.hold) x.hold = { ...x.hold, state: db.holds.find((h) => h.id === x.hold.id)?.state ?? x.hold.state };
+  const job = db.jobs.find((j) => j.id === cs.last_job);
+  const v: Json = {
+    ...cs, snapshots: list.filter((x) => x.items > 0).length, items: list.reduce((a, x) => a + x.items, 0),
+    held: list.filter((x) => x.hold?.state === 'active').length, job_state: job?.state ?? null,
+  };
+  delete v.matches;
+  delete v.snapshot_list;
+  return full ? { ...v, snapshot_list: list, matches: job?.state === 'ok' ? cs.matches : null } : v;
+}
+const caseOf = (c: Ctx, id: string) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return { u, cs: find(db.cases, (x) => x.id === Number(id), 'case') };
+};
+on('GET', '/cases', (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const tq = c.query.get('tenant');
+  return [200, db.cases.filter((x) => !tq || x.tenant === tq).sort((a, b) => a.state.localeCompare(b.state) || b.id - a.id).map((x) => caseView(x))];
+});
+on('POST', '/cases', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const b = c.body;
+  find(db.tenants, (x) => x.name === b.tenant, 'tenant');
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(b.name))) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
+  const q = String(b.criteria?.query ?? '').trim();
+  if (!q || q.length > 256) throw new HttpError(400, 'criteria.query: 1..=256 characters');
+  if (db.cases.some((x) => x.tenant === b.tenant && x.name === b.name)) throw new HttpError(409, 'a case of this name exists in the tenant');
+  const criteria: Json = { query: q, case_sensitive: !!b.criteria.case_sensitive };
+  const prefix = b.criteria.source_prefix ?? 'plugin-m365-';
+  if (prefix) criteria.source_prefix = prefix;
+  for (const k of ['source', 'from', 'to']) if (b.criteria[k] !== undefined && b.criteria[k] !== null) criteria[k] = b.criteria[k];
+  const cs: Json = {
+    id: nextId(), tenant: b.tenant, name: b.name, description: String(b.description ?? '').trim(), criteria, state: 'open',
+    created_by: u.name, created_at: now(), closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+  };
+  db.cases.push(cs);
+  caseSearch(cs, u.name);
+  await audit(u.name, 'case.create', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, name: cs.name, criteria, job: cs.last_job });
+  return [201, { ...caseView(cs), job_id: cs.last_job }];
+});
+on('GET', '/cases/:id', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  await audit(u.name, 'case.view', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id });
+  return [200, caseView(cs, true)];
+});
+on('POST', '/cases/:id/search', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed');
+  if (['queued', 'running'].includes(db.jobs.find((j) => j.id === cs.last_job)?.state ?? '')) throw new HttpError(409, "the case's search is still running");
+  caseSearch(cs, u.name);
+  await audit(u.name, 'case.search', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, job: cs.last_job });
+  return [202, { job_id: cs.last_job }];
+});
+on('POST', '/cases/:id/hold', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  need(u, 'security_officer');
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed');
+  const reason = holdReason(c.body);
+  const held: string[] = [];
+  for (const x of (cs.snapshot_list ?? []) as Json[]) {
+    if (!x.items) continue;
+    if (holdOne(cs.tenant, x.source, x.time, `case ${cs.name}: ${reason}`, u.name)) held.push(`${x.source}/${x.time}`);
+    const h = activeHold(cs.tenant, x.source, x.time);
+    if (h) x.hold = { id: h.id, state: h.state, reason: h.reason };
+  }
+  await audit(u.name, 'case.hold', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, reason, snapshots: held });
+  return [200, { held: held.length, snapshots: held }];
+});
+on('POST', '/cases/:id/export', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: case exports are not allowed on this appliance (Settings → Vault)');
+  const format = c.body?.format ?? 'tar';
+  if (!['tar', 'zip'].includes(format)) throw new HttpError(400, 'format: tar or zip');
+  const mail = c.body?.mail_format;
+  if (mail && !['eml', 'mbox', 'pst'].includes(mail)) throw new HttpError(400, 'mail_format: eml, mbox or pst');
+  if (!cs.matches?.length) throw new HttpError(409, "the case's last search matched nothing");
+  const per = new Map<string, string[]>();
+  for (const m of cs.matches) for (const t of m.times) per.set(`${t}\0${m.source}`, [...(per.get(`${t}\0${m.source}`) ?? []), '/' + m.path]);
+  const jobs = [...per.entries()]
+    .sort((a, b) => Number(b[0].split('\0')[0]) - Number(a[0].split('\0')[0]))
+    .slice(0, 50)
+    .map(([k, paths]) => {
+      const [time, source] = k.split('\0');
+      const p: Json = { source, time: Number(time), paths, format, download_token: rand(32), ...(mail && source.startsWith('plugin-m365-') ? { params: { mail_format: mail } } : {}) };
+      const j = addJob('files_get', cs.tenant, p, u.name);
+      return { id: j.id, source, time: Number(time), download_token: p.download_token };
+    });
+  await audit(u.name, 'case.export', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, jobs: jobs.map((j) => j.id), format, mail_format: mail ?? null });
+  return [202, { jobs }];
+});
+on('POST', '/cases/:id/close', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed already');
+  Object.assign(cs, { state: 'closed', closed_by: u.name, closed_at: now() });
+  await audit(u.name, 'case.close', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id });
+  return [200, caseView(cs)];
+});
+
 on('POST', '/snapshots/:tenant/:source/:time/hold', async (c, [tenant, source, time]) => {
   const u = need(c.user, 'security_officer');
   const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
@@ -9125,7 +9503,8 @@ function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
   const overwrites =
     ['backup', 'agent_update', 'agent_renew', 'plugin_restore'].includes(kind) ||
     ((kind === 'restore' || kind === 'restore_ct') && !!p.replace) ||
-    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never');
+    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never') ||
+    (kind === 'synthetic_restore' && p.mode === 'host' && !!p.overwrite && p.overwrite !== 'never');
   if (overwrites) lockdownRefuse(tenant, `${kind} jobs that change its data`);
 }
 
@@ -9479,7 +9858,8 @@ function productionRestore(kind: string, p: Json): boolean {
   if (kind === 'restore' || kind === 'restore_ct') return !!p.replace || !p.link_down;
   if (kind === 'instant_recover') return !p.link_down;
   if (kind === 'instant_disk' || kind === 'plugin_restore') return true;
-  if (kind === 'restore_files') return p.target === '/' || (!!p.overwrite && p.overwrite !== 'never');
+  if (kind === 'restore_files' || (kind === 'synthetic_restore' && p.mode === 'host'))
+    return p.target === '/' || (!!p.overwrite && p.overwrite !== 'never');
   return false;
 }
 const restoresFrozen = (tenant: string) =>

@@ -35,7 +35,7 @@ replicad); it streams replicad's answers to replication peers without opening st
     - nexus-setup creates the key. The web-api creates it only if it is missing and no encrypted seed exists.
     - Legacy plaintext seeds are encrypted at web-api startup (audit `secret.migrate`).
   - OIDC client secret (`settings.oidc.client_secret`, Phase 12): `enc:v1:` with the same web-api key but its own AAD (`nexus webapi v1\0oidc/client_secret`), because the web-api itself sends it to the IdP's token endpoint (client_secret_basic). Write-only in the API, `<redacted>` in quorum params.
-  - SMTP password of the alert delivery (`settings.alerts.smtp.password`, Phase 12): sealed to the scheduler like source secrets (owner `settings/alerts`, bound to the SMTP host, port and user). Phase 13f: webhook header values of the notification rules (`settings.alert_rules`), sealed at `settings/alert_rules/<rule>/<header>@<url>`.
+  - SMTP password of the alert delivery (`settings.alerts.smtp.password`, Phase 12): sealed to the scheduler like source secrets (owner `settings/alerts`, bound to the SMTP host, port and user). Phase 13f: webhook header values of the notification rules (`settings.alert_rules`), sealed at `settings/alert_rules/<rule>/<header>@<url>`. Phase 33: PSA secrets at `settings/alert_rules/<rule>/psa@<url>|<token_url>`.
 
 ## Catalog schema (crate `catalog`, migrations in code)
 | Table | Columns (main) |
@@ -216,7 +216,7 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET /audit.csv?actor=&action=&target=&from=&to=&after=&before=` | admin, security_officer | the filtered entries oldest first, streamed in pages of 1000, columns `seq,ts,actor,action,target,details,prev_hash,hash` (RFC 4180 quoting, values unchanged); audited `audit.export` with the filters; `order`/`limit` → 400 |
 | `GET /auth/oidc`, `GET /auth/oidc/start?next=`, `GET /auth/oidc/callback` | none | OIDC sign-in (§2, see Clarifications) |
 | `GET/PUT /settings/oidc`, `POST /settings/oidc/test` | read: admin, security_officer / admin (PUT → quorum `oidc.update`) | client secret write-only (`client_secret_set`); GET adds `redirect_uri` to register at the IdP; test → `{discovery, jwks}` |
-| `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; test `{rule?}` → `{webhook?, email?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
+| `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; Phase 33 `channels.psa` (see "PSA ticketing"); test `{rule?}` → `{webhook?, email?, psa?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
 | `GET /ssh-keys`, `POST /ssh-keys/{name}/rotate`, `POST /ssh-keys/{name}/retire` | admin, operator, security_officer read / admin (rotate → quorum `ssh_key.rotate`) | §4; only key files below `/etc/nexus/ssh` that PVE node or SFTP offsite configurations use; after a rotation the entry shows the new key and the old one as `previous` (still in use) until retire → 202 `{job_id}` (`ssh_key_retire`); 409 without a rotation |
 | `GET /updates`, `POST /updates/check`, `POST /updates/apply` | admin, security_officer, operator read / admin (apply → quorum `update.apply`) | §5; check/apply write the request file for `nexus-update.path` (apply = install now: stage if needed, reboot outside the window); status `checking` while a request waits, `blocked` (+ `blocked: [check]`) when failed pre-update checks refused the last stage/apply (docs/release.md) |
 | `GET/PUT/DELETE /updates/registry` | admin, security_officer, operator read / admin write | pull credential for a private image repository: `{username, token}` stored as `<update dir>/pull-auth.json` (0600); GET returns only `{configured, username}`; `nexus-update` writes `/run/ostree/auth.json` only during a fetch and removes it; audited `update.registry_auth` / `update.registry_auth_removed` |
@@ -790,7 +790,8 @@ administrator gets the role `tenant_admin`, always scoped to exactly one tenant 
   holds, reports, plugins list, vault state), its own approval requests (`GET /quorum`: requests it made) and the
   audit entries concerning its tenant (below).
 - **Never**: global settings (security, OIDC, alerts, forwarding, reports schedule, anomaly, updates, SSH keys,
-  certificates, diagnostics, firewall, hardware, console, vault), approvals (deciding or the setting), policies
+  certificates, diagnostics, firewall, hardware, console, vault), approvals (the setting; deciding only the tenant
+  side of its tenant's requests, Phase 33 "Tenant-side approvers"), policies
   (create/change/delete), tenants (create, offsite target `PUT /tenants/{name}`, quota, deactivation, delete,
   recovery key, policy assignment), snapshot deletion and legal holds, replication, plugin install/keys, all-sessions
   views, audit chain verification. `tests/api.rs` `tenant_admin_routes_classified` classifies every registered route
@@ -803,7 +804,9 @@ administrator gets the role `tenant_admin`, always scoped to exactly one tenant 
   cannot be deleted (409). `GET /tenants` adds `uid`, `policies` (ids) and `tiers`.
 - **Approvals**: a tenant admin's gated requests (group delete, weakening group change, source/agent delete,
   replace-original restore, vault-mode restores) need the same approval as an admin's; approvers stay admins and
-  security officers of the provider (never the tenant admin, never the requester).
+  security officers of the provider (never the requester). Phase 33: a tenant that opted in to tenant-side
+  approvers additionally decides, through its tenant admins, the requests that destroy or weaken its data (section
+  "Tenant-side approvers").
 - **Policy tiers**: `policies.tier` (`bronze` / `silver` / `gold` / NULL; settable in `POST/PUT /policies`);
   `GET /policies/templates`, `POST /policies/templates {tier, name?}` (admin; audited `policy.create`): Bronze daily
   02:00, 7/4/3/0, no offsite; Silver daily 01:00, 14/8/12/0, offsite; Gold every 6 h, 30/12/24/7, offsite. The SLA
@@ -1242,3 +1245,133 @@ At most 50 devices per account are kept.
   `change_tracking:<tenant>/<source>`) on unreported changes; a clean full read resolves it.
 - `GET /full-reads?tenant=&source=` (every reading role, tenant-scoped) returns the rows; `GET /dashboard` has
   `full_reads: {sources, verified, drift, never, oldest_verified}` (Dashboard card "Change tracking").
+
+## PSA ticketing (Phase 33, `crates/scheduler/src/psa.rs`)
+A notification rule may have a `psa` channel (`catalog::alerting::Psa`): `{vendor: halopsa|connectwise|autotask,
+url, token_url?, client_id?, username?, secret, company?, account?, board?, integration_code?, closed_status?}`
+(meaning per vendor: the table on `Psa`, manual chapter 11). `PUT /settings/alerts` validates it (https only, http
+just to loopback; required fields and numbers per vendor) and seals the secret to the scheduler at
+`settings/alert_rules/<rule>/psa@<url>|<token_url>`: bound to the rule and both URLs, so a changed URL needs the
+secret again (`secret: null` keeps it otherwise; shown as `secret: null, secret_set: true`). The scheduler's
+ticketing thread (`psa_poll_secs`, default 60 s) works per rule: an open alert matching the rule (kinds `psa` and
+`test` excluded) without an open ticket for its key → create (summary `[NexusBackup <host>] <severity> <kind>:
+<message>`, at most 100 characters; description with the hint, tenant and link); a repeat (`count` grew) → an internal
+note at most hourly, an escalation or a re-raised alert (new alert id, same key, ticket still open) → a note at once;
+no open alert for the key any more → a note ("resolved … by <who>") and the closed status. At most 50 operations per
+rule and round, the first PSA error ends the rule's round. `psa_tickets` (catalog v46) holds `(rule, key, vendor,
+ticket, alert_id, opened, noted_*, closed)`, one open ticket per rule and key; `psa_state` the rule's last success
+or failure; tickets and state of rules without a PSA channel are dropped. A rule failing for 15 minutes raises
+`psa` (warning, `psa:<rule>`), resolved by the next good round. Authentication: HaloPSA OAuth2 client credentials
+(`grant_type=client_credentials&scope=all`, `?tenant=` for hosted Halo; the token is cached until a minute before it
+expires); ConnectWise PSA API member keys (`Authorization: Basic base64(company+public:private)`, header `clientId`;
+ConnectWise has no client-credentials grant for integrations); Autotask API user headers (`UserName`, `Secret`,
+`ApiIntegrationCode`). Calls: Halo `POST /Tickets` (create and close, `status_id`), `POST /Actions` (note,
+`outcome: Note`, hidden from the user); ConnectWise `POST /service/tickets`, `POST /service/tickets/{id}/notes`
+(internal), `PATCH /service/tickets/{id}` (`status` by name or id); Autotask `POST /Tickets` (status 1, priority 1
+for critical else 2), `POST /Tickets/{id}/Notes`, `PATCH /Tickets` (`status`). Redirects are not followed; the API
+and token hosts are on the egress allow-list (`firewall::alert_targets`). `POST /settings/alerts/test {rule}` opens a
+ticket and closes it at once (`psa: "ok (ticket <id> opened and closed)"`). `GET /alerts` lists each alert's tickets
+(`tickets: [{rule, vendor, ticket, closed}]`).
+
+## Tenant-side approvers (Phase 33, `catalog::approvers`, `web-api/src/approvers.rs`, `web-api/src/quorum.rs`)
+Opt-in per tenant (`tenant_approvals`, catalog v46): `PUT /tenants/{name}/approvers {enabled: true}` by an admin or
+a tenant admin of that tenant (not while impersonating), at once, audited `tenant.approvers`; refused (409) without an
+activated tenant admin. `GET /tenants/{name}/approvers` (provider roles, the tenant's admins) returns `{enabled,
+enabled_at, enabled_by, wait_hours, approvers: [{name, eligible_from, eligible}], disable_request}`; `GET /tenants`
+adds `tenant_approvals: bool`. `{enabled: false}` requests the approval action `tenant.approvers.disable`.
+- **Gated requests** (`catalog::approvers::affected`): `snapshot.delete`, `snapshot.hold_release`,
+  `tenant.approvers.disable` (params `tenant`), `tenant.disable`, `tenant.delete`, `tenant.update` (`name`),
+  `group.update` (weakening) and `group.delete` (the group's tenant), `policy.update` (weakening; every tenant with a
+  group on the policy), `replication.key_export` (`tenants`). For each opted-in tenant among them the request gets a
+  `quorum_tenants` row when it is made (tenants that opted in later are added when someone decides).
+- **Deciding**: `POST /quorum/{id}/approve|reject` is open to tenant admins for their tenant's open row (not the
+  requester, not an impersonating session, never an API token; 409 when the request does not wait for their tenant).
+  The account must be an eligible approver: enabled, activated, unexpired tenant admin of the tenant whose
+  `users.approver_since` (NULL = `created`) is at least 24 hours old. A trigger sets `approver_since` when the role or
+  tenant changes, the activation completes (also after an account reset) or a disabled account is enabled again. A
+  provider approval while tenant rows are open is recorded in `quorum.approved_by/at` (answer `{state: "pending",
+  waiting_for}`; a second provider approval is 409); the decision that completes the request executes it with the
+  provider's approver as `approver`/`decided_by`. A tenant's rejection rejects the request (final). A request made
+  by an eligible approver of the tenant marks its row `requested` (the tenant's consent). With approvals disabled a
+  gated request still becomes a pending row with `approved_by` = requester. `GET /quorum` adds `approved_by`,
+  `approved_at`, `tenant_approvals: [{tenant, decided_by, decided_at, decision}]`; tenant admins see their own requests
+  and those with a row of their tenant. Audit: `quorum.request` names `tenant_approvers`, decisions carry `side:
+  tenant`.
+- **New approvers**: the scheduler raises `tenant_approver` (warning, security, tenant set, key
+  `tenant_approver:<tenant>:<user id>:<approver_since>`) once for each account that becomes an approver of an opted-in
+  tenant after its opt-in (within 7 days), naming when it may decide.
+- The previous release ignores the tables: a rollback would execute gated requests without the tenant (documented
+  in docs/threat-model.md T71).
+
+## Multi-appliance overview (Phase 33, `crates/nexusctl/src/fleet.rs`)
+`nexusctl fleet [--config FILE] [--hours N] [--html OUT] [--check] [--json]` on an administrator's workstation (never
+on an appliance; no new appliance component). Configuration (`--config` / `NEXUS_FLEET`): `{appliances: [{name, url,
+token_file | token_env, ca?}]}`, at most 200; inline tokens are refused, token files readable by group or others as
+well. Per appliance, in parallel, with its own token: `GET /auth/me` (Phase 33: `token: {name, scope}`; any scope
+but `read` is refused, so the overview never holds write access), `GET /dashboard`, `GET /alerts?state=open`, `GET
+/jobs?state=failed&limit=500` (kept: finished within `--hours`, default 24). Output: a table per appliance (state
+ok / attention / incident / unreachable, protected/objects, SLA breaches, open alerts critical/warning/info, failed
+jobs, store use, offsite lag) followed by up to 20 critical/warning alerts and failed jobs each; `--json` the raw
+answers; `--html` a static report (CSP `default-src 'none'`, every value HTML-escaped, file mode 0600); `--check`
+exit code 2 when an appliance is unreachable, in incident mode, or has a critical alert, a failed job or an SLA
+breach. Network: workstation → each appliance's web port (inbound allow-list); the appliances need no egress for it.
+No blueprints, no write actions (docs/commvault-comparison.md decision 7: CLI and a static HTML report first; a
+separate web service was not built).
+
+## Synthetic restore (Phase 33, `scheduler/src/synthetic.rs`, `chunkstore::synthetic`, `nexus-agentctl synthetic`)
+Job `synthetic_restore {source, time, paths? (default ["/"]), depth? (1..=100, default 30), mode: download|host,
+format? (download: tar|zip), target?, overwrite?, confirm?, agent_id? (host, as restore_files)}` for file-tree
+snapshots of agents (`host-`), TrueNAS (`nas-`) and shares (`share-`); the web-api adds `report_token` (always) and
+`download_token` (download; needs `can_download`, never through an API token) and answers both. Roles and gates as
+`restore_files` / `files_get`: tenant users may request it, vault mode gates it, a lockdown refuses host mode with
+overwriting, host mode onto the original paths or overwriting is a production restore (`catalog::incident`:
+`restore.infected` for a flagged snapshot, incident restore freezes).
+- **Decision** (scheduler, `Step::Store` with the tenant keyring, name indexes only): snapshots of the source up to
+  `time`, newest first, at most `depth + 1`, local only. Catalog inputs: the newest `snapshot_scans` row per snapshot
+  (matched paths and rules; `matches_total` above the listed matches = the whole snapshot is suspect), every IOC hash
+  list, the ransom-note globs (built-in plus the anomaly setting). Per snapshot k the mass rename against k+1 is
+  recomputed with the 21a rules (`changes::signals`/`finding`); its output = added files whose new extension is the
+  dominant one (count at least half of the most frequent) or whose name is a deleted path plus an extension; its
+  deleted files are wanted back unless the chosen snapshot has them. A version is unusable when its name is a ransom
+  note, it is rename output, a YARA match, on a hash list, or has the content (size + mtime, or SHA-256) of a version
+  flagged for YARA or a hash (content flags carry over to older snapshots). Every file of the chosen snapshot that is
+  unusable, and every wanted deleted file, takes the newest usable version found walking back; none = left out.
+  Output: `synthetic.json` in the job directory (`chunkstore::synthetic::Plan {source, time, paths, take: {time:
+  [paths]}, drop, stats}`) and `<downloads>/<report_token>.csv` (`path,action,version,reason`; actions
+  `substituted`, `restored`, `left_out`; cells starting with `= + - @` are prefixed with `'`).
+- **Composition** (`nexus-agentctl <cfg> synthetic`, the connector that already reads tree snapshots with the
+  keyring): `chunkstore::synthetic::compose` = the chosen tree without dropped and substituted paths plus the planned
+  entries of the older trees (their parent directories when the chosen tree lacks them; hard links to a left-out file
+  are left out; planned paths no longer in their snapshot are reported as `missing`). Download: `files::extract`
+  (tar/zip like `files_get`) into `<downloads>/<download_token>.<format>`; host: `restore::restore_tree` (same
+  protocol, confirmation and target rules as `restore_files`). Progress on stderr, the result (the scheduler's
+  `stats` plus `entries` or `written`, `missing`, `dangling`) as the last stdout line (captured). Nothing left to
+  restore fails the job (the CSV is written first).
+- **Result**: `{files, substituted, restored, left_out, snapshots_examined, from_unscanned, missing, dangling,
+  report_token, download_token?, format?, size?, expires?, entries? | written?}`; `GET /downloads/{token}` serves the
+  archive to the requester (kind `files_get` or `synthetic_restore`); `GET /jobs/{id}/synthetic.csv` (admin,
+  operator, tenant admin, tenant user, in scope; audited `synthetic.report`) the CSV. Both expire with the downloads
+  (24 h).
+- Not covered: VM/CT disks (no per-file versions without a file index walk per snapshot), plugin and M365
+  snapshots. Versions from never-scanned snapshots count as clean (`from_unscanned` counts them).
+
+## Cases (Phase 33, `web-api/src/cases.rs`, `scheduler/src/cases.rs`, catalog v46)
+Compliance search on top of the name indexes (docs/m365.md "Compliance search and cases": the M365 item metadata
+search was never built). Tables `cases (id, tenant, name, description, criteria, state open|closed, created_*,
+closed_*, last_job, searched_at, truncated)` and `case_snapshots (case_id, source, time, items, hold_id)`.
+Roles: admins and security officers, appliance-wide sessions only (no tenant roles, no API tokens).
+- `GET /cases?tenant=`, `POST /cases {tenant, name, description?, criteria: {query, source_prefix? (default
+  "plugin-m365-", "" = all), source?, from?, to?, case_sensitive?}}` (201 with `job_id`), `GET /cases/{id}` (adds
+  `snapshot_list` with holds and `matches` of the last finished search), `POST /cases/{id}/search` (409 while the last
+  search runs or the case is closed), `POST /cases/{id}/hold {reason}` (security officers; `holds::hold_one` on every
+  matched snapshot with reason `case <name>: <reason>`, the active hold recorded as `hold_id`), `POST
+  /cases/{id}/export {format?, mail_format? (eml|mbox|pst)}` (download privilege; refused in vault mode; one
+  `files_get` per matched snapshot, newest first, at most 50, the matched paths of the last search (at most 1000 per
+  snapshot), M365 snapshots with the plugin's `mail_format` download parameter; checked by `jobs::check_params`;
+  answers `{jobs: [{id, source, time, download_token}]}`), `POST /cases/{id}/close` (holds stay).
+- The search is a `file_search` job with `case_id`, `limit` 2000 and the criteria (the search's new `source_prefix`
+  filter); when it finishes the scheduler replaces the case's snapshot list (rows with a case hold stay with their
+  `items` reset) and sets `last_job`, `searched_at`, `truncated`.
+- Audit: `case.create`, `case.view`, `case.search`, `case.hold`, `case.export`, `case.close` with target `case/<id>` and
+  `case_tenant` (not indexed under the tenant, so its admins' audit view does not show the investigation); the export's
+  `job.create` entries and the holds are ordinary.

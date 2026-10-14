@@ -148,6 +148,8 @@ export interface Tenant {
   policies?: number[];
   /** tiers of the assigned policies */
   tiers?: Tier[];
+  /** Phase 33: the tenant's own admins co-approve destroying or weakening requests */
+  tenant_approvals?: boolean;
 }
 
 /** A deleted tenant name (Phase 19b): never re-created. */
@@ -914,7 +916,8 @@ export type JobKind =
   | 'offsite_attach'
   | 'fleet_scan'
   | 'hash_hunt'
-  | 'scan_back';
+  | 'scan_back'
+  | 'synthetic_restore';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -1077,6 +1080,17 @@ export interface JobResult {
   summary?: string;
   /** plugin_mount: how to reach the mount (plugin-defined) */
   info?: unknown;
+  /** Phase 33 synthetic_restore: files of the chosen snapshot and what was done with them */
+  files?: number;
+  substituted?: number;
+  left_out?: number;
+  snapshots_examined?: number;
+  from_unscanned?: number;
+  /** files a mass rename deleted, brought back */
+  restored?: number;
+  /** mode host: what the agent wrote */
+  written?: { target: string; files: number; dirs: number; bytes: number; errors: number };
+  report_token?: string;
 }
 
 export interface Job {
@@ -1447,6 +1461,63 @@ export interface QuorumRequest {
   decided_by: string | null;
   decided_at: number | null;
   state: QuorumState;
+  /** Phase 33: the provider's approval while tenants still decide */
+  approved_by?: string | null;
+  approved_at?: number | null;
+  /** Phase 33: tenants that must co-approve and their decisions */
+  tenant_approvals?: TenantDecision[];
+}
+
+/** Phase 33: one tenant's side of a request (`requested` = the requester is its approver). */
+export interface TenantDecision {
+  tenant: string;
+  decided_by: string | null;
+  decided_at: number | null;
+  decision: 'approved' | 'rejected' | 'requested' | null;
+}
+
+/** Phase 33: saved search criteria of a case (the file search parameters). */
+export interface CaseCriteria {
+  query: string;
+  source_prefix?: string | null;
+  source?: string | null;
+  from?: number | null;
+  to?: number | null;
+  case_sensitive?: boolean;
+}
+
+/** Phase 33: GET /cases, GET /cases/{id} (the latter with snapshot_list and matches). */
+export interface CaseInfo {
+  id: number;
+  tenant: string;
+  name: string;
+  description: string;
+  criteria: CaseCriteria;
+  state: 'open' | 'closed';
+  created_by: string;
+  created_at: number;
+  closed_by: string | null;
+  closed_at: number | null;
+  last_job: number | null;
+  searched_at: number | null;
+  truncated: boolean;
+  snapshots: number;
+  items: number;
+  held: number;
+  job_state: string | null;
+  snapshot_list?: { source: string; time: number; items: number; hold: { id: number; state: string; reason: string } | null }[];
+  matches?: { source: string; path: string; kind: string; size: number; mtime: number; times: number[] }[] | null;
+}
+
+/** Phase 33: GET /tenants/{name}/approvers */
+export interface TenantApprovers {
+  tenant: string;
+  enabled: boolean;
+  enabled_at: number | null;
+  enabled_by: string | null;
+  wait_hours: number;
+  approvers: { name: string; eligible_from: number; eligible: boolean }[];
+  disable_request: number | null;
 }
 
 export interface AuditEntry {
@@ -1522,6 +1593,8 @@ export interface Alert {
   auto: boolean;
   /** 15c: the snapshot a security officer may put on hold from the alert */
   snapshot?: SnapshotRef | null;
+  /** Phase 33: PSA tickets of the alert */
+  tickets?: AlertTicket[];
 }
 
 export interface LoginResponse {
@@ -1891,7 +1964,35 @@ export interface AlertRule {
   channels: {
     email: string[];
     webhook: { url: string; headers: Record<string, string | null>; template: string | null } | null;
+    /** Phase 33: tickets in a PSA (absent = none) */
+    psa?: PsaChannel | null;
   };
+}
+
+export type PsaVendor = 'halopsa' | 'connectwise' | 'autotask';
+
+/** Phase 33: PSA ticketing channel of a rule. `secret` is write-only (null = keep). */
+export interface PsaChannel {
+  vendor: PsaVendor;
+  url: string;
+  token_url?: string | null;
+  client_id?: string | null;
+  username?: string | null;
+  secret: string | null;
+  secret_set?: boolean;
+  company?: string | null;
+  account?: string | null;
+  board?: string | null;
+  integration_code?: string | null;
+  closed_status?: string | null;
+}
+
+/** Phase 33: a PSA ticket opened for an alert (GET /alerts `tickets`). */
+export interface AlertTicket {
+  rule: string;
+  vendor: PsaVendor;
+  ticket: string;
+  closed: number | null;
 }
 
 /** GET/PUT /settings/alerts (§3, 13f). `smtp.password` is write-only. */

@@ -36,6 +36,7 @@ export const JOB_KINDS: JobKind[] = [
   'offsite_restore',
   'offsite_attach',
   'fleet_scan',
+  'synthetic_restore',
 ];
 
 /**

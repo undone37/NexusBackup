@@ -939,6 +939,57 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   - Hashes: btrfs, FAT and exFAT files stay unhashed; NTFS compressed / encrypted / deduplicated files too.
   - No new catalog migration was needed.
 
+### Phase 33 — Commvault Tier 2 (2026-10-14)
+The Tier 2 items of `docs/commvault-comparison.md` (never scheduled before; the comparison proposed them as
+"Phase 29", which became the NetBackup Tier 1). Order: PSA ticketing, tenant-side approvers, multi-appliance
+overview, synthetic restore, M365 compliance search / cases, VMware transport spike. Catalog v46, threat model
+T70–T75. Decisions and deviations:
+- **PSA ticketing** (implemented): alert rule channel `psa` for HaloPSA, ConnectWise PSA and Autotask, one ticket
+  per (rule, alert key), an internal note on repeats (at most hourly) and at once on escalation or re-raise, a note
+  and the closed status on resolve; own scheduler thread (every 60 s), `psa_tickets` / `psa_state`, alert `psa`
+  after 15 minutes of failures, egress allow-list, secret sealed to rule + API URL + token URL. Deviation: OAuth2
+  client credentials only for HaloPSA; ConnectWise PSA (API member keys, Basic auth + `clientId`) and Autotask (API
+  user headers) do not offer a client-credentials grant for integrations, so their native schemes are used. No
+  ticket templates (fixed summary and description). Alerts already open when a rule is added get tickets too
+  (rate-limited to 50 operations per rule and minute). Details: docs/control-plane.md "PSA ticketing".
+- **Tenant-side approvers** (implemented): opt-in per tenant (admin or the tenant's own admin, immediate; off =
+  approval `tenant.approvers.disable`, gated itself); gated: snapshot delete, hold release, weakening group /
+  policy changes (policy: every tenant with a group on it), group delete, tenant update / disable / delete, replication
+  key export. The provider's approval and the tenant's in any order; refusal final (open question 5); 24 h wait per
+  account after becoming tenant admin, activation or re-enabling (SQL trigger on `users`), `tenant_approver` alert
+  during the wait. Decisions taken: the 24 h wait applies to tenant-side approvers only (appliance approvers already
+  have split activation codes; applying it there would block fresh installations for a day); with approvals disabled
+  gated requests still wait for the tenant; a tenant admin's own request counts as the tenant's consent;
+  impersonating sessions never decide; source/agent/policy deletion are not gated (refused while in use, no data
+  effect). Details: docs/control-plane.md "Tenant-side approvers".
+- **Multi-appliance overview** (implemented): `nexusctl fleet` (open question 7: CLI and a static HTML report, no web
+  service): per appliance its own read token from a file (mode 0600) or environment variable, never inline;
+  `/auth/me` now reports the token's scope and anything but `read` is refused; dashboard, open alerts, failed jobs
+  of the last N hours; parallel, unreachable appliances listed; `--html` (no scripts, escaped, 0600), `--json`,
+  `--check` (exit 2 for monitoring). No figures from `crates/reports` (the dashboard JSON has them already).
+- **Synthetic (clean-file) restore** (implemented): job `synthetic_restore` for `host-`/`nas-`/`share-`
+  snapshots; the scheduler decides per file from the sealed name indexes (YARA matches of each snapshot's newest scan,
+  IOC lists, ransom-note names, mass-rename output recomputed per step with the 21a rules), walking back up to 30
+  (1..=100) snapshots; files a mass rename deleted come back from before it; the CSV goes next to the downloads;
+  `nexus-agentctl synthetic` composes (`chunkstore::synthetic`) and writes tar/zip or restores to an agent.
+  Decisions taken: a version with the content of a YARA/hash-flagged version (size + mtime or SHA-256) is flagged in
+  older snapshots too; a scan listing fewer matches than it found distrusts its whole snapshot; unscanned snapshots
+  count as clean (reported as `from_unscanned`; the UI recommends scanning back first); rename output = dominant new
+  extension or a deleted name plus an extension (an unrelated new file type in the same snapshot is kept); host
+  restores of a flagged snapshot to production keep needing `restore.infected` (conservative: unknown malware may
+  remain); not for VM/CT disks, plugins or M365 (no per-file versions without a per-snapshot file index walk).
+- **M365 compliance search and cases** (implemented as cases on the name index; the Phase 19 item metadata search
+  still does not exist): `cases` / `case_snapshots`, criteria = name pattern + source prefix (default
+  `plugin-m365-`) + snapshot range, search = `file_search` with `case_id` (new `source_prefix` filter), holds by
+  security officers on the matched snapshots, export = one `files_get` per snapshot with the matched items (M365
+  mail as eml/mbox/PST), Cases page. Decisions taken: provider roles only (admins, security officers), case audit
+  entries not indexed under the tenant (no tip-off), closing a case keeps its holds, exports refused in vault mode and
+  capped at 50 snapshots. The item metadata index (sender, recipients) is described as a design in docs/m365.md
+  "Compliance search and cases".
+- **VMware vSphere source**: not implemented; transport spike document docs/vmware-transport-spike.md (open question
+  6 decided: no VDDK in the image; HTTPS datastore reads + `QueryChangedDiskAreas` first, nbdkit with a
+  customer-supplied VDDK later if needed; scheduled after the spike ran in a vSphere lab).
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---

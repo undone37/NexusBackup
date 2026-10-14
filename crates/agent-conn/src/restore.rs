@@ -279,9 +279,22 @@ pub fn restore(
     log: &mut dyn FnMut(&str),
 ) -> Result<ScanStats> {
     let tree = load_source_tree(store, &spec.source, spec.time)?;
+    restore_tree(store, map, s, spec, &tree, log)
+}
+
+/// [`restore`] of a tree composed elsewhere (Phase 33 synthetic restore:
+/// `chunkstore::synthetic::compose`); `spec.paths` select from it.
+pub fn restore_tree(
+    store: &Store,
+    map: &MapDb,
+    s: &mut Session,
+    spec: &Spec,
+    tree: &[TreeEntry],
+    log: &mut dyn FnMut(&str),
+) -> Result<ScanStats> {
     let lz4 = s.has_cap(agent_proto::CAP_LZ4); // chunks compressed on the wire if the agent can decode them
     let target = Target::of(s, spec.same_host());
-    let sel = select(&tree, &spec.paths)?;
+    let sel = select(tree, &spec.paths)?;
     begin(s, spec)?;
     let (mut files, mut bytes, mut sk) = (0u64, 0u64, Skipped::default());
     for batch in batches(&sel, |e| e.chunks.len()) {

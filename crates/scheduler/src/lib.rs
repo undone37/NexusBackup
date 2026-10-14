@@ -67,7 +67,9 @@ mod accounts;
 mod agent_updates;
 pub mod alerts;
 pub mod anomaly;
+mod approvers;
 mod bmr;
+mod cases;
 pub mod changes;
 pub mod clock;
 mod config_backup;
@@ -95,6 +97,7 @@ pub mod orphans;
 mod plugins;
 mod priority;
 pub mod progress;
+pub mod psa;
 mod recovery;
 mod renewal;
 pub mod repair;
@@ -112,6 +115,7 @@ mod selection;
 mod snapmeta;
 pub mod sshkeys;
 pub mod stats;
+pub mod synthetic;
 mod tenant_key;
 mod tenants;
 pub mod threat;
@@ -238,6 +242,8 @@ pub struct Config {
     pub inventory_secs: i64,
     /// audit / alert forwarding round (forward.rs); 0 = no forwarder thread
     pub forward_poll_secs: u64,
+    /// PSA ticketing round (psa.rs); 0 = no ticketing thread
+    pub psa_poll_secs: u64,
     /// nexus-disks status and operations (disks.rs; skipped while there is no status)
     pub disks_dir: PathBuf,
     /// nexus-net status (interface roles for bound egress) and operations (network.rs)
@@ -319,6 +325,7 @@ impl Default for Config {
             cancel_grace_secs: 30,
             inventory_secs: 3600,
             forward_poll_secs: 5,
+            psa_poll_secs: 60,
             disks_dir: catalog::hardware::DIR.into(),
             net_dir: catalog::network::DIR.into(),
             agent_poll_secs: 120,
@@ -568,6 +575,16 @@ impl Scheduler {
         if cfg.forward_poll_secs > 0 {
             let poll = Duration::from_secs(cfg.forward_poll_secs);
             forward::spawn(db.clone(), secrets.clone(), alerts::hostname(), poll);
+        }
+        if cfg.psa_poll_secs > 0 {
+            let poll = Duration::from_secs(cfg.psa_poll_secs);
+            psa::spawn(
+                db.clone(),
+                secrets.clone(),
+                alerts::hostname(),
+                cfg.alerts_config.clone(),
+                poll,
+            )?;
         }
         let ctx = Arc::new(Ctx {
             keys,
@@ -858,6 +875,8 @@ impl Scheduler {
         self.log_err(|s| s.check_offsite_lag(now));
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
+        self.log_err(|s| s.check_psa(now));
+        self.log_err(|s| s.check_tenant_approvers(now));
         self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.audit_net_ops());
         self.log_err(|s| s.check_clock());
@@ -1519,6 +1538,9 @@ impl Scheduler {
         if ok && job.kind == "hash_hunt" {
             self.hunt_bookkeeping(&job, result.as_ref())?; // threat.rs
         }
+        if ok && job.kind == "file_search" && job.params["case_id"].is_i64() {
+            self.case_bookkeeping(&job, result.as_ref())?; // cases.rs
+        }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;
         }
@@ -1698,6 +1720,7 @@ impl Scheduler {
     /// Structured result of a successful job (`jobs.result`, docs/control-plane.md).
     fn result(&self, job: &Job, stdout: Option<&str>, log: &mut String) -> Option<Value> {
         match job.kind.as_str() {
+            "synthetic_restore" => self.synthetic_result(job, stdout, log),
             "files_list" => {
                 let out = stdout.unwrap_or_default();
                 match serde_json::from_str::<Value>(out) {
@@ -3032,7 +3055,8 @@ impl Scheduler {
                 plan.steps.push(pve(args));
             }
             "restore_files" => return self.plan_restore_files(job, plan, replicated),
-            "instant_disk" => return self.plan_instant_disk(job, plan), // restore.rs
+            "synthetic_restore" => return self.plan_synthetic(job, plan), // synthetic.rs
+            "instant_disk" => return self.plan_instant_disk(job, plan),   // restore.rs
             k if recovery::KINDS.contains(&k) => return self.plan_recovery(job, plan),
             "fleet_scan" => return self.plan_fleet_scan(job, plan),
             "agent_renew" => {

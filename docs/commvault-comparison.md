@@ -41,10 +41,10 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | Immutability | retention lock on plans (disable needs a Commvault authorization code), HyperScale X WORM [9] | extend-only store locks on a compliance clock, S3 Object Lock offsite | has |
 | Scale-out | HyperScale X clusters | single appliance by decision (docs/scale-out.md) | missing (by design) |
 | **Security / cyber resilience** | | | |
-| Multi-person authorization | per operation, approver groups, exclusions, MSP + tenant two-level routing, 24 h wait for new approvers [10] | quorum on all destructive/weakening actions; split activation codes for privileged accounts | has (no tenant-side approvers) |
+| Multi-person authorization | per operation, approver groups, exclusions, MSP + tenant two-level routing, 24 h wait for new approvers [10] | quorum on all destructive/weakening actions; split activation codes for privileged accounts; tenant-side approvers with a 24 h wait (Phase 33) | has |
 | Anomaly detection | ML anomaly on backups, file-activity anomaly and honeypot files on clients [11] | change-rate anomalies, ransom-note names, mass renames, snapshot diff, trend sparklines | has |
 | Malware scan of backups | Threat Scan: signatures, ML, entropy, YARA + IOC hash hunting on the backup index, scheduled scans, recovery calendar [3][12] | YARA scan in an offline restore micro-VM, on demand, "scan first" restores and scheduled per group with a recovery calendar; IOC hash hunt over per-file SHA-256 (Phase 28; VM disk files not hashed yet) | has |
-| Clean restore point | Synthetic Recovery: newest clean version of each file across backups [13] | restore dialogs default to the newest clean snapshot | partial |
+| Clean restore point | Synthetic Recovery: newest clean version of each file across backups [13] | restore dialogs default to the newest clean snapshot; clean-file (synthetic) restore of agent, NAS and share snapshots with a CSV of substituted files (Phase 33) | has |
 | Security posture | Security IQ dashboard, Cyber Resiliency Index score [14] | `nexus-diag` posture checks (pass/warn) | has |
 | Containment | Tenant Lockdown Mode (one tenant read-only) [1] | incident mode (appliance-wide) and tenant lockdown (one tenant: holds, pauses, its sessions, tokens and sign-ins, changes refused; Phase 28) | has |
 | New-device sign-in notice | e-mail on login from a new browser/host [15] | `login_new_device` alert (SIEM) and mail to the account (Phase 28) | has |
@@ -54,15 +54,15 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | Standby copies | Live Sync: incremental replication from backup to a warm standby VM [8] | none (appliance failover rejected by design; standby VMs not considered) | missing |
 | Recovery validation, runbooks | Cleanroom Recovery: recovery groups, runbooks, readiness report, cleanup [16] | restore tests, recovery plans with waves, daily readiness, isolated test runs, DR report | has (on-prem PVE only) |
 | Cloud clean room / Cloud Rewind | AWS/Azure/GCP clean rooms, rebuild of cloud infrastructure [4][17] | no | missing (out of scope) |
-| Search / eDiscovery | Compliance Search, Case Manager, sensitive data governance [18] | file-name search across snapshots, legal hold, mail export; M365 item metadata search planned (Phase 19), not built | partial |
+| Search / eDiscovery | Compliance Search, Case Manager, sensitive data governance [18] | file-name search across snapshots, legal hold, mail export; cases (saved criteria over the name indexes, M365 by default, holds, export as eml/mbox/PST; Phase 33); M365 item metadata search (sender, recipients, text) still not built | partial |
 | **Operations / automation** | | | |
 | Policies | Plans (schedule + retention + storage) | policies, protection groups, auto-protect, policy tiers, restore point simulator | has |
 | API, automation | REST API, Workflows engine, MCP server, Arlie AI agents [19][20] | OpenAPI, `nexusctl`, scoped API tokens, webhooks | has (no workflows/AI by choice) |
 | Reports, alerts | reports, SIEM integrations (CrowdStrike, Splunk) | scheduled reports, syslog/HTTPS forwarding, Splunk HEC, notification rules | has |
 | **Multi-tenancy / MSP** | | | |
 | Tenants | Companies, tenant admins, per-tenant IdP | tenants, tenant admin, per-tenant OIDC, view-as-tenant, billing export, onboarding wizard | has |
-| Multi-site management | Global Command Center: aggregated dashboards/jobs/alerts over many CommCells, blueprints [21] | one appliance per UI | missing |
-| PSA integration | HaloPSA ticket creation from alerts [1] | e-mail and webhook templates (no ticket lifecycle) | partial |
+| Multi-site management | Global Command Center: aggregated dashboards/jobs/alerts over many CommCells, blueprints [21] | `nexusctl fleet`: read-only overview (dashboard, open alerts, failed jobs) of many appliances, text / JSON / static HTML (Phase 33); no blueprints | partial |
+| PSA integration | HaloPSA ticket creation from alerts [1] | alert rule channel "PSA": tickets in HaloPSA, ConnectWise PSA, Autotask with notes and closing (Phase 33) | has |
 | **Cloud / SaaS** | Commvault Cloud SaaS, Air Gap Protect (vendor-hosted immutable storage), Clumio for S3/GCS | customer-owned Storage Box / S3 Object Lock / vault appliance; no vendor-operated service | different model |
 | **Compliance / governance** | Risk Analysis (classification, PII), FedRAMP, SEC 17a-4 claims [9][18] | backup ≠ archive (plan §1.2); legal hold; hash-chained audit with external anchor | partial (by design) |
 | **Licensing / deployment** | subscription; historically per front-end TB, per VM/socket or per user [22] | AGPL-3.0, no per-TB or per-VM licence, one bootc image | different model |
@@ -104,7 +104,7 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 | 3 | **Tenant lockdown.** Incident mode scoped to one tenant: legal holds on that tenant's snapshots, its groups paused, sessions and API tokens of its users ended, restores that overwrite, deletes and source edits for it refused; other tenants keep running. Entering by SO or admin at once, leaving needs approval (as incident mode) | Tenant Lockdown Mode [1] | S–M | `web-api/src/incident.rs` (tenant parameter, per-tenant setting), MSP manual chapter |
 | 4 | **New-device sign-in notice.** Remember (account, browser family, client network prefix) per account; the first sign-in from an unseen combination raises `login_new_device` (category security, warning for admin/SO, info otherwise), forwarded to SIEM sinks and e-mailed to the account when an address is known (OIDC claim or profile) | e-mail on login from a new device [15] | S | web-api auth, catalog table, alerts |
 
-### Tier 2: clear benefit, smaller audience or larger effort (proposed Phase 29)
+### Tier 2: clear benefit, smaller audience or larger effort (Phase 33, 2026-10-14; deviations: plan.md Phase 33)
 
 - **Synthetic (clean-file) restore** for file-tree snapshots (agents, NAS, shares): for a chosen snapshot, take each
   file's newest version that has no YARA or hash hit and is not in the 21a mass-rename / ransom-note set, falling
@@ -165,7 +165,8 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 ## Proposed decisions and open questions
 
 1. **Phase 28 = Tier 1 (#1–#4)** after Phase 27, in the order 1, 2, 3, 4 (#4 can go first, it is days). Tier 2 as
-   Phase 29, each item decided separately.
+   Phase 29, each item decided separately. (Tier 2 became Phase 33, 2026-10-14: PSA ticketing, tenant-side approvers,
+   `nexusctl fleet`, synthetic restore and cases implemented; VMware as a transport spike document.)
 2. **Hash format for #2:** SHA-256 only (what IOC feeds publish) or also MD5/SHA-1 for older lists? Proposal:
    SHA-256 only; per-file hashing cost on agents to be measured (it is an extra pass over data already read).
 3. **VM file hashes for #2:** opt-in per group together with `index_files`, since the walk in the micro-VM would
@@ -173,12 +174,18 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
 4. **Scheduled scans and capacity (#1):** one scan at a time stays; with "after each backup" on many groups the
    queue may never drain. Proposal: daily-latest as the only automatic mode in the first version.
 5. **Tenant-side approvers (Tier 2):** should a tenant admin's refusal be final, or can two appliance-side approvers
-   override (MSP emergency)? Proposal: final, with the MSP's legal-hold path as the safety valve.
+   override (MSP emergency)? Proposal: final, with the MSP's legal-hold path as the safety valve. **Decided
+   2026-10-14 (Phase 33): final**; the 24 h wait applies to tenant-side approvers only (appliance approvers keep the
+   split activation codes).
 6. **VMware transport:** VDDK is proprietary and cannot ship in the AGPL image; alternatives are HTTPS datastore
    reads of snapshot disks plus `QueryChangedDiskAreas`, or nbdkit with a customer-supplied VDDK. Needs a spike
-   before the item is scheduled.
+   before the item is scheduled. **Decided 2026-10-15 (Phase 33, docs/vmware-transport-spike.md): VDDK is never
+   shipped; the first version uses HTTPS datastore reads with `QueryChangedDiskAreas` (VMFS/NFS; vSAN/vVols and VMs
+   with existing snapshots not covered), nbdkit with a customer-supplied VDDK stays a later option; the source is
+   scheduled after the spike has run in a vSphere lab.**
 7. **Multi-appliance overview:** CLI only, or a separate small web service (another component to harden)? Proposal:
-   CLI and a static HTML report first.
+   CLI and a static HTML report first. **Decided 2026-10-14 (Phase 33): CLI and static HTML report** (`nexusctl
+   fleet`, read-scoped tokens only).
 
 ## Sources
 

@@ -729,7 +729,8 @@ async fn tenant_user_isolation() {
     assert_eq!(
         t.get("/api/v1/tenants", &tina).await.body,
         json!([{"name": "acme", "offsite": {}, "quota_bytes": null, "disabled": false, "disabled_at": null,
-                 "disabled_by": null, "disabled_reason": null, "uid": uid, "policies": [], "tiers": []}])
+                 "disabled_by": null, "disabled_reason": null, "uid": uid, "policies": [], "tiers": [],
+                 "tenant_approvals": false}])
     );
     assert_eq!(t.get("/api/v1/alerts", &tina).await.body, json!([]));
 
@@ -3778,6 +3779,8 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/fullread.rs"),
         include_str!("../src/risk.rs"),
         include_str!("../src/elevation.rs"),
+        include_str!("../src/approvers.rs"),
+        include_str!("../src/cases.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4008,8 +4011,9 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/console/unlock", "/api/v1/console/unlock".into(), Some(json!({"hours": 1, "reason": "x"})), 'N'),
         ("DELETE", "/console/unlock/{id}", "/api/v1/console/unlock/1".into(), none(), 'N'),
         ("POST", "/console/unlock/{id}/code", "/api/v1/console/unlock/1/code".into(), e(), 'N'),
-        ("POST", "/quorum/{id}/approve", "/api/v1/quorum/1/approve".into(), e(), 'N'),
-        ("POST", "/quorum/{id}/reject", "/api/v1/quorum/1/reject".into(), e(), 'N'),
+        // Phase 33: tenant admins decide the tenant side of requests concerning their tenant
+        ("POST", "/quorum/{id}/approve", "/api/v1/quorum/999999/approve".into(), e(), 'Y'),
+        ("POST", "/quorum/{id}/reject", "/api/v1/quorum/999999/reject".into(), e(), 'Y'),
         ("GET", "/audit", "/api/v1/audit".into(), none(), 'Y'),
         ("GET", "/audit/verify", "/api/v1/audit/verify".into(), none(), 'N'),
         ("GET", "/audit.csv", "/api/v1/audit.csv".into(), none(), 'Y'),
@@ -4083,6 +4087,8 @@ async fn tenant_admin_routes_classified() {
         ("DELETE", "/restore-priority", "/api/v1/restore-priority".into(), none(), 'N'),
         ("POST", "/sources/{id}/split", format!("/api/v1/sources/{src}/split"), Some(json!({"roots": ["/a", "/b"]})), 'Y'),
         ("GET", "/jobs/{id}/skipped.csv", "/api/v1/jobs/999/skipped.csv".into(), none(), 'Y'),
+        // Phase 33: the report of a synthetic restore (own tenant)
+        ("GET", "/jobs/{id}/synthetic.csv", "/api/v1/jobs/999/synthetic.csv".into(), none(), 'Y'),
         ("GET", "/vault", "/api/v1/vault".into(), none(), 'Y'),
         ("PUT", "/vault", "/api/v1/vault".into(), Some(json!({"enabled": true})), 'N'),
         ("GET", "/tenants/tombstones", "/api/v1/tenants/tombstones".into(), none(), 'N'),
@@ -4131,6 +4137,17 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/auth/elevate", "/api/v1/auth/elevate".into(), Some(json!({"role": "admin", "minutes": 30, "reason": "x"})), 'N'),
         ("POST", "/auth/elevate/end", "/api/v1/auth/elevate/end".into(), e(), 'Y'),
         ("PUT", "/settings/elevation", "/api/v1/settings/elevation".into(), Some(json!({"approval": true})), 'N'),
+        // Phase 33: tenant-side approvers of the own tenant
+        ("GET", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), none(), 'Y'),
+        ("PUT", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), Some(json!({"enabled": false})), 'Y'),
+        // Phase 33: cases are the provider's (compliance)
+        ("GET", "/cases", "/api/v1/cases".into(), none(), 'N'),
+        ("POST", "/cases", "/api/v1/cases".into(), Some(json!({"tenant": "acme", "name": "c", "criteria": {"query": "x"}})), 'N'),
+        ("GET", "/cases/{id}", "/api/v1/cases/1".into(), none(), 'N'),
+        ("POST", "/cases/{id}/search", "/api/v1/cases/1/search".into(), e(), 'N'),
+        ("POST", "/cases/{id}/hold", "/api/v1/cases/1/hold".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/cases/{id}/export", "/api/v1/cases/1/export".into(), e(), 'N'),
+        ("POST", "/cases/{id}/close", "/api/v1/cases/1/close".into(), e(), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

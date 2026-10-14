@@ -5,7 +5,7 @@
   import { session } from '../../lib/session.svelte';
   import { askConfirm } from '../../lib/confirm.svelte';
   import { t } from '../../lib/i18n';
-  import type { AlertRule, AlertSettings, Severity, Tenant } from '../../lib/types';
+  import type { AlertRule, AlertSettings, PsaChannel, PsaVendor, Severity, Tenant } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import Modal from '../../components/Modal.svelte';
   import TestResult from './TestResult.svelte';
@@ -16,6 +16,7 @@
   const id = $props.id();
   const admin = $derived(session.user?.role === 'admin');
   const SEVS: Severity[] = ['info', 'warning', 'critical'];
+  const VENDORS: PsaVendor[] = ['halopsa', 'connectwise', 'autotask'];
   const KINDS = Object.keys(t.alerts.hints);
   const FIELDS = 'id, ts, first_ts, last_ts, count, severity, kind, category, message, hint, tenant, host, alert_url';
   // Example bodies (manual chapter 11): Slack incoming webhook, Microsoft Teams workflow (Adaptive Card).
@@ -133,7 +134,26 @@
     url: '',
     headers: [] as Header[],
     template: '',
+    psa: emptyPsa(),
   });
+
+  // Phase 33: the PSA channel (fields per vendor: catalog::alerting::Psa)
+  function emptyPsa() {
+    return {
+      vendor: '' as PsaVendor | '',
+      url: '',
+      token_url: '',
+      client_id: '',
+      username: '',
+      secret: '',
+      secretSet: false,
+      company: '',
+      account: '',
+      board: '',
+      integration_code: '',
+      closed_status: '',
+    };
+  }
 
   function edit(i: number | null) {
     const x = i === null ? null : saved!.rules[i];
@@ -147,8 +167,47 @@
       url: x?.channels.webhook?.url ?? '',
       headers: Object.keys(x?.channels.webhook?.headers ?? {}).map((name) => ({ name, value: '', stored: true })),
       template: x?.channels.webhook?.template ?? '',
+      psa: psaForm(x?.channels.psa ?? null),
     };
     open = true;
+  }
+
+  function psaForm(p: PsaChannel | null) {
+    const f = emptyPsa();
+    if (!p) return f;
+    return {
+      ...f,
+      vendor: p.vendor,
+      url: p.url,
+      token_url: p.token_url ?? '',
+      client_id: p.client_id ?? '',
+      username: p.username ?? '',
+      secretSet: !!p.secret_set,
+      company: p.company ?? '',
+      account: p.account ?? '',
+      board: p.board ?? '',
+      integration_code: p.integration_code ?? '',
+      closed_status: p.closed_status ?? '',
+    };
+  }
+
+  function psaChannel(): PsaChannel | null {
+    const p = r.psa;
+    if (!p.vendor) return null;
+    const v = (x: string) => x.trim() || null;
+    return {
+      vendor: p.vendor,
+      url: p.url.trim(),
+      token_url: p.vendor === 'halopsa' ? v(p.token_url) : null,
+      client_id: p.vendor === 'autotask' ? null : v(p.client_id),
+      username: p.vendor === 'halopsa' ? null : v(p.username),
+      secret: p.secret ? p.secret : null,
+      company: p.vendor === 'autotask' ? null : v(p.company),
+      account: v(p.account),
+      board: v(p.board),
+      integration_code: p.vendor === 'autotask' ? v(p.integration_code) : null,
+      closed_status: v(p.closed_status),
+    };
   }
 
   const list = (s: string) =>
@@ -164,7 +223,8 @@
     const url = r.url.trim();
     const name = r.name.trim();
     const clash = saved.rules.some((x, i) => x.name === name && i !== editing);
-    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name) || clash || (!email.length && !url)) {
+    const psa = psaChannel();
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name) || clash || (!email.length && !url && !psa)) {
       notify('error', t.settings.al.invalidRule);
       return;
     }
@@ -188,6 +248,7 @@
               template: r.template.trim() || null,
             }
           : null,
+        ...(psa ? { psa } : {}),
       },
     };
     const rules = [...saved.rules];
@@ -222,6 +283,7 @@
     [
       x.channels.email.length ? `${t.settings.al.channel('email')} (${x.channels.email.length})` : '',
       x.channels.webhook ? `${t.settings.al.channel('webhook')} ${new URL(x.channels.webhook.url).host}` : '',
+      x.channels.psa ? `${t.settings.al.psaVendors[x.channels.psa.vendor] ?? x.channels.psa.vendor} ${new URL(x.channels.psa.url).host}` : '',
     ]
       .filter(Boolean)
       .join(' · ') || t.settings.al.noChannel;
@@ -413,6 +475,77 @@
             {#each Object.keys(EXAMPLES) as k (k)}
               <button type="button" class="small" onclick={() => (r.template = EXAMPLES[k])}>{k}</button>
             {/each}
+          </div>
+        </div>
+      {/if}
+    </fieldset>
+    <fieldset>
+      <legend>{t.settings.al.psa}</legend>
+      <p class="hint">{t.settings.al.psaHint}</p>
+      <div class="form-grid">
+        <div class="field">
+          <label for="{id}-pv">{t.settings.al.psaVendor}</label>
+          <select id="{id}-pv" bind:value={r.psa.vendor}>
+            <option value="">{t.settings.al.psaNone}</option>
+            {#each VENDORS as v (v)}<option value={v}>{t.settings.al.psaVendors[v]}</option>{/each}
+          </select>
+        </div>
+      </div>
+      {#if r.psa.vendor}
+        {@const v = r.psa.vendor}
+        <div class="field">
+          <label for="{id}-pu">{t.settings.al.psaUrl}</label>
+          <input id="{id}-pu" type="url" class="mono" bind:value={r.psa.url} required autocomplete="off" spellcheck="false" placeholder={t.settings.al.psaUrlHint[v]} />
+        </div>
+        {#if v === 'halopsa'}
+          <div class="field">
+            <label for="{id}-pt">{t.settings.al.psaTokenUrl}</label>
+            <input id="{id}-pt" type="url" class="mono" bind:value={r.psa.token_url} required autocomplete="off" spellcheck="false" placeholder="https://yourcompany.halopsa.com/auth/token" />
+          </div>
+        {/if}
+        <div class="form-grid">
+          {#if v !== 'autotask'}
+            <div class="field">
+              <label for="{id}-pc">{t.settings.al.psaClientId}</label>
+              <input id="{id}-pc" bind:value={r.psa.client_id} required autocomplete="off" spellcheck="false" aria-describedby="{id}-pc-hint" />
+              <div class="hint" id="{id}-pc-hint">{t.settings.al.psaClientIdHint[v]}</div>
+            </div>
+          {/if}
+          {#if v !== 'halopsa'}
+            <div class="field">
+              <label for="{id}-pn">{t.settings.al.psaUsername[v]}</label>
+              <input id="{id}-pn" bind:value={r.psa.username} required autocomplete="off" spellcheck="false" />
+            </div>
+          {/if}
+          <div class="field">
+            <label for="{id}-ps">{t.settings.al.psaSecret[v]}</label>
+            <input id="{id}-ps" type="password" bind:value={r.psa.secret} required={!r.psa.secretSet} autocomplete="new-password" aria-describedby="{id}-ps-hint" />
+            <div class="hint" id="{id}-ps-hint">{r.psa.secretSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
+          </div>
+          {#if v !== 'autotask'}
+            <div class="field">
+              <label for="{id}-pco">{t.settings.al.psaCompany[v]}</label>
+              <input id="{id}-pco" bind:value={r.psa.company} required={v === 'connectwise'} autocomplete="off" spellcheck="false" />
+            </div>
+          {/if}
+          {#if v === 'autotask'}
+            <div class="field">
+              <label for="{id}-pi">{t.settings.al.psaIntegration}</label>
+              <input id="{id}-pi" bind:value={r.psa.integration_code} required autocomplete="off" spellcheck="false" />
+            </div>
+          {/if}
+          <div class="field">
+            <label for="{id}-pa">{t.settings.al.psaAccount[v]}</label>
+            <input id="{id}-pa" bind:value={r.psa.account} required={v !== 'halopsa'} autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="{id}-pb">{t.settings.al.psaBoard[v]}</label>
+            <input id="{id}-pb" bind:value={r.psa.board} autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="{id}-pcl">{t.settings.al.psaClosed}</label>
+            <input id="{id}-pcl" bind:value={r.psa.closed_status} autocomplete="off" spellcheck="false" aria-describedby="{id}-pcl-hint" />
+            <div class="hint" id="{id}-pcl-hint">{t.settings.al.psaClosedHint[v]}</div>
           </div>
         </div>
       {/if}

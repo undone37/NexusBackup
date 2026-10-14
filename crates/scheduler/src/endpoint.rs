@@ -147,7 +147,7 @@ fn number_before(line: &str, unit: &str) -> Option<u64> {
 /// `SessionSummary` (agent_proto JSON) of one agent's part of a finished job.
 pub fn summary(job: &Job, agent: &str, state: &str, started: i64, ended: i64, log: &str) -> Value {
     let lines = agent_section(log, agent);
-    let restore = job.kind == "restore_files";
+    let restore = job.kind == "restore_files" || job.kind == "synthetic_restore";
     let mut snapshot_time = Value::Null;
     let (mut read, mut transferred, mut new) = (0u64, 0u64, 0u64);
     let mut warnings = 0u32;
@@ -671,7 +671,9 @@ impl Scheduler {
                     .unwrap_or_default(),
                 _ => vec![],
             },
-            "restore_files" => job.params["agent_id"]
+            // Phase 33: a synthetic restore onto a host (a download involves no agent)
+            "synthetic_restore" if job.params["mode"] != "host" => vec![],
+            "restore_files" | "synthetic_restore" => job.params["agent_id"]
                 .as_str()
                 .or(job.params["source"].as_str().and_then(|s| s.strip_prefix("host-")))
                 .map(|a| vec![a.to_owned()])

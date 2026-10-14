@@ -13,6 +13,8 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+pub mod fleet;
+
 pub const USAGE: &str = "nexusctl — NexusBackup appliance API client (API tokens)
 
 usage: nexusctl [--url URL] [--token TOKEN] [--ca PEMFILE] [--json] <command> [options]
@@ -31,8 +33,16 @@ commands:
                                                           find files in all snapshots (file search
                                                           index): one line per file, its versions
   openapi                                                 print the API description
+  fleet [--config FILE] [--hours N] [--html OUT] [--check]
+                                                          read-only overview of several appliances
+                                                          (dashboard, open alerts, failed jobs of the
+                                                          last N hours, default 24); each appliance
+                                                          with its own read token (token_file or
+                                                          token_env in the JSON configuration);
+                                                          --html writes a static report, --check
+                                                          exits 2 when one needs attention
 
-environment: NEXUS_URL, NEXUS_TOKEN, NEXUS_CA";
+environment: NEXUS_URL, NEXUS_TOKEN, NEXUS_CA; fleet: NEXUS_FLEET (configuration file)";
 
 /// Where and how to connect.
 #[derive(Clone, Debug, Default)]
@@ -88,7 +98,7 @@ type Args = (Vec<String>, Vec<(String, String)>);
 type Col<'a> = (&'a str, fn(&Value) -> String);
 
 /// `--name value` options of a command; the rest stay positional.
-fn opts(args: &[String], names: &[&str], flags: &[&str]) -> Result<Args> {
+pub(crate) fn opts(args: &[String], names: &[&str], flags: &[&str]) -> Result<Args> {
     let (mut pos, mut out) = (vec![], vec![]);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -153,7 +163,7 @@ pub fn end_of_day(s: &str) -> Result<i64> {
     Ok((days + 1) * 86400 - 1)
 }
 
-fn iso(t: Option<i64>) -> String {
+pub(crate) fn iso(t: Option<i64>) -> String {
     let Some(t) = t else { return "-".into() };
     let z = t.div_euclid(86400) + 719_468;
     let era = z.div_euclid(146_097);
@@ -187,7 +197,7 @@ fn bytes(v: &Value) -> String {
     }
 }
 
-fn cell(v: &Value) -> String {
+pub(crate) fn cell(v: &Value) -> String {
     match v {
         Value::Null => "-".into(),
         Value::String(s) => s.clone(),
@@ -224,6 +234,21 @@ fn rows(v: &Value, cols: &[Col]) -> Vec<Vec<String>> {
         .flatten()
         .map(|r| cols.iter().map(|(k, f)| f(&r[*k])).collect())
         .collect()
+}
+
+/// Writes a local output file readable by the owner only (reports name customers and hosts).
+pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("{}", path.display()))?;
+    f.write_all(data)?;
+    Ok(())
 }
 
 pub struct Client {
