@@ -523,6 +523,24 @@
     if (first) first.onselect();
     else browse(s);
   }
+  /** The other actions of a snapshot row (browse and restore stay buttons of their own). */
+  function snapActions(s: Snapshot): MenuItem[] {
+    const at = fmtTime(s.time);
+    const out: MenuItem[] = [];
+    if (can.restore(session.user) && s.local)
+      out.push({ label: t.snap.changes, icon: IconDiff, title: t.snap.changesLabel(s.source, at), onselect: () => navigate('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time })) });
+    if (can.scan(session.user) && s.local) out.push({ label: t.scan.scan, icon: IconScan, title: t.scan.scanLabel(s.source, at), onselect: () => startScan(s) });
+    if (scanBackable(s))
+      out.push({ label: t.p29.scanBack.action, icon: IconHistory, title: t.p29.scanBack.label(s.source, at), onselect: () => ((sbSnap = s), (sbOpen = true)) });
+    if (can.hold(session.user) && s.anomalous)
+      out.push({ label: t.snap.clearFlag, icon: IconCheck, title: t.snap.clearFlagLabel(s.source, at), onselect: () => ((clearSnap = s), (clearNote = ''), (clearOpen = true)) });
+    if (can.hold(session.user) && s.hold?.state !== 'active')
+      out.push({ label: s.hold ? t.snap.applyHold : t.snap.hold, icon: IconGavel, title: t.snap.holdLabel(s.source, at), onselect: () => openHold(s) });
+    else if (can.releaseHold(session.user) && s.hold?.state === 'active' && !s.hold.release_quorum)
+      out.push({ label: t.snap.release, icon: IconUnlock, title: t.snap.releaseLabel(s.source, at), onselect: () => releaseHold(s) });
+    if (deletable(s)) out.push({ label: t.delete, icon: IconTrash, title: t.snap.deleteLabel(s.source, at), onselect: () => remove(s) });
+    return out;
+  }
 </script>
 
 <div class="page-head">
@@ -718,48 +736,8 @@
                       <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
                     {/if}
                   {/if}
-                  {#if can.restore(session.user) && s.local}
-                    <a
-                      class="button small"
-                      href={href('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time }))}
-                      aria-label={t.snap.changesLabel(s.source, fmtTime(s.time))}><IconDiff aria-hidden="true" />{t.snap.changes}</a
-                    >
-                  {/if}
-                  {#if can.scan(session.user) && s.local}
-                    <button type="button" class="small" onclick={() => startScan(s)} aria-label={t.scan.scanLabel(s.source, fmtTime(s.time))}
-                      ><IconScan aria-hidden="true" />{t.scan.scan}</button
-                    >
-                  {/if}
-                  {#if scanBackable(s)}
-                    <button
-                      type="button"
-                      class="small"
-                      data-scan-back
-                      onclick={() => ((sbSnap = s), (sbOpen = true))}
-                      aria-label={t.p29.scanBack.label(s.source, fmtTime(s.time))}><IconHistory aria-hidden="true" />{t.p29.scanBack.action}</button
-                    >
-                  {/if}
-                  {#if can.hold(session.user) && s.anomalous}
-                    <button
-                      type="button"
-                      class="small"
-                      onclick={() => ((clearSnap = s), (clearNote = ''), (clearOpen = true))}
-                      aria-label={t.snap.clearFlagLabel(s.source, fmtTime(s.time))}><IconCheck aria-hidden="true" />{t.snap.clearFlag}</button
-                    >
-                  {/if}
-                  {#if can.hold(session.user) && s.hold?.state !== 'active'}
-                    <button type="button" class="small" onclick={() => openHold(s)} aria-label={t.snap.holdLabel(s.source, fmtTime(s.time))}
-                      ><IconGavel aria-hidden="true" />{s.hold ? t.snap.applyHold : t.snap.hold}</button
-                    >
-                  {:else if can.releaseHold(session.user) && s.hold?.state === 'active' && !s.hold.release_quorum}
-                    <button type="button" class="small" onclick={() => releaseHold(s)} aria-label={t.snap.releaseLabel(s.source, fmtTime(s.time))}
-                      ><IconUnlock aria-hidden="true" />{t.snap.release}</button
-                    >
-                  {/if}
-                  {#if deletable(s)}
-                    <button type="button" class="small danger" onclick={() => remove(s)} aria-label={t.snap.deleteLabel(s.source, fmtTime(s.time))}
-                      ><IconTrash aria-hidden="true" />{t.delete}</button
-                    >
+                  {#if snapActions(s).length}
+                    <Menu label={t.agents.more} ariaLabel={t.snap.moreLabel(s.source, fmtTime(s.time))} items={snapActions(s)} />
                   {/if}
                 </td>
               {/if}

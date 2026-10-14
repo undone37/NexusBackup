@@ -363,6 +363,7 @@ export const en = {
       "Key figures are not available right now; the protection table below still works.",
   },
   snap: {
+    moreLabel: (source: string, time: string) => `More actions for ${source} at ${time}`,
     title: "Snapshots",
     lede: "Restore points of every protected object: restore whole guests, browse and download files, or run application restores.",
     source: "Guest",

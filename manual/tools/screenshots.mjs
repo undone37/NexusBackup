@@ -461,7 +461,7 @@ async function main() {
       await shot('snapshots-replicated');
       // an unlocked snapshot of a guest in no group (Phase 13a): Delete asks first
       await go('/snapshots?source=vm-103');
-      await ev(`$rowClick('vm-103', 'Delete'); return true;`);
+      await ev(`$rowMenu('vm-103', 'Delete'); return true;`);
       await until(`return !!$button('Confirm')`, 'confirmation dialog');
       await shot('snapshot-delete');
       await closeDialogs();
@@ -1117,7 +1117,7 @@ async function main() {
       await shot('snapshot-hold-range');
       await closeDialogs();
       await go('/snapshots?held=true');
-      await ev(`$rowClick('initech', 'Release hold'); return true;`);
+      await ev(`$rowMenu('initech', 'Release hold'); return true;`);
       await confirmOk();
       await settle();
       await shot('snapshots-held');
@@ -1147,7 +1147,7 @@ async function main() {
       await shot('sources-trends', { scrolled: true });
       await login('so');
       await go('/snapshots?source=vm-301');
-      await ev(`$rowClick('Anomalous', 'Clear flag'); return true;`);
+      await ev(`$rowMenu('Anomalous', 'Clear flag'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #clear-note')`, 'clear flag dialog');
       await ev(`$fill('#clear-note', 'Checked: bulk import of encrypted archives by the backup team (ticket 4711)'); return true;`);
       await shot('snapshot-clear-flag');
@@ -1503,8 +1503,18 @@ async function main() {
       // scan back from the infected snapshot of fs02
       const fs02 = (await api('GET', '/agents')).body.find((a) => a.name === 'fs02');
       await go(`/snapshots?source=host-${fs02.id}`);
-      await until(`return !!document.querySelector('button[data-scan-back]')`, 'scan back button');
-      await ev(`document.querySelector('button[data-scan-back]').click(); return true;`);
+      // the first snapshot whose More menu offers a scan back
+      await until(`return document.querySelectorAll('tbody tr').length > 0`, 'snapshot rows');
+      await ev(`for (const tr of document.querySelectorAll('tbody tr')) {
+        const more = [...tr.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('More'));
+        if (!more) continue;
+        more.click();
+        const pop = document.querySelector('[popover]:popover-open');
+        const item = pop && [...pop.querySelectorAll('button')].find((b) => b.textContent.includes('Scan back'));
+        if (item) { item.click(); return true; }
+        pop?.hidePopover();
+      }
+      throw new Error('no snapshot offers a scan back');`);
       await until(`return !!document.querySelector('dialog[open] #sb-budget')`, 'scan back dialog');
       await shot('snapshot-scan-back');
       await ev(`$click('Start scan back'); return true;`);
