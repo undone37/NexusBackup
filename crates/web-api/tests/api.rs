@@ -3779,6 +3779,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/fullread.rs"),
         include_str!("../src/risk.rs"),
         include_str!("../src/approvers.rs"),
+        include_str!("../src/cases.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -4130,6 +4131,14 @@ async fn tenant_admin_routes_classified() {
         // Phase 33: tenant-side approvers of the own tenant
         ("GET", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), none(), 'Y'),
         ("PUT", "/tenants/{name}/approvers", "/api/v1/tenants/acme/approvers".into(), Some(json!({"enabled": false})), 'Y'),
+        // Phase 33: cases are the provider's (compliance)
+        ("GET", "/cases", "/api/v1/cases".into(), none(), 'N'),
+        ("POST", "/cases", "/api/v1/cases".into(), Some(json!({"tenant": "acme", "name": "c", "criteria": {"query": "x"}})), 'N'),
+        ("GET", "/cases/{id}", "/api/v1/cases/1".into(), none(), 'N'),
+        ("POST", "/cases/{id}/search", "/api/v1/cases/1/search".into(), e(), 'N'),
+        ("POST", "/cases/{id}/hold", "/api/v1/cases/1/hold".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/cases/{id}/export", "/api/v1/cases/1/export".into(), e(), 'N'),
+        ("POST", "/cases/{id}/close", "/api/v1/cases/1/close".into(), e(), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

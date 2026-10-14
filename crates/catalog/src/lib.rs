@@ -929,7 +929,11 @@ ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
 ///   the requester is an eligible approver of it), `quorum.approved_by/at` (the
 ///   provider's approval while tenant decisions are still open) and
 ///   `users.approver_since` (when the account last became a tenant admin, was
-///   activated or re-enabled; NULL = `created`), kept by a trigger.
+///   activated or re-enabled; NULL = `created`), kept by a trigger;
+/// - cases (compliance search over the name indexes, M365 first): `cases` (the
+///   saved criteria, state, the last search job) and `case_snapshots` (the
+///   snapshots the last search matched, with the number of matched items and the
+///   legal hold the case placed on it).
 ///
 /// Purely additive: the previous release ignores the tables and columns (and
 /// would execute requests without the tenants' approval: no rollback while
@@ -949,6 +953,14 @@ CREATE TRIGGER users_approver_since AFTER UPDATE OF role, tenant, activation_has
 BEGIN
   UPDATE users SET approver_since = CAST(strftime('%s', 'now') AS INTEGER) WHERE id = NEW.id;
 END;
+CREATE TABLE cases (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  criteria TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('open','closed')), created_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL, closed_by TEXT, closed_at INTEGER, last_job INTEGER, searched_at INTEGER,
+  truncated INTEGER NOT NULL DEFAULT 0, UNIQUE (tenant, name));
+CREATE TABLE case_snapshots (
+  case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE, source TEXT NOT NULL, time INTEGER NOT NULL,
+  items INTEGER NOT NULL, hold_id INTEGER, PRIMARY KEY (case_id, source, time));
 CREATE TABLE psa_tickets (
   id INTEGER PRIMARY KEY, rule TEXT NOT NULL, key TEXT NOT NULL, vendor TEXT NOT NULL, ticket TEXT NOT NULL,
   alert_id INTEGER NOT NULL, opened INTEGER NOT NULL, noted_count INTEGER NOT NULL, noted_at INTEGER NOT NULL,
@@ -3332,7 +3344,7 @@ mod tests {
     /// v44 and v46): no tickets; one open ticket per rule and key, closed ones
     /// may repeat.
     #[test]
-    fn migration_v46_psa_tickets_and_tenant_approvers() {
+    fn migration_v46_psa_approvers_cases() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
         let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V46).unwrap();
@@ -3382,5 +3394,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM quorum_tenants", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "decisions go with the request");
+        // cases: unique per tenant, their snapshots go with them
+        conn.execute_batch(
+            "INSERT INTO cases (id, tenant, name, criteria, state, created_by, created_at)
+               VALUES (1, 't', 'c', '{}', 'open', 'a', 1);
+             INSERT INTO case_snapshots (case_id, source, time, items) VALUES (1, 'plugin-m365-1-u.x', 5, 2);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO cases (tenant, name, criteria, state, created_by, created_at) VALUES ('t', 'c', '{}', 'open', 'a', 1)",
+                [],
+            )
+            .is_err());
+        conn.execute("DELETE FROM cases", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM case_snapshots", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
     }
 }

@@ -54,7 +54,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | Standby copies | Live Sync: incremental replication from backup to a warm standby VM [8] | none (appliance failover rejected by design; standby VMs not considered) | missing |
 | Recovery validation, runbooks | Cleanroom Recovery: recovery groups, runbooks, readiness report, cleanup [16] | restore tests, recovery plans with waves, daily readiness, isolated test runs, DR report | has (on-prem PVE only) |
 | Cloud clean room / Cloud Rewind | AWS/Azure/GCP clean rooms, rebuild of cloud infrastructure [4][17] | no | missing (out of scope) |
-| Search / eDiscovery | Compliance Search, Case Manager, sensitive data governance [18] | file-name search across snapshots, legal hold, mail export; M365 item metadata search planned (Phase 19), not built | partial |
+| Search / eDiscovery | Compliance Search, Case Manager, sensitive data governance [18] | file-name search across snapshots, legal hold, mail export; cases (saved criteria over the name indexes, M365 by default, holds, export as eml/mbox/PST; Phase 33); M365 item metadata search (sender, recipients, text) still not built | partial |
 | **Operations / automation** | | | |
 | Policies | Plans (schedule + retention + storage) | policies, protection groups, auto-protect, policy tiers, restore point simulator | has |
 | API, automation | REST API, Workflows engine, MCP server, Arlie AI agents [19][20] | OpenAPI, `nexusctl`, scoped API tokens, webhooks | has (no workflows/AI by choice) |

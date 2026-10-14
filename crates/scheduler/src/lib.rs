@@ -69,6 +69,7 @@ pub mod alerts;
 pub mod anomaly;
 mod approvers;
 mod bmr;
+mod cases;
 pub mod changes;
 pub mod clock;
 mod config_backup;
@@ -1495,6 +1496,9 @@ impl Scheduler {
         }
         if ok && job.kind == "hash_hunt" {
             self.hunt_bookkeeping(&job, result.as_ref())?; // threat.rs
+        }
+        if ok && job.kind == "file_search" && job.params["case_id"].is_i64() {
+            self.case_bookkeeping(&job, result.as_ref())?; // cases.rs
         }
         if job.kind == "gc" {
             self.orphan_bookkeeping(&job.tenant, f.stdout.as_deref())?;

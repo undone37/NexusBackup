@@ -1286,3 +1286,24 @@ overwriting, host mode onto the original paths or overwriting is a production re
   (24 h).
 - Not covered: VM/CT disks (no per-file versions without a file index walk per snapshot), plugin and M365
   snapshots. Versions from never-scanned snapshots count as clean (`from_unscanned` counts them).
+
+## Cases (Phase 33, `web-api/src/cases.rs`, `scheduler/src/cases.rs`, catalog v46)
+Compliance search on top of the name indexes (docs/m365.md "Compliance search and cases": the M365 item metadata
+search was never built). Tables `cases (id, tenant, name, description, criteria, state open|closed, created_*,
+closed_*, last_job, searched_at, truncated)` and `case_snapshots (case_id, source, time, items, hold_id)`.
+Roles: admins and security officers, appliance-wide sessions only (no tenant roles, no API tokens).
+- `GET /cases?tenant=`, `POST /cases {tenant, name, description?, criteria: {query, source_prefix? (default
+  "plugin-m365-", "" = all), source?, from?, to?, case_sensitive?}}` (201 with `job_id`), `GET /cases/{id}` (adds
+  `snapshot_list` with holds and `matches` of the last finished search), `POST /cases/{id}/search` (409 while the last
+  search runs or the case is closed), `POST /cases/{id}/hold {reason}` (security officers; `holds::hold_one` on every
+  matched snapshot with reason `case <name>: <reason>`, the active hold recorded as `hold_id`), `POST
+  /cases/{id}/export {format?, mail_format? (eml|mbox|pst)}` (download privilege; refused in vault mode; one
+  `files_get` per matched snapshot, newest first, at most 50, the matched paths of the last search (at most 1000 per
+  snapshot), M365 snapshots with the plugin's `mail_format` download parameter; checked by `jobs::check_params`;
+  answers `{jobs: [{id, source, time, download_token}]}`), `POST /cases/{id}/close` (holds stay).
+- The search is a `file_search` job with `case_id`, `limit` 2000 and the criteria (the search's new `source_prefix`
+  filter); when it finishes the scheduler replaces the case's snapshot list (rows with a case hold stay with their
+  `items` reset) and sets `last_job`, `searched_at`, `truncated`.
+- Audit: `case.create`, `case.view`, `case.search`, `case.hold`, `case.export`, `case.close` with target `case/<id>` and
+  `case_tenant` (not indexed under the tenant, so its admins' audit view does not show the investigation); the export's
+  `job.create` entries and the holds are ordinary.

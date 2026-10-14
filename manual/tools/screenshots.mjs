@@ -1597,6 +1597,21 @@ async function main() {
       await settle();
       await shot('synthetic-restore-result', { height: 1100 });
     }],
+    // Phase 33: a compliance case over Microsoft 365 snapshots, held by a security officer
+    ['p33cases', async () => {
+      await login('so');
+      await go('/cases');
+      await until(`return document.body.innerText.includes('matter-2026-17')`, 'case list');
+      await ev(`$rowClick('matter-2026-17', 'Open'); return true;`);
+      await until(`return document.body.innerText.includes('Matched snapshots') && !!$button('Hold matched snapshots')`, 'case detail');
+      await ev(`$click('Hold matched snapshots'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input')`, 'hold dialog');
+      await ev(`$fill('dialog[open] input', 'Litigation hold, counsel K. Weber'); document.querySelector('dialog[open] form').requestSubmit(); return true;`);
+      await until(`return !document.querySelector('dialog[open]') && document.body.innerText.includes('active')`, 'held');
+      await settle();
+      await shot('case-detail', { height: 1300 });
+      await login('admin');
+    }],
   ];
 
   let failed = 0;

@@ -985,6 +985,43 @@ clicks **Apply hold…** (or **Apply hold** on the alert). See
 > applies from the next run. The VM lab verifies that a hold blocks retention; the offsite and replication paths are
 > covered by integration tests.
 
+## Cases (compliance search)
+
+For legal and compliance requests ("all mails about invoice 4711 since March"), administrators and security
+officers keep **cases** under **Governance → Cases**. A case saves what you look for, finds the snapshots holding
+matching items, puts them on legal hold and exports the items.
+
+![A case with its matched Microsoft 365 snapshots on hold](images/case-detail.png)
+
+- **New case**: tenant, a name (unique in the tenant), an optional description and the search: **Search for** is a
+  part of the item name or a pattern with `*` and `?` (with a `/` the whole path, e.g. `mail/Inbox/*invoice*`).
+  **Sources**: **Microsoft 365** (every user, site, team and group of the tenant, the default) or **All sources of
+  the tenant**; optionally a snapshot date range. **Create and search** saves the case and starts its search.
+- What is searched: the file name index of every snapshot. For Microsoft 365 that is the folder, the **subject**
+  (the mail's file name) and the date of each mail, calendar item and contact, and the names of OneDrive,
+  SharePoint and Teams files. Sender, recipients and the message text are **not** searched (see
+  [Limits](#case-limits)).
+- The case page lists the **matched snapshots** with the number of matched items and their hold, and the matched
+  items of the last search (up to 2000). **Search again** repeats the search with the saved criteria, for example
+  after new backups.
+- **Hold matched snapshots** (security officers): a legal hold on every matched snapshot that has none, with the
+  reason `case <name>: <your reason>`. Releasing a hold needs approval as always ([Legal hold](#legal-hold)).
+- **Export matched items** (accounts with the download privilege): one download job per matched snapshot (at most
+  50, newest first) with exactly the matched items, as tar or zip; Microsoft 365 mail as **eml**, **mbox** or
+  **PST** like the plugin's download ([Export formats for mail](#export-formats-for-mail)). The jobs appear on the
+  case page and under **Jobs**; each download is for you only.
+- **Close case**: no further searches, holds or exports. Its holds stay until they are released one by one.
+
+### Case limits
+
+- Item names only: a Microsoft 365 search by sender, recipient or text needs an item metadata index, which the
+  appliance does not build yet (docs/m365.md "Compliance search and cases").
+- Case entries in the audit log (`case.create`, `case.view`, `case.search`, `case.hold`, `case.export`,
+  `case.close`) are not shown in the tenant's own audit view, so an investigation is not announced to the tenant's
+  admins. The holds (with their reason) and the export jobs are ordinary ones that the tenant's admins can see:
+  choose a neutral hold reason.
+- In vault mode exports are refused; use single restores with approval there.
+
 ## Restore from the offsite copy
 
 Restores always read the local store. Local retention usually keeps fewer snapshots than the offsite copy, so older

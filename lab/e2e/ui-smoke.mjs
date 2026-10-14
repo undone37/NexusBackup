@@ -20,7 +20,7 @@ const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 // '/search?q=log' runs the instant file search (Phase 31b, GET /files/search): a 503 means nexus-index is not running
-const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/hunt', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates',
+const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/hunt', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/cases', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates',
   '/replication', '/recovery-plans', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
 const TENANT_PAGES = ['/', '/snapshots', '/search', '/hunt', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates', '/groups',

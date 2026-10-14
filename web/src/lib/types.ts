@@ -1421,6 +1421,39 @@ export interface TenantDecision {
   decision: 'approved' | 'rejected' | 'requested' | null;
 }
 
+/** Phase 33: saved search criteria of a case (the file search parameters). */
+export interface CaseCriteria {
+  query: string;
+  source_prefix?: string | null;
+  source?: string | null;
+  from?: number | null;
+  to?: number | null;
+  case_sensitive?: boolean;
+}
+
+/** Phase 33: GET /cases, GET /cases/{id} (the latter with snapshot_list and matches). */
+export interface CaseInfo {
+  id: number;
+  tenant: string;
+  name: string;
+  description: string;
+  criteria: CaseCriteria;
+  state: 'open' | 'closed';
+  created_by: string;
+  created_at: number;
+  closed_by: string | null;
+  closed_at: number | null;
+  last_job: number | null;
+  searched_at: number | null;
+  truncated: boolean;
+  snapshots: number;
+  items: number;
+  held: number;
+  job_state: string | null;
+  snapshot_list?: { source: string; time: number; items: number; hold: { id: number; state: string; reason: string } | null }[];
+  matches?: { source: string; path: string; kind: string; size: number; mtime: number; times: number[] }[] | null;
+}
+
 /** Phase 33: GET /tenants/{name}/approvers */
 export interface TenantApprovers {
   tenant: string;

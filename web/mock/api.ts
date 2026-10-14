@@ -295,6 +295,8 @@ const db = {
   quorum: [] as Json[],
   // Phase 33: tenants whose own admins co-approve destroying or weakening requests
   tenantApprovals: {} as Record<string, { enabled_at: number; enabled_by: string }>,
+  // Phase 33: compliance cases (web-api cases.rs)
+  cases: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
   sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number }>(),
@@ -1814,6 +1816,16 @@ function seedM365(t: number) {
       result: { snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }], source: user, time: start, consistent: true, warnings: 2 },
     });
   }
+  // Phase 33: a compliance case over acme's Microsoft 365 snapshots (its search finished)
+  const cs: Json = {
+    id: nextId(), tenant: 'acme', name: 'matter-2026-17', description: 'Contract dispute with Initrode (counsel: K. Weber)',
+    criteria: { query: 'Invoice 4711', case_sensitive: false, source_prefix: 'plugin-m365-' }, state: 'open',
+    created_by: 'so', created_at: t - 3 * 3600, closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+  };
+  db.cases.push(cs);
+  caseSearch(cs, 'so');
+  Object.assign(db.jobs.find((j) => j.id === cs.last_job)!, { state: 'ok', created: t - 3 * 3600, started: t - 3 * 3600 + 1, finished: t - 3 * 3600 + 4 });
+  cs.searched_at = t - 3 * 3600 + 4;
 }
 
 // ---------------------------------------------------------------- run control (Phase 13b)
@@ -7816,6 +7828,138 @@ function holdOne(tenant: string, source: string, time: number, reason: string, b
   db.holds.push(h);
   return { id: h.id };
 }
+// ---------------------------------------------------------------- cases (Phase 33, web-api cases.rs)
+/** The case's search: a file_search job; the matches are made up from the tenant's snapshots. */
+function caseSearch(cs: Json, by: string) {
+  const crit = cs.criteria;
+  const word = String(crit.query).replace(/[*?\[\]]/g, '').trim() || 'match';
+  const snaps = (db.snapshots as Json[])
+    .filter((s) => s.tenant === cs.tenant && s.local && String(s.source).startsWith(crit.source_prefix ?? ''))
+    .filter((s) => (!crit.from || s.time >= crit.from) && (!crit.to || s.time <= crit.to))
+    .sort((a, b) => b.time - a.time);
+  const bySource = new Map<string, number[]>();
+  for (const s of snaps) bySource.set(s.source, [...(bySource.get(s.source) ?? []), s.time]);
+  cs.matches = [...bySource.entries()].flatMap(([source, times], i) => [
+    { source, path: `mail/Inbox/${word} ~${(4711 + i).toString(16)}a1.eml`, kind: 'file', size: 48_211 + i, mtime: times[times.length - 1], times },
+    ...(i % 2 ? [] : [{ source, path: `mail/Sent Items/RE ${word} ~${(9311 + i).toString(16)}c7.eml`, kind: 'file', size: 21_904, mtime: times[0], times: times.slice(0, 2) }]),
+  ]);
+  const held = new Map((cs.snapshot_list ?? []).filter((x: Json) => x.hold).map((x: Json) => [`${x.source}/${x.time}`, x.hold]));
+  const items = new Map<string, number>();
+  for (const m of cs.matches) for (const t of m.times) items.set(`${m.source}/${t}`, (items.get(`${m.source}/${t}`) ?? 0) + 1);
+  cs.snapshot_list = [...items.entries()]
+    .map(([k, n]) => {
+      const i = k.lastIndexOf('/');
+      return { source: k.slice(0, i), time: Number(k.slice(i + 1)), items: n, hold: held.get(k) ?? null };
+    })
+    .sort((a, b) => b.time - a.time || a.source.localeCompare(b.source));
+  const j = addJob('file_search', cs.tenant, { ...crit, limit: 2000, case_id: cs.id }, by);
+  j.duration = 3;
+  Object.assign(cs, { last_job: j.id, searched_at: now(), truncated: false });
+}
+function caseView(cs: Json, full = false): Json {
+  const list: Json[] = cs.snapshot_list ?? [];
+  for (const x of list) if (x.hold) x.hold = { ...x.hold, state: db.holds.find((h) => h.id === x.hold.id)?.state ?? x.hold.state };
+  const job = db.jobs.find((j) => j.id === cs.last_job);
+  const v: Json = {
+    ...cs, snapshots: list.filter((x) => x.items > 0).length, items: list.reduce((a, x) => a + x.items, 0),
+    held: list.filter((x) => x.hold?.state === 'active').length, job_state: job?.state ?? null,
+  };
+  delete v.matches;
+  delete v.snapshot_list;
+  return full ? { ...v, snapshot_list: list, matches: job?.state === 'ok' ? cs.matches : null } : v;
+}
+const caseOf = (c: Ctx, id: string) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return { u, cs: find(db.cases, (x) => x.id === Number(id), 'case') };
+};
+on('GET', '/cases', (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const tq = c.query.get('tenant');
+  return [200, db.cases.filter((x) => !tq || x.tenant === tq).sort((a, b) => a.state.localeCompare(b.state) || b.id - a.id).map((x) => caseView(x))];
+});
+on('POST', '/cases', async (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const b = c.body;
+  find(db.tenants, (x) => x.name === b.tenant, 'tenant');
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(b.name))) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
+  const q = String(b.criteria?.query ?? '').trim();
+  if (!q || q.length > 256) throw new HttpError(400, 'criteria.query: 1..=256 characters');
+  if (db.cases.some((x) => x.tenant === b.tenant && x.name === b.name)) throw new HttpError(409, 'a case of this name exists in the tenant');
+  const criteria: Json = { query: q, case_sensitive: !!b.criteria.case_sensitive };
+  const prefix = b.criteria.source_prefix ?? 'plugin-m365-';
+  if (prefix) criteria.source_prefix = prefix;
+  for (const k of ['source', 'from', 'to']) if (b.criteria[k] !== undefined && b.criteria[k] !== null) criteria[k] = b.criteria[k];
+  const cs: Json = {
+    id: nextId(), tenant: b.tenant, name: b.name, description: String(b.description ?? '').trim(), criteria, state: 'open',
+    created_by: u.name, created_at: now(), closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+  };
+  db.cases.push(cs);
+  caseSearch(cs, u.name);
+  await audit(u.name, 'case.create', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, name: cs.name, criteria, job: cs.last_job });
+  return [201, { ...caseView(cs), job_id: cs.last_job }];
+});
+on('GET', '/cases/:id', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  await audit(u.name, 'case.view', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id });
+  return [200, caseView(cs, true)];
+});
+on('POST', '/cases/:id/search', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed');
+  if (['queued', 'running'].includes(db.jobs.find((j) => j.id === cs.last_job)?.state ?? '')) throw new HttpError(409, "the case's search is still running");
+  caseSearch(cs, u.name);
+  await audit(u.name, 'case.search', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, job: cs.last_job });
+  return [202, { job_id: cs.last_job }];
+});
+on('POST', '/cases/:id/hold', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  need(u, 'security_officer');
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed');
+  const reason = holdReason(c.body);
+  const held: string[] = [];
+  for (const x of (cs.snapshot_list ?? []) as Json[]) {
+    if (!x.items) continue;
+    if (holdOne(cs.tenant, x.source, x.time, `case ${cs.name}: ${reason}`, u.name)) held.push(`${x.source}/${x.time}`);
+    const h = activeHold(cs.tenant, x.source, x.time);
+    if (h) x.hold = { id: h.id, state: h.state, reason: h.reason };
+  }
+  await audit(u.name, 'case.hold', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, reason, snapshots: held });
+  return [200, { held: held.length, snapshots: held }];
+});
+on('POST', '/cases/:id/export', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: case exports are not allowed on this appliance (Settings → Vault)');
+  const format = c.body?.format ?? 'tar';
+  if (!['tar', 'zip'].includes(format)) throw new HttpError(400, 'format: tar or zip');
+  const mail = c.body?.mail_format;
+  if (mail && !['eml', 'mbox', 'pst'].includes(mail)) throw new HttpError(400, 'mail_format: eml, mbox or pst');
+  if (!cs.matches?.length) throw new HttpError(409, "the case's last search matched nothing");
+  const per = new Map<string, string[]>();
+  for (const m of cs.matches) for (const t of m.times) per.set(`${t}\0${m.source}`, [...(per.get(`${t}\0${m.source}`) ?? []), '/' + m.path]);
+  const jobs = [...per.entries()]
+    .sort((a, b) => Number(b[0].split('\0')[0]) - Number(a[0].split('\0')[0]))
+    .slice(0, 50)
+    .map(([k, paths]) => {
+      const [time, source] = k.split('\0');
+      const p: Json = { source, time: Number(time), paths, format, download_token: rand(32), ...(mail && source.startsWith('plugin-m365-') ? { params: { mail_format: mail } } : {}) };
+      const j = addJob('files_get', cs.tenant, p, u.name);
+      return { id: j.id, source, time: Number(time), download_token: p.download_token };
+    });
+  await audit(u.name, 'case.export', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, jobs: jobs.map((j) => j.id), format, mail_format: mail ?? null });
+  return [202, { jobs }];
+});
+on('POST', '/cases/:id/close', async (c, [id]) => {
+  const { u, cs } = caseOf(c, id);
+  if (cs.state !== 'open') throw new HttpError(409, 'the case is closed already');
+  Object.assign(cs, { state: 'closed', closed_by: u.name, closed_at: now() });
+  await audit(u.name, 'case.close', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id });
+  return [200, caseView(cs)];
+});
+
 on('POST', '/snapshots/:tenant/:source/:time/hold', async (c, [tenant, source, time]) => {
   const u = need(c.user, 'security_officer');
   const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];

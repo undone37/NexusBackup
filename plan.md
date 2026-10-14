@@ -932,6 +932,14 @@ T70–T75. Decisions and deviations:
   extension or a deleted name plus an extension (an unrelated new file type in the same snapshot is kept); host
   restores of a flagged snapshot to production keep needing `restore.infected` (conservative: unknown malware may
   remain); not for VM/CT disks, plugins or M365 (no per-file versions without a per-snapshot file index walk).
+- **M365 compliance search and cases** (implemented as cases on the name index; the Phase 19 item metadata search
+  still does not exist): `cases` / `case_snapshots`, criteria = name pattern + source prefix (default
+  `plugin-m365-`) + snapshot range, search = `file_search` with `case_id` (new `source_prefix` filter), holds by
+  security officers on the matched snapshots, export = one `files_get` per snapshot with the matched items (M365
+  mail as eml/mbox/PST), Cases page. Decisions taken: provider roles only (admins, security officers), case audit
+  entries not indexed under the tenant (no tip-off), closing a case keeps its holds, exports refused in vault mode and
+  capped at 50 snapshots. The item metadata index (sender, recipients) is described as a design in docs/m365.md
+  "Compliance search and cases".
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

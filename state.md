@@ -615,3 +615,9 @@ Phase 30's), threat model T70–T75.
   threat model T73
 - [ ] lab: clean-file restore of a real agent / share snapshot after a simulated ransomware run (lockbit-style rename
   plus a YARA rule), download and to host
+- [x] cases (M365 compliance search on the name index; item metadata search not built, design in docs/m365.md):
+  catalog `cases` / `case_snapshots`, `file_search` `source_prefix` + case bookkeeping, web-api `/cases` (create,
+  search, hold, export, close), Cases page, mock, manual 06, screenshot (scene `p33cases`), ui-smoke, threat model
+  T74; tests: web-api `tests/phase33.rs`, scheduler `tests/phase33.rs`, route classification, catalog migration
+- [ ] M365 item metadata search (sender, recipients) for cases: needs a plugin contract change (design in docs/m365.md)
+- [ ] lab: a case over a real M365 test tenant backup with a PST export

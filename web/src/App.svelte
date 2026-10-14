@@ -27,6 +27,8 @@
   import JobDetail from './pages/JobDetail.svelte';
   import Alerts from './pages/Alerts.svelte';
   import Quorum from './pages/Quorum.svelte';
+  import Cases from './pages/Cases.svelte';
+  import IconCases from '@lucide/svelte/icons/briefcase';
   import Audit from './pages/Audit.svelte';
   import Tenants from './pages/Tenants.svelte';
   import Sources from './pages/Sources.svelte';
@@ -101,6 +103,7 @@
     { path: '/jobs/:id', comp: JobDetail, allow: always },
     { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts, section: 'monitor', icon: IconAlerts },
     { path: '/quorum', comp: Quorum, allow: viewApprovals, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
+    { path: '/cases', comp: Cases, allow: can.cases, nav: t.nav.cases, section: 'governance', icon: IconCases },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit, section: 'governance', icon: IconAudit },
     { path: '/tenants', comp: Tenants, allow: can.attachOffsite, nav: t.nav.tenants, section: 'config', icon: IconTenants },
     { path: '/sources', comp: Sources, allow: can.manageTenant, nav: t.nav.sources, section: 'config', icon: IconSources },

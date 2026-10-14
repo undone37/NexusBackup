@@ -674,3 +674,84 @@ fn s_snap(e: &Env, t: u64) {
         )
         .unwrap();
 }
+
+// ---------------------------------------------------------------- cases
+
+/// A case's search is a file_search job with `case_id`: only the sources with
+/// the prefix are searched, the matched snapshots (items per snapshot) replace
+/// the case's list; rows with a hold of the case stay (with 0 items).
+#[test]
+fn case_search_records_matched_snapshots() {
+    let mut e = env(1);
+    e.cfg.psa_poll_secs = 0;
+    let store = chunkstore::Store::open(
+        e.cfg.store_base.join("t1"),
+        Keyring::new("t1", &[(1, [7; 32])]),
+        test_opts(),
+    )
+    .unwrap();
+    let mail = |p: &str| tree_file(p, 10, 1);
+    for (src, t, files) in [
+        (
+            "plugin-m365-1-u.ann",
+            100u64,
+            vec![mail("mail/Inbox/Invoice 4711 ~a.eml"), mail("mail/Inbox/Lunch ~b.eml")],
+        ),
+        (
+            "plugin-m365-1-u.ann",
+            200,
+            vec![
+                mail("mail/Inbox/Invoice 4711 ~a.eml"),
+                mail("mail/Sent/Invoice 4711 reminder ~c.eml"),
+            ],
+        ),
+        ("share-9", 200, vec![mail("Invoice 4711.pdf")]),
+    ] {
+        store
+            .commit_snapshot(src, t, &[("files", chunkstore::Index::Tree { entries: files })])
+            .unwrap();
+    }
+    let s = sched(&e);
+    s.db.conn()
+        .execute_batch(
+            "INSERT INTO cases (id, tenant, name, criteria, state, created_by, created_at) VALUES (7, 't1', 'm', '{}', 'open', 'a', 1);
+             INSERT INTO case_snapshots (case_id, source, time, items, hold_id) VALUES
+               (7, 'plugin-m365-1-u.old', 50, 4, 99), (7, 'plugin-m365-1-u.gone', 60, 1, NULL);",
+        )
+        .unwrap();
+    let mut s = s;
+    let id = manual(
+        &s,
+        "file_search",
+        "t1",
+        json!({"query": "invoice 4711", "source_prefix": "plugin-m365-", "limit": 2000, "case_id": 7}),
+    );
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert_eq!(state(&s, id), "ok");
+    let rows: Vec<(String, i64, i64, Option<i64>)> =
+        s.db.conn()
+            .prepare("SELECT source, time, items, hold_id FROM case_snapshots WHERE case_id = 7 ORDER BY source, time")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("plugin-m365-1-u.ann".into(), 100, 1, None),
+            ("plugin-m365-1-u.ann".into(), 200, 2, None),
+            ("plugin-m365-1-u.old".into(), 50, 0, Some(99)),
+        ],
+        "the share is not searched, the stale unheld row is gone"
+    );
+    let (last, at): (i64, Option<i64>) =
+        s.db.conn()
+            .query_row("SELECT last_job, searched_at FROM cases WHERE id = 7", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+    assert_eq!(last, id);
+    assert!(at.is_some());
+}

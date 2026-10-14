@@ -721,3 +721,159 @@ async fn synthetic_restore_requests_report_and_download() {
         "restore.infected"
     );
 }
+
+// ---------------------------------------------------------------- cases
+
+/// Cases: provider roles only (not tenant admins, not tenant users), the search
+/// is a file_search job over the M365 snapshots by default; the matched
+/// snapshots get legal holds (security officers) and an export (download
+/// privilege: one files_get per snapshot with its matched items); closed cases
+/// take no more searches; the audit entries stay out of the tenant's view.
+#[tokio::test]
+async fn cases_search_hold_export_close() {
+    let mut t = T::new();
+    t.add_user("dana", "tenant_admin", Some("acme"), 0);
+    t.exec(
+        "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES
+           ('acme', 'plugin-m365-1-u.ann', 100, 5, 1, 0), ('acme', 'plugin-m365-1-u.ann', 200, 5, 1, 0),
+           ('acme', 'plugin-m365-1-u.bob', 200, 5, 1, 0);",
+    );
+    let (alice, sam, dana, tina) = (
+        t.login("alice").await,
+        t.login("sam").await,
+        t.login("dana").await,
+        t.login("tina").await,
+    );
+    let body = json!({"tenant": "acme", "name": "matter-2026-17", "description": "Contract dispute",
+                      "criteria": {"query": "*Invoice 4711*", "from": 50}});
+    for s in [&dana, &tina] {
+        assert_eq!(
+            t.post("/api/v1/cases", s, body.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(t.get("/api/v1/cases", s).await.status, StatusCode::FORBIDDEN);
+    }
+    let r = t.post("/api/v1/cases", &sam, body.clone()).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let (id, job) = (r.body["id"].as_i64().unwrap(), r.body["job_id"].as_i64().unwrap());
+    assert_eq!(r.body["criteria"]["source_prefix"], "plugin-m365-");
+    let p: Value =
+        serde_json::from_str(&t.one::<String>(&format!("SELECT params FROM jobs WHERE id = {job}"))).unwrap();
+    assert_eq!(
+        p,
+        json!({"query": "*Invoice 4711*", "case_sensitive": false, "limit": 2000, "case_id": id,
+               "source_prefix": "plugin-m365-", "from": 50})
+    );
+    assert_eq!(
+        t.post("/api/v1/cases", &alice, body.clone()).await.status,
+        StatusCode::CONFLICT,
+        "name per tenant"
+    );
+    let r = t.post(&format!("/api/v1/cases/{id}/search"), &alice, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "still running");
+    // what the scheduler records when the search finished (scheduler tests: cases.rs)
+    let result = json!({"matches": [
+        {"source": "plugin-m365-1-u.ann", "path": "mail/Inbox/Invoice 4711 ~ab12.eml", "times": [200, 100]},
+        {"source": "plugin-m365-1-u.bob", "path": "mail/Sent/Re Invoice 4711 ~cd34.eml", "times": [200]}],
+        "scanned": 3, "unindexed": 0, "truncated": false});
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE jobs SET state = 'ok', result = ?2 WHERE id = ?1",
+            params![job, result.to_string()],
+        )
+        .unwrap();
+    t.exec(&format!(
+        "INSERT INTO case_snapshots (case_id, source, time, items) VALUES
+           ({id}, 'plugin-m365-1-u.ann', 100, 1), ({id}, 'plugin-m365-1-u.ann', 200, 1), ({id}, 'plugin-m365-1-u.bob', 200, 1);
+         UPDATE cases SET searched_at = 1 WHERE id = {id};"
+    ));
+    let r = t.get(&format!("/api/v1/cases/{id}"), &alice).await;
+    assert_eq!(
+        (r.body["snapshots"].clone(), r.body["items"].clone()),
+        (json!(3), json!(3))
+    );
+    assert_eq!(r.body["matches"][0]["path"], "mail/Inbox/Invoice 4711 ~ab12.eml");
+    assert_eq!(r.body["snapshot_list"].as_array().unwrap().len(), 3);
+    // holds: security officers
+    assert_eq!(
+        t.post(
+            &format!("/api/v1/cases/{id}/hold"),
+            &alice,
+            json!({"reason": "litigation"})
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .post(
+            &format!("/api/v1/cases/{id}/hold"),
+            &sam,
+            json!({"reason": "litigation"}),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.body["held"].clone()),
+        (StatusCode::OK, json!(3)),
+        "{:?}",
+        r.body
+    );
+    assert_eq!(
+        t.one::<String>("SELECT reason FROM legal_holds WHERE source = 'plugin-m365-1-u.bob'"),
+        "case matter-2026-17: litigation"
+    );
+    let r = t.get(&format!("/api/v1/cases/{id}"), &sam).await;
+    assert_eq!(r.body["held"], 3);
+    let r = t
+        .post(&format!("/api/v1/cases/{id}/hold"), &sam, json!({"reason": "again"}))
+        .await;
+    assert_eq!(r.body["held"], 0, "already held");
+    // export: the download privilege (security officers have none by default)
+    assert_eq!(
+        t.post(&format!("/api/v1/cases/{id}/export"), &sam, json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .post(&format!("/api/v1/cases/{id}/export"), &alice, json!({"format": "zip"}))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let jobs = r.body["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 3, "one per snapshot: ann@200, bob@200, ann@100");
+    assert_eq!(
+        (jobs[0]["time"].clone(), jobs[2]["time"].clone()),
+        (json!(200), json!(100)),
+        "newest first"
+    );
+    let jobs_n: i64 = t.one("SELECT COUNT(*) FROM jobs WHERE kind = 'files_get'");
+    assert_eq!(jobs_n, 3, "{jobs:?}");
+    let p: Value = serde_json::from_str(&t.one::<String>(
+        "SELECT params FROM jobs WHERE kind = 'files_get' AND json_extract(params, '$.source') = 'plugin-m365-1-u.bob'",
+    ))
+    .unwrap();
+    assert_eq!(p["paths"], json!(["/mail/Sent/Re Invoice 4711 ~cd34.eml"]));
+    assert_eq!(p["format"], "zip");
+    assert!(p["download_token"].as_str().unwrap().len() == 64);
+    // closed: no more searches; the holds stay
+    let r = t.post(&format!("/api/v1/cases/{id}/close"), &alice, json!({})).await;
+    assert_eq!(r.body["state"], "closed");
+    assert_eq!(
+        t.post(&format!("/api/v1/cases/{id}/search"), &alice, json!({}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        t.one::<i64>("SELECT COUNT(*) FROM legal_holds WHERE state = 'active'"),
+        3
+    );
+    // the tenant's own audit view does not show the case
+    let n: i64 = t.one(
+        "SELECT COUNT(*) FROM audit a JOIN audit_tenants x ON x.seq = a.seq WHERE a.action LIKE 'case.%' AND x.tenant = 'acme'",
+    );
+    assert_eq!(n, 0);
+    let r = t.get("/api/v1/cases?tenant=acme", &sam).await;
+    assert_eq!(r.body.as_array().unwrap().len(), 1);
+}

@@ -163,6 +163,8 @@ pub struct Query {
     /// match the whole path (the query has a `/`), else the last component
     full_path: bool,
     pub source: Option<String>,
+    /// Phase 33 cases: every source starting with this (`plugin-m365-`)
+    pub source_prefix: Option<String>,
     pub from: Option<u64>,
     pub to: Option<u64>,
     pub limit: usize,
@@ -186,6 +188,17 @@ impl Query {
             Some(s) => Some(ident(p, "source").map(|_| s.to_owned())?),
             None => None,
         };
+        let source_prefix = match p["source_prefix"].as_str() {
+            Some(s)
+                if !s.is_empty()
+                    && s.len() <= 128
+                    && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) =>
+            {
+                Some(s.to_owned())
+            }
+            Some(s) => bail!("invalid source_prefix {s:?}"),
+            None => None,
+        };
         let limit = p["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| l as usize);
         if !(1..=MAX_LIMIT).contains(&limit) {
             bail!("limit: 1..={MAX_LIMIT}");
@@ -194,6 +207,7 @@ impl Query {
             glob: Glob::new(&pat, p["case_sensitive"].as_bool() != Some(true)),
             full_path: q.contains('/'),
             source,
+            source_prefix,
             from: p["from"].as_u64(),
             to: p["to"].as_u64(),
             limit,
@@ -211,6 +225,10 @@ impl Query {
 
     fn wants(&self, m: &Manifest) -> bool {
         self.source.as_ref().is_none_or(|s| *s == m.source)
+            && self
+                .source_prefix
+                .as_ref()
+                .is_none_or(|s| m.source.starts_with(s.as_str()))
             && self.from.is_none_or(|f| m.time >= f)
             && self.to.is_none_or(|t| m.time <= t)
     }
