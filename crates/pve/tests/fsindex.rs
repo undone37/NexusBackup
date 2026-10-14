@@ -184,6 +184,14 @@ fn index_reuse_and_change() {
         "{r2}"
     );
     assert_eq!(paths(&s.load_names(&m2).unwrap().unwrap()), paths(&n1));
+    // Phase 31c: ext4 keeps no directory records (its crate caches blocks: the read sets would
+    // be incomplete); the table is still written, without volumes
+    let table = |m: &chunkstore::Manifest| s.read_snap_file(&m.source, m.time, "fsindex-dirs").unwrap().unwrap();
+    assert!(
+        table(&m1).len() < 32 && table(&m2).len() < 32,
+        "no ext4 directory records"
+    );
+    assert_eq!(r1["dirs_taken_over"], 0, "{r1}");
 
     // /home changed: only that volume is parsed again
     let Some(b) = disk(

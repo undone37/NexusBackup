@@ -107,6 +107,24 @@ impl Volume {
     }
 }
 
+/// One directory of a parsed volume (Phase 31c): what its listing depended on,
+/// so the next snapshot can take its entries over unread when none of that changed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct DirRec {
+    /// path below the volume root (`""` = the root)
+    pub rel: String,
+    /// (disk, chunk index) its listing read: the directory's index and its
+    /// children's records / inodes
+    pub deps: Vec<(u32, u64)>,
+    /// its subdirectories: (NTFS file record number, 0 elsewhere; name)
+    pub subdirs: Vec<(u64, String)>,
+    /// its entries' share of the volume's `dedup_files` / `skipped_entries`
+    #[serde(default)]
+    pub dedup: u64,
+    #[serde(default)]
+    pub skipped: u64,
+}
+
 /// The sealed per-snapshot volume report (`fsindex` side file, crate
 /// chunkstore `snapfile.rs`): what was found on each volume and, for the next
 /// snapshot, which chunks each volume's parse read.

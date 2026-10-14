@@ -557,8 +557,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   applies to a running Windows system volume: per-directory reuse is 31c)
 - [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14); lab: member
   server C: rose from 5.6 % to 98.1 % against an estimate of 390,899 entries (previous snapshot's count)
-- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, per-directory
-  reuse, content hashes
+- [x] 31c per-directory reuse (NTFS): records of what each directory's listing read (side file `fsindex-dirs`),
+  unchanged directories taken over from the previous name index without reading them, also with parallel helpers;
+  ext4 excluded (ext4-view caches blocks, read sets would be incomplete); tests: a second listing with the history
+  lists the same and reads less, a dropped record is listed again, NTFS records always have their read set
+- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

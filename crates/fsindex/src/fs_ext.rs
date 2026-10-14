@@ -29,6 +29,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         }
         // emits this directory's entries (else only looks for its subdirectories)
         let own = out.owns(&rel, depth);
+        // no per-directory reuse (Phase 31c) here: ext4-view caches blocks itself, so the
+        // helper cannot see everything a directory listing depends on; ext4 volumes are
+        // taken over as a whole when unchanged
         let rd = match fs.read_dir(&dir) {
             Ok(r) => r,
             Err(e) => {

@@ -13,7 +13,7 @@
 use crate::proto::{decode_entries, read_frame, write_frame, Config};
 
 use crate::Part;
-use crate::{Entry, Limits, Volume};
+use crate::{DirRec, Entry, Limits, Volume};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -31,6 +31,12 @@ pub trait Source: Sync {
     /// bytes per chunk of the disk's fixed index (read-set granularity)
     fn chunk_size(&self, disk: usize) -> u64;
     fn read(&self, disk: usize, off: u64, buf: &mut [u8]) -> io::Result<()>;
+    /// Phase 31c: directory `rel` of volume `key` as the previous snapshot listed
+    /// it, if nothing its listing read changed since: (its entries, its record with
+    /// `deps` in this snapshot's disk numbers). `None`: list it.
+    fn dir(&self, _key: &str, _rel: &str) -> Option<(Vec<Entry>, DirRec)> {
+        None
+    }
 }
 
 /// One volume of the listing.
@@ -42,6 +48,8 @@ pub struct Listed {
     pub reads: BTreeSet<(usize, u64)>,
     /// not parsed: the caller fills it from its cache
     pub reused: bool,
+    /// Phase 31c: the directories of the parse (listed or taken over), for the next snapshot
+    pub dirs: Vec<DirRec>,
 }
 
 /// How to run the helper.
@@ -167,9 +175,11 @@ fn merge(out: &mut [Listed], part: Vec<Listed>) {
         l.volume.skipped_entries += p.volume.skipped_entries;
         l.reads.extend(p.reads);
         l.entries.extend(p.entries);
+        l.dirs.extend(p.dirs);
         if l.volume.state == "failed" {
             l.entries.clear();
             l.reads.clear();
+            l.dirs.clear();
         }
         // deterministic, whatever share finished first
         l.entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -200,6 +210,7 @@ fn list_part(
                     let l = &mut out[i];
                     l.entries.clear();
                     l.reads.clear();
+                    l.dirs.clear();
                     l.volume.entries = 0;
                     l.volume.state = "failed".into();
                     l.volume.reason = Some(format!("{} parser failed on this volume ({why})", l.volume.fs));
@@ -319,6 +330,7 @@ fn run_once(
                     if !skip {
                         out[i].entries.clear();
                         out[i].reads.clear();
+                        out[i].dirs.clear();
                         progress(&out[i].volume, 0, None);
                     }
                 }
@@ -331,6 +343,52 @@ fn run_once(
                         return Err(io::Error::other("the helper sent more entries than allowed"));
                     }
                     progress(&out[i].volume, out[i].entries.len() as u64, expect);
+                }
+                b'U' => {
+                    // Phase 31c: may the helper take directory `rel` over from the previous snapshot?
+                    let i = current.ok_or_else(|| io::Error::other("directory query outside a volume"))?;
+                    #[derive(serde::Deserialize)]
+                    struct Q {
+                        rel: String,
+                        own: bool,
+                    }
+                    let q: Q =
+                        serde_json::from_slice(&p).map_err(|e| io::Error::other(format!("directory query: {e}")))?;
+                    match src.dir(&out[i].volume.key, &q.rel) {
+                        Some((entries, rec)) => {
+                            write_frame(&mut w, b'Y', &serde_json::to_vec(&rec.subdirs)?)?;
+                            if q.own {
+                                total += entries.len() as u64;
+                                out[i].entries.extend(entries);
+                                out[i].volume.dedup_files += rec.dedup;
+                                out[i].volume.skipped_entries += rec.skipped;
+                                out[i].dirs.push(rec);
+                                progress(&out[i].volume, out[i].entries.len() as u64, expect);
+                            }
+                        }
+                        None => write_frame(&mut w, b'N', &[])?,
+                    }
+                    w.flush()?;
+                }
+                b'L' => {
+                    // Phase 31c: an owned directory was listed: its record with the chunks it read
+                    let i = current.ok_or_else(|| io::Error::other("directory record outside a volume"))?;
+                    #[derive(serde::Deserialize)]
+                    struct K {
+                        rec: DirRec,
+                        blocks: Vec<(usize, u64)>,
+                    }
+                    let k: K =
+                        serde_json::from_slice(&p).map_err(|e| io::Error::other(format!("directory record: {e}")))?;
+                    let mut deps: Vec<(u32, u64)> = k
+                        .blocks
+                        .iter()
+                        .filter(|(d, _)| *d < names.len())
+                        .map(|&(d, b)| (d as u32, b * crate::proto::BLOCK / src.chunk_size(d).max(1)))
+                        .collect();
+                    deps.sort_unstable();
+                    deps.dedup();
+                    out[i].dirs.push(DirRec { deps, ..k.rec });
                 }
                 b'P' if p.len() == 8 => {
                     let i = current.ok_or_else(|| io::Error::other("estimate outside a volume"))?;

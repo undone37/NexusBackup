@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use chunkstore::names::KIND_DIR;
 use chunkstore::{ChunkId, Index, Manifest, NameIndex, Store};
 use fsindex::parent::{self, Helper, Listed, Source};
-use fsindex::{Limits, Report, Volume, VolumeRec, REPORT_FILE};
+use fsindex::{DirRec, Entry, Limits, Report, Volume, VolumeRec, REPORT_FILE};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io;
@@ -46,6 +46,102 @@ struct StoreSource<'a> {
     cache: Mutex<VecDeque<Cached>>,
     /// chunks read from the store (cache misses)
     loads: AtomicU64,
+    /// Phase 31c: the previous snapshot's directories nothing of whose listing changed
+    history: Hist,
+    /// directories taken over from it
+    taken: AtomicU64,
+}
+
+/// (volume key, directory) -> (its entries, its record in this snapshot's disk numbers)
+type Hist = HashMap<(String, String), (Vec<Entry>, DirRec)>;
+
+/// Side file of the directory records (Phase 31c, postcard, sealed like the report).
+const DIRS_FILE: &str = "fsindex-dirs";
+const DIRS_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct DirTable {
+    version: u32,
+    /// disk index names the records' `deps` count in
+    disks: Vec<String>,
+    /// (volume key, its directories)
+    volumes: Vec<(String, Vec<DirRec>)>,
+}
+
+/// The directories of the previous snapshot (`pm`, report `pr`) whose listing read
+/// only chunks that are still the same in this snapshot (disks `names` / `cur`),
+/// with their entries from its name index.
+fn history(store: &Store, pm: &Manifest, pr: &Report, names: &[String], cur: &[&[ChunkId]]) -> Result<Hist> {
+    let mut out = Hist::new();
+    let Some(b) = store.read_snap_file(&pm.source, pm.time, DIRS_FILE)? else {
+        return Ok(out);
+    };
+    let Ok(table) = postcard::from_bytes::<DirTable>(&b) else {
+        return Ok(out);
+    };
+    if table.version != DIRS_VERSION {
+        return Ok(out);
+    }
+    // the previous snapshot's chunk ids per disk, matched by index name
+    let mut prev_ids: HashMap<String, Vec<ChunkId>> = HashMap::new();
+    for d in &table.disks {
+        if let (true, Ok(Index::Fixed { chunks, .. })) = (pm.indexes.contains(d), store.load_index(pm, d)) {
+            prev_ids.insert(d.clone(), chunks);
+        }
+    }
+    let disk_now: HashMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (n.as_str(), i)).collect();
+    let unchanged = |pd: u32, c: u64| -> Option<(u32, u64)> {
+        let name = table.disks.get(pd as usize)?;
+        let now = *disk_now.get(name.as_str())?;
+        let (a, b) = (prev_ids.get(name)?.get(c as usize)?, cur[now].get(c as usize)?);
+        (a == b).then_some((now as u32, c))
+    };
+    for (key, recs) in table.volumes {
+        for r in recs {
+            let deps: Option<Vec<(u32, u64)>> = r.deps.iter().map(|&(d, c)| unchanged(d, c)).collect();
+            // no deps means nothing was recorded: list it again
+            if let Some(deps) = deps.filter(|d| !d.is_empty()) {
+                out.insert((key.clone(), r.rel.clone()), (Vec::new(), DirRec { deps, ..r }));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Ok(out);
+    }
+    // their entries: the previous name index below each volume's browse path, by directory
+    let browse: HashMap<&str, &str> = pr
+        .volumes
+        .iter()
+        .map(|v| (v.volume.key.as_str(), v.volume.browse.as_str()))
+        .collect();
+    let prefixes: Vec<(String, String)> = out
+        .keys()
+        .map(|(k, _)| k.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter_map(|k| Some((format!("{}/", browse.get(k.as_str())?), k)))
+        .collect();
+    let names_idx = store.load_names(pm)?.unwrap_or_default();
+    for (p, size, mtime, kind) in names_idx.iter() {
+        for (pre, key) in &prefixes {
+            let Some(rest) = p.strip_prefix(pre.as_str()) else {
+                continue;
+            };
+            let dir = rest.rsplit_once('/').map_or("", |(d, _)| d);
+            if let Some((entries, _)) = out.get_mut(&(key.clone(), dir.to_owned())) {
+                entries.push(Entry {
+                    path: rest.to_owned(),
+                    size,
+                    mtime,
+                    kind,
+                });
+            }
+            break;
+        }
+    }
+    // a volume the previous report does not know by its key has no entries to take over
+    out.retain(|(k, _), _| browse.contains_key(k.as_str()));
+    Ok(out)
 }
 
 impl StoreSource<'_> {
@@ -89,6 +185,14 @@ impl Source for StoreSource<'_> {
     fn chunk_size(&self, d: usize) -> u64 {
         self.disks[d].0
     }
+    fn dir(&self, key: &str, rel: &str) -> Option<(Vec<Entry>, DirRec)> {
+        let hit = self.history.get(&(key.to_owned(), rel.to_owned())).cloned();
+        if hit.is_some() {
+            self.taken.fetch_add(1, Ordering::Relaxed);
+        }
+        hit
+    }
+
     fn read(&self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
         let (cs, size, _) = self.disks[d];
         if off.checked_add(buf.len() as u64).is_none_or(|e| e > size) {
@@ -162,7 +266,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     if idx.is_empty() {
         bail!("snapshot has no disk images");
     }
-    let src = StoreSource {
+    let mut src = StoreSource {
         store,
         names: idx.iter().map(|(n, _)| n.clone()).collect(),
         disks: idx
@@ -178,9 +282,19 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             .collect(),
         cache: Mutex::new(VecDeque::new()),
         loads: AtomicU64::new(0),
+        history: Hist::new(),
+        taken: AtomicU64::new(0),
     };
     let disk_no: HashMap<String, usize> = src.names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
     let prev = previous(store, m);
+    if let Some((pm, pr)) = &prev {
+        let cur: Vec<&[ChunkId]> = src.disks.iter().map(|d| d.2).collect();
+        // a broken history only costs time: list everything
+        src.history = history(store, pm, pr, &src.names, &cur).unwrap_or_else(|e| {
+            eprintln!("fsindex: directory records of the previous snapshot unusable: {e:#}");
+            Hist::new()
+        });
+    }
     // a volume is reused when every chunk its last parse read is unchanged
     let unchanged = |rec: &VolumeRec| {
         rec.volume.state == "indexed"
@@ -251,9 +365,11 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     // where the time goes: every cache miss decrypts and decompresses one chunk (stderr:
     // stdout is the job result)
     eprintln!(
-        "fsindex: volumes listed in {:.1?}, {} chunk(s) read from the store",
+        "fsindex: volumes listed in {:.1?}, {} chunk(s) read from the store, {} of {} directories taken over from the previous snapshot",
         started.elapsed(),
-        src.loads.load(Ordering::Relaxed)
+        src.loads.load(Ordering::Relaxed),
+        src.taken.load(Ordering::Relaxed),
+        listed.iter().map(|l| l.dirs.len()).sum::<usize>()
     );
     // fill the reused volumes from the previous snapshot's name index
     let mut reused = 0;
@@ -284,6 +400,13 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
                 .reads
                 .iter()
                 .filter_map(|(d, c, _)| Some((*disk_no.get(d)?, *c)))
+                .collect();
+            // its directory records go on to the next snapshot (Phase 31c)
+            l.dirs = src
+                .history
+                .iter()
+                .filter(|((k, _), _)| *k == l.volume.key)
+                .map(|(_, (_, r))| r.clone())
                 .collect();
             reused += 1;
         }
@@ -340,12 +463,24 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     };
     store.write_names(&m.source, m.time, &names)?;
     store.write_snap_file(&m.source, m.time, REPORT_FILE, &serde_json::to_vec(&report)?)?;
+    // Phase 31c: what each directory's listing read, for the next snapshot
+    let table = DirTable {
+        version: DIRS_VERSION,
+        disks: src.names.clone(),
+        volumes: listed
+            .iter()
+            .filter(|l| !l.dirs.is_empty())
+            .map(|l| (l.volume.key.clone(), l.dirs.clone()))
+            .collect(),
+    };
+    store.write_snap_file(&m.source, m.time, DIRS_FILE, &postcard::to_stdvec(&table)?)?;
     Ok(json!({
         "entries": names.len(),
         "complete": complete,
         "volumes": listed.iter().map(|l| summary(&l.volume)).collect::<Vec<_>>(),
         "parsed": parsed,
         "reused": reused,
+        "dirs_taken_over": src.taken.load(Ordering::Relaxed),
         "micro_vm": fallback,
         "elapsed_ms": t0.elapsed().as_millis() as u64,
     }))

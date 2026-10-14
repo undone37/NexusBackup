@@ -5216,6 +5216,7 @@ dependencies = [
  "keyd",
  "libc",
  "nbd",
+ "postcard",
  "reqwest",
  "serde",
  "serde_json",

@@ -58,6 +58,29 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         }
         // emits this directory's entries (else only looks for its subdirectories)
         let own = out.owns(&rel, depth);
+        if let Some(subs) = out.reuse_dir(&rel, own) {
+            // Phase 31c: listed in the previous snapshot and nothing that listing read changed
+            if depth == 1
+                && rel.eq_ignore_ascii_case("Windows")
+                && subs.iter().any(|(_, n)| n.eq_ignore_ascii_case("System32"))
+            {
+                info.windows = true;
+            }
+            for (num, name) in subs {
+                let path = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+                if depth + 1 < MAX_DEPTH && out.walks(&path, depth + 1) && visited.insert(num) {
+                    stack.push((num, path, depth + 1));
+                }
+            }
+            continue;
+        }
+        if own {
+            out.dir_start();
+        }
+        // for this directory's record (Phase 31c): its subdirectories, complete or not, its counters
+        let mut subdirs: Vec<(u64, String)> = Vec::new();
+        let mut complete = true;
+        let (dedup0, skipped0) = (info.dedup_files, info.skipped_entries);
         let dir = match ntfs.file(&mut fs, rec) {
             Ok(d) => d,
             Err(e) => {
@@ -85,6 +108,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     if own {
                         out.note(info, format!("/{rel}: {err}"));
                     }
+                    complete = false;
                     break;
                 }
             };
@@ -175,6 +199,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             if own && !out.emit(info, &path, size, nt_to_unix(mtime), kind)? {
                 return Ok(());
             }
+            if kind == KIND_DIR {
+                subdirs.push((num, name.clone()));
+            }
             if kind == KIND_DIR && out.walks(&path, depth + 1) {
                 if depth + 1 >= MAX_DEPTH {
                     out.note(info, format!("/{path}: nested too deeply"));
@@ -184,6 +211,15 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     stack.push((num, path, depth + 1));
                 }
             }
+        }
+        if own && complete {
+            out.dir_listed(&crate::DirRec {
+                rel,
+                subdirs,
+                dedup: info.dedup_files - dedup0,
+                skipped: info.skipped_entries - skipped0,
+                ..Default::default()
+            });
         }
     }
     Ok(())

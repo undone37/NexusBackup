@@ -93,11 +93,45 @@ fn sample(root: &Path, fstab: &str) -> Vec<(String, u8, u64)> {
     out
 }
 
+/// (volume key, directory) -> (entries, record): what the previous listing left (Phase 31c)
+type Hist = std::collections::HashMap<(String, String), (Vec<fsindex::Entry>, fsindex::DirRec)>;
+
 struct Files {
     disks: Vec<File>,
+    hist: Hist,
+    /// bytes the helpers read
+    bytes: std::sync::atomic::AtomicU64,
+}
+
+fn files(paths: &[&Path]) -> Files {
+    Files {
+        disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
+        hist: Hist::new(),
+        bytes: Default::default(),
+    }
+}
+
+/// The history a listing leaves for the next one (every directory unchanged), less `drop`.
+fn hist_of(l: &[Listed], drop: Option<&str>) -> Hist {
+    let mut h = Hist::new();
+    for x in l {
+        for r in x.dirs.iter().filter(|r| Some(r.rel.as_str()) != drop) {
+            let entries = x
+                .entries
+                .iter()
+                .filter(|e| e.path.rsplit_once('/').map_or("", |(d, _)| d) == r.rel)
+                .cloned()
+                .collect();
+            h.insert((x.volume.key.clone(), r.rel.clone()), (entries, r.clone()));
+        }
+    }
+    h
 }
 
 impl Source for Files {
+    fn dir(&self, key: &str, rel: &str) -> Option<(Vec<fsindex::Entry>, fsindex::DirRec)> {
+        self.hist.get(&(key.to_owned(), rel.to_owned())).cloned()
+    }
     fn names(&self) -> Vec<String> {
         (0..self.disks.len()).map(|i| format!("drive-scsi{i}")).collect()
     }
@@ -108,6 +142,8 @@ impl Source for Files {
         4 << 20
     }
     fn read(&self, d: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.bytes
+            .fetch_add(buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
         self.disks[d].read_exact_at(buf, off)
     }
 }
@@ -117,9 +153,7 @@ fn helper() -> Helper {
 }
 
 fn list(paths: &[&Path]) -> Vec<Listed> {
-    let src = Files {
-        disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
-    };
+    let src = files(paths);
     // live progress: (entries so far, the walker's estimate) per volume
     let mut seen: std::collections::HashMap<String, (u64, Option<u64>)> = Default::default();
     let l = parent::list_with_progress(&src, &helper(), Limits::default(), &mut |_| false, &mut |v, n, e| {
@@ -129,9 +163,7 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
     })
     .unwrap();
     // Phase 32: three helpers splitting the NTFS / ext4 trees list exactly the same
-    let src3 = Files {
-        disks: paths.iter().map(|p| File::open(p).unwrap()).collect(),
-    };
+    let src3 = files(paths);
     let three = Helper { parts: 3, ..helper() };
     let mut l3 = parent::list(&src3, &three, Limits::default(), &mut |_| false).unwrap();
     let key = |x: &Listed| {
@@ -157,6 +189,53 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
         l1,
         "3 helpers list what 1 lists"
     );
+    // Phase 31c: a listing that may take every directory over lists the same and reads less;
+    // a directory missing from the history (changed) is listed again; with 1 and 3 helpers
+    let first = src.bytes.load(std::sync::atomic::Ordering::Relaxed);
+    for x in &l {
+        for r in &x.dirs {
+            assert!(
+                x.volume.fs == "ntfs",
+                "{}: directory records only for NTFS",
+                x.volume.fs
+            );
+            assert!(!r.deps.is_empty(), "/{}: a record without what it read", r.rel);
+        }
+    }
+    let deepest = l
+        .iter()
+        .flat_map(|x| x.dirs.iter().map(|r| r.rel.clone()))
+        .max_by_key(|r| r.matches('/').count());
+    for (drop, parts) in [(None, 1), (deepest.as_deref(), 1), (None, 3)] {
+        let again = Files {
+            hist: hist_of(&l, drop),
+            ..files(paths)
+        };
+        let h = Helper { parts, ..helper() };
+        let mut l2 = parent::list(&again, &h, Limits::default(), &mut |_| false).unwrap();
+        l2.sort_by(|a, b| a.volume.key.cmp(&b.volume.key));
+        assert_eq!(
+            l2.iter().map(key).collect::<Vec<_>>(),
+            l1,
+            "taken over ({drop:?}, {parts}): same listing"
+        );
+        for (a, b) in l2.iter().zip(&l3) {
+            assert_eq!(
+                a.dirs.len(),
+                b.dirs.len(),
+                "{}: every directory has a record again",
+                a.volume.key
+            );
+        }
+        let read = again.bytes.load(std::sync::atomic::Ordering::Relaxed);
+        // (with 3 helpers every one of them opens the volumes: on these tiny images that dominates)
+        if drop.is_none() && parts == 1 && l.iter().any(|x| !x.dirs.is_empty()) {
+            assert!(
+                read < first,
+                "taken over ({parts}): {read} bytes read, {first} the first time"
+            );
+        }
+    }
     for x in l.iter().filter(|x| x.volume.state == "indexed") {
         let (n, e) = seen[&x.volume.key];
         assert_eq!(
@@ -699,9 +778,7 @@ fn reuse_skips_the_parse() {
     ) {
         return;
     }
-    let src = Files {
-        disks: vec![File::open(&img).unwrap()],
-    };
+    let src = files(&[img.as_path()]);
     let l = parent::list(&src, &helper(), Limits::default(), &mut |v| v.fs == "ext4").unwrap();
     assert!(l[0].reused && l[0].entries.is_empty() && l[0].reads.is_empty());
     // limits: the listing stops and says so

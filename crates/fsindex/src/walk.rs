@@ -21,11 +21,23 @@ pub trait Driver {
     fn expect(&mut self, _entries: u64) -> io::Result<()> {
         Ok(())
     }
+    /// Phase 31c: the previous snapshot's subdirectories of directory `rel` when its
+    /// listing can be taken over unread (the parent adds its entries when `own`);
+    /// `None`: list it.
+    fn reuse_dir(&mut self, _rel: &str, _own: bool) -> io::Result<Option<Vec<(u64, String)>>> {
+        Ok(None)
+    }
+    /// Phase 31c: an owned directory was listed completely; `blocks` its listing read.
+    fn dir_listed(&mut self, _rec: &crate::DirRec, _blocks: &[(usize, u64)]) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Limits and bookkeeping of one walk, handed to the file system walkers.
 pub struct Out<'a> {
     driver: &'a mut dyn Driver,
+    /// the disks, for the per-directory read sets (Phase 31c)
+    io: Option<Io>,
     total: u64,
     limits: Limits,
     deadline: Instant,
@@ -73,6 +85,37 @@ impl Out<'_> {
         self.limits.part.owns(rel, depth)
     }
 
+    /// Phase 31c: the subdirectories of `rel` when the previous snapshot's listing
+    /// of it still holds (its entries are then the parent's business); `None`: list it.
+    pub fn reuse_dir(&mut self, rel: &str, own: bool) -> Option<Vec<(u64, String)>> {
+        match self.driver.reuse_dir(rel, own) {
+            Ok(r) => r,
+            Err(e) => {
+                self.fatal = Some(e);
+                None
+            }
+        }
+    }
+
+    /// Starts the read set of an owned directory's listing.
+    pub fn dir_start(&mut self) {
+        if let Some(io) = &self.io {
+            io.borrow_mut().take_accessed();
+        }
+    }
+
+    /// An owned directory was listed completely: its record for the next snapshot.
+    pub fn dir_listed(&mut self, rec: &crate::DirRec) {
+        let blocks = self
+            .io
+            .as_ref()
+            .map(|io| io.borrow_mut().take_accessed())
+            .unwrap_or_default();
+        if let Err(e) = self.driver.dir_listed(rec, &blocks) {
+            self.fatal = Some(e);
+        }
+    }
+
     /// A directory that could not be read (the volume becomes `partial`).
     pub fn note(&mut self, _info: &mut Volume, msg: String) {
         self.notes += 1;
@@ -93,6 +136,7 @@ struct Cand {
 pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) -> io::Result<()> {
     let mut out = Out {
         driver,
+        io: Some(io.clone()),
         total: 0,
         limits,
         deadline: Instant::now() + Duration::from_secs(limits.budget_secs),
@@ -396,6 +440,7 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
     let mut c = Count(0);
     let mut out = Out {
         driver: &mut c,
+        io: None,
         total: 0,
         limits,
         deadline: Instant::now() + Duration::from_secs(limits.budget_secs),

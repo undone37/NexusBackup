@@ -23,7 +23,8 @@ use std::rc::Rc;
 
 pub const MAX_FRAME: u32 = 16 << 20;
 pub const MAX_READ: u32 = 1 << 20;
-const BLOCK: u64 = 64 << 10;
+/// Bytes per block of the helper's cache (and of the per-directory read sets).
+pub const BLOCK: u64 = 64 << 10;
 const BATCH: usize = 64 << 10;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -133,6 +134,8 @@ pub struct Remote<R, W> {
     tick: u64,
     bytes: u64,
     cap: u64,
+    /// blocks accessed since the last `take_accessed`
+    accessed: std::collections::HashSet<(usize, u64)>,
 }
 
 impl<R: Read, W: Write> Remote<R, W> {
@@ -145,6 +148,7 @@ impl<R: Read, W: Write> Remote<R, W> {
             tick: 0,
             bytes: 0,
             cap: cap.max(BLOCK * 16),
+            accessed: std::collections::HashSet::new(),
         }
     }
 
@@ -198,6 +202,7 @@ impl<R: Read, W: Write> DiskIo for Remote<R, W> {
         while done < buf.len() {
             let pos = off + done as u64;
             let b = pos / BLOCK;
+            self.accessed.insert((disk, b));
             if let Some((t, d)) = self.cache.get_mut(&(disk, b)) {
                 self.tick += 1;
                 let old = *t;
@@ -225,6 +230,10 @@ impl<R: Read, W: Write> DiskIo for Remote<R, W> {
             }
         }
         Ok(())
+    }
+
+    fn take_accessed(&mut self) -> Vec<(usize, u64)> {
+        self.accessed.drain().collect()
     }
 
     fn forget(&mut self) {
@@ -286,6 +295,27 @@ impl<R: Read, W: Write> Driver for HelperDriver<R, W> {
 
     fn expect(&mut self, entries: u64) -> io::Result<()> {
         write_frame(&mut self.chan.borrow_mut().w, b'P', &entries.to_le_bytes())
+    }
+
+    fn reuse_dir(&mut self, rel: &str, own: bool) -> io::Result<Option<Vec<(u64, String)>>> {
+        self.flush_batch()?;
+        let mut c = self.chan.borrow_mut();
+        write_frame(
+            &mut c.w,
+            b'U',
+            &serde_json::to_vec(&serde_json::json!({"rel": rel, "own": own}))?,
+        )?;
+        c.w.flush()?;
+        match read_frame(&mut c.r)? {
+            (b'Y', s) => Ok(Some(serde_json::from_slice(&s)?)),
+            (b'N', _) => Ok(None),
+            _ => Err(invalid("unexpected answer to a directory query")),
+        }
+    }
+
+    fn dir_listed(&mut self, rec: &crate::DirRec, blocks: &[(usize, u64)]) -> io::Result<()> {
+        let body = serde_json::json!({"rec": rec, "blocks": blocks});
+        write_frame(&mut self.chan.borrow_mut().w, b'L', &serde_json::to_vec(&body)?)
     }
 }
 

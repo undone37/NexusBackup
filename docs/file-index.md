@@ -156,6 +156,19 @@ entries): 150-217 s with one helper and a FIFO cache of 32, 82-90 s with the LRU
 splitting from depth 2 (the subdirectories of `Windows/WinSxS` all went to one helper; hence depth 3 and per-directory
 owners).
 
+**Directories taken over (Phase 31c, NTFS).** A running Windows system volume changes somewhere between any two
+snapshots, so the per-volume reuse rarely applies to it. Every NTFS directory listed completely gets a record (side
+file `fsindex-dirs`, postcard, sealed: path, the chunks its listing read, its subdirectories with their MFT record
+numbers, its dedup / skipped counts). The helper's block cache logs every block a directory's listing touches (hits
+included: its index root and allocation blocks and its children's MFT records) and sends it with the record (frame
+`L`); before listing a directory the helper asks (frame `U`, by path), and when every chunk of the previous
+snapshot's record is unchanged (chunk ids compared, nothing decrypted) the parent adds the previous name index's
+entries of that directory and answers with its subdirectories, which the helper walks on without reading the
+directory. A renamed or moved directory has another path and is listed again. Volumes taken over whole carry their
+records on. ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
+listing depends on; ext4 volumes are taken over per volume as before. The job log line says how many directories
+were taken over; the result has `dirs_taken_over`.
+
 `groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
 browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.
 `snapshot_index` (catalog v42) keeps the state per VM/CT snapshot (`pending` while queued).

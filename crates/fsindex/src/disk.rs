@@ -17,6 +17,11 @@ pub trait DiskIo {
     /// Drops cached bytes (start of a volume: every byte a parse depends on
     /// must be requested again, so the parent sees the volume's read set).
     fn forget(&mut self) {}
+    /// The (disk, 64 KiB block) accessed since the last call, cache hits
+    /// included (Phase 31c: what one directory's listing depended on).
+    fn take_accessed(&mut self) -> Vec<(usize, u64)> {
+        Vec::new()
+    }
 }
 
 pub type Io = Rc<RefCell<dyn DiskIo>>;
