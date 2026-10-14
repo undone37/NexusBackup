@@ -15,7 +15,7 @@
   import TenantRecoveryKey from '../components/TenantRecoveryKey.svelte';
   import TenantWizard from '../components/TenantWizard.svelte';
   import Sso from './settings/Sso.svelte';
-  import Menu from '../components/Menu.svelte';
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconCloud from '@lucide/svelte/icons/cloud';
   import IconLink from '@lucide/svelte/icons/link';
@@ -402,6 +402,26 @@
     if (!(await askConfirm(t.confirmDelete(`${t.tenant} "${x.name}"`)))) return;
     if (await act(del(`/tenants/${encodeURIComponent(x.name)}`), t.deleted)) load();
   }
+  /** The other actions of a tenant row (Edit and View as tenant are buttons of their own). */
+  function tenantActions(x: Tenant, r: unknown): MenuItem[] {
+    const out: MenuItem[] = [];
+    if (r && can.restore(session.user)) out.push({ label: t.offsite.copy, icon: IconCloud, title: t.offsite.copyLabel(x.name), onselect: () => openCopy(x) });
+    if (can.configure(session.user))
+      out.push(x.disabled ? { label: t.tdis.reactivate, onselect: () => reactivate(x) } : { label: t.tdis.deactivate, onselect: () => deactivate(x) });
+    if (can.lockdown(session.user)) {
+      const l = lockOf(x.name);
+      if (!l) out.push({ label: t.lockdown.action, icon: IconLockdown, title: t.lockdown.actionLabel(x.name), onselect: () => openLockdown(x) });
+      else if (!l.lift_quorum) out.push({ label: t.lockdown.lift, title: t.lockdown.liftLabel(x.name), onselect: () => liftLockdown(x) });
+      if (l && ldParts(l).length && !l.freeze_lift_quorum)
+        out.push({ label: t.p29.freeze.lift, title: t.p29.freeze.liftLabel(x.name), onselect: () => liftFreeze(x) });
+    }
+    if (canKey) {
+      out.push({ label: t.tkey.button, onselect: () => (keyOf = x.name) });
+      out.push({ label: t.sp.idp.button, title: t.sp.idp.label(x.name), onselect: () => ((idpOf = x.name), (idpOpen = true)) });
+    }
+    if (can.configure(session.user)) out.push({ label: t.delete, onselect: () => remove(x) });
+    return out;
+  }
 </script>
 
 <div class="page-head">
@@ -493,37 +513,9 @@
                     ]}
                   />
                 {/if}
-                {#if r && can.restore(session.user)}
-                  <button type="button" class="small" onclick={() => openCopy(x)} aria-label={t.offsite.copyLabel(x.name)}
-                    ><IconCloud aria-hidden="true" />{t.offsite.copy}</button
-                  >
-                {/if}
                 {#if can.configure(session.user)}<button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>{/if}
-                {#if can.configure(session.user)}
-                {#if x.disabled}
-                  <button type="button" class="small" onclick={() => reactivate(x)}>{t.tdis.reactivate}</button>
-                {:else}
-                  <button type="button" class="small" onclick={() => deactivate(x)}>{t.tdis.deactivate}</button>
-                {/if}
-                {/if}
-                {#if can.lockdown(session.user)}
-                  {#if !lockOf(x.name)}
-                    <button type="button" class="small danger" onclick={() => openLockdown(x)} aria-label={t.lockdown.actionLabel(x.name)}
-                      ><IconLockdown aria-hidden="true" />{t.lockdown.action}</button
-                    >
-                  {:else if !lockOf(x.name)?.lift_quorum}
-                    <button type="button" class="small" onclick={() => liftLockdown(x)} aria-label={t.lockdown.liftLabel(x.name)}>{t.lockdown.lift}</button>
-                  {/if}
-                  {#if lockOf(x.name) && ldParts(lockOf(x.name)!).length && !lockOf(x.name)?.freeze_lift_quorum}
-                    <button type="button" class="small" onclick={() => liftFreeze(x)} aria-label={t.p29.freeze.liftLabel(x.name)}>{t.p29.freeze.lift}</button>
-                  {/if}
-                {/if}
-                {#if canKey}<button type="button" class="small" onclick={() => (keyOf = x.name)}>{t.tkey.button}</button>{/if}
-                {#if canKey}
-                  <button type="button" class="small" onclick={() => ((idpOf = x.name), (idpOpen = true))} aria-label={t.sp.idp.label(x.name)}>{t.sp.idp.button}</button>
-                {/if}
-                {#if can.configure(session.user)}
-                  <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
+                {#if tenantActions(x, r).length}
+                  <Menu label={t.agents.more} ariaLabel={t.tenants.moreLabel(x.name)} items={tenantActions(x, r)} />
                 {/if}
               </td>
             </tr>

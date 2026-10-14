@@ -946,7 +946,7 @@ async function main() {
         await login('admin');
       }
       await go('/tenants');
-      await ev(`$rowClick('initech', 'Recovery key'); return true;`);
+      await ev(`$rowMenu('initech', 'Recovery key'); return true;`);
       await until(`return !!$button('Show key once')`, 'tenant key requests');
       await shot('tenant-key');
       await ev(`$click('Show key once'); return true;`);
@@ -1042,7 +1042,7 @@ async function main() {
     // Phase 17f: deactivate a tenant (reason dialog; the request then needs approval)
     ['tenant-deactivate', async () => {
       await go('/tenants');
-      await ev(`$rowClick('globex', 'Deactivate'); return true;`);
+      await ev(`$rowMenu('globex', 'Deactivate'); return true;`);
       await until(`return !!document.querySelector('dialog[open] input')`, 'deactivate reason dialog');
       await ev(`$fill('dialog[open] input', 'contract paused until 2027-01'); return true;`);
       await shot('tenant-deactivate');
@@ -1463,7 +1463,7 @@ async function main() {
       await settle();
       await shot('hash-hunt', { height: 1100 });
       await go('/tenants');
-      await ev(`$rowClick('acme', 'Lock down…'); return true;`);
+      await ev(`$rowMenu('acme', 'Lock down…'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #ld-reason')`, 'lockdown dialog');
       await ev(`$fill('#ld-reason', 'Ticket SEC-2026-131: admin credentials of acme leaked'); $fill('#ld-pw', 'nexus'); $fill('#ld-totp', '492039'); return true;`);
       await shot('tenant-lockdown', { height: 1000 });
@@ -1473,7 +1473,7 @@ async function main() {
       await until(`return document.body.innerText.includes('Tenant acme is locked down')`, 'locked down');
       await settle();
       await shot('tenants-locked');
-      await ev(`$rowClick('acme', 'Request lift'); return true;`);
+      await ev(`$rowMenu('acme', 'Request lift'); return true;`);
       await confirmOk();
       await settle();
       await login('admin');

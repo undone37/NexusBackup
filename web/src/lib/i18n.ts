@@ -722,6 +722,7 @@ export const en = {
     } as Record<string, string>,
   },
   tenants: {
+    moreLabel: (name: string) => `More actions for tenant ${name}`,
     title: "Tenants",
     lede: "Customers or departments, each with its own encryption keys and offsite target.",
     new: "New tenant",
