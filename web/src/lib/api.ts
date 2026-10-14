@@ -108,6 +108,7 @@ export const postRaw = <T>(path: string, raw: Blob | ArrayBuffer, headers: Recor
 export async function act<T>(
   p: Promise<Outcome<T>>,
   okText: string | ((data: T) => string),
+  link?: (data: T) => { path: string; label: string } | null,
 ): Promise<Outcome<T> | null> {
   try {
     const o = await p;
@@ -132,7 +133,7 @@ export async function act<T>(
       );
       return o;
     }
-    notify('ok', ok);
+    notify('ok', ok, undefined, link?.(o.data) ?? undefined);
     return o;
   } catch (e) {
     notify('error', errText(e));

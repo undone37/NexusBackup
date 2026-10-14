@@ -608,6 +608,7 @@ export const en = {
     followupsHint:
       "Queued by this job when it finished. Retention, the offsite copy and the file index of new snapshots run as jobs of their own, so a backup ends (and frees the Proxmox VE node) without waiting for them.",
     groupN: (id: number) => `group #${id}`,
+    openN: (id: number) => `Open job #${id}`,
     waitingFor: "Waiting",
     // job parameters shown by name (others keep their technical key)
     paramLabels: {

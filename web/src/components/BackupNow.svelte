@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   // "Back up now" (Phase 13b): the whole group, selected guests, or the guests that failed last time.
   import { post, act } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
@@ -46,7 +47,7 @@
       // the end of the chosen day (UTC): "until" covers that day
       params.keep_until = Date.parse(`${keepUntil}T23:59:59Z`) / 1000;
     }
-    if (await act(post('/jobs', { kind: 'backup', tenant: g.tenant, params }), t.dash.backupQueued)) open = false;
+    if (await act(post<{ id: number }>('/jobs', { kind: 'backup', tenant: g.tenant, params }), t.dash.backupQueued, jobLink)) open = false;
   }
 </script>
 

@@ -65,6 +65,12 @@ export function waitText(p: JobProgress | null | undefined): string | null {
   }
 }
 
+/** The "Open job #N" link of a notice after an action started a job (POST /jobs answers `{id}`). */
+export const jobLink = (o: unknown): { path: string; label: string } | null => {
+  const id = (o as { id?: unknown } | null)?.id;
+  return typeof id === 'number' ? { path: `/jobs/${id}`, label: t.jobs.openN(id) } : null;
+};
+
 /** The job that queued `j` (follow-up jobs: retention, offsite, file index), if any. */
 export const afterJob = (j: Job): number | null => (typeof j.params?.after_job === 'number' ? j.params.after_job : null);
 

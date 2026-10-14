@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   import { rowClick, rowLink } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
@@ -79,7 +80,7 @@
     const ct = tf.source.startsWith('ct-');
     const params: Record<string, unknown> = { source: tf.source, time: Number(tf.time), node: tf.node, storage: tf.storage, checks: toChecks(tc, ct) };
     if (tf.bridge.trim()) params.bridge = tf.bridge.trim();
-    const o = await act(post<{ id: number }>('/jobs', { kind: 'restore_test', tenant: tf.tenant, params }), (d) => t.rtest.started(d.id));
+    const o = await act(post<{ id: number }>('/jobs', { kind: 'restore_test', tenant: tf.tenant, params }), (d) => t.rtest.started(d.id), jobLink);
     if (o) {
       testOpen = false;
       load();

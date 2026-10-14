@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   import { get, post, act, qs } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
@@ -93,8 +94,10 @@
     if (!ready || !agent) return;
     busy = true;
     const params = { source, time, paths, target, overwrite, confirm, agent_id: agent.id, ...(scanFirst ? { scan_first: scanFirst } : {}) };
-    const r = await act(post<{ id: number }>('/jobs', { kind: 'restore_files', tenant, params }), (d) =>
-      t.snap.jobStarted(d.id),
+    const r = await act(
+      post<{ id: number }>('/jobs', { kind: 'restore_files', tenant, params }),
+      (d) => t.snap.jobStarted(d.id),
+      jobLink,
     );
     busy = false;
     if (!r) return;

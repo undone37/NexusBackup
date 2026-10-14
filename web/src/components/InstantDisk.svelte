@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   // Phase 22b: instant disk recovery — one disk of a VM snapshot attached to an existing
   // VM (a VM a group of the tenant protects; the scheduler checks it) through the instant
   // recovery overlay, optionally moved to real storage afterwards.
@@ -51,8 +52,10 @@
     };
     if (key.trim()) params.key = key.trim();
     if (moveTo.trim()) params.move_to = moveTo.trim();
-    const r = await act(post<{ id?: number }>('/jobs', { kind: 'instant_disk', tenant: snap.tenant, params }), (d) =>
-      d.id ? t.snap.jobStarted(d.id) : t.idr.requested,
+    const r = await act(
+      post<{ id?: number }>('/jobs', { kind: 'instant_disk', tenant: snap.tenant, params }),
+      (d) => d.id ? t.snap.jobStarted(d.id) : t.idr.requested,
+      jobLink,
     );
     busy = false;
     if (r) open = false;

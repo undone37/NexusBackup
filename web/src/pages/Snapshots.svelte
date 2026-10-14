@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   import { onMount } from 'svelte';
   import { get, post, del, act, errText, qs } from '../lib/api';
   import { askConfirm } from '../lib/confirm.svelte';
@@ -191,7 +192,7 @@
             ...(prScan ? { scan_first: prScan } : {}),
           },
         };
-    const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id));
+    const r = await act(post<{ id: number }>('/jobs', job), (d) => t.snap.jobStarted(d.id), jobLink);
     busy = false;
     if (r) prOpen = false;
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
@@ -347,8 +348,10 @@
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
     }
-    const r = await act(post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }), (d) =>
-      d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued,
+    const r = await act(
+      post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }),
+      (d) => d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued,
+      jobLink,
     );
     busy = false;
     if (r) dlgOpen = false;
@@ -493,7 +496,7 @@
 
   async function repair(tenant: string) {
     if (!(await askConfirm(t.snap.repairConfirm(tenant)))) return;
-    const r = await act(post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }), t.snap.repairQueued);
+    const r = await act(post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }), t.snap.repairQueued, jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 
