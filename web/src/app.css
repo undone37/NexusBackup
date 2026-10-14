@@ -454,6 +454,24 @@ svg.lucide {
 .icon-btn .dot.warn {
   background: #b06a06;
 }
+.icon-btn .dot.info {
+  background: var(--accent);
+}
+/* the running-jobs icon pulses while something runs */
+.icon-btn.running.active svg {
+  color: var(--accent);
+  animation: running-pulse 1.6s ease-in-out infinite;
+}
+@keyframes running-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.running.active svg {
+    animation: none;
+  }
+}
 .whoami {
   color: inherit;
   text-decoration: none;

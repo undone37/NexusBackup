@@ -92,6 +92,7 @@ export const en = {
     unset: "—",
   },
   nav: {
+    jobsRunning: (n: number) => (n ? `${n} job${n === 1 ? '' : 's'} running` : 'No job running'),
     label: "Main navigation",
     dashboard: "Dashboard",
     snapshots: "Snapshots",

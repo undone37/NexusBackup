@@ -52,6 +52,7 @@
   import IconJobs from '@lucide/svelte/icons/list-checks';
   import IconAlerts from '@lucide/svelte/icons/bell';
   import IconApprovals from '@lucide/svelte/icons/stamp';
+  import IconRunning from '@lucide/svelte/icons/activity';
   import IconAudit from '@lucide/svelte/icons/scroll-text';
   import IconTenants from '@lucide/svelte/icons/building';
   import IconSources from '@lucide/svelte/icons/server';
@@ -155,6 +156,8 @@
   // Badges: open unacknowledged alerts and pending approvals; the break-glass banner (contract §7) for admins.
   let alerts: Alert[] = $state([]);
   let pendingApprovals = $state(0);
+  // jobs running right now (top bar, every page): refreshed every 10 s
+  let runningJobs = $state(0);
   const openAlerts = $derived(alerts.filter((a) => !a.acked_by));
   const critical = $derived(openAlerts.some((a) => a.severity === 'critical'));
   const glass = $derived(session.user?.role === 'admin' ? openAlerts.find((a) => a.kind === 'break_glass') : undefined);
@@ -199,6 +202,18 @@
     void route.path;
     refreshCounts();
     const iv = setInterval(refreshCounts, 30000);
+    return () => clearInterval(iv);
+  });
+  $effect(() => {
+    if (!session.user) return;
+    const count = () => {
+      if (document.visibilityState !== 'visible') return;
+      get<unknown[]>('/jobs?state=running')
+        .then((j) => (runningJobs = j.length))
+        .catch(() => {});
+    };
+    count();
+    const iv = setInterval(count, 10000);
     return () => clearInterval(iv);
   });
   async function ackGlass() {
@@ -330,6 +345,16 @@
             <span class="chip accent vault-badge" title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</span>
           {/if}
         {/if}
+        <a
+          class="icon-btn running"
+          class:active={runningJobs > 0}
+          href={href('/jobs?state=running')}
+          aria-label={t.nav.jobsRunning(runningJobs)}
+          title={t.nav.jobsRunning(runningJobs)}
+        >
+          <IconRunning aria-hidden="true" />
+          {#if runningJobs}<span class="dot info" aria-hidden="true">{runningJobs}</span>{/if}
+        </a>
         {#if viewApprovals(session.user)}
           <a class="icon-btn" href={href('/quorum')} aria-label={t.nav.approvalsPending(pendingApprovals)} title={t.nav.approvalsPending(pendingApprovals)}>
             <IconApprovals aria-hidden="true" />
