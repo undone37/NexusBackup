@@ -6,12 +6,20 @@
 //! length → `insert_chunk` → record plain → keyed → build `Index::Tree` →
 //! commit → `Release { success: true }`. Any failure before the commit ends
 //! with `Release { success: false }` and nothing committed.
+//!
+//! Scheduled full read (Phase 29, `Spec::full_read`): the Scan goes without a
+//! base, so the agent skips its metadata cache (and the Windows agent its USN
+//! journal) and reads every file. After the commit the new tree is compared
+//! with the previous snapshot (`chunkstore::drift`): a file with the same
+//! size, mtime, ctime and inode but other chunks is one the cache would have
+//! kept stale. Logged as one `full-read <source>/<time> {json}` line.
 
 use crate::map::MapDb;
 use crate::tls::Session;
 use crate::{hex, name, source_name, valid_rel_path, TREE_INDEX};
 use agent_proto::{BaseRef, Entry, Filters, Hash, Kind, Limits, Message, ScanStats, CAP_PREPARE2, MAX_BATCH};
 use anyhow::{bail, Context, Result};
+use chunkstore::drift::{self, Drift};
 use chunkstore::progress::Meter;
 use chunkstore::{ChunkId, Index, Manifest, Store, TreeEntry, TreeKind};
 use std::collections::{HashMap, HashSet};
@@ -25,6 +33,13 @@ pub struct Spec {
     /// sent with `PrepareEx` (agents with CAP_PREPARE2), ignored by older agents
     pub filters: Filters,
     pub limits: Limits,
+    /// Phase 28: SHA-256 per file in the name index. Agents with CAP_FILE_HASH
+    /// hash while they read (`ScanHashed`); for older agents and unchanged
+    /// files the store fills in (previous snapshot, else read back).
+    pub file_hashes: bool,
+    /// Phase 29: read everything and check this change tracker ("metadata-cache",
+    /// or "usn" for Windows agents); None = incremental as usual
+    pub full_read: Option<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +66,8 @@ pub struct Report {
     pub scan: ScanStats,
     /// machine layout JSON (agents with CAP_LAYOUT), stored as `.nexus-system/layout.json`
     pub layout: Option<String>,
+    /// Phase 29: result of a full read (`Spec::full_read`)
+    pub full_read: Option<Drift>,
 }
 
 /// Newest committed snapshot of this agent (the `base` of the next scan).
@@ -123,6 +140,10 @@ pub fn backup(
             log("base snapshot references bad chunks (verify): full read without the agent's metadata cache");
             None
         }
+        _ if spec.full_read.is_some() => {
+            log("full read (Phase 29): no base, the agent reads every file without its metadata cache");
+            None
+        }
         b => b,
     };
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -189,6 +210,16 @@ pub fn backup(
                 Err(e) => log(&format!("warning: release after commit failed: {e:#}")),
             }
             r.time = m.time;
+            if let Some(tracker) = spec.full_read {
+                let d = compare(store, &m, newest, tracker).unwrap_or_else(|e| {
+                    log(&format!(
+                        "full read: comparison with the previous snapshot failed: {e:#}"
+                    ));
+                    Drift::none()
+                });
+                log(&d.line(&r.source, r.time));
+                r.full_read = Some(d);
+            }
             Ok(r)
         }
         Err(e) => {
@@ -198,6 +229,24 @@ pub fn backup(
             Err(e)
         }
     }
+}
+
+fn tree_of(store: &Store, m: &Manifest) -> Result<Vec<TreeEntry>> {
+    match store.load_index(m, TREE_INDEX)? {
+        Index::Tree { entries } => Ok(entries),
+        _ => bail!("{}/{} is not a file tree snapshot", m.source, m.time),
+    }
+}
+
+/// Full read: the committed tree against the previous snapshot `prev`.
+fn compare(store: &Store, m: &Manifest, prev: Option<u64>, tracker: &str) -> Result<Drift> {
+    let Some(p) = prev else {
+        return Ok(Drift::none());
+    };
+    let old = tree_of(store, &store.load_manifest(&m.source, p)?)?;
+    let mut d = Drift::new(tracker, Some(p));
+    drift::tree(&mut d, &old, &tree_of(store, m)?, drift::metadata_differs);
+    Ok(d)
 }
 
 /// `GetLayout` (docs/bmr.md "Layout"). A layout that does not parse is logged and
@@ -268,6 +317,10 @@ fn add_layout(store: &Store, tree: &mut Vec<TreeEntry>, json: &str, time: u64) -
     for c in json.as_bytes().chunks(agent_proto::MAX_CHUNK) {
         chunks.push(store.insert_chunk(c)?.0);
     }
+    store.record_file_hash(
+        &chunks,
+        sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(json)).into(),
+    );
     tree.push(TreeEntry {
         path: LAYOUT_PATH.as_bytes().to_vec(),
         kind: TreeKind::File,
@@ -304,12 +357,25 @@ fn collect_and_commit(
     r: &mut Report,
     log: &mut dyn FnMut(&str),
 ) -> Result<Manifest> {
-    s.send(&Message::Scan {
-        job: spec.job,
-        base: r.base.map(|time| BaseRef { time }),
+    let hashed = spec.file_hashes && s.has_cap(agent_proto::CAP_FILE_HASH);
+    if spec.file_hashes {
+        store.enable_file_hashes();
+        if !hashed {
+            log("file hashes: this agent version does not hash while reading; the appliance reads the changed files back from the store");
+        }
+    }
+    let base = r.base.map(|time| BaseRef { time });
+    s.send(&if hashed {
+        Message::ScanHashed { job: spec.job, base }
+    } else {
+        Message::Scan { job: spec.job, base }
     })?;
     // ponytail: the whole entry list is held in memory (≈200 B/entry); spill to disk for >10M files
     let mut entries: Vec<Entry> = Vec::new();
+    // ScanHashed: the agent's SHA-256 per kept entry (parallel to `entries`)
+    let mut shas: Vec<Option<Hash>> = Vec::new();
+    // entries of the last batch (index into `entries`, or None for the skipped root): EntryHashes follows
+    let mut last_batch: Option<Vec<Option<usize>>> = None;
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut lens: HashMap<Hash, u32> = HashMap::new();
     // live progress (chunkstore::progress): entries of the scan, then the bytes requested
@@ -317,11 +383,17 @@ fn collect_and_commit(
     loop {
         match s.recv()? {
             Message::Entries { batch } => {
+                if hashed && last_batch.is_some() {
+                    bail!("agent sent Entries without EntryHashes for the previous batch");
+                }
                 meter.add_entries(batch.len() as u64);
+                let mut kept = Vec::with_capacity(batch.len());
                 for e in batch {
                     if e.path.is_empty() || e.path == b"." {
+                        kept.push(None);
                         continue; // the root itself
                     }
+                    kept.push(Some(entries.len()));
                     check_entry(&e)?;
                     if !seen.insert(e.path.clone()) {
                         bail!("agent sent {:?} twice", String::from_utf8_lossy(&e.path));
@@ -339,7 +411,30 @@ fn collect_and_commit(
                     r.unchanged += u64::from(e.unchanged);
                     r.inconsistent_files += u64::from(e.inconsistent);
                     entries.push(e);
+                    shas.push(None);
                 }
+                if hashed {
+                    last_batch = Some(kept);
+                }
+            }
+            Message::EntryHashes { hashes } if hashed => {
+                let Some(kept) = last_batch.take() else {
+                    bail!("agent sent EntryHashes without Entries");
+                };
+                if hashes.len() != kept.len() {
+                    bail!("agent sent {} hashes for {} entries", hashes.len(), kept.len());
+                }
+                for (i, h) in kept.into_iter().zip(hashes) {
+                    if let (Some(i), Some(h)) = (i, h) {
+                        // only regular files whose content was transferred or referenced
+                        if entries[i].kind == Kind::File && !entries[i].chunks.is_empty() {
+                            shas[i] = Some(h);
+                        }
+                    }
+                }
+            }
+            Message::ScanDone { .. } if last_batch.is_some() => {
+                bail!("agent ended the scan without EntryHashes for the last batch");
             }
             Message::ScanDone { stats } => {
                 r.scan = stats;
@@ -447,8 +542,15 @@ fn collect_and_commit(
     ));
     let mut tree: Vec<TreeEntry> = entries
         .into_iter()
-        .map(|e| TreeEntry {
-            chunks: e.chunks.iter().map(|(h, _)| keyed[h]).collect(),
+        .zip(shas)
+        .map(|(e, sha)| TreeEntry {
+            chunks: {
+                let ids: Vec<ChunkId> = e.chunks.iter().map(|(h, _)| keyed[h]).collect();
+                if let Some(sha) = sha {
+                    store.record_file_hash(&ids, sha);
+                }
+                ids
+            },
             path: e.path,
             kind: tree_kind(e.kind),
             mode: e.mode,

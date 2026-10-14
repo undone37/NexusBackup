@@ -4,7 +4,7 @@
 //! Config: `{source_id, name, url, connect_addr?, cert_pin, peer_id, cred_dir,
 //! keyd_socket, token_file? (enroll), tenant?, store? (sync: the tenant store),
 //! gfs?, bwlimit?, windows? (bandwidth windows), timezone?, parallel?, held? ([source,
-//! time] under a local legal hold)}`.
+//! time] under a local legal hold), prune? (false: deletions frozen, Phase 29)}`.
 //!
 //! Output lines the scheduler parses: `enrolled {json}`, `replicated {json}`,
 //! `key-mismatch {json}`, `verify-failed {json}`, `repair {json}` (bad chunks fetched
@@ -44,6 +44,13 @@ struct Config {
     /// Phase 19b: the primary tenant's uid seen before (null: first sync / legacy)
     #[serde(default)]
     tenant_uid: Option<String>,
+    /// Phase 29: false while deletions are frozen (no local retention)
+    #[serde(default = "yes")]
+    prune: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Deserialize, Default)]
@@ -103,6 +110,7 @@ fn run() -> Result<()> {
                 },
                 held: c.held.into_iter().collect(),
                 tenant_uid: c.tenant_uid,
+                prune: c.prune,
             };
             if cmd == "repair" {
                 let r = repair(&p)?;

@@ -7,6 +7,7 @@
   import type { PasskeySettings, SecuritySettings, SessionInfo } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import SessionTable from '../../components/SessionTable.svelte';
+  import RiskMarks from '../../components/RiskMarks.svelte';
 
   // Phase 14d settings (docs/control-plane.md "Access"). The server gates: longer session
   // timeouts need approval (the allow-list moved to Settings → Firewall); the rest applies directly (audited).
@@ -194,6 +195,8 @@
       {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
     </form>
   </section>
+
+  <RiskMarks />
 
   {#if isAdmin}
     <section class="card settings-section" aria-labelledby="sec-all">

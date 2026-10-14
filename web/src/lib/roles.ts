@@ -47,6 +47,11 @@ export const can = {
   scan: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'security_officer'].includes(u.role),
   // File search and index status (Phase 31b): admins, operators, tenant admins and tenant users
   search: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role),
+  // Phase 28: IOC hash hunts (same roles as scans); tenant lockdown: appliance-wide officers and admins
+  hunt: (u: User | null) => !!u && ['admin', 'operator', 'tenant_admin', 'security_officer'].includes(u.role),
+  lockdown: (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer'),
+  // the IOC hash lists themselves (appliance-wide)
+  hashLists: (u: User | null) => !u?.tenant && (u?.role === 'admin' || u?.role === 'security_officer'),
 };
 
 export const ROLES: Role[] = ['admin', 'security_officer', 'operator', 'tenant_admin', 'tenant_user', 'viewer'];

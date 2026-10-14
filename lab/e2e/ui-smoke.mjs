@@ -20,12 +20,12 @@ const BASE = `https://nexus-m5:${PORT}/`;
 rmSync(`${OUT}/profile`, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 // '/search?q=log' runs the instant file search (Phase 31b, GET /files/search): a 503 means nexus-index is not running
-const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet',
+const PAGES = ['/', '/snapshots', '/snapshots?held=true', '/snapshots?where=offsite', '/hunt', '/tenants?offsite=lab', '/tenants?wizard=1', '/tenants?idp=lab', '/search', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/alerts', '/quorum', '/audit', '/tenants', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates',
   '/replication', '/recovery-plans', '/policies', '/groups', '/users', '/plugins', '/hardware', '/account'];
 // Phase 19b: a tenant admin's reduced navigation (only when the lab has such an account: TA_USER/TA_PW/TA_TOTP)
-const TENANT_PAGES = ['/', '/snapshots', '/search', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/groups',
+const TENANT_PAGES = ['/', '/snapshots', '/search', '/hunt', '/changes', '/search?q=log', '/restore-tests', '/storage', '/reports', '/jobs', '/quorum', '/audit', '/sources', '/agents', '/agents?tab=fleet', '/agents?tab=updates', '/groups',
   '/recovery-plans', '/users', '/account'];
-const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'malware', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'network', 'vault', 'incident', 'edges'];
+const TABS = ['approvals', 'alerts', 'sso', 'ssh', 'updates', 'anomaly', 'malware', 'iocHashes', 'diagnostics', 'configBackup', 'console', 'certificate', 'forwarding', 'security', 'firewall', 'network', 'vault', 'incident', 'edges'];
 
 const b32 = (s) => {
   const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -148,6 +148,26 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
       visited.push(where);
       await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
     }
+    // Phase 29: the scan-back dialog of a flagged snapshot (when there is one) and the group dialog's full-read field
+    for (const [hash, sel, what, must] of [
+      ['#/snapshots', 'button[data-scan-back]', 'scan-back dialog', '#sb-budget'],
+      ['#/groups', 'button[data-group-edit]', 'group dialog (full read)', '#g-full-read'],
+    ]) {
+      await visit(hash, theme, user);
+      if (await ev(`const b = document.querySelector(${JSON.stringify(sel)}); b?.click(); return !!b;`)) {
+        where = `${user}/${theme}${hash} (${what})`;
+        if (!(await until(`return !!document.querySelector('dialog[open] ${must}')`, 5000))) problems.push(`${where}: dialog did not open`);
+        await sleep(800);
+        visited.push(where);
+        await ev(`document.querySelectorAll('dialog[open]').forEach((d) => d.close()); return true;`);
+      }
+    }
+    // Phase 27: Agents > Updates: the releases and versions sections render (rollouts for appliance roles)
+    await visit('#/agents?tab=updates', theme, user);
+    where = `${user}/${theme}#/agents?tab=updates (sections)`;
+    if (!(await until(`return !!document.querySelector('[data-testid="agent-releases"]') && !!document.querySelector('[data-testid="agent-versions"]') && !!document.querySelector('[data-testid="agent-rollouts"]')`, 10000)))
+      problems.push(`${where}: releases, versions or rollouts section missing`);
+    visited.push(where);
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render
       await visit(`#/settings?tab=${tab}`, theme, user);

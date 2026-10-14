@@ -352,15 +352,20 @@ impl Scheduler {
         plan.key = format!("guest:{}/{source}", job.tenant);
         let cfg = json!({"store": plan.store, "tenant": job.tenant, "keyd_socket": self.cfg.keyd_socket});
         plan.files = vec![("pve.json".into(), serde_json::to_vec_pretty(&cfg)?)];
+        let mut args = vec![
+            plan.dir.join("pve.json").to_string_lossy().into_owned(),
+            if ct { "ct-files" } else { "files" }.to_owned(),
+            vmid.to_string(),
+            time.to_string(),
+            "index".into(),
+        ];
+        // Phase 28: containers with `file_hashes` (VM disks: not yet, docs/file-index.md)
+        if ct && p["hashes"] == true {
+            args.push("hashes".into());
+        }
         plan.steps.push(Step::Cli {
             bin: self.cfg.pve_bin.clone(),
-            args: vec![
-                plan.dir.join("pve.json").to_string_lossy().into_owned(),
-                if ct { "ct-files" } else { "files" }.to_owned(),
-                vmid.to_string(),
-                time.to_string(),
-                "index".into(),
-            ],
+            args,
             alert: None,
             capture: true,
         });
@@ -373,18 +378,18 @@ impl Scheduler {
         let Some(g) = job.params["group_id"].as_i64() else {
             return Ok(());
         };
-        let on: Option<bool> = self
+        let on: Option<(bool, bool)> = self
             .db
             .conn()
             .query_row(
-                "SELECT index_files FROM groups WHERE id = ?1 AND tenant = ?2",
+                "SELECT index_files, file_hashes FROM groups WHERE id = ?1 AND tenant = ?2",
                 params![g, job.tenant],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        if on != Some(true) {
+        let Some((true, hashes)) = on else {
             return Ok(());
-        }
+        };
         let snaps = result
             .and_then(|r| r["snapshots"].as_array())
             .cloned()
@@ -394,8 +399,12 @@ impl Scheduler {
                 continue;
             };
             if source.starts_with("vm-") || source.starts_with("ct-") {
+                let mut p = json!({"source": source, "time": time});
+                if hashes && source.starts_with("ct-") {
+                    p["hashes"] = json!(true);
+                }
                 let id = self
-                    .insert_job("file_index", &job.tenant, &json!({"source": source, "time": time}))
+                    .insert_job("file_index", &job.tenant, &p)
                     .context("queue file_index")?;
                 self.index_pending(&job.tenant, source, time, id)?;
             }

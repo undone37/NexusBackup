@@ -153,9 +153,7 @@ impl MetaReader {
     pub fn load_names(&self, source: &str, time: u64) -> io::Result<Option<NameIndex>> {
         check_source(source)?;
         match fs::read(snap_dir(&self.root, source, time).join(names::FILE)) {
-            Ok(b) => postcard::from_bytes(&self.keys.open(names::ctx(source, time).as_bytes(), &b)?.1)
-                .map(Some)
-                .map_err(|e| invalid(format!("serialization: {e}"))),
+            Ok(b) => names::decode(&self.keys, source, time, &b).map(Some),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
@@ -230,6 +228,12 @@ mod tests {
             "etc/hosts"
         );
         assert_eq!(r.load_names("vm-1", 5).unwrap(), None);
+        // a name index v2 (file hashes, Phase 28) reads too
+        let mut n = NameIndex::default();
+        n.push("vda1/bin/sh", 3, 0, names::KIND_FILE);
+        n.set_hash(0, [7; 32]);
+        s.write_names("vm-1", 5, &n).unwrap();
+        assert_eq!(r.load_names("vm-1", 5).unwrap().unwrap().hash(0), Some(&[7; 32]));
         assert_eq!(
             r.read_snap_file("vm-1", 5, "fsindex").unwrap().unwrap(),
             b"secret volume list"

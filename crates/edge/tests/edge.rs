@@ -248,6 +248,8 @@ fn backup_and_request_through_the_edge() {
         hooks: false,
         filters: Default::default(),
         limits: Default::default(),
+        file_hashes: false,
+        full_read: None,
     };
     let rep = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();
     s.close();

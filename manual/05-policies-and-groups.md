@@ -255,6 +255,57 @@ the snapshot, it is just not found by **Find files**.
 Changing the rules re-reads the existing file lists into the search index (no backup or disk read is needed). It
 needs an administrator or a tenant administrator and is recorded in the audit log (`group.index_rules`).
 
+### Threat detection: scheduled scans and file hashes
+
+The **Threat detection** part of a group's dialog (every source kind) has two options:
+
+- **Scheduled malware scan:** **Off**, **Daily** at a time, or a **Custom schedule** (the same forms as a policy
+  schedule), in the group's time zone, and an optional **Time budget per scan** (minutes, default 240). When the
+  schedule is due, the newest local snapshot of each guest or source of the group that has not been scanned yet is
+  scanned with the YARA rules from **Settings → Malware scan**, one scan at a time inside the restore micro-VM.
+  Without rules nothing is scanned (saving the option says so). The list of groups shows **Scan: daily 03:00**.
+  Details and the recovery calendar: [11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-scans-and-the-recovery-calendar).
+- **Record file hashes (IOC hash hunt):** the SHA-256 of every file is stored in the snapshot's sealed file index,
+  so the **Hash hunt** page can search all snapshots for known-bad files without a restore. Agents with the
+  capability (version with Phase 28) compute the hashes while they read; for older agents, shares, TrueNAS
+  datasets and plugin file trees the appliance computes them, and unchanged files take the hash of the previous
+  snapshot. The first backup after switching it on reads the files once more from the store, so it takes longer.
+  Containers are hashed together with **Index files in VM/CT disks**; VM disks are not hashed yet. The list of
+  groups shows **File hashes**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#ioc-hash-hunt).
+
+![Protection group: threat detection](images/group-threat-scan.png)
+
+Both options apply at once (no approval: they only add detection) and are audited (`group.threat_scan`,
+`group.file_hashes`). Administrators and tenant administrators set them here; security officers can set the scan
+schedule through the API (`PUT /api/v1/groups/{id}/threat-scan`).
+
+### Full read (change-tracking check)
+
+Incremental backups trust **change tracking**: the dirty bitmap of a Proxmox VM, the agents' metadata cache (size,
+modification time, inode) or the Windows USN journal, the metadata cache of NFS/SMB shares and `zfs diff` on
+TrueNAS. If the tracker misses a change (a crash of the PVE host while the VM wrote, a file changed with its old
+modification time restored, a journal that wrapped), the snapshots look fine but lack that change. A scheduled
+**full read** finds this out.
+
+**Full read (change-tracking check) → Days between full reads** in the group's dialog: every this many days the next
+backup of each guest or source of the group reads everything instead of trusting the tracker, still asks the tracker
+what it would have reported, and compares the result with the previous snapshot. Data that changed although the
+tracker did not report it is **unreported**. Empty = the default (**90 days** for Proxmox VE groups, **30 days** for
+agents, NFS/SMB shares and TrueNAS), **0** = off. Containers and plugin sources have no full read (containers are
+read in full by every backup anyway).
+
+![Protection group: full read](images/group-full-read.png)
+
+The full-read backup is a normal snapshot (complete and usable). It takes as long as a first backup and moves the
+whole source over the network, so a long interval suits large VMs. The result of each source is shown on the
+**Dashboard** in the **Change tracking** card ([11 Alerts and monitoring](11-alerts-and-monitoring.md#change-tracking-scheduled-full-reads));
+a source with unreported changes raises the critical alert `change_tracking`. The interval applies at once (no
+approval) and is audited (`group.full_read`); administrators and tenant administrators set it, through the API
+`PUT /api/v1/groups/{id}/full-read {"days": null | 0..365}`.
+
+> **Status:** Implemented in Phase 29 (scheduler, connectors and API tests, demo backend); a lab run with a real
+> PVE dirty bitmap and the Windows agent's USN journal is pending.
+
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:

@@ -15,6 +15,59 @@ use std::path::{Path, PathBuf};
 pub type ChunkList = Vec<(Hash, u32)>;
 /// candidate locations kept per chunk hash (identical files share chunks)
 const MAX_LOCS: usize = 4;
+/// SHA-256 of recently chunked files kept for [`take_file_hash`] (an entry is
+/// emitted right after its file was read; Windows ADS are read in between)
+const RECENT_HASHES: usize = 64;
+
+/// (chunk list key, SHA-256) of the files chunked last
+type Recent = std::collections::VecDeque<([u8; 16], Hash)>;
+
+thread_local! {
+    /// `Some` while a `ScanHashed` runs on this (session) thread
+    static FILE_SHA: std::cell::RefCell<Option<Recent>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Phase 28 (CAP_FILE_HASH): compute the SHA-256 of every file chunked on this
+/// thread until switched off again.
+pub fn set_file_hashing(on: bool) {
+    FILE_SHA.with(|f| *f.borrow_mut() = on.then(std::collections::VecDeque::new));
+}
+
+fn list_key(chunks: &[(Hash, u32)]) -> [u8; 16] {
+    let mut h = blake3::Hasher::new();
+    for (c, l) in chunks {
+        h.update(c);
+        h.update(&l.to_le_bytes());
+    }
+    h.finalize().as_bytes()[..16].try_into().expect("16 bytes")
+}
+
+/// The SHA-256 of the file just chunked with exactly this chunk list, if hashing is on.
+pub fn take_file_hash(chunks: &[(Hash, u32)]) -> Option<Hash> {
+    let k = list_key(chunks);
+    FILE_SHA.with(|f| {
+        let mut f = f.borrow_mut();
+        let q = f.as_mut()?;
+        let i = q.iter().rposition(|(x, _)| *x == k)?;
+        q.remove(i).map(|(_, h)| h)
+    })
+}
+
+fn hashing() -> bool {
+    FILE_SHA.with(|f| f.borrow().is_some())
+}
+
+fn remember_hash(chunks: &[(Hash, u32)], h: Hash) {
+    let k = list_key(chunks);
+    FILE_SHA.with(|f| {
+        if let Some(q) = f.borrow_mut().as_mut() {
+            if q.len() >= RECENT_HASHES {
+                q.pop_front();
+            }
+            q.push_back((k, h));
+        }
+    });
+}
 
 /// Opens a file of a locator for re-reading (platform specific: never follow a final
 /// symlink on Unix; backup semantics on Windows).
@@ -211,12 +264,19 @@ pub fn chunk_file(loc: &mut Locator, idx: u32, f: &File, spool: bool) -> io::Res
 pub fn chunk_reader(loc: &mut Locator, idx: u32, r: impl io::Read, spool: bool) -> io::Result<(ChunkList, u64)> {
     let mut chunks = vec![];
     let mut total = 0u64;
+    let mut sha = hashing().then(<sha2::Sha256 as sha2::Digest>::new);
     for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX) {
         let c = c.map_err(io::Error::other)?;
         let h = *blake3::hash(&c.data).as_bytes();
+        if let Some(s) = sha.as_mut() {
+            sha2::Digest::update(s, &c.data);
+        }
         loc.add(&h, idx, c.offset, c.length as u32, spool.then_some(&c.data[..]))?;
         chunks.push((h, c.length as u32));
         total += c.length as u64;
+    }
+    if let Some(s) = sha {
+        remember_hash(&chunks, sha2::Digest::finalize(s).into());
     }
     Ok((chunks, total))
 }
@@ -348,6 +408,35 @@ mod tests {
         let i2 = l2.add_file(p.clone());
         l2.add_list(i2, &chunks).unwrap();
         assert!(l2.get(&chunks[0].0).is_none());
+    }
+
+    #[test]
+    fn file_hashes_only_while_switched_on() {
+        let t = tempfile::tempdir().unwrap();
+        let data = vec![5u8; 700_000];
+        let mut loc = Locator::default();
+        let (c, _) = chunk_reader(&mut loc, 0, &data[..], false).unwrap();
+        assert_eq!(take_file_hash(&c), None, "off by default");
+        set_file_hashing(true);
+        let (c, _) = chunk_reader(&mut loc, 0, &data[..], false).unwrap();
+        let (c2, _) = chunk_reader(&mut loc, 0, &b"other"[..], false).unwrap();
+        let want: Hash = <sha2::Sha256 as sha2::Digest>::digest(&data).into();
+        assert_eq!(take_file_hash(&c), Some(want));
+        assert_eq!(take_file_hash(&c), None, "taken once");
+        assert!(take_file_hash(&c2).is_some());
+        // on another thread: off
+        let d2 = data.clone();
+        std::thread::spawn(move || {
+            let mut l = Locator::default();
+            let (c, _) = chunk_reader(&mut l, 0, &d2[..], false).unwrap();
+            assert_eq!(take_file_hash(&c), None);
+        })
+        .join()
+        .unwrap();
+        set_file_hashing(false);
+        let (c, _) = chunk_reader(&mut loc, 0, &data[..], false).unwrap();
+        assert_eq!(take_file_hash(&c), None);
+        drop(t);
     }
 
     #[test]

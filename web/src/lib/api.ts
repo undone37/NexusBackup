@@ -1,6 +1,7 @@
 import { session, setSession } from './session.svelte';
 import { notify } from './notify.svelte';
 import { t } from './i18n';
+import { askStepUp } from './stepup.svelte';
 
 export const API = '/api/v1';
 
@@ -27,7 +28,13 @@ export interface RawBody {
 }
 const isRaw = (b: unknown): b is RawBody => !!b && typeof b === 'object' && 'raw' in b && 'headers' in b;
 
-async function request(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ status: number; data: unknown }> {
+async function request(
+  method: string,
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+  retried = false,
+): Promise<{ status: number; data: unknown }> {
   const raw = isRaw(body) ? body : null;
   const headers: Record<string, string> = { Accept: 'application/json', ...(raw?.headers ?? {}) };
   if (body !== undefined && !raw) headers['Content-Type'] = 'application/json';
@@ -63,6 +70,11 @@ async function request(method: string, path: string, body?: unknown, signal?: Ab
     if (r.status === 401 && !path.startsWith('/auth/')) {
       setSession(null, null);
       notify('info', t.err.sessionExpired);
+    }
+    // Phase 29: the account is marked by a risk signal: re-authenticate (POST /auth/step-up in the
+    // dialog), then send the request once more.
+    if (r.status === 428 && !retried && path !== '/auth/step-up' && (await askStepUp(msg))) {
+      return request(method, path, body, signal, true);
     }
     throw new ApiError(r.status, msg || `HTTP ${r.status}`);
   }
@@ -100,14 +112,24 @@ export async function act<T>(
   try {
     const o = await p;
     if (o.quorum) {
-      notify('pending', t.quorumPending(o.quorumId));
+      // Phase 29: a production restore of a flagged snapshot waits for approval `restore.infected`
+      const inf = (o.data as { infected?: boolean } | null)?.infected;
+      notify('pending', inf ? t.p29.infected.pending(o.quorumId) : t.quorumPending(o.quorumId));
       return o;
     }
     const ok = typeof okText === 'function' ? okText(o.data) : okText;
     // Approvals disabled: a gated action answers 200 {approvals: "disabled", executed, quorum_id?}.
     const d = o.data as { approvals?: string; executed?: boolean; quorum_id?: number } | null;
     if (d && typeof d === 'object' && d.approvals === 'disabled') {
-      notify('ok', d.executed === false && d.quorum_id ? t.approvalsOffScheduled(d.quorum_id) : t.approvalsOff(ok));
+      const inf = (d as { infected?: boolean }).infected;
+      notify(
+        'ok',
+        inf && d.quorum_id
+          ? t.p29.infected.approvalsOff(d.quorum_id)
+          : d.executed === false && d.quorum_id
+            ? t.approvalsOffScheduled(d.quorum_id)
+            : t.approvalsOff(ok),
+      );
       return o;
     }
     notify('ok', ok);

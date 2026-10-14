@@ -9,14 +9,17 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod access;
+pub mod agent_updates;
 pub mod alerting;
 pub mod auth;
 pub mod console;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
+pub mod fullread;
 pub mod hardware;
 pub mod holds;
+pub mod incident;
 pub mod inventory;
 pub mod network;
 pub mod priority;
@@ -767,6 +770,57 @@ ALTER TABLE jobs ADD COLUMN live_log TEXT;
 ALTER TABLE jobs ADD COLUMN progress TEXT;
 "#;
 
+/// v41 (Phase 27, docs/agent-update-plan.md "Implementation"): agent updates pushed
+/// from the appliance. Per agent the host facts of protocol v1.8 (`arch`, `install`,
+/// `gui_version`, `caps` = JSON array of the last `HelloReply` capabilities), `tags`
+/// (rollout scope) and the update state (`update_target`, `update_state`,
+/// `update_error`, `update_attempts`, `update_at`). `agent_rollouts` (target version,
+/// scope, waves, concurrency, failure threshold, maintenance windows, rollback with
+/// approval, automatic) and their `agent_rollout_items` (one per agent);
+/// `agent_update_settings` (manual / automatic per tenant, `group_id` 0 = the whole
+/// tenant); `agent_downloads` (installer download tokens). Purely additive: the
+/// previous release ignores all of it.
+const SCHEMA_V41: &str = r#"
+ALTER TABLE agents ADD COLUMN arch TEXT;
+ALTER TABLE agents ADD COLUMN install TEXT;
+ALTER TABLE agents ADD COLUMN gui_version TEXT;
+ALTER TABLE agents ADD COLUMN caps TEXT;
+ALTER TABLE agents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE agents ADD COLUMN update_target TEXT;
+ALTER TABLE agents ADD COLUMN update_state TEXT
+  CHECK (update_state IN ('pending','sending','installing','ok','failed','rolled_back'));
+ALTER TABLE agents ADD COLUMN update_error TEXT;
+ALTER TABLE agents ADD COLUMN update_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agents ADD COLUMN update_at INTEGER;
+CREATE TABLE agent_rollouts (
+  id INTEGER PRIMARY KEY, version TEXT NOT NULL, scope TEXT NOT NULL DEFAULT '{}',
+  canary INTEGER NOT NULL DEFAULT 1, canary_pct INTEGER, soak_minutes INTEGER NOT NULL DEFAULT 60,
+  concurrency INTEGER NOT NULL DEFAULT 5, max_failures INTEGER NOT NULL DEFAULT 3,
+  max_failure_pct INTEGER NOT NULL DEFAULT 20, windows TEXT NOT NULL DEFAULT '[]',
+  rollback INTEGER NOT NULL DEFAULT 0, automatic INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('pending_approval','running','paused','cancelled','done','rejected')),
+  reason TEXT, wave INTEGER NOT NULL DEFAULT 0, wave_done_at INTEGER, quorum_id INTEGER,
+  created INTEGER NOT NULL, created_by TEXT NOT NULL, finished INTEGER);
+CREATE TABLE agent_rollout_items (
+  rollout_id INTEGER NOT NULL REFERENCES agent_rollouts(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL, tenant TEXT NOT NULL, wave INTEGER NOT NULL DEFAULT 1,
+  state TEXT NOT NULL DEFAULT 'waiting'
+    CHECK (state IN ('waiting','queued','running','ok','failed','skipped','cancelled')),
+  job_id INTEGER, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, from_version TEXT,
+  updated INTEGER NOT NULL, PRIMARY KEY (rollout_id, agent_id));
+CREATE INDEX agent_rollout_items_agent ON agent_rollout_items(agent_id);
+CREATE TABLE agent_update_settings (
+  tenant TEXT NOT NULL REFERENCES tenants(name), group_id INTEGER NOT NULL DEFAULT 0,
+  mode TEXT NOT NULL DEFAULT 'manual' CHECK (mode IN ('manual','automatic')),
+  windows TEXT NOT NULL DEFAULT '[]', canary INTEGER NOT NULL DEFAULT 1,
+  soak_minutes INTEGER NOT NULL DEFAULT 60, updated INTEGER NOT NULL, updated_by TEXT NOT NULL,
+  PRIMARY KEY (tenant, group_id));
+CREATE TABLE agent_downloads (
+  token TEXT PRIMARY KEY, version TEXT NOT NULL, artifact TEXT NOT NULL,
+  requested_by TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
+"#;
+
 /// v42 (Phase 31, guest file index without the micro-VM, docs/file-index-v2-plan.md):
 /// `snapshot_index` holds the file index state of VM/CT snapshots (`pending` when
 /// the scheduler queues `file_index`, then `indexed` / `partial` / `failed` with
@@ -790,11 +844,84 @@ CREATE TABLE group_sources (
 CREATE INDEX group_sources_tenant ON group_sources(tenant, source);
 "#;
 
+/// v43 (Phase 28, docs/commvault-comparison.md Tier 1):
+/// - scheduled threat scans: `groups.scan_schedule` (schedule grammar of the
+///   policies, NULL = off; the newest local snapshot of each of the group's
+///   sources gets a `snapshot_scan` when due) and `groups.scan_budget_min`
+///   (NULL = the scanner's default); `snapshots.scan_state` = the verdict of the
+///   newest finished YARA scan (`clean` | `hit` | `incomplete`, NULL = unscanned),
+///   filled from `snapshot_scans` here;
+/// - IOC hash hunting: `groups.file_hashes` (record SHA-256 per file in the name
+///   index) and `hash_lists` (uploaded IOC lists, appliance-wide: normalised
+///   lower-case hex, one per line);
+/// - tenant lockdown: `tenant_lockdowns` (one row per tenant, the lockdown as
+///   JSON, `active`);
+/// - new-device sign-in notice: `login_devices` (account, fingerprint of
+///   user-agent family + client network prefix) and `users.email` (where the
+///   notice is mailed; from the profile or the OIDC `email` claim).
+///
+/// Purely additive: the previous release ignores the columns and tables.
+const SCHEMA_V43: &str = r#"
+ALTER TABLE groups ADD COLUMN scan_schedule TEXT;
+ALTER TABLE groups ADD COLUMN scan_budget_min INTEGER;
+ALTER TABLE groups ADD COLUMN file_hashes INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE snapshots ADD COLUMN scan_state TEXT;
+UPDATE snapshots SET scan_state = (
+  SELECT CASE WHEN x.matches_total > 0 THEN 'hit' WHEN x.complete = 1 THEN 'clean' ELSE 'incomplete' END
+  FROM snapshot_scans x WHERE x.tenant = snapshots.tenant AND x.source = snapshots.source
+    AND x.time = snapshots.time ORDER BY x.job_id DESC LIMIT 1);
+CREATE TABLE hash_lists (
+  name TEXT PRIMARY KEY, hashes TEXT NOT NULL, count INTEGER NOT NULL, sha256 TEXT NOT NULL,
+  uploaded_by TEXT NOT NULL, uploaded_at INTEGER NOT NULL);
+CREATE TABLE tenant_lockdowns (
+  tenant TEXT PRIMARY KEY, active INTEGER NOT NULL, state TEXT NOT NULL);
+CREATE TABLE login_devices (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL,
+  family TEXT NOT NULL, prefix TEXT NOT NULL, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  PRIMARY KEY (user_id, fingerprint));
+ALTER TABLE users ADD COLUMN email TEXT;
+"#;
+
+/// v44 (Phase 29, docs/netbackup-comparison.md Tier 1):
+/// - scheduled full read: `groups.full_read_days` (NULL = default, 90 days for
+///   Proxmox VE VM groups and 30 for the others; 0 = off) and `full_reads`, one
+///   row per (tenant, source): when the next full read is due (staggered by
+///   source), the outcome of the last one (`result` = `clean` | `drift` |
+///   `no_baseline`, counts, `details` JSON) and when the source was last
+///   verified without drift (`last_clean_at`);
+/// - scan back: `snapshots.clean_point` = when a scan back marked the snapshot
+///   as the recommended restore point of its source (one per source);
+/// - risk signals: `login_hours` (sign-in hours per account, the baseline of
+///   the unusual-hour rule), `users.risk_since/risk_until/risk_reason` (the
+///   account needs a step-up while marked) and `sessions.step_up_at` (when the
+///   session re-authenticated).
+///
+/// Incident and lockdown freezes live in the existing JSON state (setting
+/// `incident`, `tenant_lockdowns.state`). Purely additive: the previous
+/// release ignores the columns and tables.
+const SCHEMA_V44: &str = r#"
+ALTER TABLE groups ADD COLUMN full_read_days INTEGER;
+CREATE TABLE full_reads (
+  tenant TEXT NOT NULL, source TEXT NOT NULL, next_due INTEGER NOT NULL,
+  last_at INTEGER, last_snapshot INTEGER, last_job INTEGER, result TEXT,
+  changed INTEGER, unreported INTEGER, unreported_bytes INTEGER, details TEXT, last_clean_at INTEGER,
+  PRIMARY KEY (tenant, source));
+ALTER TABLE snapshots ADD COLUMN clean_point INTEGER;
+CREATE TABLE login_hours (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, hour INTEGER NOT NULL,
+  count INTEGER NOT NULL, last_seen INTEGER NOT NULL, PRIMARY KEY (user_id, hour));
+ALTER TABLE users ADD COLUMN risk_since INTEGER;
+ALTER TABLE users ADD COLUMN risk_until INTEGER;
+ALTER TABLE users ADD COLUMN risk_reason TEXT;
+ALTER TABLE sessions ADD COLUMN step_up_at INTEGER;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
-    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V42,
+    SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -2954,6 +3081,57 @@ mod tests {
         assert_eq!(log, "committed vm-100/5");
     }
 
+    /// v41 (agent updates) on top of the previous catalog: existing agents get no
+    /// update state and no tags; rollouts, items, settings and download tokens work.
+    #[test]
+    fn migration_v41_agent_updates() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V41).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t'); \
+                 INSERT INTO agents (id, tenant, name, host, port, version) VALUES ('0123456789abcdef', 't', 'web', 'h', 7444, '0.1.0');",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let (tags, state, attempts): (String, Option<String>, i64) = conn
+            .query_row("SELECT tags, update_state, update_attempts FROM agents", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((tags.as_str(), state, attempts), ("[]", None, 0));
+        conn.execute_batch(
+            "UPDATE agents SET arch = 'x86_64', install = 'deb', caps = '[\"update2\"]', update_target = '0.2.0', \
+               update_state = 'installing', update_at = 5;
+             INSERT INTO agent_rollouts (version, scope, created, created_by) VALUES ('0.2.0', '{\"tenant\":\"t\"}', 1, 'alice');
+             INSERT INTO agent_rollout_items (rollout_id, agent_id, tenant, wave, updated) VALUES (1, '0123456789abcdef', 't', 0, 1);
+             INSERT INTO agent_update_settings (tenant, mode, updated, updated_by) VALUES ('t', 'automatic', 1, 'alice');
+             INSERT INTO agent_downloads (token, version, artifact, requested_by, created, expires) VALUES ('ab', '0.2.0', 'x.deb', 'alice', 1, 2);",
+        )
+        .unwrap();
+        let (state, wave): (String, i64) = conn
+            .query_row(
+                "SELECT r.state, i.wave FROM agent_rollouts r JOIN agent_rollout_items i ON i.rollout_id = r.id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((state.as_str(), wave), ("running", 0));
+        assert!(conn.execute("UPDATE agents SET update_state = 'bogus'", []).is_err());
+        assert!(conn.execute("UPDATE agent_rollouts SET state = 'bogus'", []).is_err());
+        assert!(conn
+            .execute("UPDATE agent_update_settings SET mode = 'sometimes'", [])
+            .is_err());
+    }
+
     /// v39 (edge proxies) on top of the previous catalog: agents keep working
     /// without an edge.
     #[test]
@@ -2997,5 +3175,114 @@ mod tests {
             .is_err(),
             "names are unique"
         );
+    }
+
+    /// v43 (Phase 28) on top of the previous catalog: a scanned snapshot gets
+    /// its state from the newest scan, groups keep scanning and hashing off.
+    #[test]
+    fn migration_v43_threat_scans_hashes_lockdown_devices() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V43).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES
+                   ('t','vm-1',1,0,1,0,0), ('t','vm-1',2,0,1,0,0), ('t','vm-1',3,0,1,0,0), ('t','vm-1',4,0,1,0,0);
+                 INSERT INTO snapshot_scans (job_id, tenant, source, time, finished, rules, files, skipped, errors,
+                   complete, matches_total) VALUES
+                   (1,'t','vm-1',1,1,'r',5,0,0,1,0), (2,'t','vm-1',2,1,'r',5,0,0,1,3),
+                   (3,'t','vm-1',3,1,'r',5,0,0,0,0), (4,'t','vm-1',1,1,'r',5,0,0,1,1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let states: Vec<Option<String>> = conn
+            .prepare("SELECT scan_state FROM snapshots ORDER BY time")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // snapshot 1: the newest scan (job 4) found a match
+        assert_eq!(
+            states,
+            [Some("hit".into()), Some("hit".into()), Some("incomplete".into()), None]
+        );
+        conn.execute_batch(
+            "INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','admin',1);
+             INSERT INTO login_devices (user_id, fingerprint, family, prefix, first_seen, last_seen)
+               VALUES (1, 'f', 'Firefox on Linux', '192.0.2.0/24', 1, 1);
+             INSERT INTO tenant_lockdowns (tenant, active, state) VALUES ('t', 1, '{}');
+             INSERT INTO hash_lists (name, hashes, count, sha256, uploaded_by, uploaded_at) VALUES ('l','',0,'x','ann',1);",
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO login_devices (user_id, fingerprint, family, prefix, first_seen, last_seen) VALUES (1,'f','a','b',1,1)",
+                [],
+            )
+            .is_err());
+        conn.execute("DELETE FROM users", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM login_devices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "devices go with the account");
+    }
+
+    /// v44 (Phase 29) on top of the previous catalog: full reads default per
+    /// kind (NULL), no clean points, no risk marks; login hours go with the account.
+    #[test]
+    fn migration_v44_full_reads_clean_points_risk() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V44).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO tenants (name) VALUES ('t');
+                 INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES ('t','vm-1',1,0,1,0,0);
+                 INSERT INTO users (name, password_hash, totp_secret, role, created) VALUES ('ann','x','y','admin',1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let (cp, risk): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT s.clean_point, u.risk_until FROM snapshots s, users u",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((cp, risk), (None, None));
+        conn.execute_batch(
+            "INSERT INTO full_reads (tenant, source, next_due) VALUES ('t', 'vm-1', 5);
+             INSERT INTO login_hours (user_id, hour, count, last_seen) VALUES (1, 9, 3, 1);",
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO full_reads (tenant, source, next_due) VALUES ('t', 'vm-1', 6)",
+                []
+            )
+            .is_err(),
+            "one row per source"
+        );
+        conn.execute("DELETE FROM users", []).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM login_hours", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "hours go with the account");
     }
 }

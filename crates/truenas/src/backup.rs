@@ -5,11 +5,17 @@
 //! new snapshot becomes the reference and every older `nexus-<source>-*`
 //! snapshot of that dataset is deleted; after a failure the new snapshot is
 //! deleted and the old reference stays.
+//!
+//! Scheduled full read (Phase 29, `Spec::full_read`): the plan is made as
+//! usual (what `zfs diff` and the size/mtime check would have read), then
+//! every file is read; files whose content differs from the previous
+//! snapshot but that the usual plan would have reused are unreported
+//! ([`crate::tree::drift`]), logged as `full-read <source>/<time> {json}`.
 
 use crate::api::{Dataset, Nas};
 use crate::remote::{Remote, Transport};
 use crate::stream;
-use crate::tree::{changed_inodes, fill, plan};
+use crate::tree::{changed_inodes, drift, fill, plan};
 use crate::{parse_snap_name, snap_name, source_name, under, valid_dataset, TREE_INDEX};
 use anyhow::{bail, Context, Result};
 use chunkstore::{Index, Store, TreeEntry};
@@ -28,6 +34,8 @@ pub struct Spec {
     pub existing: Option<Existing>,
     /// read limit hook (crate::remote::Pace)
     pub pace: Option<crate::remote::Pace>,
+    /// Phase 29: read every file and check what `zfs diff` reported
+    pub full_read: bool,
 }
 
 /// The snapshots an "existing snapshots" run may diff against.
@@ -68,6 +76,9 @@ pub struct DatasetReport {
     pub snapshot: String,
     pub changes: usize,
     pub secs: f64,
+    /// Phase 29: the comparison of a full read (logged as its own line)
+    #[serde(skip)]
+    pub full_read: Option<chunkstore::drift::Drift>,
 }
 
 #[derive(Debug, Default)]
@@ -236,6 +247,7 @@ pub fn backup(
             &use_snap,
             reference.as_deref(),
             prev,
+            spec.full_read,
         ) {
             Ok(mut rep) => {
                 rep.transferred_bytes = remote.received - before;
@@ -262,6 +274,12 @@ pub fn backup(
                 {
                     Ok(l) => log(&l),
                     Err(e) => log(&format!("stats of {}/{}: {e}", rep.source, rep.time)),
+                }
+                if let Some(h) = store.take_hash_stats() {
+                    log(&h.to_string());
+                }
+                if let Some(d) = &rep.full_read {
+                    log(&d.line(&rep.source, rep.time));
                 }
                 r.committed.push(rep);
                 item.ok();
@@ -397,6 +415,7 @@ fn one(
     snap: &str,
     reference: Option<&str>,
     prev: Option<u64>,
+    full_read: bool,
 ) -> Result<DatasetReport> {
     let mp = d.mountpoint.as_deref().context("not mounted")?;
     let source = source_name(source_id, &d.name);
@@ -410,7 +429,14 @@ fn one(
         _ => None,
     };
     let changed = diff.as_ref().map(|l| changed_inodes(&walk, l));
-    let mut p = plan(walk, prev_tree.as_deref(), changed.as_ref(), &|id| store.has_chunk(id));
+    let has = |id: &chunkstore::ChunkId| store.has_chunk(id);
+    // full read: the usual plan only tells what the tracker reported; everything is read
+    let usual = (full_read && prev_tree.is_some() && changed.is_some())
+        .then(|| plan(walk.clone(), prev_tree.as_deref(), changed.as_ref(), &has));
+    let mut p = match full_read {
+        true => plan(walk, None, None, &has),
+        false => plan(walk, prev_tree.as_deref(), changed.as_ref(), &has),
+    };
     let mut rep = DatasetReport {
         dataset: d.name.clone(),
         source: source.clone(),
@@ -436,6 +462,12 @@ fn one(
         rep.bytes_read = bytes;
         rep.new_chunks = nc;
         rep.new_bytes = nb;
+    }
+    if full_read {
+        rep.full_read = Some(match (&usual, &prev_tree) {
+            (Some(u), Some(old)) => drift(old, u, &p.entries, prev),
+            _ => chunkstore::drift::Drift::none(),
+        });
     }
     store.commit_snapshot(&source, time, &[(TREE_INDEX, Index::Tree { entries: p.entries })])?;
     Ok(rep)

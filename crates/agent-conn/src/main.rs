@@ -50,6 +50,9 @@ struct Config {
     restore: Option<RestoreCfg>,
     #[serde(default)]
     update_dir: Option<PathBuf>,
+    /// signed release from the release store (Phase 27, docs/agent-update-plan.md)
+    #[serde(default)]
+    update: Option<UpdateCfg>,
     /// bare-metal recovery onto the rescue agent `agent` (docs/bmr.md)
     #[serde(default)]
     rescue: Option<RescueCfg>,
@@ -127,6 +130,33 @@ struct AgentCfg {
     edge: Option<EdgeTarget>,
 }
 
+/// `update` from the release store: the version to install (`rollback`: an approved
+/// downgrade), the store directories and the pinned release keys.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateCfg {
+    version: String,
+    #[serde(default)]
+    rollback: bool,
+    #[serde(default = "release_dirs")]
+    dirs: Vec<PathBuf>,
+    #[serde(default = "release_keys")]
+    keys_dir: PathBuf,
+    /// seconds to wait for the agent to come back (default by plan: 120 / 600)
+    #[serde(default)]
+    reconnect_secs: Option<u64>,
+}
+
+fn release_dirs() -> Vec<PathBuf> {
+    vec![
+        agent_core::releases::IMAGE_DIR.into(),
+        agent_core::releases::UPLOAD_DIR.into(),
+    ]
+}
+fn release_keys() -> PathBuf {
+    agent_core::releases::KEYS_DIR.into()
+}
+
 /// `edge-enroll` / `edge-link`: the edge's control address, pin, token digest file
 /// (enrollment) and what the link pushes.
 #[derive(Deserialize)]
@@ -153,6 +183,12 @@ struct BackupCfg {
     filters: agent_proto::Filters,
     #[serde(default)]
     limits: agent_proto::Limits,
+    /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -393,8 +429,13 @@ fn main() -> Result<()> {
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
             let store = cfg.store()?;
             let mut map = MapDb::open(cfg.store.as_deref().unwrap())?;
-            let (mut s, _) = cfg.session(&ca)?;
+            let (mut s, info) = cfg.session(&ca)?;
             let t = Instant::now();
+            // the Windows agent's change tracker is the USN journal (with the cache)
+            let tracker = match info.os.to_ascii_lowercase().contains("windows") {
+                true => "usn",
+                false => "metadata-cache",
+            };
             let spec = BackupSpec {
                 job: cfg.job,
                 paths: b.paths.clone(),
@@ -402,6 +443,8 @@ fn main() -> Result<()> {
                 hooks: b.hooks,
                 filters: b.filters.clone(),
                 limits: b.limits,
+                file_hashes: b.file_hashes,
+                full_read: b.full_read.then_some(tracker),
             };
             let written = store.written();
             let agent = cfg.agent()?;
@@ -430,6 +473,9 @@ fn main() -> Result<()> {
                 "{}",
                 store.stats_line(&m, r.wanted_bytes, store.written().since(written))?
             );
+            if let Some(h) = store.take_hash_stats() {
+                println!("{h}");
+            }
             if !r.consistent || r.inconsistent_files > 0 {
                 println!(
                     "inconsistent {}/{}: consistent={} ({} files changed while read without a snapshot)",
@@ -478,6 +524,7 @@ fn main() -> Result<()> {
                 bail!("{} entries could not be restored", st.errors.len());
             }
         }
+        ("update", []) if cfg.update.is_some() => update_release(&cfg)?,
         ("update", []) => {
             let dir = cfg.update_dir.as_ref().context("config: update_dir missing")?;
             let bundle = update::load(dir)?;
@@ -541,6 +588,129 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// `update` with a release from the store (protocol v1.8 chunked, or the single
+/// frame for older agents), then the reconnect check. Lines: `update-plan`,
+/// `update-sent`, `update-state`, `update-result` (docs/agent-update-plan.md).
+fn update_release(cfg: &Config) -> Result<()> {
+    let u = cfg.update.as_ref().context("config: update missing")?;
+    let keys = agent_core::update::load_keys(&u.keys_dir);
+    let dirs: Vec<(PathBuf, &'static str)> = u
+        .dirs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.clone(), if i == 0 { "image" } else { "upload" }))
+        .collect();
+    let releases = agent_core::releases::scan(&dirs, &keys);
+    let rel = agent_core::releases::find(&releases, &u.version)
+        .filter(|r| r.usable())
+        .with_context(|| {
+            format!(
+                "release {} is not in the store or not signed by a pinned key",
+                u.version
+            )
+        })?;
+    let ca = Ca::load_or_create(&cfg.ca_dir)?;
+    let (mut s, info) = cfg.session(&ca)?;
+    let result = |state: &str, version: &str, error: &str| {
+        println!(
+            "update-result {}",
+            json!({"agent_id": info.agent_id, "state": state, "version": version, "error": error})
+        );
+    };
+    let older = agent_core::releases::older(&u.version, &info.version);
+    if u.version == info.version || (older && !u.rollback) {
+        result(
+            "failed",
+            &info.version,
+            &format!("the agent runs {}; {} is not newer", info.version, u.version),
+        );
+        bail!(
+            "agent {} runs {}, not older than {}",
+            info.agent_id,
+            info.version,
+            u.version
+        );
+    }
+    if u.rollback && !older {
+        bail!("a rollback must go to an older release");
+    }
+    let plan = match update::plan(rel, &info.facts(), &info.caps) {
+        Ok(p) => p,
+        Err(e) => {
+            result("failed", &info.version, &format!("{e:#}"));
+            return Err(e);
+        }
+    };
+    let names: Vec<String> = match &plan {
+        update::Plan::Chunked(a) => a.iter().map(|a| a.name.clone()).collect(),
+        update::Plan::Legacy(a) => vec![a.name.clone()],
+    };
+    println!(
+        "update-plan {}",
+        json!({"from": info.version, "to": u.version, "install": info.install, "arch": info.arch,
+               "artifacts": names, "rollback": u.rollback,
+               "mode": if matches!(plan, update::Plan::Chunked(_)) { "chunked" } else { "legacy" }})
+    );
+    let mut last = Instant::now();
+    if let Err(e) = update::push_release(&mut s, rel, &plan, u.rollback, &mut |sent, total| {
+        if last.elapsed() >= Duration::from_secs(2) || sent == total {
+            last = Instant::now();
+            println!("progress {}", json!({"bytes": sent, "bytes_total": total}));
+        }
+    }) {
+        let msg = format!("{e:#}");
+        result(
+            if msg.contains("agent error 409") {
+                "busy"
+            } else {
+                "failed"
+            },
+            &info.version,
+            &msg,
+        );
+        return Err(e);
+    }
+    s.close();
+    println!("update-sent {}", json!({"to": u.version}));
+    // the agent restarts (binary swap) or a package manager restarts it
+    let wait = u.reconnect_secs.unwrap_or_else(|| update::reconnect_secs(&plan));
+    let end = Instant::now() + Duration::from_secs(wait);
+    let mut seen_state = json!({});
+    loop {
+        std::thread::sleep(Duration::from_secs(3));
+        match cfg.session(&ca) {
+            Ok((mut s2, i)) => {
+                let st = update::status(&mut s2).unwrap_or_else(|_| json!({}));
+                s2.close();
+                if st != seen_state {
+                    println!("update-state {st}");
+                    seen_state = st.clone();
+                }
+                let state = st["state"].as_str().unwrap_or_default();
+                if i.version == u.version && state != "installing" {
+                    result("ok", &i.version, "");
+                    return Ok(());
+                }
+                if matches!(state, "failed" | "rolled_back") && st["to"] == json!(u.version) {
+                    let err = st["error"].as_str().unwrap_or("update failed on the agent").to_owned();
+                    result(state, &i.version, &err);
+                    bail!("update to {} {state} on the agent: {err}", u.version);
+                }
+                if Instant::now() >= end {
+                    let err = format!("the agent still runs {} after {wait} s", i.version);
+                    result("failed", &i.version, &err);
+                    bail!("{err}");
+                }
+            }
+            Err(e) if Instant::now() < end => eprintln!("waiting for the agent: {e:#}"),
+            Err(e) => {
+                result("failed", &info.version, &format!("the agent did not come back: {e:#}"));
+                return Err(e.context("agent did not come back after the update"));
+            }
+        }
+    }
+}
+
 /// `rescue`: enroll the rescue agent with the recovery token (if not done yet),
 /// then the recovery. Lines for the scheduler: `rescue-enrolled {json}`,
 /// `rescue-step <apply|restore|finish>`, `rescue-done {json}`.
@@ -596,6 +766,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         backup: None,
         restore: None,
         update_dir: None,
+        update: None,
         rescue: None,
         poll: None,
         fleet: None,

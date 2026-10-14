@@ -20,6 +20,11 @@
 # (the passphrase is asked once):
 #   release/sign.sh sign-blobs DIR
 #
+# Agent release tree for the appliance (Phase 27, from release/packages.sh), offline:
+# checks every artifact against manifest.json, writes <artifact>.sig and manifest.json.sig
+# and the signed tar next to the directory (nexus-agent-release-<version>-signed.tar):
+#   release/sign.sh sign-agent-release DIR
+#
 # Key selection (environment):
 #   COSIGN_KEY=/path/to/cosign.key   encrypted key file from `cosign generate-key-pair`
 #                                    (default ./cosign.key); passphrase from
@@ -120,6 +125,32 @@ sign-blobs)
 	done <"$2/SHA256SUMS"
 	sign_blob "$2/SHA256SUMS" "$2/SHA256SUMS.sig"
 	echo "$n files + SHA256SUMS signed; check with release/verify.sh --blobs $2, then upload $2/*.sig" >&2
+	;;
+sign-agent-release)
+	[ $# = 2 ] || die "usage: sign-agent-release DIR"
+	[ -f "$2/manifest.json" ] || die "$2/manifest.json not found"
+	if [ -z "${COSIGN_PKCS11_URI:-}" ] && [ -z "${COSIGN_PASSWORD+x}" ]; then
+		read -rsp "passphrase for ${COSIGN_KEY:-./cosign.key}: " COSIGN_PASSWORD
+		echo >&2
+		export COSIGN_PASSWORD
+	fi
+	# name / size / sha256 of every artifact, as listed (one per line)
+	n=0
+	while read -r name size sum; do
+		[[ $name =~ ^[A-Za-z0-9._+-]+(/[A-Za-z0-9._+-]+)*$ ]] || die "unexpected artifact name: $name"
+		[ "$(stat -c %s "$2/$name")" = "$size" ] || die "$name: size differs from manifest.json"
+		[ "$(sha256sum "$2/$name" | cut -d' ' -f1)" = "$sum" ] || die "$name: sha256 differs from manifest.json"
+		sign_blob "$2/$name" "$2/$name.sig" </dev/null
+		n=$((n + 1))
+	done < <(python3 -I -c 'import json,sys
+for a in json.load(open(sys.argv[1]))["artifacts"]: print(a["name"], a["size"], a["sha256"])' "$2/manifest.json")
+	[ $n -gt 0 ] || die "manifest.json lists no artifacts"
+	sign_blob "$2/manifest.json" "$2/manifest.json.sig"
+	v=$(basename "$(realpath "$2")")
+	tar --sort=name --owner=0 --group=0 --numeric-owner -C "$(dirname "$(realpath "$2")")" \
+		-cf "$(dirname "$(realpath "$2")")/nexus-agent-release-$v-signed.tar" "$v"
+	echo "$n artifacts + manifest.json signed; check with release/verify.sh --agent-release $2," >&2
+	echo "then upload nexus-agent-release-$v-signed.tar or copy $2 to os/agent-release/" >&2
 	;;
 attach)
 	[ $# = 4 ] || die "usage: attach IMAGE@sha256:... PAYLOAD.json PAYLOAD.sig"

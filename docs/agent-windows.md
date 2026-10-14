@@ -361,9 +361,30 @@ reported as errors per entry and fail the job; the other files are written.
 
 ## Self-update
 
-MSI installs: `package-managed` next to `nexus-agent.exe` turns self-update off (`Update`
-is refused, "installed from a msi package …") unless `self_update = on` in `agent.conf`; a
-self-update would replace a file the MSI owns. Update them with a newer MSI.
+MSI installs (Phase 27, protocol v1.8, docs/agent-update-plan.md "Implementation"): the
+binary is never swapped under the MSI (the single-frame `Update` of older appliances is
+refused). The appliance sends the signed MSI of the release in chunks; after the manifest and
+signature checks the agent starts `%SystemRoot%\System32\msiexec.exe /i <state>\update\<msi> /qn
+/norestart /l*v <state>\update-msi.log` detached (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+CREATE_BREAKAWAY_FROM_JOB`, without breakaway if the job refuses it), so msiexec can stop and replace
+the service; the major upgrade keeps `%ProgramData%\NexusAgent` (enrollment). The new version
+clears `update-pending.json` when it listens; the old one reads the log
+(`MainEngineThread is returning <code>`, UTF-16) and records `failed` with the code and the lines
+around the first `Return value 3`. The MSI carries the desktop UI, so it is updated too. An MSI
+cannot be rolled back in-band (Windows Installer refuses downgrades). `self_update = off` refuses
+every update; unset (`auto`) allows MSI updates for MSI installs and binary swaps for manual
+installs.
+
+**Start watchdog** (binary swaps of manual installs): the third start of a new
+`nexus-agent.exe` that never reached "listening" renames it to `nexus-agent.exe.failed`, puts
+`nexus-agent.exe.prev` back and exits 75 (the service's failure actions restart it).
+
+**Needs the Windows lab (not run yet):** MSI update on Server 2022 and Windows 11 with the GUI
+running (service stays enrolled, the GUI restarts), msiexec started from the service outside its
+job object, the log parsing on a real failure (e.g. 1603), the watchdog revert on a manual
+install, and the MSI downgrade refusal of a rollback rollout. The command construction, log
+parsing and the restore are unit-tested on Linux; the code is built and linted with
+`crates/agent-windows/build.sh --clippy`.
 
 Same `Update` message and checks as Linux (`agent_core::update::check_candidate`:
 cosign blob signature with a key from `config\release-keys\*.pub`, embedded version

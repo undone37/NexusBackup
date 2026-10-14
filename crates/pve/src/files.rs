@@ -154,18 +154,24 @@ pub fn index_kind(k: &str) -> u8 {
     }
 }
 
-/// Every entry of a container's tar stream as a name index (file search).
-pub fn index(r: impl Read) -> Result<chunkstore::NameIndex> {
+/// Every entry of a container's tar stream as a name index (file search);
+/// `hashes` (Phase 28, group option `file_hashes`): with the SHA-256 of every
+/// regular file (the stream is read in full anyway).
+pub fn index(r: impl Read, hashes: bool) -> Result<chunkstore::NameIndex> {
     let mut out = chunkstore::NameIndex::default();
     for e in tar::Archive::new(r).entries()? {
-        let e = e?;
-        let h = e.header();
-        out.push(
-            &norm(&e.path()?),
-            h.size()?,
-            h.mtime()? as i64,
-            index_kind(kind(h.entry_type())),
-        );
+        let mut e = e?;
+        let (size, mtime, k) = {
+            let h = e.header();
+            (h.size()?, h.mtime()? as i64, kind(h.entry_type()))
+        };
+        let before = out.len();
+        out.push(&norm(&e.path()?), size, mtime, index_kind(k));
+        if hashes && k == "file" && out.len() > before {
+            let mut h = <sha2::Sha256 as sha2::Digest>::new();
+            std::io::copy(&mut e, &mut h)?;
+            out.set_hash(before, sha2::Digest::finalize(h).into());
+        }
     }
     Ok(out)
 }
@@ -307,6 +313,33 @@ mod tests {
         assert_eq!(etc[1].link.as_deref(), Some("/usr/share/zoneinfo/UTC"));
         assert_eq!((etc[0].size, etc[0].uid), (6, 1000));
         assert!(list(&sample()[..], "../x").is_err());
+    }
+
+    /// Phase 28: the CT name index with SHA-256 of the regular files only.
+    #[test]
+    fn index_with_hashes() {
+        let plain = index(&sample()[..], false).unwrap();
+        assert!(!plain.has_hashes());
+        let n = index(&sample()[..], true).unwrap();
+        let h: Vec<(String, String)> = n
+            .hashed()
+            .map(|(p, _, h)| (p.to_owned(), h.iter().map(|b| format!("{b:02x}")).collect()))
+            .collect();
+        let sha = |d: &[u8]| -> String {
+            <sha2::Sha256 as sha2::Digest>::digest(d)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        assert_eq!(
+            h,
+            [
+                ("etc/hostname".to_string(), sha(b"ct200\n")),
+                ("etcetera".to_string(), sha(b"not etc")),
+                ("home/u/über langer name.txt".to_string(), sha(&[7u8; 300_000])),
+            ]
+        );
+        assert_eq!(n.len(), plain.len());
     }
 
     /// Raw tar entry; the name bytes bypass the tar crate's own path checks.

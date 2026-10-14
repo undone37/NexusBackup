@@ -43,11 +43,11 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | **Security / cyber resilience** | | | |
 | Multi-person authorization | per operation, approver groups, exclusions, MSP + tenant two-level routing, 24 h wait for new approvers [10] | quorum on all destructive/weakening actions; split activation codes for privileged accounts | has (no tenant-side approvers) |
 | Anomaly detection | ML anomaly on backups, file-activity anomaly and honeypot files on clients [11] | change-rate anomalies, ransom-note names, mass renames, snapshot diff, trend sparklines | has |
-| Malware scan of backups | Threat Scan: signatures, ML, entropy, YARA + IOC hash hunting on the backup index, scheduled scans, recovery calendar [3][12] | YARA scan in an offline restore micro-VM, on demand and "scan first" restores | partial (no schedule, no hash hunting) |
+| Malware scan of backups | Threat Scan: signatures, ML, entropy, YARA + IOC hash hunting on the backup index, scheduled scans, recovery calendar [3][12] | YARA scan in an offline restore micro-VM, on demand, "scan first" restores and scheduled per group with a recovery calendar; IOC hash hunt over per-file SHA-256 (Phase 28; VM disk files not hashed yet) | has |
 | Clean restore point | Synthetic Recovery: newest clean version of each file across backups [13] | restore dialogs default to the newest clean snapshot | partial |
 | Security posture | Security IQ dashboard, Cyber Resiliency Index score [14] | `nexus-diag` posture checks (pass/warn) | has |
-| Containment | Tenant Lockdown Mode (one tenant read-only) [1] | incident mode (appliance-wide: holds, pauses, ends all sessions and tokens) | partial |
-| New-device sign-in notice | e-mail on login from a new browser/host [15] | none | missing |
+| Containment | Tenant Lockdown Mode (one tenant read-only) [1] | incident mode (appliance-wide) and tenant lockdown (one tenant: holds, pauses, its sessions, tokens and sign-ins, changes refused; Phase 28) | has |
+| New-device sign-in notice | e-mail on login from a new browser/host [15] | `login_new_device` alert (SIEM) and mail to the account (Phase 28) | has |
 | Identity resilience (AD) | AD change audit and rollback, forest recovery into a clean room [2] | AD DC VSS backup + restore runbook; AD object export open (Veeam #13) | partial |
 | **Recovery** | | | |
 | Instant access | Live Mount | instant recovery, instant disk recovery | has |
@@ -95,7 +95,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 
 Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phase 27 = agent updates).
 
-### Tier 1: high value, fits the architecture as it is (proposed Phase 28)
+### Tier 1: high value, fits the architecture as it is (Phase 28, implemented 2026-10-14; deviations: plan.md Phase 28)
 
 | # | What | Commvault | Effort | Where |
 |---|---|---|---|---|

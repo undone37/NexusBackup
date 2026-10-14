@@ -116,6 +116,9 @@ struct JobConfig {
     /// backup: guests at once (group `parallel_guests`, 1..=8)
     #[serde(default = "one")]
     parallel: usize,
+    /// Phase 28: SHA-256 per file of the plugin's file trees (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
 }
 
 fn one() -> usize {
@@ -232,7 +235,11 @@ fn open_store(cfg: &JobConfig) -> Result<Store> {
     let root = cfg.store.as_ref().context("config: store missing")?;
     let sock = cfg.keyd_socket.as_ref().context("config: keyd_socket missing")?;
     let keys = keyd::fetch_keyring(sock, &cfg.tenant).context("keyd")?;
-    Ok(Store::open(root, keys, Options::default())?)
+    let s = Store::open(root, keys, Options::default())?;
+    if cfg.file_hashes {
+        s.enable_file_hashes();
+    }
+    Ok(s)
 }
 
 fn out_line(l: &str) {

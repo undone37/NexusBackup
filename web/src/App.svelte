@@ -10,6 +10,7 @@
   import Logo from './components/Logo.svelte';
   import Notices from './components/Notices.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
+  import StepUpDialog from './components/StepUpDialog.svelte';
   import Login from './pages/Login.svelte';
   import Activate from './pages/Activate.svelte';
   import Dashboard from './pages/Dashboard.svelte';
@@ -18,6 +19,7 @@
   import Reports from './pages/Reports.svelte';
   import Files from './pages/Files.svelte';
   import Search from './pages/Search.svelte';
+  import Hunt from './pages/Hunt.svelte';
   import Changes from './pages/Changes.svelte';
   import RestoreTests from './pages/RestoreTests.svelte';
   import RecoveryPlans from './pages/RecoveryPlans.svelte';
@@ -41,6 +43,7 @@
   import IconVault from '@lucide/svelte/icons/lock-keyhole';
   import IconSnapshots from '@lucide/svelte/icons/database-backup';
   import IconSearch from '@lucide/svelte/icons/file-search';
+  import IconHunt from '@lucide/svelte/icons/fingerprint';
   import IconCompare from '@lucide/svelte/icons/git-compare';
   import IconRestoreTest from '@lucide/svelte/icons/flask-conical';
   import IconRecovery from '@lucide/svelte/icons/life-buoy';
@@ -71,6 +74,8 @@
   import IconTerminal from '@lucide/svelte/icons/square-terminal';
   import IconSiren from '@lucide/svelte/icons/siren';
   import IconLifeBuoy from '@lucide/svelte/icons/life-buoy';
+  import IconSnowflake from '@lucide/svelte/icons/snowflake';
+  import IconStepUp from '@lucide/svelte/icons/user-lock';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -86,6 +91,7 @@
     { path: '/', comp: Dashboard, allow: always, nav: t.nav.dashboard, section: 'monitor', icon: IconDashboard },
     { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
     { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
+    { path: '/hunt', comp: Hunt, allow: can.hunt, nav: t.nav.hunt, section: 'monitor', icon: IconHunt },
     { path: '/changes', comp: Changes, allow: can.restore, nav: t.nav.changes, section: 'monitor', icon: IconCompare },
     { path: '/restore-tests', comp: RestoreTests, allow: always, nav: t.nav.restoreTests, section: 'monitor', icon: IconRestoreTest },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },
@@ -156,6 +162,18 @@
   let shell: ConsoleShell | null = $state(null);
   // Phase 21b: incident mode (GET /auth/me; appliance-wide accounts only)
   const incident = $derived(session.incident);
+  // Phase 29: incident-mode / lockdown freezes and the account's risk mark (GET /auth/me)
+  const frozen = $derived.by(() => {
+    const f = session.freeze;
+    if (!f) return null;
+    const parts = [f.config && t.p29.freeze.names.config, f.deletions && t.p29.freeze.names.deletions, f.restores && t.p29.freeze.names.restores].filter(
+      (x): x is string => !!x,
+    );
+    const tenants = (f.tenants ?? []).map((x) =>
+      t.p29.freeze.tenantPart(x.tenant, [x.deletions && t.p29.freeze.names.deletions, x.restores && t.p29.freeze.names.restores].filter((y): y is string => !!y)),
+    );
+    return parts.length || tenants.length ? { parts, tenants } : null;
+  });
   async function refreshCounts() {
     const u = session.user;
     if (!u) return;
@@ -166,6 +184,8 @@
       session.impersonating = me.impersonating ?? null;
       if (can.viewQuorum(u)) shell = me.console_shell ?? null;
       session.incident = me.incident ?? null;
+      session.freeze = me.freeze ?? null;
+      session.stepUp = me.step_up ?? null;
     }
     // Phase 22b: restore priority (banner for everyone)
     session.priority = await get<RestorePriority>('/restore-priority').catch(() => session.priority);
@@ -201,6 +221,8 @@
       session.impersonating = me.impersonating ?? null;
       shell = me.console_shell ?? null;
       session.incident = me.incident ?? null;
+      session.freeze = me.freeze ?? null;
+      session.stepUp = me.step_up ?? null;
     } catch {
       setSession(null, null);
     }
@@ -356,6 +378,25 @@
           </p>
         </div>
       {/if}
+      {#if frozen}
+        <div class="glass" role="alert">
+          <IconSnowflake aria-hidden="true" />
+          <p>
+            <strong>{frozen.parts.length ? t.p29.freeze.banner(frozen.parts) : t.p29.freeze.bannerTenants}</strong>
+            {frozen.tenants.join(' · ')}
+            {#if can.lockdown(session.user)}<a href={href(frozen.parts.length ? '/settings?tab=incident' : '/tenants')}>{t.p29.freeze.manage}</a>{/if}
+          </p>
+        </div>
+      {/if}
+      {#if session.stepUp}
+        <div class="glass priority" role="status">
+          <IconStepUp aria-hidden="true" />
+          <p>
+            <strong>{t.p29.stepUp.banner(session.stepUp.reason, fmtTime(session.stepUp.until))}</strong>
+            {session.stepUp.done ? t.p29.stepUp.bannerDone : t.p29.stepUp.bannerTodo}
+          </p>
+        </div>
+      {/if}
       {#if session.priority?.active}
         <div class="glass priority" role="status">
           <IconLifeBuoy aria-hidden="true" />
@@ -403,3 +444,4 @@
 {/if}
 <Notices />
 <ConfirmDialog />
+<StepUpDialog />

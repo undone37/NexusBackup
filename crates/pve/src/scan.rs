@@ -1,5 +1,5 @@
 //! Opt-in YARA scan of a snapshot (Phase 21e, docs/malware-scan.md):
-//! `nexus-pve <cfg> scan <source> <time> <rules.json> [budget-secs]`.
+//! `nexus-pve <cfg> scan <source> <time> <rules.json> [budget-secs] [--stop-on-match]`.
 //!
 //! The scanner (`yara`) runs only inside the restore micro-VM (no NIC,
 //! read-only disks, `-sandbox on`):
@@ -11,7 +11,21 @@
 //!   tar of the regular files from the store and streams it into the VM.
 //!
 //! Prints the report: `{files, skipped, errors, matches: [{rule, path}],
-//! matches_total, complete, seconds}`; `rule` is `<rule file>:<rule name>`.
+//! matches_total, complete, stopped, seconds}`; `rule` is `<rule file>:<rule name>`.
+//!
+//! Scan back (Phase 29): the scheduler runs one `scan ... --stop-on-match` per
+//! snapshot, newest first, until one is complete without a match (the last
+//! clean restore point). `--stop-on-match` sends `stop_on_match` in the
+//! limits: the VM agent ends at the first hit (`stopped: true`, `complete:
+//! false`), so an infected snapshot costs seconds, not its budget. Only then
+//! is the field sent, so an older VM image (unknown fields refused) still
+//! serves plain scans.
+//!
+//! Manual CLI of the same walk: `nexus-pve <cfg> scan-back <source>
+//! <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots]`.
+//! Progress on stderr, the result JSON on stdout: `{source, from, scanned:
+//! [{time, files, skipped, errors, matches_total, matches (at most 20),
+//! complete, stopped, seconds}], recommended, truncated}`.
 
 use crate::restorevm::{self, Config};
 use anyhow::{bail, Context, Result};
@@ -29,6 +43,10 @@ pub const FILE_TIMEOUT: u32 = 60;
 pub const BUDGET: u64 = 4 * 3600;
 /// rules sent into the VM at most (all files together)
 pub const MAX_RULES_BYTES: usize = 1 << 20;
+/// scan back: snapshots scanned at most unless the job says otherwise
+pub const BACK_MAX: usize = 30;
+/// scan back: matches listed per snapshot
+const BACK_MATCHES: usize = 20;
 
 /// Writes the regular files of a file-tree snapshot as a tar; returns the
 /// number of files skipped (larger than `max_size`, or names a tar cannot hold).
@@ -75,12 +93,18 @@ pub fn tree_tar(store: &Store, m: &Manifest, max_size: u64, w: &mut dyn Write) -
     Ok(skipped)
 }
 
-/// The scan limits sent to the agent.
-pub fn limits(budget: u64, threads: u32) -> serde_json::Value {
-    serde_json::json!({"max_size": MAX_SIZE, "file_timeout": FILE_TIMEOUT, "budget": budget, "threads": threads})
+/// The scan limits sent to the agent (`stop_on_match` only when set: older VM
+/// images refuse unknown fields).
+pub fn limits(budget: u64, threads: u32, stop_on_match: bool) -> serde_json::Value {
+    let mut l =
+        serde_json::json!({"max_size": MAX_SIZE, "file_timeout": FILE_TIMEOUT, "budget": budget, "threads": threads});
+    if stop_on_match {
+        l["stop_on_match"] = serde_json::json!(true);
+    }
+    l
 }
 
-pub fn cli(store: &Store, source: &str, time: u64, rules: &std::path::Path, budget: Option<u64>) -> Result<()> {
+fn read_rules(rules: &std::path::Path) -> Result<serde_json::Value> {
     let text = std::fs::read(rules).with_context(|| format!("rules {}", rules.display()))?;
     if text.len() > 2 * MAX_RULES_BYTES {
         bail!("rules: more than {MAX_RULES_BYTES} bytes");
@@ -89,13 +113,108 @@ pub fn cli(store: &Store, source: &str, time: u64, rules: &std::path::Path, budg
     if rules.as_array().is_none_or(|a| a.is_empty()) {
         bail!("no YARA rules");
     }
+    Ok(rules)
+}
+
+pub fn cli(
+    store: &Store,
+    source: &str,
+    time: u64,
+    rules: &std::path::Path,
+    budget: Option<u64>,
+    stop_on_match: bool,
+) -> Result<()> {
+    let rules = read_rules(rules)?;
+    let mut report = scan(store, source, time, &rules, budget, stop_on_match)?;
+
+    report["source"] = serde_json::json!(source);
+    report["time"] = serde_json::json!(time);
+    println!("{report}");
+    Ok(())
+}
+
+/// Scan back from `from` (module docs); prints the result JSON.
+pub fn back_cli(
+    store: &Store,
+    source: &str,
+    from: u64,
+    rules: &std::path::Path,
+    budget: Option<u64>,
+    max: Option<usize>,
+) -> Result<()> {
+    let rules = read_rules(rules)?;
+    let times: Vec<u64> = store
+        .list_snapshots()?
+        .into_iter()
+        .filter(|m| m.source == source && m.time <= from)
+        .map(|m| m.time)
+        .collect();
+    if times.is_empty() {
+        bail!("no snapshot of {source} at or before {from}");
+    }
+    let out = back(source, from, times, max.unwrap_or(BACK_MAX).max(1), |t| {
+        scan(store, source, t, &rules, budget, true)
+    })?;
+    println!("{out}");
+    Ok(())
+}
+
+/// The scan-back loop over `times` (any order), `scan` = one snapshot's report.
+fn back(
+    source: &str,
+    from: u64,
+    mut times: Vec<u64>,
+    max: usize,
+    mut scan: impl FnMut(u64) -> Result<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    times.sort_unstable_by(|a, b| b.cmp(a));
+    let (mut scanned, mut recommended) = (Vec::new(), None);
+    for &t in times.iter().take(max) {
+        let r = scan(t).with_context(|| format!("scan of {source}/{t}"))?;
+        let n = r["matches_total"].as_u64().unwrap_or(0);
+        let complete = r["complete"].as_bool().unwrap_or(false);
+        let state = match (n, complete) {
+            (0, true) => "clean".to_owned(),
+            (0, false) => "incomplete".to_owned(),
+            (n, _) => format!("{n} matches"),
+        };
+        eprintln!("scan-back {source}/{t}: {state}");
+        let matches: Vec<serde_json::Value> = r["matches"]
+            .as_array()
+            .map(|a| a.iter().take(BACK_MATCHES).cloned().collect())
+            .unwrap_or_default();
+        scanned.push(serde_json::json!({
+            "time": t, "files": r["files"], "skipped": r["skipped"], "errors": r["errors"],
+            "matches_total": n, "matches": matches, "complete": complete,
+            "stopped": r["stopped"].as_bool().unwrap_or(false), "seconds": r["seconds"],
+        }));
+        if n == 0 && complete {
+            recommended = Some(t);
+            break;
+        }
+    }
+    let truncated = recommended.is_none() && times.len() > scanned.len();
+    Ok(serde_json::json!({
+        "source": source, "from": from, "scanned": scanned, "recommended": recommended, "truncated": truncated,
+    }))
+}
+
+/// One snapshot's scan in the restore micro-VM; returns the agent's report.
+fn scan(
+    store: &Store,
+    source: &str,
+    time: u64,
+    rules: &serde_json::Value,
+    budget: Option<u64>,
+    stop_on_match: bool,
+) -> Result<serde_json::Value> {
     let budget = budget.unwrap_or(BUDGET).clamp(60, 24 * 3600);
     let m = store.load_manifest(source, time)?;
     let cfg = Config::from_env();
-    let limits = limits(budget, cfg.cpus);
+    let limits = limits(budget, cfg.cpus, stop_on_match);
     // the agent stops at its budget; the margin covers boot, rule compilation and the last batch
     let wait = Duration::from_secs(budget + 600);
-    let mut report = if source.starts_with("vm-") {
+    let report = if source.starts_with("vm-") {
         let mut disks = Vec::new();
         for name in &m.indexes {
             let idx = store.load_index(&m, name)?;
@@ -108,13 +227,13 @@ pub fn cli(store: &Store, source: &str, time: u64, rules: &std::path::Path, budg
         }
         let refs: Vec<(&str, &Index)> = disks.iter().map(|(n, i)| (*n, i)).collect();
         restorevm::with_vm(store, &refs, &cfg, |vm| {
-            vm.rules(&rules)?;
+            vm.rules(rules)?;
             vm.scan(&limits, wait)
         })?
     } else if source.starts_with("ct-") {
         let root = crate::ct::root_tar(store, &m)?;
         restorevm::with_vm(store, &[], &cfg, |vm| {
-            vm.rules(&rules)?;
+            vm.rules(rules)?;
             vm.scan_tar(&limits, wait, |w| {
                 std::io::copy(&mut store.chunk_reader(&root.chunks), w)?;
                 Ok(())
@@ -123,7 +242,7 @@ pub fn cli(store: &Store, source: &str, time: u64, rules: &std::path::Path, budg
     } else {
         let mut skipped = 0;
         let mut r = restorevm::with_vm(store, &[], &cfg, |vm| {
-            vm.rules(&rules)?;
+            vm.rules(rules)?;
             vm.scan_tar(&limits, wait, |w| {
                 skipped = tree_tar(store, &m, MAX_SIZE, w)?;
                 Ok(())
@@ -132,10 +251,7 @@ pub fn cli(store: &Store, source: &str, time: u64, rules: &std::path::Path, budg
         r["skipped"] = serde_json::json!(r["skipped"].as_u64().unwrap_or(0) + skipped);
         r
     };
-    report["source"] = serde_json::json!(source);
-    report["time"] = serde_json::json!(time);
-    println!("{report}");
-    Ok(())
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -191,5 +307,49 @@ mod tests {
             })
             .collect();
         assert_eq!(got, [("docs/eicar.com".to_owned(), 9)]);
+    }
+
+    #[test]
+    fn stop_on_match_only_when_asked() {
+        assert!(limits(60, 2, false).get("stop_on_match").is_none());
+        assert_eq!(limits(60, 2, true)["stop_on_match"], true);
+    }
+
+    fn report(matches: u64, complete: bool) -> serde_json::Value {
+        let m: Vec<_> = (0..matches.min(30))
+            .map(|i| serde_json::json!({"rule": "r:X", "path": format!("/f{i}")}))
+            .collect();
+        serde_json::json!({"files": 3, "skipped": 0, "errors": 0, "matches": m, "matches_total": matches,
+                           "complete": complete, "stopped": matches > 0, "seconds": 1})
+    }
+
+    /// Newest first, past infected and incomplete scans, to the first clean one.
+    #[test]
+    fn scan_back_stops_at_the_first_clean_snapshot() {
+        let mut asked = Vec::new();
+        let out = back("vm-101", 50, vec![10, 50, 40, 30, 20], 30, |t| {
+            asked.push(t);
+            Ok(match t {
+                50 => report(40, false),
+                40 => report(0, false),
+                _ => report(0, true),
+            })
+        })
+        .unwrap();
+        assert_eq!(asked, [50, 40, 30]);
+        assert_eq!(out["recommended"], 30);
+        assert_eq!(out["truncated"], false);
+        assert_eq!(out["scanned"][0]["matches"].as_array().unwrap().len(), BACK_MATCHES);
+        assert_eq!(out["scanned"][0]["matches_total"], 40);
+        assert_eq!(out["scanned"][0]["stopped"], true);
+        assert_eq!(out["scanned"][1]["complete"], false);
+        // all infected and the limit reached before a clean one
+        let out = back("vm-101", 50, vec![50, 40, 30], 2, |_| Ok(report(1, false))).unwrap();
+        assert_eq!(out["recommended"], serde_json::Value::Null);
+        assert_eq!(out["truncated"], true);
+        assert_eq!(out["scanned"].as_array().unwrap().len(), 2);
+        // all infected, nothing older left: not truncated
+        let out = back("vm-101", 50, vec![50], 2, |_| Ok(report(1, false))).unwrap();
+        assert_eq!(out["truncated"], false);
     }
 }

@@ -47,6 +47,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5", features = ["util"] }
+# agent release uploads (Phase 27): streamed body, tar extraction
+http-body-util = "0.1"
+tar = "0.4"
 
 [dev-dependencies]
 plugin-manager = { path = "../plugin-manager" }

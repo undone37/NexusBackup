@@ -28,6 +28,9 @@ use std::time::Duration;
 #[serde(deny_unknown_fields)]
 struct Config {
     tenant: String,
+    /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
     #[serde(default)]
     store: Option<PathBuf>,
     #[serde(default)]
@@ -60,6 +63,9 @@ struct Config {
     /// appliance-side read limit of the source (Phase 22b)
     #[serde(default)]
     read_limit: Option<catalog::schedule::ReadLimit>,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -204,7 +210,11 @@ impl Config {
         let root = self.store.as_ref().context("config: store missing")?;
         let sock = self.keyd_socket.as_ref().context("config: keyd_socket missing")?;
         let keys = keyd::fetch_keyring(sock, &self.tenant).context("keyd")?;
-        Ok(Store::open(root, keys, Options::default())?)
+        let s = Store::open(root, keys, Options::default())?;
+        if self.file_hashes {
+            s.enable_file_hashes();
+        }
+        Ok(s)
     }
 
     /// (mount fd if mounted, readable root dir fd)
@@ -298,6 +308,7 @@ fn main() -> Result<()> {
                         })
                     })
                     .transpose()?,
+                full_read: cfg.full_read,
             };
             let before = store.written();
             let o = backup::backup(&store, &root, &spec, &log)?;
@@ -329,6 +340,9 @@ fn main() -> Result<()> {
             );
             let m = store.load_manifest(&o.source, o.time)?;
             println!("{}", store.stats_line(&m, r.bytes_read, new)?);
+            if let Some(h) = store.take_hash_stats() {
+                println!("{h}");
+            }
             if !o.consistent {
                 println!(
                     "inconsistent {}/{}: consistent=false ({}; {} files changed while read; {} entries unreadable)",

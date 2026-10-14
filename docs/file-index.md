@@ -89,6 +89,32 @@ Benchmark (`cargo test -p scheduler --release search_benchmark -- --ignored --no
   `restore_files` path checks.
 - **API tokens.** `POST /search` is not on the token allow-list.
 
+## File hashes and the IOC hash hunt (Phase 28)
+Groups with **`file_hashes`** (`PUT /groups/{id}/file-hashes`, Groups page) record the SHA-256 of every regular file
+in the sealed name index, so a hunt for known-bad hashes (IOC feeds) needs no restore.
+
+- **Format:** name index v2 (`chunkstore::names`): the v1 columns plus a sparse list `(entry index, SHA-256)`,
+  sealed with the context `names2:<source>/<time>` (v1: `names:<source>/<time>`). An index without hashes is still
+  written as v1, so the previous release reads every snapshot taken without the option. Readers try v2, then v1;
+  out-of-range or unordered hash entries are refused. Never offsite (derived data, rebuilt from the snapshot).
+- **Where the hashes come from** (`Store::enable_file_hashes`, at commit): computed while reading by the connector
+  (NAS shares, TrueNAS, plugin file trees: `store_file*`) or by the agent (`file-hash` capability,
+  docs/agent-protocol.md); carried over from the previous snapshot of the source for files with the same chunk
+  list; otherwise read back from the store (older agents, the first run after switching it on). The job log has a
+  line `file hashes: N while reading, N from the previous snapshot, N read back from the store, N failed`.
+- **Containers:** with `index_files` and `file_hashes` the `file_index` job hashes every regular file of the root
+  tar (`nexus-pve … ct-files … index hashes`). **VM disks** get no hashes yet (the walk in the micro-VM would read
+  every file; decision: later, opt-in).
+- **Hash lists:** `PUT /hash-lists/{name} {text}` (admins, security officers; text or CSV, the first SHA-256 per
+  line; MD5/SHA-1 skipped and counted); at most 20 lists, 100 000 hashes each, 500 000 together; stored normalised
+  in `hash_lists` (catalog v43), audited with their SHA-256.
+- **Hunt:** `POST /hunts {tenant, lists?, source?, from?, to?}` queues `hash_hunt`; the scheduler opens the tenant's
+  store (in-process, read-only, own plan key, 30 minute budget, parallel like the file search), compares the hashes
+  of every name index v2 with the lists and returns `{matches: [{source, path, size, sha256, lists, times}],
+  scanned, unhashed, truncated, hashes}` (at most 2000 file versions). Hits flag the snapshots that contain them
+  (anomaly reason `IOC hash: …`, so restores default to an earlier clean snapshot) and raise the critical
+  `hash_hunt_hit` alert for the tenant. The Hash hunt page shows the results with **Restore…** and **Legal hold…**.
+
 ## Phase 31: VM files without the micro-VM, instant search (2026-10-14)
 
 Plan and decisions: `docs/file-index-v2-plan.md`. What changed against the sections above:

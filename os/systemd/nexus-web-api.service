@@ -40,6 +40,10 @@ ReadWritePaths=/var/lib/nexus/plugins-staging
 # web certificate (docs/control-plane.md): request.json for nexus-tls.path, its
 # result.json (0770 root:nexus-webapi); web.pem is read from /etc/nexus/tls
 ReadWritePaths=/var/lib/nexus/tls
+# agent releases uploaded in Agents -> Updates (Phase 27; 2750 nexus-webapi:nexus-catalog,
+# read by the scheduler and nexus-agentctl), checked against the release keys
+ReadWritePaths=/var/lib/nexus/agent-releases
+Environment=NEXUS_AGENT_RELEASES_UPLOAD=/var/lib/nexus/agent-releases
 Environment=NEXUS_PLUGIN_STAGING=/var/lib/nexus/plugins-staging
 Environment=NEXUS_PLUGIN_KEYS=/etc/pki/nexus/plugin-keys
 Environment=NEXUS_PLUGINS=/var/lib/nexus/plugins

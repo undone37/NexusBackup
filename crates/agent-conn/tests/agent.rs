@@ -122,6 +122,20 @@ impl Env {
         s
     }
     fn backup(&self, store: &Store, pin: &str, job: u64) -> anyhow::Result<backup::Report> {
+        self.backup_with(store, pin, job, false)
+    }
+    fn backup_with(&self, store: &Store, pin: &str, job: u64, file_hashes: bool) -> anyhow::Result<backup::Report> {
+        self.backup_spec(store, pin, job, file_hashes, None, &mut |l| eprintln!("{l}"))
+    }
+    fn backup_spec(
+        &self,
+        store: &Store,
+        pin: &str,
+        job: u64,
+        file_hashes: bool,
+        full_read: Option<&'static str>,
+        log: &mut dyn FnMut(&str),
+    ) -> anyhow::Result<backup::Report> {
         let mut map = MapDb::open(&self.store_dir).unwrap();
         let mut s = self.session(pin);
         let r = backup::backup(
@@ -136,12 +150,76 @@ impl Env {
                 hooks: true,
                 filters: Default::default(),
                 limits: Default::default(),
+                file_hashes,
+                full_read,
             },
-            &mut |l| eprintln!("{l}"),
+            log,
         );
         s.close();
         r
     }
+}
+
+fn sha_hex(d: &[u8]) -> String {
+    sha256_hex(d)
+}
+
+/// `(path, sha256 hex)` of the hashed files of a snapshot's name index.
+fn hashed(store: &Store, time: u64) -> Vec<(String, String)> {
+    let m = store.load_manifest(&source_name(ID), time).unwrap();
+    let n = store.load_names(&m).unwrap().unwrap();
+    n.hashed().map(|(p, _, h)| (p.to_owned(), agent_conn::hex(h))).collect()
+}
+
+/// Phase 28: file hashes from an agent with CAP_FILE_HASH (while reading), from
+/// an older agent (read back from the store), carried over for unchanged files;
+/// a hostile agent's hash list of the wrong length fails the backup.
+#[test]
+fn file_hashes_from_new_and_old_agents() {
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let want: Vec<(String, String)> = [
+        "etc/hostname",
+        "etc/ssh/sshd_config",
+        "var/empty",
+        "var/label.xattr",
+        "var/lib/db/copy.bin",
+        "var/lib/db/data.bin",
+    ]
+    .iter()
+    .map(|p| (p.to_string(), sha_hex(&fs::read(e.root.join(p)).unwrap())))
+    .collect();
+    // an older agent: the appliance computes the hashes from the stored chunks
+    let r = e.backup_with(&store, &pin, 1, true).unwrap();
+    let mut got = hashed(&store, r.time);
+    got.sort();
+    assert_eq!(got, want);
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.computed), (0, 5), "{st:?}");
+    // an agent with the capability: hashes while reading (and the store has nothing to read)
+    e.agent.st.lock().unwrap().file_hash = true;
+    e.agent.st.lock().unwrap().cache = None; // a full read
+    fs::write(e.root.join("etc/hostname"), b"web02\n").unwrap();
+    let r = e.backup_with(&store, &pin, 2, true).unwrap();
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.computed, st.failed), (5, 0, 0), "{st:?}");
+    let got = hashed(&store, r.time);
+    assert!(got.contains(&("etc/hostname".into(), sha_hex(b"web02\n"))));
+    // incremental: unchanged files are not read, their hashes carry over
+    let r = e.backup_with(&store, &pin, 3, true).unwrap();
+    assert!(r.unchanged >= 5);
+    let st = store.take_hash_stats().unwrap();
+    assert_eq!((st.fresh, st.carried, st.computed), (0, 5, 0), "{st:?}");
+    assert_eq!(hashed(&store, r.time).len(), 6);
+    // hashes off (the next job opens its own store handle): the name index is v1 again
+    let off = e.store();
+    let r = e.backup(&off, &pin, 4).unwrap();
+    assert!(hashed(&off, r.time).is_empty());
+    // a hostile agent: one hash too few
+    e.agent.st.lock().unwrap().short_hashes = true;
+    let err = e.backup_with(&store, &pin, 5, true).unwrap_err();
+    assert!(format!("{err:#}").contains("hashes for"), "{err:#}");
 }
 
 fn tree(store: &Store, time: u64) -> Vec<chunkstore::TreeEntry> {
@@ -866,4 +944,61 @@ fn damaged_base_means_full_read_and_the_chunk_is_stored_again() {
         !store.is_damaged(&m1).unwrap(),
         "re-stored: the old snapshot is whole again"
     );
+}
+
+/// Phase 29: a full read sends the Scan without a base (the agent reads every
+/// file) and finds the file the metadata cache kept stale: same size, mtime,
+/// ctime and inode as recorded, other content.
+#[test]
+fn full_read_finds_what_the_metadata_cache_missed() {
+    use std::os::unix::fs::MetadataExt;
+    let e = Env::new();
+    let pin = e.enroll();
+    let store = e.store();
+    let t1 = e.backup(&store, &pin, 1).unwrap().time;
+    // same size, other content; the agent's cache "misses" it (records the new metadata)
+    let p = e.root.join("etc/hostname");
+    fs::write(&p, b"web02\n").unwrap();
+    let md = fs::metadata(&p).unwrap();
+    {
+        let mut g = e.agent.st.lock().unwrap();
+        let c = g.cache.as_mut().unwrap().get_mut(b"etc/hostname".as_slice()).unwrap();
+        (c.size, c.mtime, c.ctime, c.inode) = (
+            md.len(),
+            md.mtime() * 1_000_000_000 + md.mtime_nsec(),
+            md.ctime() * 1_000_000_000 + md.ctime_nsec(),
+            md.ino(),
+        );
+    }
+    let host = |t| tree(&store, t).into_iter().find(|x| x.path == b"etc/hostname").unwrap();
+    let t2 = e.backup(&store, &pin, 2).unwrap().time;
+    assert_eq!(
+        host(t2).chunks,
+        host(t1).chunks,
+        "the incremental kept the stale content"
+    );
+    let mut lines = Vec::new();
+    let r = e
+        .backup_spec(&store, &pin, 3, false, Some("metadata-cache"), &mut |l| {
+            lines.push(l.to_owned())
+        })
+        .unwrap();
+    assert_eq!(e.agent.st.lock().unwrap().scans.last().unwrap(), &None, "no base");
+    assert!(r.base.is_none());
+    assert_ne!(host(r.time).chunks, host(t1).chunks, "read in full");
+    let d = r.full_read.unwrap();
+    assert_eq!((d.tracker.as_str(), d.baseline), ("metadata-cache", Some(t2)));
+    assert_eq!((d.changed, d.unreported, d.unreported_bytes), (1, 1, 6));
+    assert_eq!(d.examples, ["etc/hostname"]);
+    assert!(d.compared >= 5);
+    let want = format!(
+        "full-read {}/{} {{\"tracker\":\"metadata-cache\",\"baseline\":{t2},",
+        source_name(ID),
+        r.time
+    );
+    assert!(lines.iter().any(|l| l.starts_with(&want)), "{lines:?}");
+    // the next full read is clean
+    let r = e.backup_spec(&store, &pin, 4, false, Some("usn"), &mut |_| {}).unwrap();
+    let d = r.full_read.unwrap();
+    assert_eq!((d.tracker.as_str(), d.changed, d.unreported), ("usn", 0, 0));
 }

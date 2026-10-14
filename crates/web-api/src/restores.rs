@@ -87,6 +87,17 @@ pub async fn restore_many(State(st): State<St>, ctx: Ctx, J(r): J<RestoreMany>) 
             p["pool"] = json!(x);
         }
         let p = check_params(&st, kind, &r.tenant, p).map_err(|e| ApiError(e.0, format!("{}: {}", it.source, e.1)))?;
+        // Phase 29: frozen restores to production; a flagged snapshot is restored alone (approval)
+        crate::infected::refuse_frozen(&st.cat.conn(), &r.tenant, kind, &p)?;
+        if !r.link_down {
+            if let Some(why) = catalog::incident::flagged(&st.cat.conn(), &r.tenant, &it.source, it.time)? {
+                return Err(ApiError::conflict(format!(
+                    "{}: the snapshot is flagged as infected ({why}): restore it with the network disconnected, \
+                     or alone (approval restore.infected)",
+                    it.source
+                )));
+            }
+        }
         jobs.push((kind, p));
     }
     let wrapped: Vec<(&str, &Value)> = jobs.iter().map(|(k, p)| (*k, p)).collect();

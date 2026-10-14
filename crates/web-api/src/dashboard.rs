@@ -446,6 +446,7 @@ pub fn compute(c: &Connection, scope: Option<&str>, days: i64, now: i64) -> ApiR
         // same threshold as the scheduler's offsite_lag alert (48 h)
         "offsite": offsite(c, scope, days, now, 48 * 3600)?,
         "restore_tests": restore_tests(c, scope, days, now)?,
+        "full_reads": crate::fullread::summary(c, scope)?,
     }))
 }
 

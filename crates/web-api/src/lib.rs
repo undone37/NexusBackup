@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 
 pub mod access;
 pub mod activation;
+pub mod agent_updates;
 pub mod agents;
 pub mod alerts;
 pub mod approvals;
@@ -29,6 +30,7 @@ pub mod changes;
 pub mod config_backup;
 pub mod console;
 pub mod dashboard;
+pub mod devices;
 pub mod diag;
 pub mod edges;
 pub mod endpoint;
@@ -36,13 +38,17 @@ pub mod filesearch;
 pub mod firewall;
 pub mod fleet;
 pub mod forwarding;
+pub mod freeze;
+pub mod fullread;
 pub mod hardware;
 pub mod holds;
 pub mod impersonate;
 pub mod incident;
+pub mod infected;
 pub mod inventory;
 pub mod jobs;
 pub mod keep;
+pub mod lockdown;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
@@ -59,6 +65,7 @@ pub mod reports;
 pub mod rescue;
 pub mod resources;
 pub mod restores;
+pub mod risk;
 pub mod runctl;
 pub mod scan;
 pub mod search;
@@ -71,6 +78,7 @@ pub mod tenancy;
 pub mod tenant_idp;
 pub mod tenant_key;
 pub mod tenants;
+pub mod threat;
 pub mod tls;
 pub mod tokens;
 pub mod usage;
@@ -159,6 +167,8 @@ pub struct AppState {
     pub oidc: crate::oidc::OidcState,
     /// web certificate files and the nexus-tls request dir (default: appliance paths)
     pub tls: std::sync::OnceLock<webtls::Paths>,
+    /// agent release store (Phase 27; default: env or appliance paths)
+    pub agent_releases: std::sync::OnceLock<crate::agent_updates::ReleasePaths>,
 }
 
 impl AppState {
@@ -192,6 +202,7 @@ impl AppState {
             dashboard: Default::default(),
             oidc: Default::default(),
             tls: std::sync::OnceLock::new(),
+            agent_releases: std::sync::OnceLock::new(),
         })
     }
 
@@ -247,9 +258,14 @@ impl AppState {
     }
 
     pub fn audit(&self, actor: &str, action: &str, target: &str, details: serde_json::Value) -> Result<(), ApiError> {
+        let account = actor;
         let actor = crate::tokens::audit_actor(actor);
         self.cat
             .audit(&crate::impersonate::audit_actor(&actor), action, target, &details)?;
+        // Phase 29: risk signals of the acting account (never fails the request)
+        if let Err(e) = crate::risk::observe(&self.cat.conn(), account, action, &details) {
+            eprintln!("risk signals: {}", e.1);
+        }
         Ok(())
     }
 }
@@ -344,6 +360,12 @@ impl ApiError {
     }
     pub fn conflict(m: impl Into<String>) -> Self {
         ApiError(StatusCode::CONFLICT, m.into())
+    }
+    /// A server-side failure (file system, worker task), logged.
+    pub fn internal(m: impl Into<String>) -> Self {
+        let m = m.into();
+        eprintln!("<3>web-api: {m}");
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("internal error: {m}"))
     }
 }
 
@@ -596,6 +618,32 @@ pub fn router(st: St) -> Router {
         .route("/agents/{id}/sessions", get(endpoint::agent_sessions))
         // Phase 26: edge proxies for roaming agents (edges.rs)
         .route("/agents/{id}/edge", axum::routing::put(edges::set_agent_edge))
+        // Phase 27: agent updates (agent_updates.rs)
+        .route("/agents/{id}/tags", axum::routing::put(agent_updates::set_tags))
+        .route(
+            "/agent-releases",
+            get(agent_updates::list_releases)
+                .post(agent_updates::upload_release)
+                .layer(axum::extract::DefaultBodyLimit::max(agent_updates::MAX_UPLOAD as usize)),
+        )
+        .route(
+            "/agent-releases/{version}",
+            axum::routing::delete(agent_updates::delete_release),
+        )
+        .route(
+            "/agent-releases/{version}/download",
+            post(agent_updates::download_token),
+        )
+        .route(
+            "/agent-rollouts",
+            get(agent_updates::list_rollouts).post(agent_updates::create_rollout),
+        )
+        .route("/agent-rollouts/{id}", get(agent_updates::get_rollout))
+        .route("/agent-rollouts/{id}/{action}", post(agent_updates::rollout_action))
+        .route(
+            "/agent-update-settings",
+            get(agent_updates::list_settings).put(agent_updates::put_settings),
+        )
         .route("/edges", get(edges::list_edges).post(edges::create_edge))
         .route("/edges/{id}", axum::routing::delete(edges::delete_edge))
         .route("/edges/{id}/token", post(edges::new_edge_token))
@@ -608,6 +656,7 @@ pub fn router(st: St) -> Router {
         )
         .route("/stats/trends", get(changes::trends))
         .route("/snapshots/{tenant}/{source}/{time}/scan", post(scan::scan_snapshot))
+        .route("/snapshots/{tenant}/{source}/{time}/scan-back", post(scan::scan_back))
         .route("/scans", get(scan::list_scans))
         .route("/scan/rules", get(scan::list_rules))
         .route(
@@ -696,6 +745,11 @@ pub fn router(st: St) -> Router {
         .merge(tenancy::routes())
         .merge(vault::routes())
         .merge(incident::routes())
+        .merge(lockdown::routes())
+        .merge(threat::routes())
+        .merge(devices::routes())
+        .merge(risk::routes())
+        .merge(fullread::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()
@@ -720,6 +774,7 @@ pub fn router(st: St) -> Router {
         .route("/api/openapi.json", get(openapi::document))
         .fallback(spa::serve)
         .layer(axum::extract::DefaultBodyLimit::max(1 << 20))
+        .layer(middleware::from_fn_with_state(st.clone(), freeze::layer))
         .layer(middleware::from_fn_with_state(st.clone(), tokens::layer))
         .layer(middleware::from_fn(impersonate::layer))
         .layer(middleware::from_fn(connection_scope))

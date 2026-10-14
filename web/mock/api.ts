@@ -129,6 +129,10 @@ interface User {
   can_download?: boolean | null;
   expires?: number | null;
   last_login?: number | null;
+  /** Phase 29: risk-signal mark (step-up required until `risk_until`) */
+  risk_since?: number | null;
+  risk_until?: number | null;
+  risk_reason?: string | null;
 }
 interface Agent {
   id: string;
@@ -163,6 +167,17 @@ interface Agent {
   edge_id?: string | null;
   via?: string | null;
   edge_pushed?: string | null;
+  /** Phase 27: host facts (protocol v1.8), tags, update state */
+  arch?: string | null;
+  install?: string | null;
+  gui_version?: string | null;
+  caps?: string[] | null;
+  tags?: string[];
+  update_target?: string | null;
+  update_state?: string | null;
+  update_error?: string | null;
+  update_attempts?: number;
+  update_at?: number | null;
 }
 interface Job {
   id: number;
@@ -215,6 +230,12 @@ interface MockGroup {
   exclude_disks?: Record<string, string[]>;
   exclude_disks_mode?: 'placeholder' | 'omit';
   parallel_guests?: number;
+  /** Phase 28 */
+  scan_schedule?: string | null;
+  scan_budget_min?: number | null;
+  file_hashes?: boolean;
+  /** Phase 29: days between full reads, null = the default, 0 = off */
+  full_read_days?: number | null;
 }
 interface InvRow {
   guest: string;
@@ -272,7 +293,7 @@ const db = {
   quorum: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' } }>(),
+  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number }>(),
   /** Phase 19b: policies assigned to tenants (tenant admins use only these), deleted tenant names */
   tenantPolicies: {} as Record<string, number[]>,
   tombstones: [] as { name: string; uid: string | null; deleted_at: number; deleted_by: string }[],
@@ -1696,6 +1717,10 @@ function seed() {
   seedFleet(t);
   seedRecovery(t);
   seedEdges(t);
+  seedAgentUpdates(t);
+
+  seedPhase28(t);
+  seedPhase29(t);
 }
 
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
@@ -1815,6 +1840,11 @@ function groupState(g: (typeof db.groups)[number]) {
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
     index_files: g.index_files ?? false,
+    scan_schedule: g.scan_schedule ?? null,
+    scan_budget_min: g.scan_budget_min ?? null,
+    file_hashes: g.file_hashes ?? false,
+    full_read_days: g.full_read_days ?? null,
+    full_read_default: fullReadDefault(g),
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
     resolved_guests: resolveGuests(g),
@@ -2139,6 +2169,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'agent.delete':
       db.agents = db.agents.filter((a) => a.id !== p.id);
       break;
+    case 'agent.rollback': {
+      // Phase 27: the approved rollback rollout starts
+      const r = rollouts.find((x) => x.id === p.id);
+      if (r && r.state === 'pending_approval') Object.assign(r, { state: 'running', wave_at: now() });
+      break;
+    }
     case 'source.delete':
       db.sources = db.sources.filter((g) => g.id !== p.id);
       break;
@@ -2240,6 +2276,17 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       addJob(p.kind, p.tenant, { ...p.params, replace: true, quorum_id: qid, requested_by: by }, 'scheduler');
       break;
     }
+    case 'tenant.lockdown.lift':
+      liftLockdown(p, by, decider);
+      break;
+    // Phase 29
+    case 'restore.infected':
+      if (restoresFrozen(p.tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen');
+      addJob(p.kind, p.tenant, { ...p.params, quorum_id: qid, requested_by: by }, 'scheduler');
+      break;
+    case 'incident.freeze.lift':
+      liftFreeze(p);
+      break;
     case 'incident.leave': {
       const v = db.incident;
       if (!v?.active || v.since !== p.since) throw new HttpError(409, 'this incident is no longer active');
@@ -2333,7 +2380,7 @@ on('POST', '/auth/login', async (c) => {
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || tenantOff(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
+  if (!u || u.disabled || tenantOff(u.tenant) || lockedDown(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -2347,6 +2394,7 @@ on('POST', '/auth/login', async (c) => {
   const ua = String(c.headers['user-agent'] ?? '').slice(0, 256);
   db.sessions.set(sid, { id: nextId(), userId: u.id, csrf, created: now(), last: now(), ip: '198.51.100.17', ua });
   u.last_login = now();
+  deviceSeen(u, ua, '198.51.100.17'); // Phase 28
   // Phase 21b: beyond `max_sessions` the account's oldest sessions end
   const mine = [...db.sessions.entries()].filter(([, x]) => x.userId === u.id).sort((a, b) => b[1].created - a[1].created || b[1].id - a[1].id);
   const over = mine.slice(db.security.max_sessions);
@@ -2372,6 +2420,8 @@ on('GET', '/auth/me', (c) => {
       vault_mode: db.vault.enabled,
       impersonating: db.sessions.get(c.sid!)!.imp ?? null,
       incident: incidentBanner(u),
+      freeze: freezeBanner(u),
+      step_up: stepUpState(u, c.sid),
     },
   ];
 });
@@ -3186,7 +3236,20 @@ on('DELETE', '/replication/sources/:id', async (c, [id]) => {
 });
 
 // agents
-const pubAgent = ({ token_hash: _h, ...a }: Agent) => a;
+const pubAgent = ({ token_hash: _h, caps, ...a }: Agent) => ({
+  ...a,
+  arch: a.arch ?? null,
+  install: a.install ?? null,
+  gui_version: a.gui_version ?? null,
+  // Phase 27: "1.8" with the update2 capability, "1.7" for older agents, null = never seen
+  protocol: caps ? (caps.includes('update2') ? '1.8' : '1.7') : null,
+  tags: a.tags ?? [],
+  update_target: a.update_target ?? null,
+  update_state: a.update_state ?? null,
+  update_error: a.update_error ?? null,
+  update_attempts: a.update_attempts ?? 0,
+  update_at: a.update_at ?? null,
+});
 const AGENT_ID_RE = /^[0-9a-f]{16}$/;
 const findAgent = (u: User, id: string) => find(byTenant(u, db.agents), (a) => AGENT_ID_RE.test(id) && a.id === id, 'agent');
 // 128-bit one-time token, base32 (26 chars), valid 24 h; only its hash is stored.
@@ -4055,6 +4118,7 @@ on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => 
   if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
   if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
   if (activeHold(tn, src, tm)) throw new HttpError(409, 'snapshot is under a legal hold: release it first (needs approval)');
+  lockdownRefuse(tn, 'deletes');
   return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
 });
 on('GET', '/snapshots', (c) => {
@@ -4064,7 +4128,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), ...snapIndex(s) }))
+    .map((s) => ({ ...s, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), scan_state: scanState(s), flagged: flaggedSnap(s), clean_point: s.clean_point ?? null, ...snapIndex(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4299,6 +4363,9 @@ on('POST', '/jobs', async (c) => {
   if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
   const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
+  lockdownRefuseJob(tenant, kind, params); // Phase 28
+  const infected = await infectedGate(u, kind, tenant, params); // Phase 29
+  if (infected) return infected;
   if (kind === 'files_get' && !canDownload(u)) throw new HttpError(403, 'this account may not download files');
   if (kind === 'files_get' && params.params && Object.keys(params.params).length) {
     // contract v1.9: only plugin snapshots whose `download` has a params_schema (web-api jobs.rs)
@@ -4352,6 +4419,10 @@ on('POST', '/restores', async (c) => {
     const p: Json = { source: it.source, time: it.time, node: b.node, target: Number(b.target_base) + i, storage: b.storage, start: !!b.start, link_down: !!b.link_down };
     if (b.name_prefix) p.name_prefix = b.name_prefix;
     if (b.pool) p.pool = b.pool;
+    // Phase 29: flagged snapshots and frozen restores only with the network disconnected
+    const sn = (db.snapshots as Json[]).find((x) => x.tenant === b.tenant && x.source === it.source && x.time === it.time);
+    if (!b.link_down && sn && flaggedSnap(sn)) throw new HttpError(409, `${it.source}: the snapshot is flagged (anomaly or malware); restore it with the network disconnected or one at a time (approval)`);
+    if (!b.link_down && restoresFrozen(b.tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen; restore with the network disconnected');
     try {
       checkRestore(kind, b.tenant, p);
     } catch (e) {
@@ -4823,6 +4894,7 @@ const ALERT_CATEGORY: Record<string, string> = {
   mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
   account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
   vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
+  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', change_tracking: 'backup',
   job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
   orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
   vmid_reused: 'backup', restore_priority: 'backup', index_backlog: 'backup', index_space: 'system',
@@ -5586,6 +5658,7 @@ on('GET', '/dashboard', (c) => {
   if (hit && now() - hit.at < 60) return [200, { ...hit.body, incident: incidentBanner(u) }];
   const body: Json = dashboard(u, days);
   body.restore_tests = rtKpi(u, days);
+  body.full_reads = fullReadSummary(u);
   dashCache.set(key, { at: now(), body });
   return [200, { ...body, incident: incidentBanner(u) }];
 });
@@ -6869,6 +6942,7 @@ async function handle(req: Req, res: Res) {
     if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
       throw new HttpError(403, 'CSRF token missing or invalid');
     }
+    if (user) p29Gate(method, path, user, sess); // Phase 29: step-up (428), freezes (409)
     const dl = /^\/downloads\/([0-9a-f]+)$/.exec(path);
     if (dl && method === 'GET') {
       const u = need(user);
@@ -6886,7 +6960,7 @@ async function handle(req: Req, res: Res) {
     }
     const bytes = method === 'GET' ? null : await readBody(req);
     // Plugin uploads are raw bundles, everything else JSON.
-    const raw = method === 'POST' && path === '/plugins' ? bytes : null;
+    const raw = method === 'POST' && (path === '/plugins' || path === '/agent-releases') ? bytes : null;
     const text = bytes && !raw ? bytes.toString('utf8') : '';
     let body: Json = {};
     if (text) {
@@ -6900,6 +6974,9 @@ async function handle(req: Req, res: Res) {
       const mm = method === m ? re.exec(path) : null;
       if (!mm) continue;
       const [status, out, type] = await h({ method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res }, mm.slice(1));
+      // Phase 29, risk rule (c): deletes per account
+      const acct = user && db.users.find((x) => x.id === user!.id);
+      if (acct && method === 'DELETE' && status < 300) riskDelete(acct);
       return send(status, out, type);
     }
     throw new HttpError(404, 'no such endpoint');
@@ -7642,7 +7719,7 @@ const incidentLeaveQuorum = () => db.quorum.find((q) => q.action === 'incident.l
 on('GET', '/incident', (c) => {
   const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
-  return [200, { ...(db.incident ?? { active: false }), leave_quorum: incidentLeaveQuorum() }];
+  return [200, { ...(db.incident ?? { active: false }), leave_quorum: incidentLeaveQuorum(), freeze_lift_quorum: freezeLiftQuorum('appliance') }];
 });
 on('POST', '/incident', async (c) => {
   const u = need(c.user, 'security_officer');
@@ -7679,7 +7756,7 @@ on('POST', '/incident', async (c) => {
   const msg = `incident mode entered by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens ended)`;
   const alert = mkAlert({ ts: t, severity: 'critical', kind: 'incident', key: 'incident', message: msg });
   db.alerts.push(alert);
-  db.incident = { active: true, since: t, by: u.name, reason, hold: h ? { tenants: h.tenants ?? [], sources: h.sources ?? [], from: h.from, to: h.to } : null, held, paused, sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id };
+  db.incident = { active: true, freeze: normFreeze(b.freeze, true), since: t, by: u.name, reason, hold: h ? { tenants: h.tenants ?? [], sources: h.sources ?? [], from: h.from, to: h.to } : null, held, paused, sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id };
   dashCache.clear();
   await audit(u.name, 'incident.enter', 'appliance', { incident: db.incident });
   return [201, db.incident];
@@ -8358,3 +8435,1033 @@ on('PUT', '/agents/:id/edge', async (c, [id]) => {
   await audit(u.name, 'agent.edge', `agent/${a.id}`, { tenant: a.tenant, edge: edge_id, old });
   return [200, pubAgent(a)];
 });
+
+// Phase 27: agent releases, rollouts, automatic mode (docs/agent-update-plan.md "Implementation")
+type MockArtifact = { name: string; kind: string; os: string; arch: string; version: string; size: number; sha256: string };
+type MockRelease = {
+  version: string; source: 'image' | 'upload'; signed: boolean; key: string | null; error: string | null; protocol: string | null;
+  min_appliance: string | null; released: string | null; notes: string | null; artifacts: MockArtifact[];
+};
+type MockRolloutItem = {
+  agent_id: string; tenant: string; wave: number; state: string; job_id: number | null; attempts: number; error: string | null;
+  from_version: string | null; updated: number | null;
+};
+type MockRollout = {
+  id: number; version: string; scope: Json; canary: number; canary_pct: number | null; soak_minutes: number; concurrency: number;
+  max_failures: number; max_failure_pct: number; windows: Json[]; rollback: boolean; automatic: boolean; state: string; reason: string | null;
+  wave: number; quorum_id: number | null; created: number; created_by: string; finished: number | null; items: MockRolloutItem[];
+  /** mock-only: time of the last simulated step */
+  wave_at: number;
+};
+type MockUpdateSetting = {
+  tenant: string; group_id: number | null; mode: 'manual' | 'automatic'; windows: Json[]; canary: number; soak_minutes: number;
+  updated: number | null; updated_by: string | null;
+};
+const releases: MockRelease[] = [];
+const rollouts: MockRollout[] = [];
+const updateSettings: MockUpdateSetting[] = [];
+/** deterministic pseudo SHA-256 (no rand(): the seeded PRNG sequence of the other fixtures stays as it was) */
+const fakeSha = (s: string) => {
+  let out = '';
+  for (let k = 0; k < 8; k++) {
+    let h = (2166136261 ^ Math.imul(k + 1, 0x9e3779b1)) >>> 0;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 0x85ebca6b) >>> 0;
+    out += ((h ^ (h >>> 13)) >>> 0).toString(16).padStart(8, '0');
+  }
+  return out;
+};
+function artifacts(v: string, gui: string): MockArtifact[] {
+  const a = (name: string, kind: string, os: string, arch: string, size: number, version = v): MockArtifact => ({
+    name, kind, os, arch, version, size, sha256: fakeSha(`${v}/${name}`),
+  });
+  const out: MockArtifact[] = [];
+  for (const [arch, deb] of [['x86_64', 'amd64'], ['aarch64', 'arm64']]) {
+    const d = `linux-${arch}`;
+    out.push(
+      a(`${d}/nexus-agent`, 'binary', 'linux', arch, 6_912_512),
+      a(`${d}/nexus-agent_${v}_${deb}.deb`, 'deb', 'linux', arch, 2_431_016),
+      a(`${d}/nexus-agent-${v}-1.${arch}.rpm`, 'rpm', 'linux', arch, 2_598_740),
+      a(`${d}/nexus-agent-desktop_${gui}-1_${deb}.deb`, 'desktop-deb', 'linux', arch, 4_120_332, gui),
+      a(`${d}/nexus-agent-desktop-${gui}-1.${arch}.rpm`, 'desktop-rpm', 'linux', arch, 4_377_904, gui),
+    );
+  }
+  out.push(
+    a(`linux-x86_64/nexus-agent-${v}-x86_64.tar.gz`, 'bundle', 'linux', 'x86_64', 2_802_118),
+    a('windows-x64/nexus-agent.exe', 'exe', 'windows', 'x86_64', 7_340_032),
+    a(`windows-x64/nexus-agent-${v}-x64.msi`, 'msi', 'windows', 'x86_64', 11_534_336),
+  );
+  return out;
+}
+const recommendedRelease = () =>
+  releases.filter((r) => r.signed).sort((a, b) => cmpVersion(b.version, a.version))[0]?.version ?? null;
+const isWindows = (a: Agent) => !!a.os?.startsWith('Windows');
+function seedAgentUpdates(t: number) {
+  releases.push(
+    {
+      version: '0.10.0', source: 'image', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
+      released: '2026-10-12', notes: 'Chunked in-band updates, package installs updated with apt/dnf/MSI, start watchdog.',
+      artifacts: artifacts('0.10.0', '0.10.0'),
+    },
+    {
+      version: '0.9.0', source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.7', min_appliance: '1.3.0',
+      released: '2026-09-02', notes: 'Edge proxy for roaming agents (kept for rollbacks).', artifacts: artifacts('0.9.0', '0.9.0'),
+    },
+    {
+      version: '0.11.0', source: 'upload', signed: false, key: null,
+      error: 'manifest.json.sig does not verify with any pinned release key', protocol: '1.8', min_appliance: '1.4.0', released: '2026-10-13',
+      notes: null, artifacts: artifacts('0.11.0', '0.11.0').slice(0, 3),
+    },
+  );
+  const by = (n: string) => db.agents.find((a) => a.name === n);
+  const web01 = by('web01');
+  const fs02 = by('fs02');
+  const nb07 = by('nb07');
+  const caps18 = ['lz4', 'poll', 'edge', 'update2'];
+  if (web01)
+    Object.assign(web01, {
+      version: '0.10.0', arch: 'x86_64', install: 'deb', caps: caps18, tags: ['ring1'],
+      update_target: '0.10.0', update_state: 'ok', update_attempts: 1, update_at: t - 3600 * 20,
+    });
+  if (fs02)
+    Object.assign(fs02, {
+      version: '0.9.0', arch: 'x86_64', install: 'msi', gui_version: '0.9.0', caps: caps18, tags: ['ring2'],
+      update_target: '0.10.0', update_state: 'failed', update_attempts: 1, update_at: t - 3600 * 19,
+      update_error: 'msiexec exit code 1603 (fatal error during installation); update-msi.log: "Error 1920. Service NexusAgent failed to start"',
+    });
+  if (nb07)
+    Object.assign(nb07, {
+      version: '0.9.0', arch: 'x86_64', install: 'deb', gui_version: '0.9.0', caps: caps18, tags: ['laptops'],
+      update_target: '0.10.0', update_state: 'pending', update_at: t - 1200,
+    });
+  // two more enrolled agents: an aarch64 rpm install and an old bundle install (protocol 1.7)
+  const extra = (id: string, name: string, host: string, os: string, o: Partial<Agent>): Agent => ({
+    id, tenant: 'initech', name, host, port: 7444, enrolled_at: t - 86400 * 90, cert_sha256: fakeSha(id), token_expires: null,
+    last_seen: t - 300, version: '0.9.0', os, token_hash: null, limits: {}, cert_issued: t - 86400 * 90,
+    cert_expires: t - 86400 * 90 + 3650 * 86400, cert_renewal_pending: false, reachable: true, last_poll: t - 90,
+    power: { on_battery: false, battery_percent: null, metered: false, network_name: null }, ui_policy: {}, ui_policy_version: 0,
+    ui_policy_seen: null, laptop: {}, missed_at: null, last_request: null, ...o,
+  });
+  db.agents.push(
+    extra('3f9a0c2e7b1d4e58', 'arm01', 'arm01.initech.example.com', 'AlmaLinux 10.0 (Purple Lion)', {
+      arch: 'aarch64', install: 'rpm', caps: caps18, tags: ['ring1'],
+    }),
+    extra('8d2b6e41a07c9f35', 'legacy03', '192.0.2.63', 'Debian GNU/Linux 12 (bookworm)', {
+      version: '0.8.0', arch: null, install: null, caps: ['lz4', 'poll'], tags: [],
+    }),
+  );
+  const ids: Record<string, string> = Object.fromEntries(db.agents.map((a) => [a.name, a.id]));
+  const item = (name: string, wave: number, state: string, o: Partial<MockRolloutItem> = {}): MockRolloutItem => ({
+    agent_id: ids[name] ?? name, tenant: db.agents.find((a) => a.name === name)?.tenant ?? 'acme', wave, state, job_id: null,
+    attempts: state === 'waiting' ? 0 : 1, error: null, from_version: '0.9.0', updated: t - 3600, ...o,
+  });
+  const base = { canary_pct: null, concurrency: 5, max_failures: 3, max_failure_pct: 20, rollback: false, quorum_id: null, wave_at: t };
+  rollouts.push(
+    {
+      ...base, id: 31, version: '0.9.0', scope: {}, canary: 1, soak_minutes: 60, windows: [], automatic: false, state: 'done', reason: null,
+      wave: 1, created: t - 86400 * 40, created_by: 'alice', finished: t - 86400 * 39,
+      items: [
+        item('web01', 0, 'ok', { from_version: '0.8.0', updated: t - 86400 * 40 + 900 }),
+        item('fs02', 1, 'ok', { from_version: '0.8.0', updated: t - 86400 * 39 }),
+        item('nb07', 1, 'ok', { from_version: '0.8.0', updated: t - 86400 * 39 }),
+      ],
+    },
+    {
+      ...base, id: 32, version: '0.10.0', scope: { tenant: 'acme' }, canary: 1, soak_minutes: 120,
+      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '19:00', to: '23:00' }], automatic: false, state: 'paused',
+      reason: 'canary failed: fs02 (msiexec exit code 1603)', wave: 0, created: t - 86400, created_by: 'alice', finished: null,
+      items: [
+        item('fs02', 0, 'failed', { error: 'msiexec exit code 1603 (fatal error during installation)', updated: t - 3600 * 19 }),
+        item('web01', 1, 'ok', { updated: t - 3600 * 20 }),
+        item('nb07', 1, 'waiting', { updated: null }),
+      ],
+    },
+    {
+      ...base, id: 33, version: '0.10.0', scope: { tenant: 'initech' }, canary: 1, soak_minutes: 60, windows: [], automatic: true,
+      state: 'running', reason: null, wave: 0, created: t - 1800, created_by: 'scheduler', finished: null,
+      items: [
+        item('arm01', 0, 'running', { updated: t - 120 }),
+        item('legacy03', 1, 'waiting', { from_version: '0.8.0', updated: null }),
+      ],
+    },
+  );
+  updateSettings.push({
+    tenant: 'initech', group_id: null, mode: 'automatic', windows: [{ days: [], from: '22:00', to: '05:00' }], canary: 1, soak_minutes: 60,
+    updated: t - 86400 * 3, updated_by: 'alice',
+  });
+  db.alerts.push(
+    mkAlert({
+      ts: t - 3600 * 19, severity: 'warning', kind: 'agent_update_failed', key: `agent_update_failed:${ids.fs02}`, tenant: 'acme',
+      message: 'agent fs02: update to 0.10.0 failed: msiexec exit code 1603 (fatal error during installation)',
+    }),
+    mkAlert({
+      ts: t - 3600 * 19, severity: 'warning', kind: 'rollout_paused', key: 'rollout_paused:32', tenant: null,
+      message: 'rollout 32 to 0.10.0 paused: canary failed: fs02 (msiexec exit code 1603)',
+    }),
+  );
+}
+function rolloutState(r: MockRollout) {
+  if (r.state === 'pending_approval' && r.quorum_id) {
+    const q = db.quorum.find((x) => x.id === r.quorum_id);
+    if (q && (q.state === 'rejected' || q.state === 'expired')) r.state = 'rejected';
+  }
+  return r.state;
+}
+/** mock scheduler: a running rollout moves one step about every 10 s while someone looks */
+function stepRollout(r: MockRollout) {
+  if (r.state !== 'running' || now() - r.wave_at < 10) return;
+  r.wave_at = now();
+  const wave = r.items.filter((i) => i.wave === r.wave);
+  const active = wave.find((i) => i.state === 'queued' || i.state === 'running');
+  if (active) {
+    const a = db.agents.find((x) => x.id === active.agent_id);
+    if (active.state === 'queued') active.state = 'running';
+    else {
+      // a protocol 1.7 agent with an unknown install type gets the old single-frame update: works for bundles only
+      active.state = 'ok';
+      if (a) Object.assign(a, { version: r.version, update_state: 'ok', update_target: r.version, update_at: now(), update_error: null });
+    }
+    active.updated = now();
+    return;
+  }
+  const next = wave.find((i) => i.state === 'waiting');
+  if (next) {
+    Object.assign(next, { state: 'queued', attempts: next.attempts + 1, updated: now() });
+    return;
+  }
+  if (r.wave === 0 && r.items.some((i) => i.wave === 1)) {
+    r.wave = 1;
+    return;
+  }
+  Object.assign(r, { state: 'done', finished: now() });
+}
+const rolloutCounts = (r: MockRollout) => {
+  const c: Record<string, number> = { total: r.items.length, waiting: 0, queued: 0, running: 0, ok: 0, failed: 0, skipped: 0, cancelled: 0 };
+  for (const i of r.items) c[i.state]++;
+  return c;
+};
+const pubRollout = (r: MockRollout) => {
+  const { items: _i, wave_at: _w, ...x } = r;
+  return { ...x, state: rolloutState(r), counts: rolloutCounts(r) };
+};
+const findRollout = (id: string) => find(rollouts, (r) => r.id === Number(id), 'rollout');
+const ROLLOUT_READERS: Role[] = ['admin', 'security_officer', 'operator', 'viewer'];
+function needAppliance(u: User | null, ...roles: Role[]) {
+  const x = need(u, ...roles);
+  if (x.tenant) throw new HttpError(403, 'forbidden: appliance-wide');
+  return x;
+}
+const validUpdateWindow = (w: Json) =>
+  !!w &&
+  Array.isArray(w.days) &&
+  w.days.every((d: unknown) => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].includes(String(d))) &&
+  typeof w.from === 'string' &&
+  typeof w.to === 'string' &&
+  validWindow({ days: w.days, from: w.from, to: w.to });
+
+on('GET', '/agent-releases', (c) => {
+  need(c.user);
+  return [200, { recommended: recommendedRelease(), releases }];
+});
+on('POST', '/agent-releases', async (c) => {
+  const u = need(c.user, 'admin');
+  if (!String(c.headers['content-type'] ?? '').startsWith('application/x-tar')) throw new HttpError(415, 'Content-Type must be application/x-tar');
+  const raw = c.raw;
+  if (!raw?.length) throw new HttpError(400, 'empty release');
+  if (raw.length > 512 << 20) throw new HttpError(413, 'release larger than 512 MiB');
+  // Mock: every upload is "verified" and becomes the next patch version of the newest signed release
+  const [ma, mi, pa] = (recommendedRelease() ?? '0.10.0').split('.').map(Number);
+  const version = `${ma}.${mi}.${pa + 1}`;
+  if (releases.some((r) => r.version === version)) throw new HttpError(409, `release ${version} exists`);
+  releases.push({
+    version, source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
+    released: new Date(now() * 1000).toISOString().slice(0, 10), notes: 'Uploaded release', artifacts: artifacts(version, version),
+  });
+  await audit(u.name, 'agent.release.upload', `agent-release/${version}`, { version, bytes: raw.length });
+  return [201, { version }];
+});
+on('DELETE', '/agent-releases/:v', async (c, [v]) => {
+  const u = need(c.user, 'admin');
+  const r = find(releases, (x) => x.version === v, 'release');
+  if (r.source !== 'upload') throw new HttpError(409, 'releases from the image cannot be deleted');
+  if (rollouts.some((x) => x.version === v && ['running', 'paused', 'pending_approval'].includes(rolloutState(x))))
+    throw new HttpError(409, 'an active rollout uses this release');
+  releases.splice(releases.indexOf(r), 1);
+  await audit(u.name, 'agent.release.delete', `agent-release/${v}`, { version: v });
+  return [200, { version: v }];
+});
+on('POST', '/agent-releases/:v/download', async (c, [v]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
+  const r = find(releases, (x) => x.version === v && x.signed, 'signed release');
+  const a = find(r.artifacts, (x) => x.name === c.body?.artifact, 'artifact');
+  const token = rand(32);
+  const expires = now() + 3600;
+  const filename = a.name.split('/').pop() ?? a.name;
+  db.downloads.set(token, { owner: u.name, filename, body: `mock installer ${a.name} (${a.sha256})\n`, expires });
+  return [200, { token, url: `/api/v1/downloads/${token}`, name: a.name, size: a.size, sha256: a.sha256, expires }];
+});
+on('PUT', '/agents/:id/tags', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const tags = c.body?.tags;
+  if (!Array.isArray(tags) || tags.length > 16 || tags.some((x: unknown) => typeof x !== 'string' || !/^[a-z0-9_.-]{1,32}$/.test(x)))
+    throw new HttpError(400, 'tags: at most 16 of [a-z0-9_.-]{1,32}');
+  const old = a.tags ?? [];
+  a.tags = [...new Set(tags as string[])];
+  await audit(u.name, 'agent.tags', `agent/${a.id}`, { tenant: a.tenant, tags: a.tags, old });
+  return [200, pubAgent(a)];
+});
+on('GET', '/agent-rollouts', (c) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  rollouts.forEach(stepRollout);
+  return [200, [...rollouts].sort((a, b) => b.id - a.id).map(pubRollout)];
+});
+on('GET', '/agent-rollouts/:id', (c, [id]) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  const r = findRollout(id);
+  stepRollout(r);
+  const items = r.items.map((i) => ({
+    ...i,
+    name: db.agents.find((a) => a.id === i.agent_id)?.name ?? i.agent_id,
+    version: i.state === 'ok' ? r.version : null,
+  }));
+  return [200, { ...pubRollout(r), items }];
+});
+on('POST', '/agent-rollouts', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const b = c.body ?? {};
+  const rel = find(releases, (x) => x.version === b.version && x.signed, 'signed release');
+  const scope: Json = b.scope ?? {};
+  for (const k of Object.keys(scope)) if (!['tenant', 'group_id', 'os', 'tag', 'agents'].includes(k)) throw new HttpError(400, `scope: unknown field ${k}`);
+  const int = (v: unknown, def: number, min: number, max: number, what: string) => {
+    if (v === undefined || v === null) return def;
+    if (!Number.isInteger(v) || (v as number) < min || (v as number) > max) throw new HttpError(400, `${what}: ${min}..=${max}`);
+    return v as number;
+  };
+  const canaryPct = b.canary_pct === undefined || b.canary_pct === null ? null : int(b.canary_pct, 10, 1, 100, 'canary_pct');
+  const canary = int(b.canary, 1, 0, 1000, 'canary');
+  const windows = Array.isArray(b.windows) ? b.windows : [];
+  if (!windows.every(validUpdateWindow)) throw new HttpError(400, 'windows: days Mon..Sun, from/to HH:MM, different');
+  const group = scope.group_id !== undefined ? find(db.groups, (g) => g.id === Number(scope.group_id), 'group') : null;
+  let pool = db.agents.filter((a) => a.cert_sha256);
+  if (scope.tenant) pool = pool.filter((a) => a.tenant === scope.tenant);
+  if (group) pool = pool.filter((a) => a.tenant === group.tenant && group.guests.includes(a.id));
+  if (scope.os) pool = pool.filter((a) => (scope.os === 'windows') === isWindows(a));
+  if (scope.tag) pool = pool.filter((a) => (a.tags ?? []).includes(scope.tag));
+  if (Array.isArray(scope.agents)) pool = pool.filter((a) => (scope.agents as string[]).includes(a.id));
+  if (!pool.length) throw new HttpError(400, 'scope: no enrolled agent matches');
+  const rollback = !!b.rollback;
+  const older = pool.some((a) => !!a.version && cmpVersion(rel.version, a.version) < 0);
+  if (older && !rollback) throw new HttpError(400, `version: ${rel.version} is older than agents in the scope (a downgrade needs rollback: true)`);
+  if (rollback && !older) throw new HttpError(400, 'rollback: no agent in the scope runs a newer version');
+  const nCanary = canaryPct !== null ? Math.max(1, Math.round((pool.length * canaryPct) / 100)) : canary;
+  let w0 = 0;
+  const items: MockRolloutItem[] = pool.map((a) => {
+    const current = !!a.version && cmpVersion(a.version, rel.version) === 0;
+    let wave = 1;
+    if (!current && w0 < nCanary) {
+      wave = 0;
+      w0++;
+    }
+    return {
+      agent_id: a.id, tenant: a.tenant, wave, state: current ? 'skipped' : 'waiting', job_id: null, attempts: 0,
+      error: current ? 'already runs this version' : null, from_version: a.version, updated: null,
+    };
+  });
+  const r: MockRollout = {
+    id: nextId(), version: rel.version, scope, canary, canary_pct: canaryPct, soak_minutes: int(b.soak_minutes, 60, 0, 10080, 'soak_minutes'),
+    concurrency: int(b.concurrency, 5, 1, 100, 'concurrency'), max_failures: int(b.max_failures, 3, 0, 10000, 'max_failures'),
+    max_failure_pct: int(b.max_failure_pct, 20, 0, 100, 'max_failure_pct'), windows, rollback, automatic: false,
+    state: rollback ? 'pending_approval' : 'running', reason: null, wave: w0 ? 0 : 1, quorum_id: null, created: now(), created_by: u.name,
+    finished: null, items, wave_at: now(),
+  };
+  rollouts.push(r);
+  await audit(u.name, 'agent.rollout.create', `rollout/${r.id}`, { version: r.version, scope, rollback, agents: items.length });
+  if (!rollback) return [201, pubRollout(r)];
+  const [st, body] = await quorum(u, 'agent.rollback', { id: r.id, version: r.version, scope }, { id: r.id });
+  if (st === 202) r.quorum_id = Number(body.quorum_id);
+  return [st, { ...pubRollout(r), ...body }];
+});
+for (const verb of ['pause', 'resume', 'cancel'] as const) {
+  on('POST', `/agent-rollouts/:id/${verb}`, async (c, [id]) => {
+    const u = needAppliance(c.user, 'admin');
+    const r = findRollout(id);
+    const st = rolloutState(r);
+    const ok = verb === 'pause' ? st === 'running' : verb === 'resume' ? st === 'paused' : ['running', 'paused', 'pending_approval'].includes(st);
+    if (!ok) throw new HttpError(409, `rollout is ${st}`);
+    if (verb === 'pause') Object.assign(r, { state: 'paused', reason: `paused by ${u.name}` });
+    if (verb === 'resume') Object.assign(r, { state: 'running', reason: null, wave_at: now() });
+    if (verb === 'cancel') {
+      Object.assign(r, { state: 'cancelled', finished: now() });
+      for (const i of r.items) if (i.state === 'waiting') Object.assign(i, { state: 'cancelled', updated: now() });
+    }
+    if (verb !== 'pause')
+      for (const a of db.alerts)
+        if (a.key === `rollout_paused:${r.id}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+    await audit(u.name, `agent.rollout.${verb}`, `rollout/${r.id}`, { version: r.version });
+    return [200, pubRollout(r)];
+  });
+}
+on('GET', '/agent-update-settings', (c) => {
+  needAppliance(c.user, ...ROLLOUT_READERS);
+  return [200, updateSettings];
+});
+on('PUT', '/agent-update-settings', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const b = c.body ?? {};
+  find(db.tenants, (x) => x.name === b.tenant, 'tenant');
+  const group_id = b.group_id ? Number(b.group_id) : null;
+  if (group_id !== null) find(db.groups, (g) => g.id === group_id && g.tenant === b.tenant, 'group in tenant');
+  if (!['manual', 'automatic'].includes(b.mode)) throw new HttpError(400, 'mode: manual or automatic');
+  const windows = Array.isArray(b.windows) ? b.windows : [];
+  if (!windows.every(validUpdateWindow)) throw new HttpError(400, 'windows: days Mon..Sun, from/to HH:MM, different');
+  const canary = Number.isInteger(b.canary) ? b.canary : 1;
+  const soak_minutes = Number.isInteger(b.soak_minutes) ? b.soak_minutes : 60;
+  const old = updateSettings.find((s) => s.tenant === b.tenant && (s.group_id ?? null) === group_id);
+  const next: MockUpdateSetting = { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes, updated: now(), updated_by: u.name };
+  if (old) Object.assign(old, next);
+  else updateSettings.push(next);
+  await audit(u.name, 'agent.update_settings', `tenant/${b.tenant}`, { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes });
+  return [200, next];
+});
+
+// ---------------------------------------------------------------- Phase 28: threat scans, hash hunt, lockdown, devices
+
+/** Verdict of the newest scan (catalog `snapshots.scan_state`): seeded on the snapshot, else from the scans. */
+function scanState(s: Json): string | null {
+  if (s.scan_state !== undefined) return s.scan_state;
+  const x = scanSummary(s);
+  return x ? (x.matches ? 'hit' : x.complete ? 'clean' : 'incomplete') : null;
+}
+
+const p28 = {
+  lists: [] as { name: string; hashes: string[]; sha256: string; uploaded_by: string; uploaded_at: number }[],
+  /** files with a recorded SHA-256 the demo hunts can find: [tenant, source, path, size, sha256, times] */
+  hashed: [] as { tenant: string; source: string; path: string; size: number; sha256: string; times: number[] }[],
+  lockdowns: [] as Json[],
+  devices: [] as { user_id: number; fingerprint: string; family: string; prefix: string; first_seen: number; last_seen: number }[],
+  emails: {} as Record<number, string>,
+};
+const hex64 = (seed: string) => (sha(seed) + sha(`${seed}#2`)).slice(0, 64);
+const lockedDown = (tenant: string | null | undefined) => !!tenant && p28.lockdowns.some((l) => l.tenant === tenant && l.active);
+function lockdownRefuse(tenant: string, what: string) {
+  if (lockedDown(tenant)) throw new HttpError(409, `tenant ${tenant} is locked down: ${what} are refused until the lockdown is lifted (approval)`);
+}
+/** web-api `lockdown::refuse_job`. */
+function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
+  const overwrites =
+    ['backup', 'agent_update', 'agent_renew', 'plugin_restore'].includes(kind) ||
+    ((kind === 'restore' || kind === 'restore_ct') && !!p.replace) ||
+    (kind === 'restore_files' && !!p.overwrite && p.overwrite !== 'never');
+  if (overwrites) lockdownRefuse(tenant, `${kind} jobs that change its data`);
+}
+
+function uaFamily(ua: string): string {
+  const b = ([['Edg/', 'Edge'], ['OPR/', 'Opera'], ['Firefox/', 'Firefox'], ['Chrome/', 'Chrome'], ['Safari/', 'Safari'], ['curl/', 'curl']] as const).find(([k]) => ua.includes(k))?.[1] ?? 'other';
+  const os = ([['Windows', 'Windows'], ['Android', 'Android'], ['iPhone', 'iOS'], ['Mac OS X', 'macOS'], ['Macintosh', 'macOS'], ['Linux', 'Linux']] as const).find(([k]) => ua.includes(k))?.[1];
+  return os ? `${b} on ${os}` : b;
+}
+const ipPrefix = (ip: string) => (/^\d+\.\d+\.\d+\.\d+$/.test(ip) ? `${ip.split('.').slice(0, 3).join('.')}.0/24` : 'unknown');
+/** web-api `devices::check`: records the device of a new session, raises `login_new_device` for an unseen one. */
+function deviceSeen(u: User, ua: string, ip: string) {
+  const family = uaFamily(ua);
+  const prefix = ipPrefix(ip);
+  const fingerprint = sha(`${family}\n${prefix}`).slice(0, 16);
+  const mine = p28.devices.filter((d) => d.user_id === u.id);
+  const known = mine.find((d) => d.fingerprint === fingerprint);
+  if (known) return void (known.last_seen = now());
+  p28.devices.push({ user_id: u.id, fingerprint, family, prefix, first_seen: now(), last_seen: now() });
+  if (!mine.length) return;
+  db.alerts.push(
+    mkAlert({
+      ts: now(), severity: u.role === 'admin' || u.role === 'security_officer' ? 'warning' : 'info', kind: 'login_new_device',
+      key: `login_new_device:${u.id}:${fingerprint}`, tenant: u.tenant,
+      message: `account ${u.name} (${u.role}) signed in from a new device: ${family} from ${prefix} (address ${ip})`,
+    }),
+  );
+}
+
+// group options
+on('PUT', '/groups/:id/threat-scan', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin', 'security_officer');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  const b = c.body ?? {};
+  const schedule = typeof b.schedule === 'string' && b.schedule.trim() ? b.schedule.trim() : null;
+  if (schedule && !parseSchedule(schedule)) throw new HttpError(400, 'schedule: not a valid schedule');
+  const budget = b.budget_min ?? null;
+  if (budget !== null && !(Number.isInteger(budget) && budget >= 1 && budget <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.scan_schedule = schedule;
+  g.scan_budget_min = budget;
+  const out = { id: g.id, tenant: g.tenant, scan_schedule: schedule, scan_budget_min: budget, rules: db.yaraRules.length > 0 };
+  await audit(u.name, 'group.threat_scan', `group/${g.id}`, out);
+  return [200, out];
+});
+on('PUT', '/groups/:id/file-hashes', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.file_hashes = c.body.enabled;
+  const out = { id: g.id, tenant: g.tenant, file_hashes: g.file_hashes };
+  await audit(u.name, 'group.file_hashes', `group/${g.id}`, out);
+  return [200, out];
+});
+
+// IOC hash lists
+function parseHashList(text: string): [string[], number] {
+  const out = new Set<string>();
+  let skipped = 0;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const hex = line.split(/[,;\t ]/).map((f) => f.trim().replace(/^"|"$/g, '')).filter((f) => f.length >= 32 && /^[0-9a-fA-F]+$/.test(f));
+    const h = hex.find((f) => f.length === 64);
+    if (h) out.add(h.toLowerCase());
+    else if (hex.length) skipped++;
+  }
+  return [[...out].sort(), skipped];
+}
+const pubList = (l: (typeof p28.lists)[number]) => ({ name: l.name, count: l.hashes.length, sha256: l.sha256, uploaded_by: l.uploaded_by, uploaded_at: l.uploaded_at });
+on('GET', '/hash-lists', (c) => {
+  need(c.user, 'admin', 'security_officer');
+  return [200, p28.lists.map(pubList).sort((a, b) => (a.name < b.name ? -1 : 1))];
+});
+on('PUT', '/hash-lists/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const n = decodeURIComponent(name);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  const [hashes, skipped] = parseHashList(String(c.body?.text ?? ''));
+  if (!hashes.length) throw new HttpError(400, 'text: no SHA-256 hash in the file (MD5 and SHA-1 are not supported)');
+  if (hashes.length > 100_000) throw new HttpError(400, 'text: at most 100000 hashes per list');
+  const others = p28.lists.filter((l) => l.name !== n);
+  if (others.length >= 20 || others.reduce((x, l) => x + l.hashes.length, 0) + hashes.length > 500_000)
+    throw new HttpError(400, 'at most 20 lists and 500000 hashes together');
+  const l = { name: n, hashes, sha256: hex64(hashes.join('\n')), uploaded_by: u.name, uploaded_at: now() };
+  p28.lists = [...others, l];
+  const out = { name: n, count: hashes.length, skipped, sha256: l.sha256 };
+  await audit(u.name, 'hash_list.put', `hash_list/${n}`, out);
+  return [200, out];
+});
+on('DELETE', '/hash-lists/:name', async (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  const l = find(p28.lists, (x) => x.name === decodeURIComponent(name), 'hash list');
+  p28.lists = p28.lists.filter((x) => x !== l);
+  await audit(u.name, 'hash_list.delete', `hash_list/${l.name}`, { sha256: l.sha256 });
+  return [204, null];
+});
+
+/** The scheduler's `hash_hunt` over the demo's hashed files. */
+function runHunt(j: Job, tenant: string, p: Json, seeding = false) {
+  const lists = p.lists ? p28.lists.filter((l) => p.lists.includes(l.name)) : p28.lists;
+  const listed = new Map<string, string[]>();
+  for (const l of lists) for (const h of l.hashes) listed.set(h, [...(listed.get(h) ?? []), l.name]);
+  const files = p28.hashed.filter((f) => f.tenant === tenant && (!p.source || f.source === p.source));
+  const inRange = (t: number) => (!p.from || t >= p.from) && (!p.to || t <= p.to);
+  const matches = files
+    .filter((f) => listed.has(f.sha256))
+    .map((f) => ({ source: f.source, path: f.path, size: f.size, sha256: f.sha256, lists: listed.get(f.sha256)!, times: f.times.filter(inRange) }))
+    .filter((m) => m.times.length);
+  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && inRange(s.time));
+  const hashedSources = new Set(p28.hashed.filter((f) => f.tenant === tenant).map((f) => f.source));
+  j.duration = 4;
+  j.plan = [`hash hunt in ${tenant}: ${listed.size} hashes from ${lists.length} list(s)`, `${snaps.length} snapshots`, `${matches.length} file versions on a list`];
+  j.result = {
+    matches, scanned: snaps.length, unhashed: snaps.filter((s) => !hashedSources.has(s.source)).length, truncated: false,
+    hashes: listed.size, elapsed_ms: 1840,
+  };
+  if (matches.length && !seeding) {
+    for (const m of matches)
+      for (const t of m.times) {
+        const s = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === m.source && x.time === t);
+        if (s && !anomalous(s)) s.anomaly = { reason: `IOC hash: 1 file(s) on a hash list (hunt job ${j.id}), e.g. ${m.path}`, at: now(), cleared_by: null, cleared_at: null, note: null };
+      }
+    const first = matches[0];
+    db.alerts.push(
+      mkAlert({
+        ts: now(), severity: 'critical', kind: 'hash_hunt_hit', key: `hash_hunt_hit:${tenant}`, tenant,
+        message: `IOC hash hunt (job ${j.id}) in tenant ${tenant}: ${matches.length} file versions on a hash list in ${new Set(matches.flatMap((m) => m.times.map((t) => `${m.source}/${t}`))).size} snapshots, e.g. ${first.path} in ${first.source} (${first.lists[0]})`,
+      }),
+    );
+  }
+}
+on('POST', '/hunts', async (c) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const b = c.body ?? {};
+  const tenant = String(b.tenant ?? '');
+  find(db.tenants, (x) => x.name === tenant, 'tenant');
+  if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  if (b.from && b.to && b.from > b.to) throw new HttpError(400, 'from: after to');
+  const params: Json = {};
+  if (b.lists !== undefined) {
+    if (!Array.isArray(b.lists) || !b.lists.length) throw new HttpError(400, 'lists: name at least one list, or leave it out for all');
+    for (const l of b.lists) if (!p28.lists.some((x) => x.name === l)) throw new HttpError(400, `lists: no list ${l}`);
+    params.lists = b.lists;
+  } else if (!p28.lists.length) throw new HttpError(409, 'no IOC hash lists uploaded (Settings → IOC hash lists)');
+  for (const k of ['source', 'from', 'to']) if (b[k] !== undefined && b[k] !== null) params[k] = b[k];
+  const j = addJob('hash_hunt', tenant, params, u.name);
+  runHunt(j, tenant, params);
+  await audit(u.name, 'hash_hunt.request', `job/${j.id}`, { tenant, params });
+  return [202, { id: j.id }];
+});
+
+// tenant lockdown
+const liftQuorum = (tenant: string) => db.quorum.find((q) => q.action === 'tenant.lockdown.lift' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null;
+function needLockdown(u: User | null): User {
+  const x = need(u, 'security_officer', 'admin');
+  if (x.tenant) throw new HttpError(403, 'forbidden');
+  return x;
+}
+on('GET', '/lockdowns', (c) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return [
+    200,
+    p28.lockdowns
+      .filter((l) => l.active)
+      .map((l) => ({ tenant: l.tenant, since: l.since, by: l.by, reason: l.reason, lift_quorum: liftQuorum(l.tenant), freeze: l.freeze ?? null, freeze_lift_quorum: freezeLiftQuorum('tenant', l.tenant) })),
+  ];
+});
+on('GET', '/tenants/:name/lockdown', (c, [name]) => {
+  const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const tn = decodeURIComponent(name);
+  const l = p28.lockdowns.find((x) => x.tenant === tn);
+  return [200, { ...(l ?? { active: false }), lift_quorum: liftQuorum(tn), freeze: l?.freeze ?? null, freeze_lift_quorum: freezeLiftQuorum('tenant', tn) }];
+});
+on('POST', '/tenants/:name/lockdown', async (c, [name]) => {
+  const u = needLockdown(c.user);
+  const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
+  const b = c.body ?? {};
+  const reason = String(b.reason ?? '').trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (lockedDown(tn)) throw new HttpError(409, 'the tenant is already locked down');
+  const range: [number, number] | null = b.hold === null ? null : b.hold ? [b.hold.from, b.hold.to] : [-Infinity, Infinity];
+  if (range && range[0] > range[1]) throw new HttpError(400, 'hold: from must not be after to');
+  const held: string[] = [];
+  if (range)
+    for (const x of db.snapshots as Json[])
+      if (x.tenant === tn && x.time >= range[0] && x.time <= range[1] && holdOne(x.tenant, x.source, x.time, `tenant lockdown: ${reason}`, u.name))
+        held.push(`${x.source}/${x.time}`);
+  const paused: Json[] = [];
+  for (const g of db.groups.filter((x) => x.tenant === tn && x.paused_until !== -1)) {
+    paused.push({ id: g.id, prev: g.paused_until ?? null });
+    g.paused_until = -1;
+  }
+  let sessions = 0;
+  for (const [sid, s] of [...db.sessions]) if (sid !== c.sid && db.users.find((y) => y.id === s.userId)?.tenant === tn) (db.sessions.delete(sid), sessions++);
+  const mine = new Set(db.users.filter((y) => y.tenant === tn).map((y) => y.id));
+  const before = p14.tokens.length;
+  p14.tokens.splice(0, p14.tokens.length, ...p14.tokens.filter((x) => !mine.has(x.user_id)));
+  const tokens = before - p14.tokens.length;
+  const t = now();
+  const msg = `tenant ${tn} locked down by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens of its accounts ended)`;
+  const alert = mkAlert({ ts: t, severity: 'critical', kind: 'tenant_lockdown', key: `tenant_lockdown:${tn}`, tenant: tn, message: msg });
+  db.alerts.push(alert);
+  const v = {
+    active: true, tenant: tn, freeze: normFreeze(b.freeze, false), since: t, by: u.name, reason, hold: b.hold === undefined ? 'all' : b.hold, held, paused,
+    sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id,
+  };
+  p28.lockdowns = [...p28.lockdowns.filter((x) => x.tenant !== tn), v];
+  dashCache.clear();
+  await audit(u.name, 'tenant.lockdown', `tenant/${tn}`, { lockdown: v });
+  return [201, v];
+});
+on('POST', '/tenants/:name/lockdown/lift', async (c, [name]) => {
+  const u = needLockdown(c.user);
+  const tn = decodeURIComponent(name);
+  const l = p28.lockdowns.find((x) => x.tenant === tn && x.active);
+  if (!l) throw new HttpError(409, 'the tenant is not locked down');
+  if (liftQuorum(tn)) throw new HttpError(409, 'lifting the lockdown is already requested');
+  // always a second person, even with approvals disabled
+  const q = { id: nextId(), action: 'tenant.lockdown.lift', params: { tenant: tn, since: l.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+/** Quorum arm of `tenant.lockdown.lift`. */
+function liftLockdown(p: Json, by: string, decider: string) {
+  const l = p28.lockdowns.find((x) => x.tenant === p.tenant && x.active && x.since === p.since);
+  if (!l) throw new HttpError(409, 'this lockdown is no longer active');
+  let resumed = 0;
+  for (const g of l.paused) {
+    const x = db.groups.find((y) => y.id === g.id);
+    if (x && x.paused_until === -1) (x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null, resumed++);
+  }
+  for (const a of db.alerts) if (a.key === `tenant_lockdown:${p.tenant}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
+  Object.assign(l, { active: false, ended_at: now(), ended_by: by, approved_by: decider || by, resumed });
+}
+
+// sign-in devices and the account's address
+on('GET', '/auth/devices', (c) => {
+  const u = need(c.user);
+  const devices = p28.devices.filter((d) => d.user_id === u.id).sort((a, b) => b.last_seen - a.last_seen).map(({ user_id: _u, ...d }) => d);
+  return [200, { devices, email: p28.emails[u.id] ?? null }];
+});
+on('DELETE', '/auth/devices/:fp', async (c, [fp]) => {
+  const u = need(c.user);
+  const d = find(p28.devices, (x) => x.user_id === u.id && x.fingerprint === fp, 'device');
+  p28.devices = p28.devices.filter((x) => x !== d);
+  await audit(u.name, 'user.device_forget', `user/${u.name}`, { fingerprint: fp });
+  return [204, null];
+});
+on('PUT', '/auth/email', async (c) => {
+  const u = need(c.user);
+  const e = typeof c.body?.email === 'string' ? c.body.email.trim() : '';
+  if (e && !/^[^\s@<>,;]+@[^\s@<>,;.]+(\.[^\s@<>,;.]+)+$/.test(e)) throw new HttpError(400, 'email: not a mail address');
+  if (e) p28.emails[u.id] = e;
+  else delete p28.emails[u.id];
+  await audit(u.name, 'user.email', `user/${u.name}`, { email: e || null });
+  return [200, { email: e || null }];
+});
+
+function seedPhase28(t: number) {
+  // scheduled scans and file hashes on acme's groups
+  for (const g of db.groups.filter((x) => x.tenant === 'acme')) {
+    g.scan_schedule = 'daily 03:00';
+    g.file_hashes = true;
+  }
+  const g2 = db.groups.find((x) => x.tenant === 'initech');
+  if (g2) g2.scan_schedule = 'Sun 02:00';
+  // the encrypted file server: daily scheduled scans found every snapshot clean until the newest one
+  const fs = db.agents.find((a) => a.name === 'fs02');
+  const fsSnaps = fs ? (db.snapshots as Json[]).filter((s) => s.tenant === 'acme' && s.source === `host-${fs.id}` && s.local).sort((a, b) => b.time - a.time) : [];
+  fsSnaps.forEach((s, i) => {
+    if (i === 0) return; // the infected one: its seeded scan says hit
+    s.scan_state = i === 4 ? 'incomplete' : i > 14 ? null : 'clean';
+  });
+  // IOC lists and a finished hunt
+  const evil = hex64('invoice-dropper');
+  const loader = hex64('cobalt-loader');
+  p28.lists.push(
+    { name: 'cert-advisory-2026-41', hashes: [evil, loader, hex64('a'), hex64('b'), hex64('c')].sort(), sha256: hex64('l1'), uploaded_by: 'so', uploaded_at: t - 86400 * 2 },
+    { name: 'ir-case-4711', hashes: [evil, hex64('d')].sort(), sha256: hex64('l2'), uploaded_by: 'so', uploaded_at: t - 3600 * 5 },
+  );
+  if (fs && fsSnaps.length > 3)
+    p28.hashed.push(
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Downloads/Invoice_2026-10.pdf.exe', size: 412_672, sha256: evil, times: fsSnaps.slice(0, 2).map((s) => s.time) },
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'ProgramData/Updater/svchost32.dll', size: 98_304, sha256: loader, times: [fsSnaps[0].time] },
+      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Documents/plan.docx', size: 23_552, sha256: hex64('benign'), times: fsSnaps.map((s) => s.time) },
+    );
+  const hunt = addJob('hash_hunt', 'acme', {}, 'so', { state: 'ok', started: t - 3000, finished: t - 2990 });
+  hunt.created = t - 3010;
+  runHunt(hunt, 'acme', {}, true); // no flags / alert in the seed: the other pictures stay as they were
+  // sign-in devices (the screenshot browser signs in as Chrome on Linux from 198.51.100.17)
+  const dev = (u: User | undefined, family: string, prefix: string, first: number, last: number) =>
+    u && p28.devices.push({ user_id: u.id, fingerprint: sha(`${family}\n${prefix}`).slice(0, 16), family, prefix, first_seen: t - first, last_seen: t - last });
+  const admin = db.users.find((u) => u.name === 'admin');
+  dev(admin, 'Firefox on Windows', '198.51.100.0/24', 86400 * 90, 1200);
+  dev(admin, 'Safari on macOS', '192.0.2.0/24', 86400 * 30, 5400);
+  dev(admin, 'Chrome on Linux', '198.51.100.0/24', 86400 * 12, 86400);
+  if (admin) p28.emails[admin.id] = 'admin@example.com';
+  dev(db.users.find((u) => u.name === 'op'), 'Chrome on Linux', '198.51.100.0/24', 86400 * 60, 86400)
+}
+
+// ---------------------------------------------------------------- Phase 29 (NetBackup Tier 1): full read, flagged
+// restores, scan back, incident / lockdown freezes, privileged-activity risk signals (docs/control-plane.md)
+
+const p29 = {
+  /** catalog `full_reads` (one row per source) */
+  fullReads: [] as Json[],
+  /** DELETE requests per account in the last hour (risk rule c) */
+  deletes: new Map<number, number[]>(),
+};
+
+// ---- full read
+const fullReadDefault = (g: { source_id: number }) => (db.sources.find((s) => s.id === g.source_id)?.kind === 'pve' ? 90 : 30);
+on('PUT', '/groups/:id/full-read', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  const d = c.body?.days;
+  if (d !== null && !(Number.isInteger(d) && d >= 0 && d <= 365)) throw new HttpError(400, 'days: null (the default) or 0..=365 (0 = off)');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.full_read_days = d;
+  const out = { id: g.id, tenant: g.tenant, full_read_days: d, full_read_default: fullReadDefault(g) };
+  await audit(u.name, 'group.full_read', `group/${g.id}`, out);
+  return [200, out];
+});
+on('GET', '/full-reads', (c) => {
+  const u = need(c.user);
+  const [tq, sq] = [c.query.get('tenant'), c.query.get('source')];
+  return [200, byTenant(u, p29.fullReads as (Json & { tenant: string })[]).filter((r) => (!tq || r.tenant === tq) && (!sq || r.source === sq))];
+});
+function fullReadSummary(u: User): Json {
+  const rows = byTenant(u, p29.fullReads as (Json & { tenant: string })[]);
+  const verified = rows.filter((r) => r.result === 'clean');
+  return {
+    sources: rows.length,
+    verified: verified.length,
+    drift: rows.filter((r) => r.result === 'drift').length,
+    never: rows.filter((r) => r.result === null || r.result === 'no_baseline').length,
+    oldest_verified: verified.length ? Math.min(...verified.map((r) => r.last_at)) : null,
+  };
+}
+
+// ---- flagged snapshots: production restores need approval `restore.infected`
+const flaggedSnap = (s: Json) => anomalous(s) || (scanState(s) === 'hit' && !s.anomaly?.cleared_at);
+/** web-api: what counts as a restore to production (contract item 2). */
+function productionRestore(kind: string, p: Json): boolean {
+  if (kind === 'restore' || kind === 'restore_ct') return !!p.replace || !p.link_down;
+  if (kind === 'instant_recover') return !p.link_down;
+  if (kind === 'instant_disk' || kind === 'plugin_restore') return true;
+  if (kind === 'restore_files') return p.target === '/' || (!!p.overwrite && p.overwrite !== 'never');
+  return false;
+}
+const restoresFrozen = (tenant: string) =>
+  (db.incident?.active && db.incident.freeze?.restores) || p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.restores);
+const deletionsFrozen = (tenant: string | null) =>
+  (db.incident?.active && db.incident.freeze?.deletions) || (!!tenant && p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.deletions));
+/** POST /jobs: frozen restores (409) and the `restore.infected` gate; null = go on as usual. */
+async function infectedGate(u: User, kind: string, tenant: string, p: Json): Promise<Reply | null> {
+  if (!productionRestore(kind, p)) return null;
+  if (restoresFrozen(tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen; restore isolated (network disconnected or another path) or lift the freeze (approval)');
+  const s = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === p.source && x.time === Number(p.time));
+  if (!s || !flaggedSnap(s)) return null;
+  const params = { tenant, kind, params: p, reason: s.anomaly?.reason ?? 'malware scan matches' };
+  if (!db.approvals) {
+    if (u.role !== 'admin')
+      throw new HttpError(403, 'the snapshot is flagged (anomaly or malware): only an administrator may restore it to production while approvals are disabled; restore it isolated: network disconnected or another path');
+    const q = { id: nextId(), action: 'restore.infected', params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
+    db.quorum.push(q);
+    addJob(kind, tenant, { ...p, quorum_id: q.id, requested_by: u.name }, 'scheduler');
+    await audit(u.name, 'restore.infected', `quorum/${q.id}`, { approvals: 'disabled', params });
+    return [200, { approvals: 'disabled', executed: false, quorum_id: q.id, state: 'approved', infected: true }];
+  }
+  const q = { id: nextId(), action: 'restore.infected', params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params });
+  return [202, { quorum_id: q.id, infected: true }];
+}
+
+// ---- scan back to the last clean snapshot
+on('POST', '/snapshots/:tenant/:source/:time/scan-back', async (c, [tenant, source, time]) => {
+  const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'security_officer');
+  const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
+  if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
+  const b = c.body ?? {};
+  if (b.budget_min !== undefined && !(Number.isInteger(b.budget_min) && b.budget_min >= 1 && b.budget_min <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  if (b.max !== undefined && !(Number.isInteger(b.max) && b.max >= 1 && b.max <= 100)) throw new HttpError(400, 'max: 1..=100');
+  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
+  const params: Json = { source: src, from: tm, ...(b.budget_min ? { budget: b.budget_min * 60 } : {}), ...(b.max ? { max: b.max } : {}) };
+  const j = addJob('scan_back', tn, params, u.name);
+  const max = b.max ?? 30;
+  const cands = (db.snapshots as Json[]).filter((x) => x.tenant === tn && x.source === src && x.local && x.time <= tm).sort((x, y) => y.time - x.time);
+  const scanned: Json[] = [];
+  let recommended: number | null = null;
+  for (const s of cands.slice(0, max)) {
+    // one ordinary snapshot_scan job per snapshot, with stop_on_match (the scan ends at its first match)
+    const hit: Json | undefined = s.infected?.[0];
+    const sj = addJob('snapshot_scan', tn, { source: src, time: s.time, stop_on_match: true, scan_back: j.id }, 'scheduler');
+    const r = { files: 18_412 - scanned.length * 37, skipped: 3, errors: 0, matches_total: hit ? 1 : 0, matches: hit ? [hit] : [], complete: !hit, stopped: !!hit, seconds: hit ? 96 : 405, source: src, time: s.time };
+    sj.duration = 3;
+    sj.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${src} (stop on the first match)`, hit ? '1 match: stopped' : 'clean'];
+    sj.result = r;
+    db.scans.push({ job: sj.id, tenant: tn, finished: now() + 3, rules: ruleLabel(), ...r });
+    scanned.push({ time: s.time, job: sj.id, matches_total: r.matches_total, complete: r.complete, stopped: r.stopped });
+    s.scan_state = hit ? 'hit' : 'clean';
+    if (hit && !anomalous(s)) s.anomaly = { reason: `YARA: 1 match (${hit.rule}), scan back job ${j.id}`, at: now(), cleared_by: null, cleared_at: null, note: null };
+    if (!hit) {
+      recommended = s.time;
+      break;
+    }
+  }
+  for (const s of db.snapshots as Json[]) if (s.tenant === tn && s.source === src) s.clean_point = s.time === recommended ? recommended : null;
+  j.duration = 3 + 2 * scanned.length;
+  j.plan = [
+    `scan back of ${src} from ${tm}: at most ${max} snapshots, stop on the first match`,
+    ...scanned.map((r) => `scan-back ${src}/${r.time}: ${r.matches_total ? `${r.matches_total} matches` : 'clean'}`),
+    recommended ? `recommended restore point: ${src}/${recommended}` : 'no clean snapshot found',
+  ];
+  j.result = { source: src, from: tm, scanned, recommended, truncated: recommended === null && cands.length > max };
+  await audit(u.name, 'snapshot.scan_back_request', `snapshot/${tn}/${src}/${tm}`, { tenant: tn, job: j.id, params });
+  return [202, { id: j.id }];
+});
+
+// ---- freezes (incident mode, tenant lockdown)
+const normFreeze = (f: Json | undefined, withConfig: boolean): Json | null => {
+  if (!f) return null;
+  const v = { ...(withConfig ? { config: !!f.config } : {}), deletions: !!f.deletions, restores: !!f.restores };
+  return Object.values(v).some(Boolean) ? v : null;
+};
+const freezeLiftQuorum = (scope: string, tenant?: string) =>
+  db.quorum.find((q) => q.action === 'incident.freeze.lift' && q.state === 'pending' && q.params.scope === scope && (scope === 'appliance' || q.params.tenant === tenant))?.id ?? null;
+on('POST', '/incident/freeze/lift', async (c) => {
+  const u = needLockdown(c.user);
+  if (!db.incident?.active || !db.incident.freeze) throw new HttpError(409, 'incident mode freezes nothing');
+  if (freezeLiftQuorum('appliance')) throw new HttpError(409, 'lifting the freezes is already requested');
+  // always a second person, even with approvals disabled
+  const q = { id: nextId(), action: 'incident.freeze.lift', params: { scope: 'appliance', since: db.incident.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+on('POST', '/tenants/:name/lockdown/freeze/lift', async (c, [name]) => {
+  const u = needLockdown(c.user);
+  const tn = decodeURIComponent(name);
+  const l = p28.lockdowns.find((x) => x.tenant === tn && x.active);
+  if (!l?.freeze) throw new HttpError(409, 'the lockdown freezes nothing');
+  if (freezeLiftQuorum('tenant', tn)) throw new HttpError(409, 'lifting the freezes is already requested');
+  const q = { id: nextId(), action: 'incident.freeze.lift', params: { scope: 'tenant', tenant: tn, since: l.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  db.quorum.push(q);
+  await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
+  return [202, { quorum_id: q.id }];
+});
+/** Quorum arm of `incident.freeze.lift`. */
+function liftFreeze(p: Json) {
+  if (p.scope === 'appliance') {
+    if (!db.incident?.active || db.incident.since !== p.since) throw new HttpError(409, 'this incident is no longer active');
+    db.incident.freeze = null;
+    return;
+  }
+  const l = p28.lockdowns.find((x) => x.tenant === p.tenant && x.active && x.since === p.since);
+  if (!l) throw new HttpError(409, 'this lockdown is no longer active');
+  l.freeze = null;
+}
+/** GET /auth/me `freeze` (appliance-wide accounts; null when nothing is frozen). */
+function freezeBanner(u: User): Json | null {
+  if (u.tenant || u.role === 'tenant_user') return null;
+  const f = db.incident?.active ? (db.incident.freeze ?? null) : null;
+  const tenants = p28.lockdowns.filter((l) => l.active && l.freeze).map((l) => ({ tenant: l.tenant, deletions: !!l.freeze.deletions, restores: !!l.freeze.restores }));
+  if (!f && !tenants.length) return null;
+  return { config: !!f?.config, deletions: !!f?.deletions, restores: !!f?.restores, tenants };
+}
+/** Requests that stay allowed while configuration is frozen (contract item 4). */
+const FROZEN_OK = [
+  /^\/auth\//, /^\/incident/, /^\/tenants\/[^/]+\/lockdown/, /^\/quorum\/\d+\/(approve|reject)$/, /^\/users\/\d+$/, /^\/users\/\d+\/(sessions\/revoke|risk\/clear)$/,
+  /^\/alerts\/\d+\/(ack|resolve)$/, /^\/sessions/, /^\/auth\/sessions/, /^\/tokens\/\d+$/, /^\/snapshots\/[^/]+\/[^/]+\/\d+\/(hold|scan|scan-back)$/, /^\/holds/,
+  /^\/groups\/\d+\/pause$/, /^\/jobs/, /^\/restores$/, /^\/hunts$/, /^\/search$/, /^\/snapshots\/diff$/, /^\/diagnostics/, /^\/mock\//,
+];
+
+// ---- privileged-activity risk signals
+const riskActive = (u: User) => !!u.risk_until && u.risk_until > now();
+function markRisk(u: User, rule: string, reason: string, severity: 'warning' | 'critical') {
+  const t = now();
+  if (!riskActive(u)) u.risk_since = t;
+  u.risk_until = t + 86400;
+  u.risk_reason = reason;
+  db.alerts.push(
+    mkAlert({
+      ts: t, severity, kind: 'user_risk', key: `user_risk:${u.id}:${rule}`, tenant: u.tenant,
+      message: `risk signal for ${u.name} (${u.role}): ${reason}; the account must confirm it is the owner before its next change (step-up) until ${new Date(u.risk_until * 1000).toISOString()}`,
+    }),
+  );
+}
+/** Rule (c): ten or more delete requests within an hour. */
+function riskDelete(u: User) {
+  const t = now();
+  const xs = [...(p29.deletes.get(u.id) ?? []).filter((x) => x > t - 3600), t];
+  p29.deletes.set(u.id, xs);
+  if (xs.length >= 10 && !riskActive(u)) markRisk(u, 'deletes', `${xs.length} deletes within one hour`, 'critical');
+}
+/** 428 for a marked account's first change in a session; 409 while configuration / deletions are frozen. */
+function p29Gate(method: string, path: string, u: User, sess: { step_up_at?: number } | undefined) {
+  if (method === 'GET') return;
+  const exempt = ['/auth/login', '/auth/logout', '/auth/step-up', '/auth/passkeys/challenge'].includes(path) || path.startsWith('/auth/activate/');
+  if (riskActive(u) && !exempt && !((sess?.step_up_at ?? 0) >= (u.risk_since ?? 0)))
+    throw new HttpError(428, `step-up required: a risk signal marked this account (${u.risk_reason}); confirm with your password and a second factor (POST /auth/step-up)`);
+  if (db.incident?.active && db.incident.freeze?.config && !FROZEN_OK.some((re) => re.test(path)))
+    throw new HttpError(409, 'incident mode: configuration changes are frozen; lifting the freeze needs a second person (Settings → Incident mode)');
+  const del = /^\/snapshots\/([^/]+)\/[^/]+\/\d+$/.exec(path);
+  if (method === 'DELETE' && del && deletionsFrozen(decodeURIComponent(del[1])))
+    throw new HttpError(409, 'incident mode: deletions are frozen; lifting the freeze needs a second person');
+}
+on('POST', '/auth/step-up', async (c) => {
+  const u = need(c.user);
+  const b = c.body ?? {};
+  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !secondOk(u, b.current_totp)) {
+    await audit(u.name, 'auth.step_up_failed', `user/${u.name}`, {});
+    throw new HttpError(403, 're-authentication failed: wrong current password or second factor');
+  }
+  const sess = db.sessions.get(c.sid!)!;
+  sess.step_up_at = now();
+  await audit(u.name, 'auth.step_up', `user/${u.name}`, { reason: u.risk_reason ?? null });
+  return [200, { step_up_at: sess.step_up_at }];
+});
+function stepUpState(u: User, sid: string | null): Json | null {
+  if (!riskActive(u)) return null;
+  const at = (sid && db.sessions.get(sid)?.step_up_at) || 0;
+  return { since: u.risk_since, until: u.risk_until, reason: u.risk_reason, done: at >= (u.risk_since ?? 0) };
+}
+on('GET', '/risk', (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return [
+    200,
+    db.users
+      .filter(riskActive)
+      .map((x) => ({ user_id: x.id, user: x.name, role: x.role, tenant: x.tenant, since: x.risk_since, until: x.risk_until, reason: x.risk_reason }))
+      .sort((a, b) => (b.since ?? 0) - (a.since ?? 0)),
+  ];
+});
+on('POST', '/users/:id/risk/clear', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const x = find(db.users, (y) => y.id === Number(id), 'user');
+  if (x.id === u.id) throw new HttpError(403, 'another administrator or security officer clears your own mark');
+  if (!riskActive(x)) throw new HttpError(409, 'the account is not marked');
+  const was = { since: x.risk_since, until: x.risk_until, reason: x.risk_reason };
+  x.risk_until = null;
+  await audit(u.name, 'user.risk_clear', `user/${x.name}`, was);
+  return [200, { user_id: x.id, cleared: true }];
+});
+
+function seedPhase29(t: number) {
+  // full reads: one row per VM / host / NAS source with local snapshots; VM groups every 90 days, the rest 30
+  const keys = [...new Set((db.snapshots as Json[]).filter((s) => s.local && /^(vm|host|nas|share)-/.test(s.source)).map((s) => `${s.tenant}\u0000${s.source}`))].sort();
+  const trackerOf = (src: string) => (src.startsWith('vm-') ? 'dirty-bitmap' : src.startsWith('host-') ? 'metadata-cache' : src.startsWith('nas-') ? 'zfs-diff' : 'metadata-cache');
+  keys.forEach((k, i) => {
+    const [tenant, source] = k.split('\u0000');
+    const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time);
+    const period = (source.startsWith('vm-') ? 90 : 30) * DAY;
+    const fresh = i % 7 === 3; // a source protected only recently: no full read yet
+    const pick = snaps[Math.min(snaps.length - 1, 1 + (i % 3))];
+    const row: Json = {
+      tenant, source, next_due: null, last_at: null, last_snapshot: null, last_job: null, result: null, changed: null, unreported: null,
+      unreported_bytes: null, details: null, last_clean_at: null,
+    };
+    if (!fresh && pick) {
+      const compared = source.startsWith('vm-') ? 16_384 + i * 211 : 2_906 + i * 37;
+      Object.assign(row, {
+        last_at: pick.time + 2400, last_snapshot: pick.time, last_job: 9_000 + i, result: snaps.length > 1 ? 'clean' : 'no_baseline',
+        changed: 120 + i * 13, unreported: 0, unreported_bytes: 0, next_due: pick.time + period,
+        details: { tracker: snaps.length > 1 ? trackerOf(source) : 'none', baseline: snaps[snaps.indexOf(pick) + 1]?.time ?? null, compared, examples: [] },
+      });
+      if (row.result === 'clean') row.last_clean_at = row.last_at;
+    } else row.next_due = (snaps[0]?.time ?? t) + DAY;
+    p29.fullReads.push(row);
+  });
+  // drift: the dirty bitmap of vm-102 (initech) missed writes (a host crash while the VM ran)
+  const d = p29.fullReads.find((r) => r.tenant === 'initech' && r.source === 'vm-102' && r.last_at);
+  if (d) {
+    const prevClean = d.last_at - 90 * DAY;
+    Object.assign(d, {
+      result: 'drift', changed: 2_211, unreported: 37, unreported_bytes: 37 * 4 * 2 ** 20, last_clean_at: prevClean,
+      details: { ...d.details, tracker: 'dirty-bitmap', examples: ['drive-scsi0@0x3a2400000', 'drive-scsi0@0x3a2800000', 'drive-scsi0@0x7f0c00000', 'drive-scsi1@0x12000000'] },
+    });
+    // acknowledged by the security officer: the open-alert badge of the other pictures stays as it was
+    db.alerts.push(
+      mkAlert({
+        ts: d.last_at, severity: 'critical', kind: 'change_tracking', key: `change_tracking:${d.tenant}/${d.source}`, tenant: d.tenant,
+        message: `full read of ${d.tenant}/${d.source} snapshot ${d.last_snapshot}: 37 of 2211 changed chunks (148 MiB) were not reported by the dirty bitmap, e.g. drive-scsi0@0x3a2400000, drive-scsi0@0x3a2800000; incremental snapshots since the last clean full read may miss changes`,
+        acked_by: 'so', note: 'Host pve2 crashed on 2026-10-09; checking the bitmap handling with the PVE team',
+      }),
+    );
+  }
+  // the contractor's download volume triggered rule (d): marked for step-up (alert acknowledged, see above)
+  const ctr = db.users.find((u) => u.name === 'contractor');
+  if (ctr) {
+    Object.assign(ctr, { risk_since: t - 5 * 3600, risk_until: t - 5 * 3600 + 86400, risk_reason: 'downloads: 14.2 GiB in 24 h (usually 0.4 GiB a day, limit 4.0 GiB)' });
+    db.alerts.push(
+      mkAlert({
+        ts: t - 5 * 3600, severity: 'warning', kind: 'user_risk', key: `user_risk:${ctr.id}:downloads`, tenant: null,
+        message: `risk signal for contractor (operator): ${ctr.risk_reason}; the account must confirm it is the owner before its next change (step-up)`,
+        acked_by: 'so', note: 'Asked the contractor; waiting for an answer',
+      }),
+    );
+  }
+}

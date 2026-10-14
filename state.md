@@ -1,6 +1,6 @@
 # Project State
 
-_Last updated: 2026-10-13_
+_Last updated: 2026-10-14_
 
 ## Decisions (see plan.md §2, docs/adr.md)
 - License AGPL-3.0 · AEAD XChaCha20-Poly1305 · git + GitHub Actions
@@ -435,6 +435,89 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - Found on the way: `store_image_extents` read every chunk twice on a full read (no base: dirty extent and the
   "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
 - [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host
+
+## Phase 27 — Agent updates pushed from the appliance (2026-10-14)
+Contract + deviations: docs/agent-update-plan.md "Implementation"; decisions plan.md Phase 27. Catalog v41, protocol v1.8,
+threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum action `agent.rollback`.
+- [x] 27a protocol v1.8: capability `update2`, host facts as caps (`arch=`, `install=`, `gui=`), `UpdateBegin/Ready/Chunk/
+  Commit/Staged/Status/State` (tags 49–55); v1.7 and older keep the single-frame `Update`
+- [x] 27a release store (`agent_core::releases`): `/usr/share/nexus/agent/<v>/` + `/var/lib/nexus/agent-releases/<v>/`,
+  signed `manifest.json` (`agent_proto::release`: per-OS/arch/install selection, desktop package with deb/rpm);
+  `release/packages.sh` builds the tree + `nexus-agent-release-<v>.tar`, `release/sign.sh sign-agent-release`,
+  `release/verify.sh --agent-release`, release workflow ships the signed tree via `os/agent-release/` (image)
+- [x] 27a agents: checks (self_update off, busy 409, own package type, manifest + artifact signatures, newer or approved
+  rollback >= `ROLLBACK_FLOOR`), staging, `update-pending.json` / `update-state.json` (reported by `UpdateStatus`), start
+  watchdog (third failed start puts `.prev` back; Linux + Windows), Linux deb/rpm via `systemd-run --unit=nexus-agent-update`
+  (apt-get / dnf / rpm, fixed argv, result from the unit + journal of this attempt), Windows MSI via detached msiexec (result
+  from the verbose log), `self_update = auto` default
+- [x] 27a appliance: `nexus-agentctl update` with the store (plan, chunked push with progress, reconnect check 2/10 min,
+  `update-result`), agent rows with arch/install/gui/protocol/tags/update state, installer downloads via download tokens
+- [x] 27b rollouts: scope (all/tenant/group/OS/tag/agents), canary count or %, soak, concurrency, failure threshold (count, or
+  share from 5 finished), pause/resume/cancel (audited), busy retried, unreachable / blacked-out agents held, maintenance windows
+  (UTC), agents already on the target skipped; alerts; API + UI (Agents > Updates)
+- [x] 27c automatic mode per tenant/group (one rollout per release and scope, every 10 min); rollback rollouts gated by quorum
+  `agent.rollback` (rejected/expired → `rejected`)
+- [x] Tests: agent-proto (tags, limits, selection, host facts), agent-core (version/rollback rules, announced checks, watchdog,
+  package settling, store), agent-linux (package argv without shell, unit states, swap/restore; interop: chunked update of the
+  real agent by the real agentctl incl. refusals), agent-windows (msiexec argv, MSI log parsing UTF-16, restore), catalog
+  (migration v41, scope/waves/skips, settings), web-api (upload/verify/list/delete/download, tags, roles, rollout states,
+  approved rollback, settings, tenant_admin route table), scheduler (release choice, waves, busy retry, holds, threshold +
+  alerts, windows, automatic mode, rollback approval/rejection)
+- [x] Lab (container, `lab/linux/update-deb.sh`, run 2026-10-14): real musl agents 0.1.0/0.1.1 as .deb (nfpm), release signed
+  with the TEST key by `release/sign.sh sign-agent-release` (cosign) and verified, Debian 13 with systemd in rootless podman:
+  0.1.0 -> 0.1.1 in-band via apt-get in the transient unit, postinst restart, update state `ok` in 6 s; same version refused;
+  a signed 9.9.9 .deb with an unmet dependency: apt-get exit 100 reported as `failed` with the apt output, agent stays on
+  0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
+- [ ] Lab VMs (not run: the VMs were in use by parallel work): `lab/linux/e2e.sh <vm> agent agent_deb update_deb` (.deb on
+  deb-lvm through the appliance API), `.rpm` on alma-xfs (dnf path), desktop package with the GUI running, bundle binary
+  swap + watchdog on deb-plain, arm64 on the emulated aarch64 VM, an edge-connected laptop updated on reconnect
+- [ ] Windows lab: MSI update on Server 2022 / Windows 11 with the GUI running (service stays enrolled), msiexec outside the
+  service's job object, MSI failure log parsing (1603), watchdog revert of a manual install, rollback refused for MSI
+- [ ] Appliance image with a signed agent release (os/agent-release) built and booted; SELinux of the upload dir
+  (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign checked under enforcing
+## Phase 28 — Commvault Tier 1 (2026-10-14)
+- [x] catalog v43 (`groups.scan_schedule/scan_budget_min/file_hashes`, `snapshots.scan_state`, `hash_lists`,
+  `tenant_lockdowns`, `login_devices`, `users.email`; migration test), alert kinds + hints, threat model T62–T63
+- [x] scheduled YARA scans per group (scheduler `threat.rs`, newest unscanned snapshot per source, `scan_hit`),
+  scan verdict per snapshot, "latest clean" prefers scanned-clean (scheduler + UI), recovery calendar (Snapshots)
+- [x] IOC hash hunt: name index v2 with SHA-256 (chunkstore), store hash cache + carry-over + read-back, agents
+  hash while reading (`CAP_FILE_HASH`: `ScanHashed`/`EntryHashes`, old agents keep working), NAS/TrueNAS/plugin
+  connectors, CT index (`ct-files … index hashes`); hash lists API + settings tab, `hash_hunt` job, Hash hunt page
+  with restore / hold actions, `hash_hunt_hit`
+- [x] tenant lockdown (holds, pauses, sessions/tokens ended, sign-in blocked, changes/deletes/overwriting restores
+  refused in web-api and scheduler, lift by approval `tenant.lockdown.lift`), Tenants page
+- [x] new-device sign-in notice (`login_new_device`, SIEM via the alert triggers, mail to the account's address),
+  My account: sign-in devices + e-mail
+- [x] tests: chunkstore (v1/v2, fresh/carried/computed), agent-proto/agent-core/agent-conn (fake agent with and
+  without the capability, hostile hash lists), pve (CT index hashes), scheduler `tests/threat.rs`, web-api
+  `tests/phase28.rs` + tenant-admin route classification; mock, manual 03/05/06/09/11/14, 7 new screenshots
+  (scene `threat`), ui-smoke pages
+- [ ] lab: scheduled scan and hash hunt on the appliance image with a real agent (Linux, Windows), lockdown with a
+  tenant admin session, new-device mail through the lab SMTP sink
+- [ ] VM disk file hashes (opt-in with `index_files`), MD5/SHA-1 lists (decided: SHA-256 only for now)
+
+## Phase 29 — NetBackup Tier 1 (2026-10-14)
+- [x] catalog v44 (`groups.full_read_days`, `full_reads`, `snapshots.clean_point`, `login_hours`,
+  `users.risk_since/risk_until/risk_reason`, `sessions.step_up_at`; migration test), `catalog::fullread`,
+  `catalog::incident` (freezes, production-restore rule, flagged snapshots), alert kinds + hints, threat model T64–T65
+- [x] scheduled full read: due per source (staggered), connector configs patched (PVE whole-disk read with the reused
+  bitmap as the "reported" set, agents without base, NAS without cache, TrueNAS against the zfs-diff plan),
+  `chunkstore::drift`, `full-read` lines -> `full_reads`, job log line, `change_tracking`; group setting, list,
+  dashboard summary
+- [x] restores of flagged snapshots to production: approval `restore.infected` (web-api, scheduler poller and
+  plan-time re-check), administrators only with approvals off, `/restores` refuses flagged items without link_down
+- [x] scan back: `POST .../scan-back`, scheduler drives stop-on-match scans newest first, `clean_point`, restore VM agent
+  `stop_on_match`, `nexus-pve scan --stop-on-match` and manual `scan-back`
+- [x] freezes: incident (configuration middleware, deletions, restores) and lockdown (deletions, restores), banner in
+  `/auth/me`, `incident.freeze.lift`; scheduler trims retention/GC/offsite pruning, replica `prune: false`
+- [x] risk signals: unusual sign-in hour, weakening burst, bulk deletes, download volume; `user_risk`, 428 step-up,
+  `POST /auth/step-up`, `GET /risk`, clear
+- [x] tests: catalog (v44, incident, fullread), web-api `tests/phase29.rs` + freeze/risk unit tests, scheduler
+  `tests/phase29.rs`, chunkstore/pve/agent-conn/nas/truenas/restore VM agent; UI, mock, manual, screenshots, ui-smoke
+- [ ] lab: full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with
+  a passkey in the browser
+- [ ] open: first-API-token-use-from-a-new-network rule, risk thresholds as settings, gating BMR/P2V of flagged
+  snapshots, downloads of flagged snapshots limited to admins
 
 ## Phase 31 — Guest file index without the micro-VM, instant search (2026-10-14)
 - [x] 31a `nexus-fsindex` (crate fsindex): GPT/MBR (+EBR), LVM2 linear/striped/mirror/raid1, ext2/3/4 (ext4-view),

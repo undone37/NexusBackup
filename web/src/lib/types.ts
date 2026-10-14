@@ -346,6 +346,145 @@ export interface Agent {
   via?: string | null;
   /** edge setting the agent confirmed (`host:port`; null = none pushed yet) */
   edge_pushed?: string | null;
+  /** Phase 27 (protocol v1.8 host facts, null = not reported yet / older agent) */
+  arch?: string | null;
+  /** bundle | deb | rpm | msi | manual */
+  install?: string | null;
+  gui_version?: string | null;
+  /** "1.8" with chunked updates, "1.7" = older (single-frame binary updates only); null = unknown */
+  protocol?: string | null;
+  tags?: string[];
+  update_target?: string | null;
+  update_state?: AgentUpdateState | null;
+  update_error?: string | null;
+  update_attempts?: number;
+  update_at?: number | null;
+}
+
+/** Phase 27: per-agent update state (docs/agent-update-plan.md "Implementation") */
+export type AgentUpdateState = 'pending' | 'sending' | 'installing' | 'ok' | 'failed' | 'rolled_back';
+
+export interface AgentArtifact {
+  /** relative path in the release (linux-x86_64/nexus-agent_0.2.0_amd64.deb, ...) */
+  name: string;
+  /** binary | deb | rpm | msi | desktop-deb | desktop-rpm | bundle | exe */
+  kind: string;
+  os: string;
+  arch: string;
+  version: string;
+  size: number;
+  sha256: string;
+}
+
+export interface AgentRelease {
+  version: string;
+  source: 'image' | 'upload';
+  signed: boolean;
+  /** name of the pinned key that verified the manifest */
+  key: string | null;
+  error: string | null;
+  protocol: string | null;
+  min_appliance: string | null;
+  released: string | null;
+  notes: string | null;
+  artifacts: AgentArtifact[];
+}
+
+export interface AgentReleases {
+  /** newest signed release (null = none) */
+  recommended: string | null;
+  releases: AgentRelease[];
+}
+
+export interface AgentDownload {
+  token: string;
+  url: string;
+  name: string;
+  size: number;
+  sha256: string;
+  expires: number;
+}
+
+export interface RolloutScope {
+  tenant?: string;
+  group_id?: number;
+  os?: string;
+  tag?: string;
+  agents?: string[];
+}
+
+export interface UpdateWindow {
+  days: string[];
+  from: string;
+  to: string;
+}
+
+export type RolloutState = 'pending_approval' | 'running' | 'paused' | 'cancelled' | 'done' | 'rejected';
+export type RolloutItemState = 'waiting' | 'queued' | 'running' | 'ok' | 'failed' | 'skipped' | 'cancelled';
+
+export interface RolloutCounts {
+  total: number;
+  waiting: number;
+  queued: number;
+  running: number;
+  ok: number;
+  failed: number;
+  skipped: number;
+  cancelled: number;
+}
+
+export interface Rollout {
+  id: number;
+  version: string;
+  scope: RolloutScope;
+  canary: number;
+  canary_pct: number | null;
+  soak_minutes: number;
+  concurrency: number;
+  max_failures: number;
+  max_failure_pct: number;
+  windows: UpdateWindow[];
+  rollback: boolean;
+  automatic: boolean;
+  state: RolloutState;
+  reason: string | null;
+  /** 0 = canary wave, 1 = the rest */
+  wave: number;
+  quorum_id: number | null;
+  created: number;
+  created_by: string;
+  finished: number | null;
+  counts: RolloutCounts;
+}
+
+export interface RolloutItem {
+  agent_id: string;
+  name: string;
+  tenant: string;
+  wave: number;
+  state: RolloutItemState;
+  job_id: number | null;
+  attempts: number;
+  error: string | null;
+  from_version: string | null;
+  version: string | null;
+  updated: number | null;
+}
+
+export interface RolloutDetail extends Rollout {
+  items: RolloutItem[];
+}
+
+export interface AgentUpdateSetting {
+  tenant: string;
+  /** null / 0 = the whole tenant */
+  group_id: number | null;
+  mode: 'manual' | 'automatic';
+  windows: UpdateWindow[];
+  canary: number;
+  soak_minutes: number;
+  updated: number | null;
+  updated_by: string | null;
 }
 
 /** Phase 26: what the edge's control link reports (docs/edge.md) */
@@ -607,6 +746,86 @@ export interface Group {
   exclude_disks_mode: 'placeholder' | 'omit';
   /** guests backed up at once (PVE and plugin groups), 1..8 */
   parallel_guests: number;
+  /** Phase 28, GET /groups only: scheduled YARA scan (policy schedule grammar), null = off */
+  scan_schedule?: string | null;
+  /** minutes per scheduled scan, null = the scanner's default (240) */
+  scan_budget_min?: number | null;
+  /** record the SHA-256 of every file in the name index (IOC hash hunt) */
+  file_hashes?: boolean;
+  /** Phase 29, GET /groups only: days between full reads (change-tracking check); null = the default, 0 = off */
+  full_read_days?: number | null;
+  /** the default for this group's kind (90 PVE VMs, 30 agents / NAS / TrueNAS) */
+  full_read_default?: number;
+}
+
+/** Phase 29: GET /full-reads (one row per source). */
+export interface FullRead {
+  tenant: string;
+  source: string;
+  next_due: number | null;
+  last_at: number | null;
+  last_snapshot: number | null;
+  last_job: number | null;
+  result: 'clean' | 'drift' | 'no_baseline' | null;
+  changed: number | null;
+  unreported: number | null;
+  unreported_bytes: number | null;
+  details: { tracker?: string; examples?: string[]; compared?: number; baseline?: number | null; [k: string]: unknown } | null;
+  last_clean_at: number | null;
+}
+
+/** Phase 29: one snapshot of a scan back (`job.result.scanned[]`). */
+export interface ScanBackItem {
+  time: number;
+  /** the ordinary `snapshot_scan` job of this snapshot (details: GET /scans) */
+  job: number;
+  matches_total: number;
+  complete: boolean;
+  /** ended at the first match */
+  stopped: boolean;
+}
+
+/** Phase 29: `job.result` of a `scan_back` job. */
+export interface ScanBackResult {
+  source: string;
+  from: number;
+  scanned: ScanBackItem[];
+  recommended: number | null;
+  truncated: boolean;
+}
+
+/** Phase 29: incident-mode / lockdown freezes. */
+export interface Freeze {
+  config?: boolean;
+  deletions: boolean;
+  restores: boolean;
+}
+
+/** Phase 29: GET /auth/me `freeze` (appliance-wide accounts). */
+export interface FreezeBanner {
+  config: boolean;
+  deletions: boolean;
+  restores: boolean;
+  tenants: { tenant: string; deletions: boolean; restores: boolean }[];
+}
+
+/** Phase 29: GET /auth/me `step_up`. */
+export interface StepUpState {
+  since: number;
+  until: number;
+  reason: string;
+  done: boolean;
+}
+
+/** Phase 29: GET /risk (active marks). */
+export interface RiskMark {
+  user_id: number;
+  user: string;
+  role: string;
+  tenant: string | null;
+  since: number;
+  until: number;
+  reason: string;
 }
 
 export type GroupMode = 'explicit' | 'all' | 'tags';
@@ -667,7 +886,9 @@ export type JobKind =
   | 'offsite_list'
   | 'offsite_restore'
   | 'offsite_attach'
-  | 'fleet_scan';
+  | 'fleet_scan'
+  | 'hash_hunt'
+  | 'scan_back';
 
 /** One snapshot of an `offsite_list` result (Phase 17d, `nexus-offsite list --json`). */
 export interface OffsiteListed {
@@ -911,6 +1132,65 @@ export interface Snapshot {
   /** Phase 31b: file index state (null = not applicable) and the reason of partial / failed */
   index_state?: IndexState | null;
   index_reason?: string | null;
+  /** Phase 28: verdict of the latest scan, null = unscanned */
+  scan_state?: ScanState | null;
+  /** Phase 29: anomaly or scan hit, not cleared (production restores need approval `restore.infected`) */
+  flagged?: boolean;
+  /** Phase 29: the recommended restore point of the source's newest scan back (unix time, this snapshot) */
+  clean_point?: number | null;
+}
+
+export type ScanState = 'clean' | 'hit' | 'incomplete';
+
+/** One uploaded IOC hash list (GET /hash-lists, Phase 28). */
+export interface HashList {
+  name: string;
+  count: number;
+  sha256: string;
+  uploaded_by: string;
+  uploaded_at: number;
+}
+
+/** One file version of a hash hunt result. */
+export interface HuntMatch {
+  source: string;
+  path: string;
+  size: number;
+  sha256: string;
+  lists: string[];
+  /** snapshot times holding it, newest first */
+  times: number[];
+}
+
+/** `job.result` of a `hash_hunt` job. */
+export interface HuntResult {
+  matches: HuntMatch[];
+  scanned: number;
+  unhashed: number;
+  truncated: boolean;
+  hashes: number;
+  elapsed_ms: number;
+}
+
+/** GET /lockdowns (active tenant lockdowns, Phase 28). */
+export interface LockdownInfo {
+  tenant: string;
+  since: number;
+  by: string;
+  reason: string;
+  lift_quorum: number | null;
+  /** Phase 29 */
+  freeze?: Freeze | null;
+  freeze_lift_quorum?: number | null;
+}
+
+/** GET /auth/devices. */
+export interface LoginDevice {
+  fingerprint: string;
+  family: string;
+  prefix: string;
+  first_seen: number;
+  last_seen: number;
 }
 
 export interface SnapshotScanSummary {
@@ -1198,6 +1478,10 @@ export interface LoginResponse {
   impersonating?: Impersonation | null;
   /** Phase 21b: incident mode is active (appliance-wide accounts only) */
   incident?: IncidentBanner | null;
+  /** Phase 29: frozen configuration / deletions / restores (appliance-wide accounts) */
+  freeze?: FreezeBanner | null;
+  /** Phase 29: the account is marked by a risk signal: sensitive requests need a step-up */
+  step_up?: StepUpState | null;
 }
 
 /** Phase 21b: the incident banner (GET /auth/me, /dashboard). */
@@ -1223,6 +1507,9 @@ export interface Incident {
   approved_by?: string;
   resumed?: number;
   leave_quorum: number | null;
+  /** Phase 29: active freezes of incident mode, and a pending lift request */
+  freeze?: Freeze | null;
+  freeze_lift_quorum?: number | null;
 }
 
 /** `GET /vault` (Phase 17c); `checks` and the requests only for appliance-wide roles. */
@@ -1495,6 +1782,8 @@ export interface Dashboard {
     verify_failed: number;
   };
   /** Phase 25: the newest restore test result per guest within the window */
+  /** Phase 29: full reads (change-tracking check) */
+  full_reads?: { sources: number; verified: number; drift: number; never: number; oldest_verified: number | null };
   restore_tests?: { tested: number; passed: number; failed: number; last: number | null; failing: { tenant: string; source: string; finished: number }[] };
 }
 

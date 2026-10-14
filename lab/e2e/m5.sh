@@ -61,6 +61,7 @@ setup() {
 		 "runtime_dir": "$ROOT/run/scheduler", "state_dir": "$lib/scheduler",
 		 "pve_bin": "$BIN/nexus-pve", "offsite_bin": "$BIN/nexus-offsite",
 		 "agentctl_bin": "$BIN/nexus-agentctl", "agent_update_dir": "$ROOT/agent-update", "edge_update_dir": "$ROOT/edge-update",
+		 "agent_release_upload": "$lib/agent-releases", "agent_release_keys": "$repo/release/testkey",
 		 "truenas_bin": "$BIN/nexus-truenas", "nas_bin": "$BIN/nexus-nas",
 		 "alerts_config": "$etc/alerts.json", "tick_secs": 5, "refresh_secs": 60, "agent_poll_secs": 10}
 	EOF
@@ -77,6 +78,8 @@ start() {
 		NEXUS_SETUP_DONE=$lib/setup-done NEXUS_METRICS_TOKEN=$etc/metrics-token \
 		NEXUS_DOWNLOADS=$lib/downloads NEXUS_TOTP_KEY=$lib/webapi/totp.key \
 		NEXUS_SECRETS_PUB=$lib/catalog/secrets.pub NEXUS_TLS_REQ_DIR=$lib/tls \
+		NEXUS_AGENT_RELEASES_IMAGE=$ROOT/agent-update NEXUS_AGENT_RELEASES_UPLOAD=$lib/agent-releases \
+		NEXUS_AGENT_RELEASE_KEYS=$repo/release/testkey \
 		nohup "$BIN/nexus-web-api" >log/web-api.log 2>&1 &
 	echo $! >run/web-api.pid
 	# web certificate helper (on the appliance: nexus-tls.path); here a polling loop

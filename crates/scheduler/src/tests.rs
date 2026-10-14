@@ -2105,6 +2105,8 @@ mod limits;
 mod network;
 /// Phase 17d offsite in the UI (list, fetch back, attach an offsite copy).
 mod offsite_ui;
+/// Phase 29 full read, freezes, restores of flagged snapshots, scan back.
+mod phase29;
 /// Phase 22b restore priority.
 mod priority;
 /// Phase 25 restore tests and recovery plans.
@@ -2123,6 +2125,8 @@ mod scan;
 mod search;
 /// Phase 17f tenant deactivation.
 mod tenants;
+/// Phase 28 scheduled threat scans, hash hunt, file hashes, tenant lockdown, new-device mail.
+mod threat;
 /// Phase 17a/b bandwidth and sync windows, close vault.
 mod windows;
 

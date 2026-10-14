@@ -352,6 +352,7 @@ impl Secondary {
                 bandwidth,
                 held: Default::default(),
                 tenant_uid,
+                prune: true,
             },
             &mut |l| eprintln!("replica: {l}"),
         )
@@ -1275,6 +1276,7 @@ fn bad_chunk_on_the_secondary_repaired_from_the_primary() {
         bandwidth: Default::default(),
         held: Default::default(),
         tenant_uid: None,
+        prune: true,
     })
     .unwrap();
     assert_eq!((r.repaired, r.unavailable), (1, 0));

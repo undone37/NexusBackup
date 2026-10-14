@@ -758,12 +758,107 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
   swap with a start watchdog; chunked transfer; per-agent update state; rollouts with waves, canary, failure
   threshold, busy/window handling; optional automatic mode; rollback only with approval; installer downloads from
   the appliance. Details and proposed decisions: `docs/agent-update-plan.md`.
+- **Implemented 2026-10-14 (27a, 27b, 27c)**; contract and deviations: `docs/agent-update-plan.md` "Implementation".
+  Catalog v41, protocol v1.8, threat model T57–T59, alert kinds `agent_update_failed` / `rollout_paused`, quorum
+  action `agent.rollback`. Deviations and decisions taken during implementation:
+  - Host facts (`arch`, `install`, `gui`) travel as `HelloReply.caps` entries (`arch=…`, `install=…`, `gui=…`), not as
+    new `HelloReply` fields: a postcard struct variant cannot grow without breaking the decoding of older agents.
+  - Rollback marker: instead of a signed marker per version pair, each agent build carries a compiled-in
+    `ROLLBACK_FLOOR` (part of the signed binary); an approved rollback may go down to it, never below. MSI installs
+    cannot be rolled back in-band (Windows Installer refuses downgrades).
+  - Start watchdog: checked by the agent binary at the start of `run` (Linux and Windows), not by an `ExecStartPre`
+    shell snippet; the unit stays shell-free and the binary is signed and verified before the swap.
+  - Package-install results: no wrapper process; the agent settles a pending install itself (new version listening =
+    ok; the transient unit's `Result`/exit status and journal tail, or the MSI verbose log, = failed; 30 min timeout).
+  - Agents keep the single-frame `Update` for v1.7 and older; package-installed agents refuse it (no binary swap under
+    a package manager). Without any signed release in the store the scheduler still uses the legacy update directory.
+  - Windows (UTC) for rollout maintenance windows; group policy blackout windows are honoured per agent; the failure
+    share counts only from 5 finished agents (the count threshold and a failed canary pause at once).
+  - Image builds ship the newest signed agent release attached to a GitHub release
+    (`nexus-agent-release-<v>-signed.tar`, signed offline with `release/sign.sh sign-agent-release`); CI cannot sign,
+    so a release's own agent tree reaches the image with the next build (or by upload).
+  - Agent tags (`agents.tags`, `PUT /agents/{id}/tags`) were added for the "tag" rollout scope.
 
 ### Phase 28+ — Commvault-inspired items (proposed 2026-10-13)
 - Tier 1 (scheduled threat scans, IOC hash hunting, tenant lockdown, new-device sign-in notice) as Phase 28, Tier 2 as Phase 29; details and open questions: `docs/commvault-comparison.md`.
 - NetBackup-inspired items (proposed 2026-10-13): Tier 1 (scheduled full read with change-tracking drift check,
   approval for restoring malware-flagged snapshots to production, scan back to the last clean snapshot, incident-mode
   freezes, privileged-activity risk signals) with Phase 29, Tier 2 as Phase 30; details: `docs/netbackup-comparison.md`.
+
+### Phase 28 — Commvault Tier 1 (implemented 2026-10-14)
+Scheduled threat scans with a per-snapshot verdict and recovery calendar, IOC hash hunting over per-file SHA-256 in
+the sealed name index, tenant lockdown, new-device sign-in notice (catalog v43, threat model T62–T63, alert kinds
+`scan_hit`, `hash_hunt_hit`, `tenant_lockdown`, `login_new_device`, approval `tenant.lockdown.lift`). Details:
+docs/malware-scan.md "Scheduled scans", docs/file-index.md "File hashes", docs/control-plane.md "Tenant lockdown" /
+"New-device sign-in", docs/agent-protocol.md "v1.8 notes — file hashes". Deviations from the proposal
+(docs/commvault-comparison.md) and decisions taken on the way:
+- **Scan schedule** is the policy schedule grammar per group (UI: off / daily at / custom), not a fixed "daily latest"
+  switch; only the newest local snapshot of each source without a verdict is scanned. "After each backup" is not
+  offered (open question 4: the queue might never drain). Scans on request keep raising `malware`; only scheduled
+  scans raise `scan_hit`. A snapshot already scanned is not scanned again when the rules change (rescan on request).
+- **Verdict** is a catalog column `snapshots.scan_state` (newest scan), backfilled from `snapshot_scans`; a hit whose
+  anomaly flag a security officer cleared still shows red in the calendar but counts as clean for "latest clean".
+- **File hashes:** SHA-256 only (open question 2). Name index v2 is a new sealing context (`names2:`); indexes without
+  hashes stay v1, so the previous release reads them; after a rollback v2 indexes are unreadable for search there
+  (accepted). Hashes come from the reader (agents with `file-hash`, NAS/TrueNAS/plugin connectors), else carried over
+  from the previous snapshot by identical chunk list, else read back from the store (old agents, first run after
+  switching on: no forced full read on the source). Containers are hashed in the `file_index` job (with
+  `index_files`); **VM disks are not hashed** (open question 3: later, opt-in). Hash cache in the store: about
+  100 bytes per file of one backup.
+- **Agent protocol:** `ScanHashed`/`EntryHashes` appended as tags 49/50 behind capability `file-hash`, documented in
+  the v1.8 notes without a version change. The v1.8 agent-update messages (Phase 27) must be ordered after or before
+  them consistently when both are merged (both unreleased; the `agent-proto` tests pin the tags).
+- **Hunt:** appliance-wide lists (admins, security officers), hunts per tenant (admins, operators, security officers,
+  tenant admins); in-process in the scheduler like the file search, 30 minute budget, at most 2000 file versions.
+  Hits flag up to 500 snapshots (newest first) and raise one `hash_hunt_hit` per tenant. Results through the jobs
+  API (`hash_hunt` job result); no separate results table.
+- **Tenant lockdown** goes beyond the proposal: the tenant's accounts cannot sign in while it lasts (password,
+  passkey, OIDC, tokens), and agent updates/renewals and changes of its tenant settings are refused as well. Scans,
+  hunts, restores to new targets and downloads stay allowed. Entering: security officers **and** admins
+  (appliance-wide), re-authenticated; lifting always needs a second person.
+- **New-device notice:** device = browser family + OS from the user agent and the /24 (IPv4) or /48 (IPv6) prefix;
+  the account's first sign-in is the baseline (no alert); at most 50 devices per account. The mail to the account goes
+  through the alert SMTP server on the alert's first delivery only (not reminders); the address comes from **My
+  account** or the OIDC `email` claim (unless `email_verified` is false). Changing group options needs no approval
+  (detection, not protection; audited).
+
+### Phase 29 — NetBackup Tier 1 (implemented 2026-10-14)
+Scheduled full read with a change-tracking drift check, approval for restoring flagged snapshots to production, scan
+back to the last clean snapshot, incident-mode freezes, privileged-activity risk signals with step-up (catalog v44,
+threat model T64–T65, alert kinds `change_tracking`, `user_risk`, approval actions `restore.infected`,
+`incident.freeze.lift`). Details: docs/control-plane.md "Full read", "Restores of flagged snapshots", "Incident
+freezes", "Risk signals and step-up"; docs/malware-scan.md "Scan back"; connector docs "Full read (Phase 29)".
+Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken on the way:
+- **Full read** is a group setting (`PUT /groups/{id}/full-read`, null = default by source kind: Proxmox VE 90 days,
+  agents/NAS/TrueNAS 30, plugins none), not a policy field; no approval (detection, audited). On by default
+  (open question 2), first due staggered over the interval by a hash of the source name, skipped during restore
+  priority, only for sources that already have a snapshot. PVE keeps reusing the dirty bitmap and reads the whole disk
+  (so the bitmap's report can be compared) instead of dropping it; containers are not covered (they read everything).
+  Agents need no protocol change (a Scan without base skips the metadata cache and the USN journal); the drift rule for
+  files is "same size, mtime, ctime and inode, different content". `change_tracking` is critical (proposal: warning),
+  as the task decided.
+- **Restore of flagged snapshots:** flagged = any uncleared anomaly flag (YARA hit, hash-hunt hit, change-rate flag)
+  or an uncleared `scan_state = hit`; the proposal named only the YARA flag. Production = over or next to the original
+  with the network up, instant recovery with links up, instant disk, files into the original paths (`target` "/") or
+  overwriting, plugin restores. One `restore.infected` request also covers a replace (no second `restore.replace`).
+  With approvals disabled administrators only (open question 3 proposed security officers, who cannot start jobs).
+  Downloads stay with the download privilege (the proposal's "admins/SOs only" is not done). Jobs queued by recovery
+  plans or the vault are re-checked by the scheduler and fail without the approval. BMR/P2V are not gated.
+- **Scan back** is driven by the scheduler (one ordinary `snapshot_scan` per snapshot with `--stop-on-match`, so every
+  scan has its own job and `snapshot_scans` row) instead of one long connector run; `nexus-pve scan-back` exists as a
+  manual CLI. Default 30 snapshots, one hour per snapshot; hits found by it are flagged without alerts. No bisect.
+  `stop_on_match` is not on by default for scan-first restores (an older restore VM image would refuse the field).
+- **Freezes:** appliance-wide (configuration, deletions, restores to production) when entering incident mode; per
+  tenant lockdown deletions and restores only (its configuration is refused by the lockdown anyway). The configuration
+  freeze is an allow-list middleware (sign-in, own account, incident/lockdown, approvals, disabling accounts, ending
+  sessions, alerts, holds, pausing, jobs, scans, hunts, search, diagnostics); updates are frozen too (open question 4:
+  not even OS updates with approval; lift the freeze first). Lifting freezes early: `incident.freeze.lift`, always a
+  second person; leaving incident mode / lifting the lockdown ends them as well.
+- **Risk signals:** four rules (unusual sign-in hour UTC +-1 h after 10 sign-ins in 90 days; 5 weakening requests per
+  hour; 10 delete requests per hour; downloads over max(10 x daily median, 1 GiB) in 24 h); the "first API token use
+  from a new network" rule is not done. Thresholds are constants, not settings. The mark lasts 24 h; marked sessions
+  get 428 on their first change until `POST /auth/step-up`; tokens of a marked account cannot write; security
+  officers and admins list and clear marks (not their own).
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed

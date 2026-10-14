@@ -137,9 +137,21 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    Users check a download with `sha256sum -c --ignore-missing SHA256SUMS` and
    `cosign verify-blob --key <release key>.pub --signature <file>.sig --insecure-ignore-tlog=true <file>`.
    No native package signatures (GPG for apt/dnf, Authenticode for the MSI): there is no
-   package repository and no code-signing certificate yet (plan.md §2). Package installs
-   do not self-update (docs/agent-linux.md "Self-update"); the agent binaries for the
-   appliance's **Update agent** job are signed separately with `sign-blob`.
+   package repository and no code-signing certificate yet (plan.md §2).
+
+   **Agent release for the appliance** (Phase 27, docs/agent-update-plan.md): the packages job
+   also attaches `nexus-agent-release-<v>.tar` (the release tree: `<v>/manifest.json` and the
+   binaries, packages and bundles per OS/arch). Sign it on the key machine and attach the
+   signed tar; the next image build ships it (`os/agent-release/` → `/usr/share/nexus/agent/`),
+   admins can also upload it in Agents → Updates:
+   ```sh
+   gh release download vX.Y.Z -p 'nexus-agent-release-*.tar' && tar -xf nexus-agent-release-<v>.tar
+   COSIGN_KEY=... release/sign.sh sign-agent-release <v>   # checks manifest.json, writes <artifact>.sig + manifest.json.sig
+   release/verify.sh --agent-release <v>                  # against release/keys/*.pub
+   gh release upload vX.Y.Z nexus-agent-release-<v>-signed.tar
+   ```
+   Agents of every install type are updated in-band from it (deb with deb, rpm with rpm, MSI
+   with MSI, bundles by binary swap); `self_update = off` on a host refuses that.
 
 `release/test-local.sh` runs this whole chain against a throwaway `registry:2` on
 127.0.0.1 with the TEST key and a freshly generated untrusted key.

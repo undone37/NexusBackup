@@ -37,7 +37,9 @@ fn default_port() -> u16 {
 
 const COLS: &str = "id, tenant, name, host, port, enrolled_at, cert_sha256, token_expires, last_seen, version, os, \
                     limits, cert_issued, cert_expires, cert_sha256_next IS NOT NULL, reachable, last_poll, power, \
-                    ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request, edge_id, via, edge_pushed";
+                    ui_policy, ui_policy_version, ui_policy_seen, laptop, missed_at, last_request, edge_id, via, edge_pushed, \
+                    arch, install, gui_version, caps, tags, update_target, update_state, update_error, \
+                    update_attempts, update_at";
 
 fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
     Ok(json!({
@@ -59,6 +61,17 @@ fn agent_row(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
         // Phase 26: reach via an edge proxy (crate::edges), route of the last session
         "edge_id": r.get::<_, Option<String>>(24)?, "via": r.get::<_, Option<String>>(25)?,
         "edge_pushed": r.get::<_, Option<String>>(26)?,
+        // Phase 27: host facts (protocol v1.8) and the update state
+        "arch": r.get::<_, Option<String>>(27)?, "install": r.get::<_, Option<String>>(28)?,
+        "gui_version": r.get::<_, Option<String>>(29)?,
+        "protocol": r.get::<_, Option<String>>(30)?.map(|c| {
+            let caps: Vec<String> = serde_json::from_str(&c).unwrap_or_default();
+            agent_proto::release::protocol_of(&caps)
+        }),
+        "tags": json_col(r, 31)?,
+        "update_target": r.get::<_, Option<String>>(32)?, "update_state": r.get::<_, Option<String>>(33)?,
+        "update_error": r.get::<_, Option<String>>(34)?, "update_attempts": r.get::<_, i64>(35)?,
+        "update_at": r.get::<_, Option<i64>>(36)?,
     }))
 }
 
@@ -235,6 +248,7 @@ pub async fn delete_agent(State(st): State<St>, ctx: Ctx, Path(id): Path<String>
         let c = st.cat.conn();
         let a = agent_value(&c, &id)?.ok_or_else(ApiError::not_found)?;
         ctx.owns(a["tenant"].as_str().unwrap_or_default())?;
+        crate::lockdown::refuse(&c, a["tenant"].as_str().unwrap_or_default(), "deletes")?;
         if agent_in_use(&c, &id)? {
             return Err(ApiError::conflict("agent is still used by a source"));
         }

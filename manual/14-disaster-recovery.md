@@ -173,6 +173,69 @@ accounts that may be compromised, and review the audit log of the incident perio
 > **Status:** Implemented in Phase 21b and tested in the API (`crates/web-api/tests/incident.rs`) and the demo
 > backend; a run on the appliance image (lab) is pending.
 
+### Tenant lockdown
+
+When only **one tenant** is affected (a customer's administrator account is compromised, one customer's file server
+is being encrypted), lock that tenant down instead of the whole appliance: **Configuration → Tenants → Lock down…**
+on the tenant's row (security officers and administrators of the appliance).
+
+![Lock down a tenant](images/tenant-lockdown.png)
+
+Give a **Reason** (the ticket), choose the **Legal hold** (every snapshot of the tenant, the snapshots of a time range,
+or none), confirm with your password and a fresh authenticator code, then **Lock down now**. At once, in one step:
+
+- the tenant's snapshots are put on legal hold,
+- its protection groups are paused,
+- every session and API token of the tenant's accounts ends, and **they cannot sign in** until the lockdown is lifted,
+- the critical alert `tenant_lockdown` is raised (forwarded to your SIEM).
+
+While it lasts, everything that would change or remove the tenant's data is refused: backups, deleting snapshots,
+sources, groups, agents or the tenant, changing its sources, groups and agents, resuming its groups, agent updates,
+and restores that overwrite (replace a guest, restore files with **Overwrite** set, plugin restores into the source).
+**Restores to new targets, downloads, scans and hash hunts stay possible**, so you can investigate and recover.
+All other tenants keep running. The Tenants page shows a banner and **Locked down** on the tenant.
+
+![A locked-down tenant](images/tenants-locked.png)
+
+**Lifting** needs a second person, also with approvals switched off: **Request lift** on the tenant's row, then
+*another* administrator or security officer approves `tenant.lockdown.lift` on **Approvals**. The groups the lockdown
+paused resume (an earlier pause comes back), the alert resolves and the tenant's accounts can sign in again. **Holds
+stay** until each is released. Revoked API tokens do not come back. Audit: `tenant.lockdown`, `quorum.request`,
+`quorum.approve`.
+
+> **Status:** Implemented in Phase 28 and tested in the API (`crates/web-api/tests/phase28.rs`), the scheduler and
+> the demo backend; a run on the appliance image (lab) is pending.
+
+### Freezes during an incident
+
+Incident mode and a tenant lockdown can also **freeze** what an attacker with a stolen account would do next. Tick
+them in the **Freeze** part of the incident mode form or the lockdown dialog:
+
+- **Freeze configuration changes** (incident mode only; a lockdown always refuses changes of its tenant): every change
+  on the appliance is refused with "incident mode: configuration changes are frozen", except signing in and out and
+  your own account, incident mode and lockdowns, deciding approvals, disabling accounts, ending sessions and revoking
+  tokens, acknowledging alerts, legal holds, pausing groups, jobs (backups and restores), scans, hash hunts, searches
+  and diagnostics;
+- **Freeze deletions:** no snapshot can be deleted, and the scheduler skips retention, garbage collection, orphan
+  cleanup, offsite retention and replica retention (job log `[scheduler] deletions frozen (incident mode): … skipped`);
+- **Freeze restores to production:** restores that replace originals, start with the network connected, attach a
+  disk to a running VM or overwrite files are refused; isolated restores (network disconnected, another path,
+  downloads) still work ([06 Restores](06-restores.md#flagged-snapshots-restores-to-production-need-approval)).
+
+![Incident mode with freezes](images/settings-incident-freeze.png)
+
+The incident status lists the active freezes, and every appliance-wide account sees a banner (a lockdown's freezes
+also show on its tenant's row).
+
+![Incident mode is active with freezes](images/settings-incident-frozen.png)
+
+**Lift freezes** asks for a second person, also when approvals are off: *another* administrator or security officer
+approves `incident.freeze.lift` on **Approvals**. Incident mode or the lockdown stays active; leaving incident mode or
+lifting the lockdown ends its freezes as well. Audit: `incident.enter` and `tenant.lockdown` record the freezes,
+`quorum.request` / `quorum.approve` the lift.
+
+> **Status:** Implemented in Phase 29 (API and scheduler tests, demo backend); a lab run is pending.
+
 ## Attach an offsite copy in the web UI
 
 Use this on a new appliance that went through first boot normally (it has its own recovery key). You need:

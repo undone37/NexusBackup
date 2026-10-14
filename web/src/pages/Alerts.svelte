@@ -1,16 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, act, errText } from '../lib/api';
+  import { get, post, act, errText, qs } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route } from '../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import type { Alert } from '../lib/types';
+  import type { Alert, Snapshot } from '../lib/types';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import Modal from '../components/Modal.svelte';
   import HoldDialog from '../components/HoldDialog.svelte';
   import IconGavel from '@lucide/svelte/icons/gavel';
+  import IconHistory from '@lucide/svelte/icons/history';
+  import ScanBack from '../components/ScanBack.svelte';
+  import { notify } from '../lib/notify.svelte';
   import type { SnapshotRef } from '../lib/types';
 
   // ?id=<n> (the alert_url of notifications) shows that alert whatever its state
@@ -68,6 +71,30 @@
     holdOpen = true;
   }
   const ref = (s: SnapshotRef) => `${s.source} @ ${fmtTime(s.time)}`;
+
+  // Phase 29: "Scan back to last clean" from a malware / scan / hash hunt alert. The source comes
+  // from the alert key `kind:tenant/source`; the start is the newest flagged snapshot of it.
+  const SCAN_BACK_KINDS = ['scan_hit', 'malware', 'hash_hunt_hit'];
+  const keySource = (a: Alert) => {
+    const m = /^[a-z_]+:([^/]+)\/(.+)$/.exec(a.key ?? '');
+    return SCAN_BACK_KINDS.includes(a.kind) && m ? { tenant: m[1], source: m[2] } : null;
+  };
+  let sb: { tenant: string; source: string; time: number } | null = $state(null);
+  let sbOpen = $state(false);
+  async function scanBack(a: Alert) {
+    const k = keySource(a);
+    if (!k) return;
+    try {
+      const xs = await get<Snapshot[]>('/snapshots' + qs(k));
+      const flagged = xs.filter((x) => x.local && (x.flagged ?? (!!x.anomalous || x.scan_state === 'hit'))).sort((x, y) => y.time - x.time);
+      const from = flagged[0];
+      if (!from) return void notify('info', t.p29.scanBack.noFlagged);
+      sb = { ...k, time: from.time };
+      sbOpen = true;
+    } catch (e) {
+      notify('error', errText(e));
+    }
+  }
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -155,6 +182,9 @@
                       ><IconGavel aria-hidden="true" />{a.kind === 'anomaly' ? t.alerts.holdLastGood : t.alerts.applyHold}</button
                     >
                   {/if}
+                  {#if keySource(a) && can.scan(session.user)}
+                    <button type="button" class="small" onclick={() => scanBack(a)}><IconHistory aria-hidden="true" />{t.p29.scanBack.alertAction}</button>
+                  {/if}
                   {#if a.acked_by}
                     <span class="muted small">{t.alerts.acked} {t.alerts.ackedBy(a.acked_by)}</span>
                   {:else}
@@ -191,6 +221,8 @@
 </Modal>
 
 <HoldDialog bind:open={holdOpen} target={holdTarget} reason={holdReason} ondone={load} />
+
+{#if sb}<ScanBack bind:open={sbOpen} tenant={sb.tenant} source={sb.source} time={sb.time} />{/if}
 
 <style>
   tr.resolved td {

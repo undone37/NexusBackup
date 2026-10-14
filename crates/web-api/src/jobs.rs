@@ -92,6 +92,15 @@ struct AgentP {
     agent_id: String,
 }
 
+/// `agent_update`: the release to install (default: the recommended one).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AgentUpdateP {
+    agent_id: String,
+    #[serde(default)]
+    version: Option<String>,
+}
+
 /// Name of an agent of `tenant`, or 400.
 fn agent_name(st: &St, tenant: &str, id: &str) -> ApiResult<String> {
     validate::agent_id(id)?;
@@ -371,7 +380,15 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             r.agent_id = Some(target_agent);
             json!(r)
         }
-        "agent_update" | "agent_enroll" | "agent_renew" => {
+        "agent_update" => {
+            let a: AgentUpdateP = parse(p)?;
+            agent_name(st, tenant, &a.agent_id)?;
+            match crate::agent_updates::check_update_version(st, &a.agent_id, a.version.as_deref())? {
+                Some(v) => json!({"agent_id": a.agent_id, "version": v}),
+                None => json!({"agent_id": a.agent_id}),
+            }
+        }
+        "agent_enroll" | "agent_renew" => {
             let a: AgentP = parse(p)?;
             agent_name(st, tenant, &a.agent_id)?;
             json!(a)
@@ -651,6 +668,12 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     if let Some(s) = scan_first {
         params["scan_first"] = json!(s);
     }
+    // Phase 28: a locked-down tenant gets no backups and no restores that overwrite
+    crate::lockdown::refuse_job(&st.cat.conn(), &r.tenant, &r.kind, &params)?;
+    // Phase 29: frozen restores to production; flagged snapshots to production need approval
+    if let Some(res) = crate::infected::gate(&st, &ctx, &r.kind, &r.tenant, &params)? {
+        return Ok(res);
+    }
     if params.get("replace").is_some() {
         return request_replace(&st, &ctx, &r.kind, &r.tenant, params).map(|o| crate::quorum::accepted(o, json!({})));
     }
@@ -849,6 +872,29 @@ pub async fn download(State(st): State<St>, ctx: Ctx, Path(token): Path<String>)
     if token.len() != 64 || !token.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
         return Err(ApiError::not_found());
     }
+    // agent installers (Phase 27): token from POST /agent-releases/{version}/download
+    if let Some((path, name)) = crate::agent_updates::installer_file(&st, &token, ctx.name())? {
+        let file = tokio::fs::File::open(&path).await.map_err(|_| ApiError::not_found())?;
+        let meta = file.metadata().await.map_err(|_| ApiError::not_found())?;
+        st.audit(
+            ctx.name(),
+            "download.get",
+            &format!("agent-installer/{name}"),
+            json!({"bytes": meta.len()}),
+        )?;
+        let mut res = Body::from_stream(tokio_util::io::ReaderStream::new(file)).into_response();
+        let h = res.headers_mut();
+        h.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len()));
+        h.insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")).map_err(|_| ApiError::not_found())?,
+        );
+        return Ok(res);
+    }
     let job = st
         .cat
         .conn()
@@ -920,7 +966,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                     (SELECT json_object('job', job_id, 'finished', finished, 'matches', matches_total,
                        'complete', json(CASE WHEN complete = 1 THEN 'true' ELSE 'false' END)) FROM snapshot_scans x
                      WHERE x.tenant = s.tenant AND x.source = s.source AND x.time = s.time
-                     ORDER BY job_id DESC LIMIT 1) AS scan,
+                     ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state,
+                    s.clean_point AS clean_point,
                     (SELECT json_object('state', state, 'reason', reason) FROM snapshot_index y
                      WHERE y.tenant = s.tenant AND y.source = s.source AND y.time = s.time) AS file_index
              FROM snapshots s
@@ -962,6 +1009,14 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                 "damaged_at": r.get::<_, Option<i64>>("damaged_at")?,
                 // Phase 21e: the latest YARA scan `{job, finished, matches, complete}`
                 "scan": r.get::<_, Option<String>>("scan")?.and_then(|v| serde_json::from_str::<Value>(&v).ok()),
+                // Phase 28: its verdict `clean` | `hit` | `incomplete`, null = unscanned
+                "scan_state": r.get::<_, Option<String>>("scan_state")?,
+                // Phase 29: restoring it to production needs approval `restore.infected`
+                "flagged": r.get::<_, Option<i64>>(15)?.is_none()
+                    && (r.get::<_, Option<String>>(12)?.is_some()
+                        || r.get::<_, Option<String>>("scan_state")?.as_deref() == Some("hit")),
+                // Phase 29: marked by a scan back as the source's recommended restore point
+                "clean_point": r.get::<_, Option<i64>>("clean_point")?,
                 // Phase 31: file index state of VM/CT snapshots (catalog v42 snapshot_index)
                 "index_state": idx.as_ref().map(|v| v["state"].clone()),
                 "index_reason": idx.as_ref().map(|v| v["reason"].clone()),
@@ -986,6 +1041,12 @@ pub async fn delete_snapshot(
     validate::source_ref(&source)?;
     if !ctx.sees(&tenant) {
         return Err(ApiError::forbidden());
+    }
+    crate::lockdown::refuse(&st.cat.conn(), &tenant, "deletes")?;
+    if catalog::incident::frozen(&st.cat.conn(), &tenant)?.deletions {
+        return Err(ApiError::conflict(
+            "incident mode: deletions are frozen; lifting the freeze needs a second approver",
+        ));
     }
     let row: Option<(bool, i64, Option<String>)> = st
         .cat

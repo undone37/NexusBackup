@@ -10,8 +10,8 @@
 #   --no-arm64  skip the aarch64 build
 #   --no-msi    skip the Windows agent and its MSI
 #
-# Output: target/packages/{nexus-agent_<v>_amd64.deb, nexus-agent-<v>-1.x86_64.rpm,
-# nexus-agent_<v>_arm64.deb, nexus-agent-<v>-1.aarch64.rpm, nexus-agent-desktop_<v>-1_<arch>.deb,
+# Output: target/packages/{nexus-agent_<v>-1_amd64.deb, nexus-agent-<v>-1.x86_64.rpm,
+# nexus-agent_<v>-1_arm64.deb, nexus-agent-<v>-1.aarch64.rpm, nexus-agent-desktop_<v>-1_<arch>.deb,
 # nexus-agent-desktop-<v>-1.<arch>.rpm, nexus-agent-<v>-x64.msi, SHA256SUMS}.
 # The version is the agent's crate version (what self-update compares). Not signed here:
 # the release manager signs the files with release/sign.sh sign-blobs (docs/release.md).
@@ -233,4 +233,61 @@ fi
 
 (cd "$out" && shopt -s nullglob && sha256sum -- *.deb *.rpm *.msi >SHA256SUMS)
 cat "$out/SHA256SUMS"
+
+# --- Agent release tree for the appliance (Phase 27, docs/agent-update-plan.md) -------------
+# agent-release/<version>/{linux-<arch>/..., windows-x64/...} + manifest.json (unsigned; the
+# release manager signs it offline: release/sign.sh sign-agent-release) and the same as
+# nexus-agent-release-<version>.tar. The appliance image ships it from os/agent-release/.
+rel=$out/agent-release/$version
+mkdir -p "$rel"
+arts=()
+add() { # add SRC NAME KIND OS ARCH VERSION
+	install -D -m 0644 "$1" "$rel/$2"
+	arts+=("$(printf '{"name": "%s", "kind": "%s", "os": "%s", "arch": "%s", "version": "%s", "size": %s, "sha256": "%s"}' \
+		"$2" "$3" "$4" "$5" "$6" "$(stat -c %s "$1")" "$(sha256sum "$1" | cut -d' ' -f1)")")
+}
+for t in "${targets[@]}"; do
+	case $t in
+	x86_64-*) arch=x86_64 deb=amd64 ;;
+	aarch64-*) arch=aarch64 deb=arm64 ;;
+	esac
+	d=linux-$arch
+	add "target/linux-container/$t/release/nexus-agent" "$d/nexus-agent" binary linux "$arch" "$version"
+	add "$out/nexus-agent_${version}-1_$deb.deb" "$d/nexus-agent_${version}-1_$deb.deb" deb linux "$arch" "$version"
+	add "$out/nexus-agent-$version-1.$arch.rpm" "$d/nexus-agent-$version-1.$arch.rpm" rpm linux "$arch" "$version"
+	add "$out/nexus-agent-desktop_${gversion}-1_$deb.deb" "$d/nexus-agent-desktop_${gversion}-1_$deb.deb" desktop-deb linux "$arch" "$gversion"
+	add "$out/nexus-agent-desktop-$gversion-1.$arch.rpm" "$d/nexus-agent-desktop-$gversion-1.$arch.rpm" desktop-rpm linux "$arch" "$gversion"
+	# the install bundle (as crates/agent-linux/dist/build-bundle.sh lays it out)
+	b=$out/stage-bundle/nexus-agent-$version-$arch
+	mkdir -p "$b/release-keys" "$b/hooks.d/pre"
+	install -m 0755 "target/linux-container/$t/release/nexus-agent" "$b/nexus-agent"
+	install -m 0644 crates/agent-linux/dist/nexus-agent.service "$b/"
+	install -m 0755 crates/agent-linux/dist/install.sh "$b/"
+	install -m 0644 crates/agent-linux/dist/hooks.d/pre/*.example "$b/hooks.d/pre/"
+	install -m 0644 docs/agent-linux.md "$b/README.md"
+	for i in "${!keys[@]}"; do install -m 0644 "${keys[$i]}" "$b/release-keys/${key_names[$i]}"; done
+	echo "$version" >"$b/nexus-agent.version"
+	tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$(git log -1 --format=%ct 2>/dev/null || echo 0)" \
+		-C "$out/stage-bundle" -czf "$out/stage-bundle/nexus-agent-$version-$arch.tar.gz" "nexus-agent-$version-$arch"
+	add "$out/stage-bundle/nexus-agent-$version-$arch.tar.gz" "$d/nexus-agent-$version-$arch.tar.gz" bundle linux "$arch" "$version"
+done
+rm -rf "$out/stage-bundle"
+if [ $msi = 1 ]; then
+	add target/agent-dist/windows/nexus-agent.exe windows-x64/nexus-agent.exe binary windows x86_64 "$wversion"
+	add "$out/nexus-agent-$wversion-x64.msi" "windows-x64/nexus-agent-$wversion-x64.msi" msi windows x86_64 "$wversion"
+fi
+[ "$wversion" = "$version" ] || [ $msi = 0 ] || die "Linux ($version) and Windows ($wversion) agent versions differ: one release per version"
+{
+	printf '{\n  "format": 1,\n  "version": "%s",\n  "protocol": "1.8",\n  "min_appliance": "",\n' "$version"
+	printf '  "released": "%s",\n' "$(git log -1 --format=%cI 2>/dev/null || date -u +%FT%TZ)"
+	printf '  "notes": "nexus-agent %s",\n  "artifacts": [\n' "$version"
+	for i in "${!arts[@]}"; do
+		sep=,
+		[ "$i" = $((${#arts[@]} - 1)) ] && sep=
+		printf '    %s%s\n' "${arts[$i]}" "$sep"
+	done
+	printf '  ]\n}\n'
+} >"$rel/manifest.json"
+tar --sort=name --owner=0 --group=0 --numeric-owner -C "$out/agent-release" -cf "$out/nexus-agent-release-$version.tar" "$version"
+echo "agent release tree: $rel (sign it: release/sign.sh sign-agent-release $rel)"
 echo "packages in $out (check them with release/test-packages.sh)"

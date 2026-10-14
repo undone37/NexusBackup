@@ -118,6 +118,8 @@ fn real_agent_with_agent_conn() {
         hooks: false,
         filters: Default::default(),
         limits: Default::default(),
+        file_hashes: true,
+        full_read: None,
     };
     let run = |job: u64| {
         let mut map = MapDb::open(&store_dir).unwrap();
@@ -139,6 +141,9 @@ fn real_agent_with_agent_conn() {
         r1.wanted_bytes
     );
     assert!(r1.scan.errors.is_empty(), "{:?}", r1.scan.errors);
+    // Phase 28: the agent hashed every file it read (CAP_FILE_HASH); the store read nothing back
+    let h = store.take_hash_stats().unwrap();
+    assert!(h.fresh >= 4 && h.computed == 0 && h.failed == 0, "{h:?}");
     // second backup: everything unchanged, nothing transferred
     std::thread::sleep(Duration::from_millis(1100)); // distinct snapshot time
     let r2 = run(2);
@@ -146,6 +151,12 @@ fn real_agent_with_agent_conn() {
     assert_eq!(r2.wanted_chunks, 0, "no transfer when nothing changed");
     assert_eq!(r2.scan.read_bytes, 0, "unchanged files are not re-read");
     assert!(r2.unchanged >= 5);
+    let h = store.take_hash_stats().unwrap();
+    // only the machine layout the appliance adds is hashed afresh
+    assert!(
+        h.fresh <= 1 && h.carried >= 4 && h.computed == 0,
+        "unchanged files carry their hash: {h:?}"
+    );
     // mapping index lost: the appliance Wants chunks of `unchanged` files, the agent
     // re-reads them from the files
     fs::remove_file(store_dir.join("agent-map.db")).unwrap();
@@ -169,6 +180,14 @@ fn real_agent_with_agent_conn() {
     assert!(entries
         .iter()
         .any(|e| e.path == format!("{rel}/db/data.bin").as_bytes() && e.kind == TreeKind::File));
+    let names = store.load_names(&m).unwrap().unwrap();
+    let want = agent_conn::ca::sha256_hex(&fs::read(data.join("db/data.bin")).unwrap());
+    assert!(
+        names
+            .hashed()
+            .any(|(p, _, h)| p == format!("{rel}/db/data.bin") && agent_conn::hex(h) == want),
+        "SHA-256 of data.bin in the name index"
+    );
 
     // restore into a fresh directory
     let target = d.path().join("restored");
@@ -322,6 +341,8 @@ fn filters_limits_and_certificate_renewal() {
             bwlimit: 1_000_000,
             nice: 5,
         },
+        file_hashes: false,
+        full_read: None,
     };
     let t = std::time::Instant::now();
     let r = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();
@@ -480,4 +501,132 @@ fn endpoint_status_poll_and_request() {
     let mut out = vec![];
     agent_conn::poll::poll_all(&ca, &[bad], 1, T, &mut |v| out.push(v));
     assert_eq!(out[0]["ok"], false);
+}
+
+/// A fake ELF for this architecture carrying `version` as its marker (`size` bytes).
+fn fake_elf(version: &str, size: usize) -> Vec<u8> {
+    let mut b = rnd(size, 7);
+    b[..4].copy_from_slice(b"\x7fELF");
+    b[4] = 2;
+    let machine: u16 = if cfg!(target_arch = "aarch64") { 183 } else { 62 };
+    b[18..20].copy_from_slice(&machine.to_le_bytes());
+    let marker = format!("\0NEXUS-AGENT-VERSION={version}\0");
+    b[1000..1000 + marker.len()].copy_from_slice(marker.as_bytes());
+    b
+}
+
+/// Phase 27: a v1.8 agent gets a signed release from the store in chunks; the binary
+/// swap keeps `.prev`, the pending update is reported until the new version listens.
+/// Wrong kinds and foreign signatures are refused before any data is accepted.
+#[test]
+fn chunked_update_from_the_release_store() {
+    use agent_conn::update;
+    use agent_core::releases::{self, testing::Signer};
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let paths = Paths {
+        config: d.path().join("agent/etc"),
+        state: d.path().join("agent/state"),
+        run: d.path().join("agent/run"),
+    };
+    let signer = Signer::new();
+    let exe = d.path().join("bin/nexus-agent");
+    fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    fs::write(&exe, b"the running build").unwrap();
+    nexus_agent::init(&paths, TOKEN, None).unwrap();
+    fs::create_dir_all(paths.release_keys()).unwrap();
+    fs::write(paths.release_keys().join("release.pub"), signer.public_pem()).unwrap();
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let mut agent = Agent::with_platform(
+        nexus_agent::server::Linux::with_exe(exe.clone()),
+        paths.clone(),
+        settings,
+    )
+    .unwrap();
+    agent.exit_on_update = false;
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = l.local_addr().unwrap().port();
+    std::thread::spawn(move || Arc::new(agent).serve(l));
+    let ca = Ca::load_or_create(&d.path().join("ca")).unwrap();
+    let e = enroll::enroll(&ca, "127.0.0.1", port, &agent_proto::token_digest(TOKEN), ID, T).unwrap();
+    let connect = || {
+        for _ in 0..100 {
+            if let Ok(mut c) = Session::connect(
+                "127.0.0.1",
+                port,
+                session_config(&ca, ID, Some(&e.cert_sha256)).unwrap(),
+                T,
+            ) {
+                if let Ok(i) = c.hello(ID) {
+                    return (c, i);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("no session")
+    };
+
+    let arch = nexus_agent::update::arch();
+    let name = format!("linux-{arch}/nexus-agent");
+    let new = fake_elf("0.2.0", 3_500_000);
+    let store = d.path().join("store");
+    signer.write_release(&store, "0.2.0", &[(&name, "binary", "linux", arch, &new)]);
+    Signer::new().write_release(&store, "0.3.0", &[(&name, "binary", "linux", arch, &new)]);
+    let deb_name = format!("linux-{arch}/nexus-agent_0.2.0.deb");
+    signer.write_release(
+        &d.path().join("store2"),
+        "0.2.0",
+        &[(&deb_name, "deb", "linux", arch, b"!<arch>")],
+    );
+    let rels = releases::scan(&[(store.clone(), "upload")], &signer.keys());
+    let rel = releases::find(&rels, "0.2.0").unwrap();
+    assert!(rel.usable(), "{:?}", rel.error);
+    assert!(!releases::find(&rels, "0.3.0").unwrap().usable(), "foreign key");
+
+    let (mut s, info) = connect();
+    assert_eq!(info.protocol, "1.8");
+    assert_eq!((info.arch.as_str(), info.install.as_str()), (arch, "bundle"));
+    // a deb never goes to a bundle install: the agent refuses before any data
+    let deb_rel = releases::load(&d.path().join("store2/0.2.0"), "upload", &signer.keys(), true);
+    assert!(update::plan(&deb_rel, &info.facts(), &info.caps).is_err());
+    let forced = update::Plan::Chunked(deb_rel.manifest.clone().unwrap().artifacts);
+    let err = update::push_release(&mut s, &deb_rel, &forced, false, &mut |_, _| {}).unwrap_err();
+    assert!(format!("{err:#}").contains("own package type"), "{err:#}");
+    s.close();
+    // a release signed with another key: refused by the agent too (the appliance would
+    // not offer it, but the agent does not trust the appliance)
+    let (mut s, _) = connect();
+    let mut foreign = rel.clone();
+    foreign.manifest_sig = Signer::new().sign(&foreign.manifest_bytes);
+    let p = update::plan(rel, &info.facts(), &info.caps).unwrap();
+    let err = update::push_release(&mut s, &foreign, &p, false, &mut |_, _| {}).unwrap_err();
+    assert!(format!("{err:#}").contains("manifest"), "{err:#}");
+    s.close();
+    assert_eq!(fs::read(&exe).unwrap(), b"the running build");
+
+    // the real thing: 4 chunks, swap, `.prev`, pending until the new version listens
+    let (mut s, _) = connect();
+    let mut progress = vec![];
+    update::push_release(&mut s, rel, &p, false, &mut |a, b| progress.push((a, b))).unwrap();
+    s.close();
+    assert_eq!(progress.len(), 4);
+    assert_eq!(progress.last(), Some(&(new.len() as u64, new.len() as u64)));
+    assert_eq!(fs::read(&exe).unwrap(), new);
+    assert_eq!(
+        fs::read(d.path().join("bin/nexus-agent.prev")).unwrap(),
+        b"the running build"
+    );
+    let (mut s, _) = connect();
+    let st = update::status(&mut s).unwrap();
+    s.close();
+    assert_eq!(st["state"], "installing");
+    assert_eq!(st["from"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(st["to"], "0.2.0");
+    // what the restarted new version does once it listens
+    agent_core::update::mark_listening(&paths, "0.2.0");
+    let (mut s, _) = connect();
+    assert_eq!(update::status(&mut s).unwrap()["state"], "ok");
+    s.close();
 }

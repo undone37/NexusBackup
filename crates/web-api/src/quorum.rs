@@ -62,9 +62,12 @@ pub const WEB_ACTIONS: &[&str] = &[
     catalog::tenants::DISABLE_ACTION,
     crate::impersonate::ACTION,
     crate::incident::LEAVE,
+    catalog::tenants::LOCKDOWN_LIFT,
+    catalog::incident::FREEZE_LIFT,
     crate::keep::ACTION,
     crate::keep::SETTING_ACTION,
     crate::tenant_idp::ACTION,
+    catalog::agent_updates::ROLLBACK_ACTION,
 ];
 
 /// Who may approve or reject requests (never their own: see [`approve`]).
@@ -385,9 +388,12 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         crate::firewall::ACTION => crate::firewall::execute(c, p)?,
         catalog::holds::RELEASE_ACTION => crate::holds::execute(c, p, approver, requested_by)?,
         crate::incident::LEAVE => crate::incident::execute(c, p, approver, requested_by)?,
+        catalog::tenants::LOCKDOWN_LIFT => crate::lockdown::execute(c, p, approver, requested_by)?,
+        catalog::incident::FREEZE_LIFT => crate::incident::execute_freeze_lift(c, p, approver)?,
         crate::keep::ACTION => return crate::keep::execute(c, p, requested_by).map(Some),
         crate::keep::SETTING_ACTION => crate::keep::execute_setting(c, p)?,
         crate::tenant_idp::ACTION => crate::tenant_idp::execute(c, p)?,
+        catalog::agent_updates::ROLLBACK_ACTION => crate::agent_updates::execute_rollback(c, p)?,
         "agent.delete" => {
             let id = p["id"].as_str().unwrap_or_default();
             if crate::agents::agent_in_use(c, id)? {

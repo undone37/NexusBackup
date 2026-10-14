@@ -84,6 +84,10 @@ impl Scheduler {
         if let Some(b) = p["budget"].as_u64() {
             args.push(b.to_string());
         }
+        // Phase 29: scans of a scan back stop at their first match (scanback.rs)
+        if p["stop_on_match"] == true {
+            args.push("--stop-on-match".into());
+        }
         plan.steps.push(Step::Cli {
             bin: self.cfg.pve_bin.clone(),
             args,
@@ -162,6 +166,18 @@ impl Scheduler {
                     r["matches"].to_string()
                 ],
             )?;
+            // Phase 28: the snapshot's verdict (recovery calendar, "latest clean")
+            let state = if total > 0 {
+                "hit"
+            } else if complete {
+                "clean"
+            } else {
+                "incomplete"
+            };
+            self.db.conn().execute(
+                "UPDATE snapshots SET scan_state = ?4 WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                params![job.tenant, source, time, state],
+            )?;
             self.db.audit(
                 ACTOR,
                 "snapshot.scan",
@@ -184,20 +200,31 @@ impl Scheduler {
                 self.flag_snapshot(&job.tenant, &source, time, &why)?;
                 let first = &r["matches"][0];
                 let last = self.last_clean(&job.tenant, &source, time)?;
-                self.raise(
-                    "critical",
-                    "malware",
-                    &format!("malware:{}/{source}", job.tenant),
-                    &format!(
-                        "YARA scan of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
-                        job.tenant,
-                        first["rule"].as_str().unwrap_or("?"),
-                        first["path"].as_str().unwrap_or("?")
-                    ),
-                    Some(&job.tenant),
-                )?;
+                // Phase 28: scheduled scans (threat.rs) raise their own kind
+                let (kind, what) = if job.params["scheduled"] == true {
+                    ("scan_hit", "Scheduled YARA scan")
+                } else {
+                    ("malware", "YARA scan")
+                };
+                // Phase 29: the hits of a scan back are expected (scanback.rs): flagged, no alert
+                let quiet = job.params["for_scan_back"].is_i64();
+                if !quiet {
+                    self.raise(
+                        "critical",
+                        kind,
+                        &format!("{kind}:{}/{source}", job.tenant),
+                        &format!(
+                            "{what} of {}/{source} snapshot {time}: {why}, e.g. {} in {}; {last}",
+                            job.tenant,
+                            first["rule"].as_str().unwrap_or("?"),
+                            first["path"].as_str().unwrap_or("?")
+                        ),
+                        Some(&job.tenant),
+                    )?;
+                }
             }
         }
+        self.scan_back_step(job, ok, r)?; // scanback.rs
         let Some(rid) = job.params["for_job"].as_i64() else {
             return Ok(());
         };

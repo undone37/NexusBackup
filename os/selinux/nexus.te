@@ -119,6 +119,8 @@ type nexus_plugin_data_t;	# /var/lib/nexus/plugins: manifests, assets (written o
 files_type(nexus_plugin_data_t)
 type nexus_plugin_staging_t;	# /var/lib/nexus/plugins-staging: uploaded bundles + signatures (web-api -> installer)
 files_type(nexus_plugin_staging_t)
+type nexus_agent_release_t;	# /var/lib/nexus/agent-releases: signed agent releases uploaded in the web UI (Phase 27)
+files_type(nexus_agent_release_t)
 type nexus_plugin_tmp_t;	# per-job private tmp of a plugin (/tmp/nexus-plugin-<job>-<rand>, PrivateTmp of the scheduler)
 files_tmp_file(nexus_plugin_tmp_t)
 
@@ -582,8 +584,12 @@ filetrans_pattern(nexus_agentctl_t, nexus_store_t, nexus_agent_ca_t, dir, "agent
 # files get: tar/zip downloads for the web-api
 manage_files_pattern(nexus_agentctl_t, nexus_downloads_t, nexus_downloads_t)
 allow nexus_agentctl_t nexus_downloads_t:dir rw_dir_perms;
-# signed agent binaries for agent_update (/usr/share/nexus/agent)
+# signed agent binaries for agent_update (/usr/share/nexus/agent) and the uploaded
+# releases (Phase 27); manifests are checked against /etc/pki/nexus/cosign (cert_t)
 files_read_usr_files(nexus_agentctl_t)
+read_files_pattern(nexus_agentctl_t, nexus_agent_release_t, nexus_agent_release_t)
+list_dirs_pattern(nexus_agentctl_t, nexus_agent_release_t, nexus_agent_release_t)
+miscfiles_read_generic_certs(nexus_agentctl_t)
 
 ########################################
 # nexus-truenas (crate truenas, docs/truenas-connector.md): TrueNAS JSON-RPC API over
@@ -863,6 +869,16 @@ allow init_t nexus_plugin_staging_t:file { getattr read watch };
 # and watches the request file it waits for (found in the VM: helpers never started)
 allow init_t { nexus_tls_req_t nexus_diag_var_lib_t }:file { getattr read watch };
 miscfiles_read_generic_certs(nexus_webapi_t)
+# agent releases (Phase 27): signed uploads extracted, verified and kept below
+# /var/lib/nexus/agent-releases; the image's releases (/usr/share/nexus/agent) are read
+# for the list and the installer downloads
+manage_dirs_pattern(nexus_webapi_t, nexus_agent_release_t, nexus_agent_release_t)
+manage_files_pattern(nexus_webapi_t, nexus_agent_release_t, nexus_agent_release_t)
+files_read_usr_files(nexus_webapi_t)
+# the scheduler lists them (recommended release, automatic mode)
+read_files_pattern(nexus_scheduler_t, nexus_agent_release_t, nexus_agent_release_t)
+list_dirs_pattern(nexus_scheduler_t, nexus_agent_release_t, nexus_agent_release_t)
+files_read_usr_files(nexus_scheduler_t)
 list_dirs_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)
 read_lnk_files_pattern(nexus_webapi_t, nexus_plugin_data_t, nexus_plugin_data_t)

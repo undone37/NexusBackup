@@ -437,6 +437,7 @@ impl Scheduler {
                 v["policy_version"].as_i64()
             ],
         )?;
+        self.agent_facts(id, &v["info"])?; // agent_updates.rs
         self.poll.next.insert(id.to_owned(), now + base);
         self.poll.ack.remove(id);
         if let Some(via) = v["info"]["via"].as_str().filter(|x| matches!(*x, "direct" | "edge")) {

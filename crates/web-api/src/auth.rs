@@ -151,6 +151,9 @@ impl FromRequestParts<St> for Ctx {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, st: &St) -> Result<Self, ApiError> {
         if let Some(t) = parts.extensions.get::<crate::tokens::TokenAuth>() {
+            if parts.method != Method::GET && parts.method != Method::HEAD {
+                crate::risk::check(&st.cat.conn(), t.user.id, "", true, parts.uri.path())?;
+            }
             return Ok(Ctx {
                 user: t.user.clone(),
                 sid: String::new(),
@@ -215,6 +218,10 @@ impl FromRequestParts<St> for Ctx {
                     "missing or invalid X-CSRF-Token".into(),
                 ));
             }
+        }
+        if parts.method != Method::GET && parts.method != Method::HEAD {
+            // Phase 29: a session of an account marked by a risk signal steps up first
+            crate::risk::check(&c, user.id, &sid, false, parts.uri.path())?;
         }
         c.execute(
             "UPDATE sessions SET last_seen = ?1 WHERE id_hash = ?2",
@@ -610,6 +617,9 @@ pub fn new_session(st: &AppState, user_id: i64, ip: &str, headers: &HeaderMap) -
         "DELETE FROM sessions WHERE last_seen < ?1 OR created < ?2",
         params![now - lim.idle_secs(), now - lim.absolute_secs()],
     )?;
+    // Phase 28: new-device sign-in notice (crate::devices)
+    crate::devices::check(&c, user_id, ip, &ua)?;
+    crate::risk::sign_in(&c, user_id)?; // Phase 29
     c.execute(
         "INSERT INTO sessions (id_hash, user_id, csrf, created, last_seen, ip, user_agent)
          VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6)",
@@ -664,12 +674,14 @@ pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Va
     let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
     let vault = catalog::vault::enabled(&st.cat.conn())?;
     let incident = crate::incident::banner(&st.cat.conn(), &ctx)?;
+    let freeze = crate::incident::freeze_banner(&st.cat.conn(), &ctx)?;
+    let step_up = crate::risk::me(&st.cat.conn(), &ctx)?;
     let imp = ctx
         .impersonating
         .as_ref()
         .map(|t| json!({"tenant": t, "role": ctx.user.role}));
     Ok(Json(
         json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault,
-               "impersonating": imp, "incident": incident}),
+               "impersonating": imp, "incident": incident, "freeze": freeze, "step_up": step_up}),
     ))
 }

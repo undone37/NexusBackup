@@ -149,6 +149,15 @@ the **supported, documented setup** (user decision 2026-10-10); the admin config
 | hard links | detected (nlink) | detected | stored per name (nlink 1) |
 | not captured | share root's own metadata; SACL (`system.cifs_ntsd_full`, needs SeSecurityPrivilege); `security.selinux` | | |
 
+### Full read (Phase 29)
+nas.json `full_read: true` (set by the scheduler when the share is due): the scan runs without the previous
+snapshot (no metadata cache, every file read; `incremental: false`), then the new tree is compared with the
+previous snapshot (`chunkstore::drift::tree`): a regular file at the same path with the same size, mtime, ctime and
+inode but other chunks is one the cache would have kept stale (unreported). Files read while they changed
+(`inconsistent`) are never counted. After the commit: `full-read <source>/<time> {"tracker", "baseline", "compared", "changed", "unreported", "unreported_bytes", "examples"}`, tracker
+`metadata-cache`; without a previous snapshot tracker `none`, baseline null. Test: `tests/local.rs`
+`full_read_finds_what_the_metadata_cache_missed`.
+
 ## 3. Restore
 Download (tar keeps owners, modes, mtimes, symlinks, hard links, xattrs incl. ACLs as PAX
 `SCHILY.xattr.*`; zip modes and mtimes), using agent-conn's tree download code, and since Phase 15b

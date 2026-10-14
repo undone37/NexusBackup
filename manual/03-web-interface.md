@@ -52,7 +52,7 @@ If the administrators set a **login banner** (for example a legal notice), it ap
 
 | Group | Pages |
 |---|---|
-| **Monitor** | Dashboard, Snapshots, Find files, Storage, Reports, Jobs, Alerts |
+| **Monitor** | Dashboard, Snapshots, Find files, Hash hunt, Storage, Reports, Jobs, Alerts |
 | **Governance** | Approvals, Audit log |
 | **Configuration** | Tenants, Sources, Agents, Replication, Policies, Protection groups, Users, Plugins, Hardware, Settings |
 
@@ -88,11 +88,12 @@ The sidebar shows only what your role may use. The server checks every request a
 |---|---|---|---|---|---|
 | Dashboard, Snapshots, Storage, Reports (CSV downloads), Jobs | ✓ | ✓ | ✓ | ✓ (own tenant) | read (its scope) |
 | Find files | ✓ | — | ✓ | ✓ (own tenant) | — |
+| Hash hunt | ✓ | ✓ | ✓ | tenant administrators (own tenant) | — |
 | Reports: scheduled reports | ✓ | read | — | — | — |
 | Alerts | ✓ | ✓ | ✓ | — | read (without a tenant) |
 | Approvals | ✓ | ✓ (decides) | ✓ (read) | — | — |
 | Audit log | ✓ | ✓ | — | — | — |
-| Tenants | ✓ | **Attach offsite copy** only | — | — | — |
+| Tenants | ✓ | **Attach offsite copy**, **Lock down…** only | — | — | — |
 | Sources, Agents, Policies, Protection groups, Users | ✓ | — | — | — | — |
 | Replication, Plugins | ✓ | read | read | — | — |
 | Hardware | ✓ (changes need approval) | read | read, **Rescan** | — | read (without a tenant) |
@@ -184,6 +185,10 @@ data reduction factor before the first backup).
   [auto-protect group](05-policies-and-groups.md#auto-protect-all-guests-or-guests-by-tag) can cover them for good.
 
 ![The "Not in a group" list on the Dashboard](images/dashboard-unprotected.png)
+
+- **Change tracking**: shown once full reads are recorded. How many sources the scheduled full read **verified**,
+  found with **drift** (changes the change tracking did not report) or **never checked**, and the sources with drift
+  first. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#change-tracking-scheduled-full-reads).
 
 Hover over a bar or ring segment to see its value. Screen readers get each chart as a table.
 
@@ -461,6 +466,12 @@ sees a red banner under the top bar: "Break-glass recovery was used: … Check t
 **Open audit log** and **Acknowledge**. It stays until an administrator acknowledges it. See
 [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator).
 
+**Freeze and step-up banners.** While incident mode or a tenant lockdown freezes configuration changes, deletions or
+restores to production, appliance-wide accounts see a red banner naming what is frozen
+([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)). An account marked by a risk signal sees
+a yellow banner with the reason; its first change in each session opens **Confirm it is you**
+([09 Users and access](09-users-and-access.md#risk-signals-and-step-up)).
+
 ## Approvals
 
 ![Approvals as seen by a security officer](images/approvals.png)
@@ -533,6 +544,7 @@ when approvals are enabled.
 | **Security** | session timeouts, sessions per account, encryption key rotation reminder, dormant accounts, login banner; sessions of all users (administrators); a link to the firewall | [09 Users and access](09-users-and-access.md#sessions-and-sign-in-protection) |
 | **Firewall** | inbound rules per service (who may reach the web UI, ping), recent blocked attempts, the automatic outbound allow-list (read-only) | [02 Installation](02-installation.md#inbound-firewall) |
 | **Network** | network cards, bonds, VLANs, MTU, addresses and routes, the role of each interface (management, data, replication) and which one offsite copies use; a change needs approval, a management change also a confirmation within 120 s; the path-MTU check (**Check now**: administrators and operators) | [02 Installation](02-installation.md#network-interfaces) |
+| **IOC hash lists** | SHA-256 lists of known-bad files for the **Hash hunt** (administrators and security officers) | [11 Alerts and monitoring](11-alerts-and-monitoring.md#ioc-hash-hunt) |
 | **Incident mode** | enter incident mode (security officers: hold snapshots, pause groups, end sessions and API tokens, critical alert) and request to leave it | [14 Disaster recovery](14-disaster-recovery.md#incident-mode) |
 | **Vault** | vault mode of a replication secondary: its preconditions, the request to switch it on, the two-step switch-off (administrators, security officers and operators read it) | [08 Replication](08-replication.md#vault-mode-secondary-only) |
 

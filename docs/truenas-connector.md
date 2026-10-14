@@ -242,6 +242,15 @@ last time = dataset skipped ("no new snapshot"), not failed. The forced command 
 `<prefix>[A-Za-z0-9_-]*` in addition to `nexus-<id>-<time>` (`fc::Fc::existing_prefix`, variable `E` in the
 script; the `authorized_keys` line changes, re-paste). Tests: `tests/fake_truenas.rs` `existing_snapshots_mode`.
 
+## 7b. Full read (Phase 29)
+truenas.json `full_read: true` (set by the scheduler when due): per dataset the usual plan is still made (`zfs diff`
+against the reference plus the size/mtime check: what the incremental would read), then every file is read
+(`tree::plan` without a reference). Files whose content differs from the previous store snapshot (same path) while
+the usual plan would have reused them are unreported (`tree::drift`). After the commit: `full-read <source>/<time> {"tracker", "baseline", "compared", "changed", "unreported", "unreported_bytes", "examples"}`,
+tracker `zfs-diff`; without a reference snapshot (first run, reference gone) tracker `none`, baseline null. Costs a
+full read of the dataset over SSH. Tests: `tree::tests::full_read_drift_against_the_usual_plan`,
+`tests/fake_truenas.rs` `full_read_finds_what_zfs_diff_missed` (the fake reports no `M` for an in-place edit).
+
 ## 8. Limitations and open points
 - **Needs a decision**: the privilege model (sudo for find/tar/realpath/zfs behind the forced command,
   §1). A forced-command escape would be root on TrueNAS; the command is small, tested and fuzzed, but

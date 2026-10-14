@@ -59,9 +59,16 @@ Every restore dialog opened on a flagged snapshot (**Full restore**, **Instant r
 before it**. A yellow notice names both snapshots; **Use the flagged snapshot instead** switches back (for example to
 fetch files changed after the last clean snapshot that were not hit), **Use the latest clean snapshot** returns.
 **Restore several** picks the latest clean snapshot of each guest and notes when a newer flagged one was skipped.
-Snapshots whose flag a security officer cleared (**Flag cleared**) count as clean.
+Snapshots whose flag a security officer cleared (**Flag cleared**) count as clean. When malware scans ran (on
+request or scheduled per group), **the newest snapshot a scan found clean is preferred** over newer snapshots that
+were never scanned, both in these dialogs and in **Restore several**.
 
 ![The restore dialog of a flagged snapshot](images/restore-flagged-clean.png)
+
+Filter the Snapshots page to one guest or source to see its **Recovery calendar**: every snapshot of the month by
+day, coloured by its scan state (green scanned clean, red matches or flagged, yellow scan incomplete, grey not
+scanned). Selecting a snapshot opens its first restore action. See
+[11 Alerts and monitoring](11-alerts-and-monitoring.md#scheduled-scans-and-the-recovery-calendar).
 
 > **Status:** The file browser and **Find files** show flagged snapshots without a notice.
 
@@ -91,6 +98,40 @@ urgent restores scan the snapshot ahead (**Scan** on **Snapshots**).
 > and that symlinks are not followed; the hold-and-verdict logic is covered by scheduler tests. A run on the
 > appliance VM against a real VM snapshot is a lab step that is still open. **Restore several** and downloads from
 > the file browser have no scan-first option in the UI.
+
+### Flagged snapshots: restores to production need approval
+
+A snapshot counts as **flagged** while it carries an anomaly flag or a malware scan found matches in it, and no
+security officer cleared the flag. Restoring such a snapshot **to production** needs a second person:
+
+- **Production restores** are: a full restore that replaces the original guest or starts with the network
+  connected (**Disconnect the network** not ticked), an instant recovery with the network connected, an instant
+  disk recovery (the disk goes into a running VM), **Restore to a host…** to the original paths (`/`) or with
+  **Overwrite** other than **Never**, and plugin restores.
+- **Isolated restores stay possible without approval**: restores with every network card disconnected, files to
+  another path without overwriting, downloads, mounts, the file browser and restore tests.
+
+The restore dialogs show a yellow notice when the chosen options are a production restore of a flagged snapshot,
+with buttons that switch to the isolated variant (**Disconnect the network**, **Restore to another path without
+overwriting**). Usually the dialog already uses the latest clean snapshot (above); the notice appears when you chose
+the flagged one on purpose.
+
+![A production restore of a flagged snapshot](images/restore-infected.png)
+
+When you start it anyway, the restore becomes the approval request `restore.infected` ("Approval requested:
+request #… (restore of a flagged snapshot)"): another administrator or security officer checks the request on
+**Approvals** (tenant, kind, parameters and the reason of the flag) and approves it; then the scheduler runs the
+restore. With approvals disabled, only **administrators** may start such a restore (it runs at once and is
+audited); other roles get "restore it isolated: network disconnected or another path", and API tokens are always
+refused. **Restore several** refuses flagged snapshots unless **Disconnect the network** is ticked.
+
+To find the snapshot to restore from, use **Scan back** ([11 Alerts and monitoring](11-alerts-and-monitoring.md#scan-back-to-the-last-clean-snapshot)):
+it marks the **Recommended restore point**, which the restore dialogs then prefer.
+
+During incident mode or a tenant lockdown, restores to production can be **frozen** altogether
+([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)); isolated restores still work.
+
+> **Status:** Implemented in Phase 29 (API tests, demo backend); a lab run is pending.
 
 ### Consistency
 

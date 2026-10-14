@@ -142,6 +142,8 @@ pub enum Step {
     /// In-process read/maintenance work on the tenant's store (file search,
     /// name index backfill, crate::search): `Ok` output becomes the captured stdout.
     Store(StoreOp),
+    /// A line for the job log (e.g. steps a freeze took out, crate::freeze)
+    Note(String),
 }
 
 /// Held times of one source.
@@ -403,7 +405,7 @@ fn run_steps(
     let needs_store = plan
         .steps
         .iter()
-        .any(|s| !matches!(s, Step::Cli { .. } | Step::Func(_)));
+        .any(|s| !matches!(s, Step::Cli { .. } | Step::Func(_) | Step::Note(_)));
     let store = if needs_store {
         match (ctx.keys)(&plan.tenant).and_then(|k| Store::open(&plan.store, k, (ctx.store_options)())) {
             Ok(s) => Some(s),
@@ -544,6 +546,7 @@ fn run_steps(
                     return failed;
                 }
             },
+            Step::Note(line) => log.lock().unwrap().line(line),
             Step::Func(InProc(f)) => match f() {
                 Ok(out) => *stdout = Some(out),
                 Err(e) => {

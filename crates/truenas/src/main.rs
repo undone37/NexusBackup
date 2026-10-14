@@ -24,6 +24,9 @@ use truenas::{parse_snap_name, parse_source_name, TREE_INDEX};
 #[serde(deny_unknown_fields)]
 struct Config {
     tenant: String,
+    /// Phase 28: SHA-256 per file in the name index (group option `file_hashes`)
+    #[serde(default)]
+    file_hashes: bool,
     #[serde(default)]
     store: Option<PathBuf>,
     #[serde(default)]
@@ -52,6 +55,9 @@ struct Config {
     references: std::collections::HashMap<String, Reference>,
     #[serde(default)]
     read_limit: Option<catalog::schedule::ReadLimit>,
+    /// Phase 29: scheduled full read (set by the scheduler when due)
+    #[serde(default)]
+    full_read: bool,
 }
 
 #[derive(Deserialize)]
@@ -110,7 +116,11 @@ impl Config {
         let root = self.store.as_ref().context("config: store missing")?;
         let sock = self.keyd_socket.as_ref().context("config: keyd_socket missing")?;
         let keys = keyd::fetch_keyring(sock, &self.tenant).context("keyd")?;
-        Ok(Store::open(root, keys, Options::default())?)
+        let s = Store::open(root, keys, Options::default())?;
+        if self.file_hashes {
+            s.enable_file_hashes();
+        }
+        Ok(s)
     }
     fn api(&self) -> Result<Api> {
         let a = self.api.as_ref().context("config: api missing")?;
@@ -187,6 +197,7 @@ fn main() -> Result<()> {
                         .collect(),
                 }),
                 pace: throttle.map(|t| -> truenas::remote::Pace { std::sync::Arc::new(move |n| t.account(n)) }),
+                full_read: cfg.full_read,
             };
             let r = backup::backup(&store, &mut api, &ssh, &spec, &mut |l| println!("{l}"))?;
             api.close();

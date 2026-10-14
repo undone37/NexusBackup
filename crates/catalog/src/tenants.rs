@@ -27,3 +27,26 @@ pub fn all_disabled(c: &Connection) -> rusqlite::Result<HashSet<String>> {
         .query_map([], |r| r.get(0))?
         .collect()
 }
+
+/// Tenant lockdown (v43, Phase 28): approval action that lifts it.
+pub const LOCKDOWN_LIFT: &str = "tenant.lockdown.lift";
+/// Its alert kind (critical, one per tenant while active).
+pub const LOCKDOWN_ALERT: &str = "tenant_lockdown";
+
+/// Is `tenant` locked down (incident mode for one tenant)?
+pub fn locked_down(c: &Connection, tenant: &str) -> rusqlite::Result<bool> {
+    Ok(
+        c.query_row("SELECT active FROM tenant_lockdowns WHERE tenant = ?1", [tenant], |r| {
+            r.get::<_, bool>(0)
+        })
+        .optional()?
+        .unwrap_or(false),
+    )
+}
+
+/// Names of all locked-down tenants.
+pub fn all_locked_down(c: &Connection) -> rusqlite::Result<HashSet<String>> {
+    c.prepare("SELECT tenant FROM tenant_lockdowns WHERE active = 1")?
+        .query_map([], |r| r.get(0))?
+        .collect()
+}

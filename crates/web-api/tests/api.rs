@@ -3770,8 +3770,13 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
         include_str!("../src/incident.rs"),
+        include_str!("../src/lockdown.rs"),
+        include_str!("../src/threat.rs"),
+        include_str!("../src/devices.rs"),
         include_str!("../src/passkeys.rs"),
         include_str!("../src/tenant_idp.rs"),
+        include_str!("../src/fullread.rs"),
+        include_str!("../src/risk.rs"),
     ] {
         for piece in src.split(".route(").skip(1) {
             let piece = piece.split(".merge(").next().unwrap().split("\n}").next().unwrap();
@@ -3947,6 +3952,19 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/edges/{id}/token", "/api/v1/edges/0011223344556677/token".into(), e(), 'N'),
         ("POST", "/edges/{id}/enroll", "/api/v1/edges/0011223344556677/enroll".into(), e(), 'N'),
         ("PUT", "/agents/{id}/edge", "/api/v1/agents/0011223344556677/edge".into(), Some(json!({"edge_id": null})), 'N'),
+        // Phase 27: releases are readable and installers downloadable for the own agents;
+        // uploads, rollouts and the automatic mode are the provider's
+        ("GET", "/agent-releases", "/api/v1/agent-releases".into(), none(), 'Y'),
+        ("POST", "/agent-releases", "/api/v1/agent-releases".into(), e(), 'N'),
+        ("DELETE", "/agent-releases/{version}", "/api/v1/agent-releases/0.1.0".into(), none(), 'N'),
+        ("POST", "/agent-releases/{version}/download", "/api/v1/agent-releases/0.1.0/download".into(), Some(json!({"artifact": "x"})), 'Y'),
+        ("PUT", "/agents/{id}/tags", format!("/api/v1/agents/{agent}/tags"), Some(json!({"tags": ["web"]})), 'Y'),
+        ("GET", "/agent-rollouts", "/api/v1/agent-rollouts".into(), none(), 'N'),
+        ("POST", "/agent-rollouts", "/api/v1/agent-rollouts".into(), Some(json!({"version": "0.2.0"})), 'N'),
+        ("GET", "/agent-rollouts/{id}", "/api/v1/agent-rollouts/1".into(), none(), 'N'),
+        ("POST", "/agent-rollouts/{id}/{action}", "/api/v1/agent-rollouts/1/pause".into(), e(), 'N'),
+        ("GET", "/agent-update-settings", "/api/v1/agent-update-settings".into(), none(), 'N'),
+        ("PUT", "/agent-update-settings", "/api/v1/agent-update-settings".into(), Some(json!({"tenant": "acme", "mode": "manual"})), 'N'),
         ("GET", "/fleet/candidates", "/api/v1/fleet/candidates".into(), none(), 'Y'),
         ("POST", "/fleet/candidates/{id}/accept", "/api/v1/fleet/candidates/999/accept".into(), e(), 'Y'),
         ("POST", "/fleet/candidates/{id}/reject", "/api/v1/fleet/candidates/999/reject".into(), e(), 'Y'),
@@ -4079,6 +4097,31 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), none(), 'Y'),
         ("PUT", "/tenants/{name}/oidc", "/api/v1/tenants/acme/oidc".into(), Some(json!({"enabled": false, "issuer": "", "client_id": "", "label": "x"})), 'N'),
         ("POST", "/tenants/{name}/oidc/test", "/api/v1/tenants/acme/oidc/test".into(), e(), 'N'),
+        // Phase 28: threat scans and file hashes of own groups, hunts in own tenant, own devices;
+        // IOC lists and lockdowns are the provider's
+        ("PUT", "/groups/{id}/threat-scan", format!("/api/v1/groups/{grp}/threat-scan"), Some(json!({"schedule": "daily 02:00"})), 'Y'),
+        ("PUT", "/groups/{id}/file-hashes", format!("/api/v1/groups/{grp}/file-hashes"), Some(json!({"enabled": false})), 'Y'),
+        ("GET", "/hash-lists", "/api/v1/hash-lists".into(), none(), 'N'),
+        ("PUT", "/hash-lists/{name}", "/api/v1/hash-lists/feed".into(), Some(json!({"text": "x"})), 'N'),
+        ("DELETE", "/hash-lists/{name}", "/api/v1/hash-lists/feed".into(), none(), 'N'),
+        ("POST", "/hunts", "/api/v1/hunts".into(), Some(json!({"tenant": "acme"})), 'Y'),
+        ("GET", "/lockdowns", "/api/v1/lockdowns".into(), none(), 'N'),
+        ("GET", "/tenants/{name}/lockdown", "/api/v1/tenants/acme/lockdown".into(), none(), 'N'),
+        ("POST", "/tenants/{name}/lockdown", "/api/v1/tenants/acme/lockdown".into(), Some(json!({"reason": "x"})), 'N'),
+        ("POST", "/tenants/{name}/lockdown/lift", "/api/v1/tenants/acme/lockdown/lift".into(), e(), 'N'),
+        ("GET", "/auth/devices", "/api/v1/auth/devices".into(), none(), 'Y'),
+        ("DELETE", "/auth/devices/{fp}", "/api/v1/auth/devices/0123456789abcdef".into(), none(), 'Y'),
+        ("PUT", "/auth/email", "/api/v1/auth/email".into(), Some(json!({"email": null})), 'Y'),
+        // Phase 29: full read of own groups, scan back in own tenant, own step-up; freezes and
+        // risk marks are the provider's
+        ("PUT", "/groups/{id}/full-read", format!("/api/v1/groups/{grp}/full-read"), Some(json!({"days": 5})), 'Y'),
+        ("GET", "/full-reads", "/api/v1/full-reads".into(), none(), 'Y'),
+        ("POST", "/snapshots/{tenant}/{source}/{time}/scan-back", format!("{snap}/scan-back"), e(), 'Y'),
+        ("POST", "/incident/freeze/lift", "/api/v1/incident/freeze/lift".into(), e(), 'N'),
+        ("POST", "/tenants/{name}/lockdown/freeze/lift", "/api/v1/tenants/acme/lockdown/freeze/lift".into(), e(), 'N'),
+        ("POST", "/auth/step-up", "/api/v1/auth/step-up".into(), e(), 'Y'),
+        ("GET", "/risk", "/api/v1/risk".into(), none(), 'N'),
+        ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
     ];
     let classified: std::collections::BTreeSet<(String, String)> =
         table.iter().map(|(m, p, ..)| (m.to_string(), p.to_string())).collect();

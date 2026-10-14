@@ -17,6 +17,7 @@ nbd = { path = "../nbd" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
@@ -25,5 +26,4 @@ name = "nexus-pve"
 path = "src/main.rs"
 
 [dev-dependencies]
-sha2 = "0.10"
 tempfile = "3"

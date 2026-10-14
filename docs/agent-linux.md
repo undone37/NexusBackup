@@ -102,8 +102,9 @@ after enrollment), `agent.key` (0600), `enroll.crt`, `agent.crt`, `ca.crt`, `age
 
 `agent.conf` (`key = value`): `listen` (`::`), `port` (7444), `lvm_snapshot_percent` (10),
 `hook_timeout_secs` (3600), `spool_max_bytes` (2 GiB), `appliance_id` (pin the client
-certificate CN `nexus-appliance:<id>`), `max_connections` (4), `self_update` (`on`/`off`;
-unset = on, except for package installs). Unknown keys are errors.
+certificate CN `nexus-appliance:<id>`), `max_connections` (4), `self_update` (`auto`/`on`/`off`;
+unset = `auto`: updates from the appliance are allowed with the install's own package type; `off` refuses
+every update). Unknown keys are errors.
 
 ## Enrollment and TLS
 
@@ -287,13 +288,26 @@ or a restore run. Atomic rename over the running binary (old one kept as `.prev`
 exit 75 → systemd restarts (`RestartForceExitStatus=75`). The binary must stay below the
 8 MiB frame limit (currently ~3.3 MiB).
 
-Package installs: the package owns `/usr/bin/nexus-agent`, so a self-update would be undone
-by the next package upgrade and flagged by `rpm -V` / `debsums`. If
-`/usr/lib/nexus-agent/package-managed` exists, `Update` is refused before any check ("installed
-from a deb package: update it with the package manager …") unless `agent.conf` says
-`self_update = on`; `self_update = off` disables it for bundle installs too. `nexus-agent
-status` shows the state. The appliance's **Update agent** job then fails with that message;
-bundle installs keep updating as before.
+Package installs (Phase 27, protocol v1.8, docs/agent-update-plan.md "Implementation"): the package
+owns `/usr/bin/nexus-agent`, so the binary is never swapped under it (the single-frame `Update` of
+older appliances is refused: "installed from a deb package: it is updated with a deb package …").
+Instead the appliance sends the signed `.deb` / `.rpm` of the release (with the desktop package when
+`nexus-agent-desktop` is installed) in chunks; the agent checks the signed manifest and every
+artifact against its pinned keys, stores them in `/var/lib/nexus-agent/update/` and starts the
+transient unit `nexus-agent-update.service` (`systemd-run`, so the upgrade survives the agent's own
+restart by the package's postinst): `apt-get install -y -o Dpkg::Options::=--force-confold <files>`
+(rollback: `--allow-downgrades`) or `dnf install -y --disablerepo=* <files>` (rollback: `dnf
+downgrade`; without dnf `rpm -U [--oldpackage]`). No shell, only the staged files' absolute paths.
+`update-pending.json` marks the install; the new version clears it when it listens and writes
+`update-state.json` (`ok`); a failed unit (exit status and the last journal lines) or no restart
+within 2 min after success is recorded as `failed`. `self_update = off` refuses every update;
+`nexus-agent status` shows the setting and the last update.
+
+**Start watchdog** (binary swaps of bundle installs): `update-pending.json` counts the starts of
+the new binary; the agent removes it once it listens. The third start without that puts
+`nexus-agent.prev` back (state `rolled_back`) and exits 75, so systemd starts the previous version.
+The check runs at the very start of `nexus-agent run` (not as `ExecStartPre`: the binary is signed
+and verified before the swap; the unit keeps no shell).
 
 ## End-user status: `nexus-agent tui` and the status commands
 

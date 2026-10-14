@@ -61,6 +61,7 @@ replicad); it streams replicad's answers to replication peers without opening st
 | `forward_events` (v16) | seq PK AUTOINCREMENT, ts, type (`alert`,`job`), payload (JSON of the row at that moment) — outbox written by triggers on `alerts` (raised / escalated / acknowledged / resolved) and `jobs` (state → ok/failed/cancelled); pruned when every enabled sink has it and it is older than a day |
 | `forward_state` (v16) | sink PK (`syslog`,`https`), dest, audit_seq, event_seq (last delivered), last_ok, last_error, last_error_ts, failing_since |
 | `alerts` | id, ts (first seen), severity, kind, message (latest), acked_by; v12 (13f lifecycle): key (dedup key, one open alert per key), tenant, count, last_ts, resolved_at, resolved_by, note, auto (resolved by the scheduler), notified_ts (last delivery; NULL = due) |
+| Phase 28 (v43) | `groups.scan_schedule` (schedule grammar, NULL = off), `groups.scan_budget_min`, `groups.file_hashes`; `snapshots.scan_state` (`clean`/`hit`/`incomplete`, NULL = unscanned); `hash_lists` (name PK, hashes (normalised hex lines), count, sha256, uploaded_by, uploaded_at); `tenant_lockdowns` (tenant PK, active, state JSON); `login_devices` (user_id FK ON DELETE CASCADE, fingerprint, family, prefix, first_seen, last_seen; PK (user_id, fingerprint)); `users.email` — see "Tenant lockdown", "New-device sign-in", docs/malware-scan.md, docs/file-index.md |
 | `replication_peers` (v7, primary) | id (16 hex), name, tenants (JSON), state (`pending`,`approved`,`enrolled`,`revoked`), cert_sha256, keyd_pub, token_hash (`sealed:v1:` to replicad), token_expires, enroll_failures, key_exports (JSON, DEKs sealed to the peer's keyd), created, created_by, enrolled_at, last_seen, revoked |
 | `replication_sources` (v7, secondary) | id, name, url (`host:port`), peer_id, cert_pin, tenants (JSON), schedule, gfs, bwlimit, token_hash (`sealed:v1:` to the scheduler), state (`enrolling`,`enrolled`,`failed`), cert_sha256, keyd_pub, created, last_sync, status (JSON per tenant); v24: windows, sync_window (JSON), timezone, closed_until (-1 = until reopened), closed_by, closed_at |
 
@@ -147,6 +148,9 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `PUT /agents/{id}/limits` | admin | `{bwlimit (0 or ≥ 65536 bytes/s), nice (0..=19)}` → 200 agent; audit `agent.limits` (Phase 15f) |
 | `GET /fleets`, `POST /fleets`, `DELETE /fleets/{id}`, `POST /fleets/{id}/scan` | admin | Phase 24d fleet secrets: POST `{name, tenant, expires_days (1..=30), max_uses?, auto_accept=false, port=7444, ranges (≤ 32: CIDR ≤ /22 resp. /118, address or host; ≤ 4096 addresses), group?, group_rules [{pattern, group}]}` → 201 fleet + `secret` (`nxf1.<id>.<secret>`, shown once) + `install` commands; DELETE revokes (row kept); scan → 202 `{id}` of a `fleet_scan` job (409 revoked/expired/used up/no ranges). Audit `fleet.create`, `fleet.revoke` |
 | `GET /edges`, `POST /edges`, `POST /edges/{id}/token`, `POST /edges/{id}/enroll`, `DELETE /edges/{id}` | admin | Phase 26 edge proxies (docs/edge.md, catalog v39): GET lists `{id, name, host, port, public_host, public_port, cert_sha256, enrolled_at, token_expires, last_seen, online (last seen ≤ 120 s), version, health, log, agents}` (never the token); POST `{name, host, port=7445, public_host, public_port=443}` → 201 `{id, token, expires, setup}` (one-time token, 24 h, digest sealed to the scheduler as `edge/<id>/token@<host>:<port>`, shown once); token → a new token (re-enrollment); enroll → 202 `{id}` of an `edge_enroll` job (409 without a valid token); DELETE clears `agents.edge_id` of its agents. Audit `edge.create`, `edge.token`, `edge.enroll`, `edge.delete` |
+| `GET /agent-releases`, `POST /agent-releases`, `DELETE /agent-releases/{version}`, `POST /agent-releases/{version}/download` | read: all; upload/delete: admin; download: admin, tenant_admin (with the download right) | Phase 27 agent release store (docs/agent-update-plan.md "Implementation", catalog v41): GET `{recommended, releases: [{version, source: image\|upload, signed, key, error, protocol, min_appliance, released, notes, artifacts}]}`; POST = the release as tar (≤ 512 MiB), verified against the pinned keys before it is stored (201 `{version}`, 409 if present); DELETE uploaded releases only, not while a rollout needs them; download → `{token, url, name, size, sha256, expires}` (1 h), served by `GET /downloads/{token}` to the requester only. Audit `agent.release.upload`, `agent.release.delete`, `download.get` |
+| `GET /agent-rollouts`, `GET /agent-rollouts/{id}`, `POST /agent-rollouts`, `POST /agent-rollouts/{id}/pause\|resume\|cancel`, `GET /agent-update-settings`, `PUT /agent-update-settings` | read: admin, security_officer, operator, viewer; write: admin | Phase 27 rollouts (waves, canary, soak, concurrency, failure threshold, maintenance windows) and the automatic mode per tenant/group; a rollback rollout is gated by the quorum action `agent.rollback` (202 `{quorum_id, id}`). Audit `agent.rollout.create\|pause\|resume\|cancel` (`.done` by the scheduler), `agent.update_settings` |
+| `PUT /agents/{id}/tags` | admin, tenant_admin (own tenant) | Phase 27 `{tags}` (≤ 16, `[a-z0-9_.-]{1,32}`), rollout scope. Audit `agent.tags` |
 | `PUT /agents/{id}/edge` | admin | `{edge_id: string \| null}`: reach this agent via that edge (direct first, then the edge; pushed to the agent with protocol v1.7 `SetEdge` at the next poll). Audit `agent.edge`. The agent list carries `edge_id`, `via` (`direct` \| `edge`, route of the last session) and `edge_pushed` |
 | `GET /fleet/candidates`, `POST /fleet/candidates/{id}/accept`, `POST /fleet/candidates/{id}/reject` | read (tenant-scoped) / admin, tenant_admin (own tenant) | agents found by fleet scans `{id, fleet_id, fleet, tenant, host, port, hostname, os, version, first_seen, last_seen, state: awaiting/accepted/rejected, agent_id}`; accept → `{agent_id, job}` (agent + template source/group created, `agent_enroll` with `fleet_id` queued, one use counted); audit `fleet.accept`, `fleet.reject`, `fleet.auto_accept` (scheduler) |
 | `POST /agents/bulk` | admin, tenant_admin (own tenant) | `{csv}` with header; `host`, `tenant` required, `name`, `port`, `group` optional; ≤ 500 rows, all-or-nothing (400 `line N: …`) → 201 `{created, agents, csv}` (the CSV carries the one-time tokens, shown once); audit `agent.create` per agent with `bulk: true` |
@@ -1056,3 +1060,97 @@ need no approval (isolated, destroyed, nothing leaves the cluster); an execution
 Network (NetworkManager, static/DHCP on the management NIC) → admin account + TOTP enrollment (QR in terminal, code confirmation) → second person: "create it now (recommended)" = security officer account + TOTP, entered at the console by that person, or "later" (audit `setup.second_person_later`; script mode `"second_person_later": true`) → `keyd init`: recovery key shown once, re-entry of 3 random groups required → TLS certificate (self-signed, SAN = hostname + IPs; fingerprint shown) → metrics token → `/var/lib/nexus/setup-done` (writes `settings.approvals_enabled`: enabled with two people, **disabled with a single administrator** — the TUI and the script output say so; audit `setup.approvals`) → enable `nexus-web-api`, `nexus-scheduler`, `nexus-keyd`, `nexus-replicad` (`nexus-nasmount.socket` is enabled by the image preset).
 
 Tenant keys: tenants are created in the UI; the scheduler asks keyd `ensure <tenant>` (keyd creates DEK v1 on first use, only for the chunkstore uid) and refreshes the wrapped escrow files via `escrow <tenant>` before each offsite run.
+
+## Tenant lockdown (Phase 28)
+Incident mode limited to one tenant (`crates/web-api/src/lockdown.rs`). `POST /tenants/{name}/lockdown {reason,
+hold?, current_password, current_totp}` by a security officer or an admin (appliance-wide, re-authenticated) — at
+once, in one transaction: legal holds on the tenant's snapshots (all; `hold: {from, to}` = a time range, `null` =
+none), its groups paused indefinitely, every session and API token of its accounts ended, critical alert
+`tenant_lockdown` (tenant set). While it lasts the tenant's accounts cannot sign in (password, passkey, OIDC, tokens:
+`tenants::blocked`), and the web-api and the scheduler refuse with 409 / a failed job: backups, agent updates and
+renewals, restores that overwrite (replace a guest, files with `if_older`/`always`, plugin restores), snapshot
+deletes, deletes and changes of the tenant's sources, groups and agents, tenant changes and deletion, resuming its
+groups. Restores to new targets, downloads, scans and hash hunts stay possible. Other tenants are not affected.
+Lifting: `POST /tenants/{name}/lockdown/lift` → approval `tenant.lockdown.lift` (always a second admin or security
+officer, also with approvals disabled); the groups it paused resume (an earlier pause comes back), the alert
+resolves, holds stay. `GET /lockdowns` (active ones, with the pending lift request), `GET /tenants/{name}/lockdown`.
+State: `tenant_lockdowns` (catalog v43); history: audit (`tenant.lockdown`, `quorum.*`).
+
+## New-device sign-in (Phase 28)
+Every new session records the account's device (`login_devices`, catalog v43): the browser family and operating
+system from the user agent and the client network prefix (IPv4 /24, IPv6 /48), fingerprinted. The first sign-in of
+an account sets its baseline; afterwards an unseen combination raises `login_new_device` (warning for admins and
+security officers, info otherwise; key `login_new_device:<user id>:<fingerprint>`), forwarded to the SIEM sinks like
+every alert. On its first delivery the scheduler also mails it to the account's own address (`users.email`: the
+profile, `PUT /auth/email`, or the OIDC `email` claim unless `email_verified` is false) through the alert SMTP
+server. `GET /auth/devices` lists the caller's devices and address, `DELETE /auth/devices/{fingerprint}` forgets one.
+At most 50 devices per account are kept.
+
+## Incident freezes (Phase 29)
+- `POST /incident` takes `freeze: {config, deletions, restores}` (booleans, optional); `GET /incident` returns
+  `freeze` (null = none) and `freeze_lift_quorum`. `POST /tenants/{name}/lockdown` takes `freeze: {deletions,
+  restores}` (the tenant's configuration is always refused by a lockdown); `GET /lockdowns` and `GET
+  /tenants/{name}/lockdown` rows carry `freeze` and `freeze_lift_quorum`.
+- Frozen configuration: every non-GET call answers 409 "incident mode: configuration changes are frozen …" except
+  sign-in/out and the own account, incident and lockdown endpoints, approve/reject, disabling users, alert ack/resolve,
+  ending sessions and revoking tokens, creating holds, pausing groups, jobs (create/cancel), scans, hunts, search,
+  diff and diagnostics.
+- Frozen deletions: snapshot delete requests 409; the scheduler skips retention, GC, orphan cleanup, offsite
+  retention and GC and replica retention (job log `[scheduler] deletions frozen (incident mode): … skipped`).
+- Frozen restores: production restores (see "Restores of flagged snapshots") answer 409 or are refused by the
+  scheduler; isolated restores run.
+- Lifting: `POST /incident/freeze/lift` / `POST /tenants/{name}/lockdown/freeze/lift` (security officers, admins) →
+  202 `{quorum_id}`, approval `incident.freeze.lift` `{scope: "appliance" | "tenant", tenant?, since}`, always a
+  second person. Leaving incident mode or lifting the lockdown ends its freezes.
+- `GET /auth/me` → `freeze: null | {config, deletions, restores, tenants: [{tenant, deletions, restores}]}` for
+  appliance-wide accounts (banner in the UI).
+
+## Risk signals and step-up (Phase 29)
+- Rules (deterministic, per account): (a) a sign-in at an hour (UTC, +-1 h) not used in the last 90 days, with at
+  least 10 sign-ins of history → warning; (b) >= 5 weakening requests within one hour (approvals off, retention cuts
+  in policy updates, management allow-list / firewall / forwarding changes, offsite or replication deletes, vault /
+  keep changes, hold releases) → critical; (c) >= 10 delete requests within one hour (snapshots, sources, groups,
+  agents, tenants, policies) → critical; (d) downloads in 24 h above max(10 x the account's median daily volume over
+  30 days, 1 GiB) → warning.
+- A signal raises `user_risk` (security category, key `user_risk:<user id>:<rule>`) and marks the account for 24 h
+  (`users.risk_since`, `risk_until`, `risk_reason`).
+- While marked, the first non-GET request of each session answers **428** `{"error": "step-up required: …"}` until
+  the session re-authenticates: `POST /auth/step-up {current_password, current_totp}` (TOTP code or passkey
+  assertion JSON, as in the other re-authentications) → 200 `{step_up_at}`. The UI opens its step-up dialog on any
+  428 and repeats the request once. API tokens of a marked account get 403 on non-GET calls.
+- `GET /auth/me` → `step_up: null | {since, until, reason, done}`. `GET /risk` (admins, security officers) lists the
+  active marks `[{user_id, user, role, tenant, since, until, reason}]`; `POST /users/{id}/risk/clear` (admins,
+  security officers, not their own) ends a mark, audited `user.risk_clear`.
+
+## Restores of flagged snapshots (Phase 29)
+- Flagged = `anomaly` set and not cleared, or `scan_state = "hit"` and not cleared. `GET /snapshots` rows carry
+  `flagged` and `clean_point` (the recommended restore point of the source's newest scan back, unix time, or null).
+- Production restores: `restore` / `restore_ct` with `replace` or without `link_down: true`; `instant_recover`
+  without `link_down: true`; `instant_disk`; `restore_files` with `target` "/" or `overwrite` other than "never";
+  `plugin_restore`. Isolated: link_down restores, `restore_files` to another path with "never", downloads, mounts,
+  restore tests.
+- `POST /jobs` with a production restore of a flagged snapshot: approvals on → 202 `{quorum_id, infected: true}`
+  (approval `restore.infected` `{tenant, kind, params, reason}`; the scheduler queues the restore after approval);
+  approvals off → administrators only: 200 `{approvals: "disabled", executed: false, quorum_id, state: "approved",
+  infected: true}`; other roles 403 ("… restore it isolated: network disconnected or another path"); API tokens
+  403. `POST /restores` refuses flagged items without `link_down` (409).
+- Scan back: `POST /snapshots/{tenant}/{source}/{time}/scan-back {budget_min?: 1..=1440, max?: 1..=100}` → 202
+  `{id}` (job `scan_back`; admins, operators, security officers, tenant admins; 409 without YARA rules; audited
+  `snapshot.scan_back_request`). The job runs one `snapshot_scan` with `stop_on_match` per snapshot, newest first,
+  until one is complete and clean; result `{source, from, scanned: [{time, job, matches_total, complete, stopped}],
+  recommended, truncated}`. Each scan is booked like any scan (verdict, flags, alerts); `snapshots.clean_point` is set
+  on the recommended snapshot and cleared on the source's others.
+
+## Full read (Phase 29)
+- `groups.full_read_days` (NULL = default: 90 for PVE VM groups, 30 for agents / NAS / TrueNAS; 0 = off). `PUT
+  /groups/{id}/full-read {"days": null | 0..=365}` (admins, tenant admins of the group's tenant), audited
+  `group.full_read`; `GET /groups` rows carry `full_read_days` and `full_read_default`.
+- When a source is due, the scheduler sets the connector's full-read flag for that backup (`pve.json` `full_read:
+  [vmids]`, agent `backup.full_read`, `nas.json` / `truenas.json` `full_read: true`). The connector ignores change
+  tracking but still asks the tracker what it would have reported, reads everything, commits the snapshot as usual
+  and prints `full-read <source>/<time> {tracker, baseline, compared, changed, unreported, unreported_bytes,
+  examples}`. The scheduler records it in `full_reads` (one row per source: next due, last run, result `clean` /
+  `drift` / `no_baseline`, counts, details, last clean run) and raises `change_tracking` (critical, key
+  `change_tracking:<tenant>/<source>`) on unreported changes; a clean full read resolves it.
+- `GET /full-reads?tenant=&source=` (every reading role, tenant-scoped) returns the rows; `GET /dashboard` has
+  `full_reads: {sources, verified, drift, never, oldest_verified}` (Dashboard card "Change tracking").

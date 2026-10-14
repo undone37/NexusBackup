@@ -6,7 +6,7 @@
   import { href } from '../../lib/router.svelte';
   import { fmtTime } from '../../lib/format';
   import { t } from '../../lib/i18n';
-  import type { Group, Incident, Tenant } from '../../lib/types';
+  import type { Group, Incident, LoginResponse, Tenant } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import IconSiren from '@lucide/svelte/icons/siren';
 
@@ -35,11 +35,23 @@
   let chosen: number[] = $state([]);
   let password = $state('');
   let totp = $state('');
+  // Phase 29: freezes (configuration, deletions, restores to production)
+  let frz = $state({ config: false, deletions: false, restores: false });
+  const frozenParts = (f: Incident['freeze']) =>
+    f
+      ? [f.config && t.p29.freeze.names.config, f.deletions && t.p29.freeze.names.deletions, f.restores && t.p29.freeze.names.restores].filter(
+          (x): x is string => !!x,
+        )
+      : [];
 
   async function load() {
     try {
       inc = await get<Incident>('/incident');
       session.incident = inc.active ? { since: inc.since ?? 0, by: inc.by ?? '', reason: inc.reason ?? '' } : null;
+      // the freeze banner (GET /auth/me) at once, not at the next refresh
+      get<LoginResponse>('/auth/me')
+        .then((me) => (session.freeze = me.freeze ?? null))
+        .catch(() => {});
       if (officer) [tenants, groups] = await Promise.all([get<Tenant[]>('/tenants'), get<Group[]>('/groups')]);
       error = null;
     } catch (e) {
@@ -58,6 +70,7 @@
         ? { tenants: holdTenants, sources: sources.split(',').map((s) => s.trim()).filter(Boolean), from: ts(from), to: ts(to) }
         : null,
       groups: allGroups ? null : chosen,
+      freeze: { ...frz },
       current_password: password,
       current_totp: totp,
     };
@@ -65,6 +78,10 @@
       password = totp = '';
       load();
     }
+  }
+  async function liftFreeze() {
+    if (!(await askConfirm(t.p29.freeze.liftConfirm))) return;
+    if (await act(post('/incident/freeze/lift'), t.p29.freeze.liftRequested)) load();
   }
   async function leave() {
     if (!(await askConfirm(t.incident.leaveConfirm))) return;
@@ -88,6 +105,16 @@
       <li>{t.incident.paused(inc.paused?.length ?? 0)}</li>
       <li>{t.incident.ended(inc.sessions_ended ?? 0, inc.tokens_revoked ?? 0)}</li>
     </ul>
+    {#if frozenParts(inc.freeze).length}
+      <div class="banner warn freeze" role="status">
+        <span><strong>{t.p29.freeze.active(frozenParts(inc.freeze))}</strong></span>
+        {#if inc.freeze_lift_quorum}
+          <span>{t.p29.freeze.liftPending(inc.freeze_lift_quorum)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+        {:else if canLeave}
+          <button type="button" class="small" onclick={liftFreeze}>{t.p29.freeze.lift}</button>
+        {/if}
+      </div>
+    {/if}
     {#if inc.leave_quorum}
       <p class="banner pending"><span>{t.incident.leavePending(inc.leave_quorum)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
     {:else if canLeave}
@@ -150,6 +177,22 @@
             </div>
           {/if}
         </fieldset>
+        <fieldset>
+          <legend>{t.p29.freeze.legend}</legend>
+          <p class="hint">{t.p29.freeze.intro}</p>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" bind:checked={frz.config} aria-describedby="inc-frz-config-hint" />{t.p29.freeze.config}</label>
+            <p class="hint" id="inc-frz-config-hint">{t.p29.freeze.configHint}</p>
+          </div>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" bind:checked={frz.deletions} aria-describedby="inc-frz-del-hint" />{t.p29.freeze.deletions}</label>
+            <p class="hint" id="inc-frz-del-hint">{t.p29.freeze.deletionsHint}</p>
+          </div>
+          <div class="field">
+            <label class="inline-check"><input type="checkbox" bind:checked={frz.restores} aria-describedby="inc-frz-res-hint" />{t.p29.freeze.restores}</label>
+            <p class="hint" id="inc-frz-res-hint">{t.p29.freeze.restoresHint}</p>
+          </div>
+        </fieldset>
         <p>{t.incident.reauth}</p>
         <div class="form-grid">
           <div class="field">
@@ -177,6 +220,12 @@
   }
   fieldset {
     margin: 1rem 0;
+  }
+  .freeze {
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
   }
   .group-list {
     display: grid;
