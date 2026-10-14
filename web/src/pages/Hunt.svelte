@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowLink } from '../lib/rowlink';
   import { onDestroy, onMount } from 'svelte';
   import { get, post, errText, qs } from '../lib/api';
   import { route, href, navigate } from '../lib/router.svelte';
@@ -269,7 +270,7 @@
         <tbody>
           {#each hunts as j (j.id)}
             {@const n = hits(j)}
-            <tr>
+            <tr use:rowLink={`/jobs/${j.id}`}>
               <td class="nowrap"><a href={href(`/jobs/${j.id}`)}>{fmtTime(j.created)}</a></td>
               <td>{j.tenant}</td>
               <td>

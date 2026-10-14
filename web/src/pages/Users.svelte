@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { get, post, put, act, errText, type Outcome } from '../lib/api';
   import { askConfirm } from '../lib/confirm.svelte';
@@ -232,7 +233,7 @@
         </thead>
         <tbody>
           {#each items as x (x.id)}
-            <tr>
+            <tr use:rowClick={!tenantAdmin || TENANT_ROLES.includes(x.role) ? () => edit(x) : null}>
               <td><strong>{x.name}</strong></td>
               <td>{t.roles[x.role] ?? x.role}</td>
               <td>{x.tenant ?? t.allTenants}</td>

@@ -1072,6 +1072,8 @@ export interface Job {
   cancel_by?: string | null;
   /** live progress of a running job (scheduler, docs/control-plane.md "Live progress"); null otherwise */
   progress?: JobProgress | null;
+  /** GET /jobs/{id}: the jobs it queued (params.after_job) */
+  followups?: { id: number; kind: JobKind; state: JobState; created: number; started: number | null; finished: number | null }[];
 }
 
 /** Aggregated `progress {json}` lines of the connector (crates/scheduler/src/progress.rs). */
@@ -1096,6 +1098,13 @@ export interface JobProgress {
   bytes?: number;
   /** bytes/s over about the last 10 s */
   rate?: number | null;
+  /** queued jobs: why they wait (scheduler `start_jobs`), with the blocking job or the slot count */
+  waiting?: 'firewall' | 'slots' | 'background' | 'restore_priority' | 'offsite_window' | 'scan_first' | 'scan_back' | 'busy';
+  job?: number;
+  slots?: number;
+  /** entries counted so far / per second (parts without bytes: file index, agent scans) */
+  entries_done?: number;
+  entries_rate?: number | null;
   eta?: number | null;
   item_eta?: number | null;
   elapsed?: number;

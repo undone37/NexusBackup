@@ -139,7 +139,13 @@ fn vm_index_follows_group_backups() {
         .unwrap();
     run(&mut s, "backup", "t1", json!({"group_id": 1}));
     let jobs = index_jobs(&s);
-    assert_eq!(jobs, vec![json!({"source": "vm-100", "time": 5})]);
+    assert_eq!(jobs.len(), 1);
+    assert_eq!((&jobs[0]["source"], &jobs[0]["time"]), (&json!("vm-100"), &json!(5)));
+    assert!(
+        jobs[0]["after_job"].as_i64().is_some(),
+        "shown with its backup: {}",
+        jobs[0]
+    );
     // Phase 31: the snapshot's index state (pending while queued, then the job's result)
     let state = |s: &Scheduler| -> (String, Option<String>, Option<i64>) {
         s.db.conn()

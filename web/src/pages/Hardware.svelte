@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { get, post, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -237,7 +238,7 @@
           <tbody>
             {#each hw.disks as d (d.name)}
               {@const h = health(d)}
-              <tr>
+              <tr use:rowClick={() => openDetail(d)}>
                 <td class="nowrap"><span class="mono">{d.name}</span><div class="muted small">{t.hw.types[d.type] ?? d.type}{d.transport ? ` · ${d.transport}` : ''}</div></td>
                 <td>{d.model ?? '—'}</td>
                 <td class="mono">{d.serial ?? '—'}</td>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
@@ -588,7 +589,7 @@
         </thead>
         <tbody>
           {#each items as x (x.id)}
-            <tr>
+            <tr use:rowClick={() => edit(x)}>
               <td
                 ><strong>{x.name}</strong>
                 {#if isPaused(x.maintenance_until)}<span class="chip warn"

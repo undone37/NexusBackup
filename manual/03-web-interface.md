@@ -400,9 +400,20 @@ versions marks the snapshots of that source that are not (fully) indexed, with t
 ![Jobs](images/jobs.png)
 
 All jobs, newest first (the 100 most recent). Filter by **State** and **Kind**. The list refreshes every 2 seconds
-while jobs are queued or running. For a running job the **Progress** column shows a bar with the overall
-percentage, the current read rate and the current item (for example `vm-101 (2/3)`). Click a job number to see its
-details.
+while jobs are queued or running. Below the kind, each job says what it works on (the protection group, the guest or
+snapshot) and, for jobs another job queued, which one (**after #142**). For a running job the **Progress** column
+shows a bar with the overall percentage, the current rate (MB/s while data is read, entries/s while a file index or
+an agent's scan counts files) and the current item (for example `vm-101 (2/3)`). For a queued job it says why it
+waits: another job of the same group or guest runs (with its number), all job slots or the background slots are
+busy, restore priority is on, an offsite pause window is open, or a malware scan must come first. Click anywhere on a
+row to open the job.
+
+**Follow-up jobs.** When a backup ends, the appliance queues the retention of the group, then the offsite copy (if
+the policy has one) and the file index of the new VM and container snapshots as jobs of their own: the backup is done
+and frees the Proxmox VE node without waiting for them. They appear above the backup in the list (newer jobs first)
+with **after #…**, and the backup's page lists them under **Follow-up jobs** with their state.
+
+![A backup with its follow-up jobs](images/job-followups.png)
 
 ![Running jobs with their progress](images/jobs-running.png)
 

@@ -412,6 +412,8 @@ pub struct Scheduler {
     running: HashMap<i64, String>,
     /// the running jobs that are [`background`] ones
     running_background: HashSet<i64>,
+    /// why each queued job waits, as last written to its `progress`
+    waits: HashMap<i64, String>,
     tx: Sender<Finished>,
     rx: Receiver<Finished>,
     /// first time an item without scheduled history was seen (no immediate run)
@@ -583,6 +585,7 @@ impl Scheduler {
             ctx,
             running: HashMap::new(),
             running_background: HashSet::new(),
+            waits: HashMap::new(),
             tx,
             rx,
             first_seen: HashMap::new(),
@@ -1235,35 +1238,50 @@ impl Scheduler {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// FIFO over queued jobs; a job whose key (source) is busy waits, later
-    /// jobs of other sources may pass it. At most `max_parallel` at once.
+    /// FIFO over queued jobs; a job whose key (group, guest, source) is busy
+    /// waits, later jobs with other keys may pass it. At most `max_parallel` at
+    /// once. Every queued job that does not start gets the reason in its
+    /// `progress` (`{"waiting": …}`), so the UI can say why it waits.
     pub fn start_jobs(&mut self) -> Result<()> {
-        if self.running.len() >= self.cfg.max_parallel {
-            return Ok(());
-        }
         let queued = self.queued()?;
-        if queued.is_empty() || !self.firewall_ready() {
+        if queued.is_empty() {
             return Ok(());
         }
-        let mut busy: HashSet<String> = self.running.values().cloned().collect();
+        let mut waits: Vec<(i64, Value)> = Vec::new();
+        if !self.firewall_ready() {
+            waits.extend(queued.iter().map(|j| (j.id, json!({"waiting": "firewall"}))));
+            return self.record_waits(waits);
+        }
+        // key -> the running job holding it
+        let mut busy: HashMap<String, i64> = self.running.iter().map(|(id, k)| (k.clone(), *id)).collect();
         let priority = self.restore_priority()?.is_some();
         for job in queued {
             if self.running.len() >= self.cfg.max_parallel {
-                break;
+                waits.push((job.id, json!({"waiting": "slots", "slots": self.cfg.max_parallel})));
+                continue;
             }
             if background(&job.kind) && self.running_background.len() >= self.cfg.max_background {
-                continue; // the other slots stay free for backups and restores
+                // the other slots stay free for backups and restores
+                waits.push((
+                    job.id,
+                    json!({"waiting": "background", "slots": self.cfg.max_background}),
+                ));
+                continue;
             }
             if self.held_by_priority(&job, priority)? {
+                waits.push((job.id, json!({"waiting": "restore_priority"})));
                 continue; // restore priority: waits for its end
             }
             if self.hold_offsite(&job)? {
+                waits.push((job.id, json!({"waiting": "offsite_window"})));
                 continue; // pause window: waits for its end
             }
             if self.hold_for_scan(&job)? {
+                waits.push((job.id, json!({"waiting": "scan_first"})));
                 continue; // scan first: waits for its snapshot_scan (scan.rs)
             }
             if self.drive_scan_back(&job)? {
+                waits.push((job.id, json!({"waiting": "scan_back"})));
                 continue; // scan back: drives its snapshot_scan jobs (scanback.rs)
             }
             let plan = match self.plan(&job) {
@@ -1273,17 +1291,20 @@ impl Scheduler {
                     continue;
                 }
             };
-            if !busy.insert(plan.key.clone()) {
+            if let Some(&other) = busy.get(&plan.key) {
+                waits.push((job.id, json!({"waiting": "busy", "job": other})));
                 continue;
             }
+            busy.insert(plan.key.clone(), job.id);
             let changed = self.db.conn().execute(
-                "UPDATE jobs SET state='running', started=?1 WHERE id=?2 AND state='queued'",
+                "UPDATE jobs SET state='running', started=?1, progress=NULL WHERE id=?2 AND state='queued'",
                 params![catalog::now(), job.id],
             )?;
             if changed == 0 {
                 busy.remove(&plan.key);
                 continue; // cancelled meanwhile
             }
+            self.waits.remove(&job.id);
             self.db.audit(
                 ACTOR,
                 "job.start",
@@ -1299,6 +1320,24 @@ impl Scheduler {
                 let f = execute(id, &plan, &ctx);
                 let _ = tx.send(f);
             });
+        }
+        self.record_waits(waits)
+    }
+
+    /// Writes why queued jobs wait (`jobs.progress` of a queued job), only when it changed.
+    fn record_waits(&mut self, waits: Vec<(i64, Value)>) -> Result<()> {
+        let now: HashSet<i64> = waits.iter().map(|(id, _)| *id).collect();
+        self.waits.retain(|id, _| now.contains(id));
+        for (id, w) in waits {
+            let s = w.to_string();
+            if self.waits.get(&id) == Some(&s) {
+                continue;
+            }
+            self.db.conn().execute(
+                "UPDATE jobs SET progress = ?2 WHERE id = ?1 AND state = 'queued'",
+                params![id, s],
+            )?;
+            self.waits.insert(id, s);
         }
         Ok(())
     }
@@ -1815,14 +1854,17 @@ impl Scheduler {
         }
     }
 
+    /// Follow-up jobs carry `after_job` (the job that queued them) so the UI can show
+    /// them with it (backup -> retention -> offsite, backup -> file_index).
     fn follow_up(&mut self, job: &Job) -> Result<()> {
         match job.kind.as_str() {
             "plugin_backup" => {
-                let p = json!({"chain": true, "source_id": job.params["source_id"], "plugin": true});
+                let p =
+                    json!({"chain": true, "source_id": job.params["source_id"], "plugin": true, "after_job": job.id});
                 self.insert_job("retention", &job.tenant, &p)?;
             }
             "backup" => {
-                let mut p = json!({"chain": true});
+                let mut p = json!({"chain": true, "after_job": job.id});
                 for k in ["group_id", "source_id", "vmid", "agent_id"] {
                     if !job.params[k].is_null() {
                         p[k] = job.params[k].clone();
@@ -1860,7 +1902,7 @@ impl Scheduler {
                     && self.offsite_cfg(&job.tenant)?.is_some()
                     && !catalog::tenants::disabled(&self.db.conn(), &job.tenant)?
                 {
-                    self.insert_job("offsite", &job.tenant, &json!({"chain": true}))?;
+                    self.insert_job("offsite", &job.tenant, &json!({"chain": true, "after_job": job.id}))?;
                 }
             }
             "verify" => {

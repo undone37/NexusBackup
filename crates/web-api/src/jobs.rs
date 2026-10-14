@@ -799,7 +799,7 @@ pub async fn list_jobs(State(st): State<St>, ctx: Ctx, Q(f): Q<JobFilter>) -> Ap
 
 pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let c = st.cat.conn();
-    let job = c
+    let mut job = c
         .query_row(
             &format!("SELECT {JOB_COLS} FROM jobs WHERE id = ?1 AND (?2 IS NULL OR tenant = ?2)"),
             params![id, ctx.scope()],
@@ -807,6 +807,21 @@ pub async fn get_job(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
         )
         .optional()?
         .ok_or_else(ApiError::not_found)?;
+    // the jobs it queued (params.after_job: retention, offsite, file index after a backup)
+    let followups = c
+        .prepare(
+            "SELECT id, kind, state, created, started, finished FROM jobs
+             WHERE json_extract(params, '$.after_job') = ?1 AND (?2 IS NULL OR tenant = ?2) ORDER BY id",
+        )?
+        .query_map(params![id, ctx.scope()], |r| {
+            Ok(
+                json!({"id": r.get::<_, i64>(0)?, "kind": r.get::<_, String>(1)?, "state": r.get::<_, String>(2)?,
+                      "created": r.get::<_, i64>(3)?, "started": r.get::<_, Option<i64>>(4)?,
+                      "finished": r.get::<_, Option<i64>>(5)?}),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    job["followups"] = Value::Array(followups);
     Ok(Json(job))
 }
 

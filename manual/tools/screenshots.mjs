@@ -384,6 +384,13 @@ async function main() {
       const torn = all.find((j) => j.result?.snapshots?.some((x) => x.consistent === false)) ?? smb;
       await go(`/jobs/${torn.id}`);
       await shot('job-inconsistent');
+      // a backup with the jobs it queued (retention -> offsite copy, file index)
+      const chain = all.find((j) => j.followups?.length);
+      if (chain) {
+        await go(`/jobs/${chain.id}`);
+        await ev(`document.getElementById('jfu')?.scrollIntoView({ block: 'center' }); return true;`);
+        await shot('job-followups', { scrolled: true });
+      }
     }],
     ['alerts', async () => {
       await go('/alerts');

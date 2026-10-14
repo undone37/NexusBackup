@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   import { askConfirm, askText } from '../lib/confirm.svelte';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
@@ -440,7 +441,7 @@
         <tbody>
           {#each items as x (x.name)}
             {@const r = remoteOf(x.offsite)}
-            <tr>
+            <tr use:rowClick={can.configure(session.user) ? () => edit(x) : null}>
               <td>
                 <strong>{x.name}</strong>
                 {#each x.tiers ?? [] as tier (tier)}<span class="chip accent">{t.tiers.names[tier]}</span>{/each}

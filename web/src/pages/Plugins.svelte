@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   // Plugin platform (docs/plugin-system.md): installed plugins per id/version, signed
   // uploads (four-eyes), lifecycle actions and the publisher keys signatures are checked against.
   import { onMount } from 'svelte';
@@ -279,7 +280,7 @@
           </thead>
           <tbody>
             {#each g.versions as v (v.version)}
-              <tr>
+              <tr use:rowClick={() => showDetails(v)}>
                 <td><strong>{v.version}</strong></td>
                 <td>
                   <span class="chip {stateCls[v.state] ?? ''}">{t.plugins.states[v.state] ?? v.state}</span>

@@ -399,7 +399,8 @@ impl Scheduler {
                 continue;
             };
             if source.starts_with("vm-") || source.starts_with("ct-") {
-                let mut p = json!({"source": source, "time": time});
+                // after_job: shown with its backup (follow-up jobs)
+                let mut p = json!({"source": source, "time": time, "after_job": job.id});
                 if hashes && source.starts_with("ct-") {
                     p["hashes"] = json!(true);
                 }

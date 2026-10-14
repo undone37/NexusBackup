@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowLink } from '../lib/rowlink';
   import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import { onMount } from 'svelte';
   import { get, errText } from '../lib/api';
@@ -622,7 +623,7 @@
         <table>
           <tbody>
             {#each failed.slice(0, 6) as j (j.id)}
-              <tr>
+              <tr use:rowLink={`/jobs/${j.id}`}>
                 <td><a href={href(`/jobs/${j.id}`)}>#{j.id}</a></td>
                 <td>{kindLabel(j.kind)}</td>
                 <td>{j.tenant}</td>

@@ -28,7 +28,10 @@ pub struct Tracker {
     last: Option<String>,
     /// bytes moved over all items and parts
     bytes: u64,
-    samples: VecDeque<(Instant, u64)>,
+    /// entries counted over all items and parts (parts without bytes: scans, file index)
+    entries: u64,
+    /// (when, bytes, entries)
+    samples: VecDeque<(Instant, u64, u64)>,
 }
 
 struct Cur {
@@ -87,8 +90,13 @@ impl Tracker {
             Some(c) if c.line.part == l.part => l.done.unwrap_or(0).saturating_sub(c.line.done.unwrap_or(0)),
             _ => l.done.unwrap_or(0),
         };
+        let counted = match self.active.get(&key) {
+            Some(c) if c.line.part == l.part => l.entries.unwrap_or(0).saturating_sub(c.line.entries.unwrap_or(0)),
+            _ => l.entries.unwrap_or(0),
+        };
         self.bytes += delta;
-        self.samples.push_back((now, self.bytes));
+        self.entries += counted;
+        self.samples.push_back((now, self.bytes, self.entries));
         while self.samples.len() > 2 && now.duration_since(self.samples[1].0) >= WINDOW {
             self.samples.pop_front();
         }
@@ -98,9 +106,16 @@ impl Tracker {
 
     /// Bytes per second over the last [`WINDOW`] (up to `now`).
     fn rate(&self, now: Instant) -> Option<f64> {
-        let (t0, b0) = *self.samples.front()?;
+        let (t0, b0, _) = *self.samples.front()?;
         let span = now.duration_since(t0).as_secs_f64();
         (span >= 1.0).then(|| (self.bytes - b0) as f64 / span)
+    }
+
+    /// Entries per second over the same window (parts that count entries, not bytes).
+    fn entries_rate(&self, now: Instant) -> Option<f64> {
+        let (t0, _, e0) = *self.samples.front()?;
+        let span = now.duration_since(t0).as_secs_f64();
+        (span >= 1.0 && self.entries > 0).then(|| (self.entries - e0) as f64 / span)
     }
 
     /// The `jobs.progress` JSON (None: no progress line yet).
@@ -122,9 +137,18 @@ impl Tracker {
         let eta = overall
             .filter(|&f| f > 0.01 && elapsed >= 5.0)
             .map(|f| (elapsed * (1.0 - f) / f).round() as u64);
+        let entries_rate = self.entries_rate(now);
         let item_eta = cur.and_then(|c| {
             let rem = c.line.total?.checked_sub(c.line.done?)?;
             rate.filter(|r| *r > 0.0).map(|r| (rem as f64 / r).round() as u64)
+        });
+        // a part that counts entries against an estimate (file index): its own ETA
+        let item_eta = item_eta.or_else(|| {
+            let c = cur?;
+            let rem = c.line.entries_total?.checked_sub(c.line.entries?)?;
+            entries_rate
+                .filter(|r| *r > 0.0)
+                .map(|r| (rem as f64 / r).round() as u64)
         });
         let pct = |f: f64| (f * 1000.0).round() / 10.0;
         let mut v = json!({
@@ -132,6 +156,8 @@ impl Tracker {
             "percent": overall.map(pct),
             "bytes": self.bytes,
             "rate": rate.map(|r| r.round() as u64),
+            "entries_done": self.entries,
+            "entries_rate": entries_rate.map(|r| r.round() as u64),
             "eta": eta.or(if items.is_none_or(|n| n <= 1) { item_eta } else { None }),
             "item_eta": item_eta,
             "elapsed": elapsed.round() as u64,
@@ -172,6 +198,26 @@ mod tests {
 
     fn l(s: &str) -> Line {
         Line::parse(&format!("progress {s}")).unwrap()
+    }
+
+    #[test]
+    fn entry_parts_have_an_entry_rate_and_eta() {
+        let mut t = Tracker::default();
+        let t0 = Instant::now();
+        t.line(
+            l(r#"{"item":"vm-101","part":"vdb3 (ntfs)","entries":1000,"entries_total":9000}"#),
+            t0,
+        );
+        let t1 = t0 + Duration::from_secs(4);
+        t.line(
+            l(r#"{"item":"vm-101","part":"vdb3 (ntfs)","entries":5000,"entries_total":9000}"#),
+            t1,
+        );
+        let s = t.snapshot(t1).unwrap();
+        assert_eq!(s["entries_rate"], 1000, "4000 entries in 4 s");
+        assert_eq!(s["entries_done"], 5000);
+        assert_eq!(s["item_eta"], 4, "4000 left at 1000/s");
+        assert_eq!(s["rate"], 0, "no bytes");
     }
 
     #[test]

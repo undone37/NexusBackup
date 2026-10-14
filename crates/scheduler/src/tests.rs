@@ -82,6 +82,15 @@ fn manual(s: &Scheduler, kind: &str, tenant: &str, p: Value) -> i64 {
     c.last_insert_rowid()
 }
 
+/// Why a queued job waits (`jobs.progress` while queued).
+fn waiting(s: &Scheduler, id: i64) -> Value {
+    let p: Option<String> =
+        s.db.conn()
+            .query_row("SELECT progress FROM jobs WHERE id=?1", [id], |r| r.get(0))
+            .unwrap();
+    p.map_or(Value::Null, |p| serde_json::from_str(&p).unwrap())
+}
+
 fn state(s: &Scheduler, id: i64) -> String {
     s.db.conn()
         .query_row("SELECT state FROM jobs WHERE id=?1", [id], |r| r.get(0))
@@ -98,6 +107,11 @@ fn fifo_with_per_group_exclusivity() {
     s.start_jobs().unwrap();
     assert_eq!(s.running(), vec![(a, "group:1".into()), (c, "group:3".into())]);
     assert_eq!(state(&s, b), "queued");
+    assert_eq!(
+        waiting(&s, b),
+        json!({"waiting": "busy", "job": a}),
+        "waits for the group's running job"
+    );
     s.start_jobs().unwrap(); // nothing new while busy
     assert_eq!(s.running().len(), 2);
     s.wait_idle(Duration::from_secs(20)).unwrap();
@@ -134,6 +148,11 @@ fn background_jobs_leave_slots_for_backups() {
         "two background jobs, the backup passes the third"
     );
     assert_eq!(state(&s, idx[2]), "queued");
+    assert_eq!(
+        waiting(&s, idx[2]),
+        json!({"waiting": "background", "slots": 2}),
+        "the UI says why"
+    );
     s.wait_idle(Duration::from_secs(20)).unwrap();
     assert!(super::background("file_index") && super::background("verify") && !super::background("backup"));
 }

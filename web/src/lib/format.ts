@@ -46,6 +46,12 @@ export function fmtRatio(x: number | null | undefined): string {
 }
 
 /** Bytes per second as decimal megabytes: "412 MB/s", "3.4 MB/s". */
+/** Entries per second (jobs that count files instead of bytes: file index, agent scans). */
+export function fmtEntryRate(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+  return `${Math.round(n).toLocaleString('en-US')} entries/s`;
+}
+
 export function fmtRate(bps: number | null | undefined): string {
   if (bps === null || bps === undefined || !Number.isFinite(bps)) return '—';
   const mb = bps / 1e6;

@@ -780,6 +780,10 @@ tbody tr:last-child > * {
 tbody tr:hover > td {
   background: var(--surface-2);
 }
+/* rows that open a detail page (lib/rowlink.ts) */
+tbody tr.rowlink {
+  cursor: pointer;
+}
 select.auto {
   width: auto;
 }

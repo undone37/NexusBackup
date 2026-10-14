@@ -1,7 +1,7 @@
 import { get, post } from './api';
 import { t } from './i18n';
 import { notify } from './notify.svelte';
-import type { Agent, AgentStatus, FileEntry, Job, JobKind } from './types';
+import type { Agent, AgentStatus, FileEntry, Job, JobKind, JobProgress } from './types';
 
 export const JOB_KINDS: JobKind[] = [
   'backup',
@@ -37,6 +37,36 @@ export const JOB_KINDS: JobKind[] = [
   'offsite_attach',
   'fleet_scan',
 ];
+
+/**
+ * What a job works on, from its parameters: the group (by name when `groups` knows it),
+ * the snapshot source or guest. Empty when the parameters say nothing about it.
+ */
+export function jobSubject(j: Job, groups?: Map<number, string>): string {
+  const p = j.params ?? {};
+  const out: string[] = [];
+  if (typeof p.group_id === 'number') out.push(groups?.get(p.group_id) ?? t.jobs.groupN(p.group_id));
+  if (typeof p.source === 'string') out.push(p.source);
+  else if (typeof p.vmid === 'number') out.push(`vm-${p.vmid}`);
+  return out.join(' · ');
+}
+
+/** Why a queued job waits, as a sentence (the blocking job number follows for `busy`). */
+export function waitText(p: JobProgress | null | undefined): string | null {
+  if (!p?.waiting) return null;
+  const w = t.jobs.waiting;
+  switch (p.waiting) {
+    case 'slots':
+      return w.slots(p.slots ?? 0);
+    case 'background':
+      return w.background(p.slots ?? 0);
+    default:
+      return w[p.waiting] ?? null;
+  }
+}
+
+/** The job that queued `j` (follow-up jobs: retention, offsite, file index), if any. */
+export const afterJob = (j: Job): number | null => (typeof j.params?.after_job === 'number' ? j.params.after_job : null);
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */
 export const kindLabel = (k: string) => t.jobs.kinds[k] ?? k;

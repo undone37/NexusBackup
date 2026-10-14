@@ -657,7 +657,7 @@ function tick() {
         // Phase 15g: groups with index_files list the guests' file systems after the backup
         if (g?.index_files && gsrc?.kind === 'pve')
           for (const n of names) {
-            const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id }, 'scheduler');
+            const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id, after_job: j.id }, 'scheduler');
             x.plan = [`listing the guest file systems of ${n} @ ${t} (sandboxed parser)`, 'file index sealed and written', 'search index updated'];
           }
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
@@ -1521,9 +1521,10 @@ function seed() {
     'index written, snapshot committed',
     'backup finished: 2 of 3 guests ok',
   ], 1460);
-  old(addJob('backup', 'initech', { group_id: gDev.id }, 'scheduler'), day(0, 3), 'ok', ['starting backup of vm-102', 'dirty bitmap valid: incremental', 'index written, snapshot committed', 'backup finished: 1 guest'], 300);
-  old(addJob('retention', 'initech', {}, 'scheduler'), day(0, 3) + 400, 'ok', ['GFS retention per group policy', 'kept 31 snapshots, locks extended', 'deleted 3 unlocked snapshots'], 20);
-  old(addJob('offsite', 'initech', {}, 'scheduler'), day(0, 2), 'ok', ['uploading to sftp u123456.storagebox.example.net:23', 'uploaded 412 chunks in 3 packs (1.2 GiB)', 'manifests uploaded', 'inventory check: 0 missing, 0 unknown'], 900);
+  const devJob = old(addJob('backup', 'initech', { group_id: gDev.id }, 'scheduler'), day(0, 3), 'ok', ['starting backup of vm-102', 'dirty bitmap valid: incremental', 'index written, snapshot committed', 'backup finished: 1 guest'], 300);
+  // follow-up jobs carry the job that queued them (params.after_job, like the scheduler)
+  const devRet = old(addJob('retention', 'initech', { chain: true, group_id: gDev.id, after_job: devJob.id }, 'scheduler'), day(0, 3) + 300, 'ok', ['GFS retention per group policy', 'kept 31 snapshots, locks extended', 'deleted 3 unlocked snapshots'], 20);
+  old(addJob('offsite', 'initech', { chain: true, after_job: devRet.id }, 'scheduler'), day(0, 3) + 320, 'ok', ['uploading to sftp u123456.storagebox.example.net:23', 'uploaded 412 chunks in 3 packs (1.2 GiB)', 'manifests uploaded', 'inventory check: 0 missing, 0 unknown'], 900);
   old(addJob('verify', 'initech', {}, 'scheduler'), day(0, 5), 'ok', ['verifying chunk store part 3 of 7 (rolling)', 'verified 15,912 chunks: 0 missing, 0 corrupt', 'offsite: 3 sampled packs verified'], 1200);
   old(addJob('backup', 'acme', { group_id: gAcmeVms.id }, 'scheduler'), day(1, 22), 'ok', ['starting backup of vm-300', 'index written, snapshot committed', 'starting backup of vm-301', 'index written, snapshot committed', 'backup finished: 2 guests'], 900);
   const smbJob = old(addJob('backup', 'acme', { group_id: gSmb.id }, 'scheduler'), day(0, 3), 'ok', [
@@ -4149,6 +4150,11 @@ function progressItems(j: Job): ProgressItem[] {
 }
 /** Like the scheduler's aggregate of the connectors' `progress {json}` lines (crates/scheduler/src/progress.rs). */
 function mockProgress(j: Job): Json | null {
+  // like the scheduler: a queued job says why it waits
+  if (j.state === 'queued') {
+    const same = db.jobs.find((x) => x.state === 'running' && x.tenant === j.tenant && x.kind === j.kind && x.params.group_id === j.params.group_id);
+    return same ? { waiting: 'busy', job: same.id } : { waiting: 'slots', slots: 8 };
+  }
   if (j.state !== 'running' || j.started === null) return null;
   if (j.kind === 'file_index') {
     // like nexus-pve's file index walk: entries of the volume and an estimate (no bytes)
@@ -4159,7 +4165,9 @@ function mockProgress(j: Job): Json | null {
       item: j.params.source, label: null, item_index: null, items: null, items_done: 0,
       part: 'vdb3 (ntfs)', part_index: 2, parts: null, done: null, total: null,
       entries: Math.round(f * total), entries_total: total, item_percent: Math.round(f * 1000) / 10,
-      percent: null, bytes: 0, rate: null, eta: null, item_eta: null, elapsed, updated: now(),
+      percent: null, bytes: 0, rate: null, entries_done: Math.round(f * total),
+      entries_rate: Math.round(total / j.duration), eta: null,
+      item_eta: Math.max(0, Math.round(j.duration - elapsed)), elapsed, updated: now(),
     };
   }
   const items = j.items ?? progressItems(j);
@@ -4252,7 +4260,13 @@ on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
 });
 on('GET', '/jobs/:id', (c, [id]) => {
   const u = need(c.user);
-  return [200, pubJob(find(byTenant(u, db.jobs), (j) => j.id === Number(id), 'job'), true)];
+  const j = find(byTenant(u, db.jobs), (x) => x.id === Number(id), 'job');
+  // the jobs it queued (params.after_job), like the real API
+  const followups = byTenant(u, db.jobs)
+    .filter((x) => x.params.after_job === j.id)
+    .sort((a, b) => a.id - b.id)
+    .map((x) => ({ id: x.id, kind: x.kind, state: x.state, created: x.created, started: x.started, finished: x.finished }));
+  return [200, { ...pubJob(j, true), followups }];
 });
 const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */

@@ -504,3 +504,36 @@ fn dashboard_paused_is_not_a_breach() {
     let s = |src: &str| worst.iter().find(|w| w["source"] == src).unwrap()["sla"].clone();
     assert_eq!((s("vm-100"), s("vm-200")), (json!("paused"), json!("breach")));
 }
+
+/// The jobs a job queued (`params.after_job`: retention / offsite / file index after a backup)
+/// come with it, scoped like the job itself.
+#[tokio::test]
+async fn job_detail_lists_its_follow_ups() {
+    let t = T::new();
+    let (otto, tina) = (t.login("otto").await, t.login("tina").await);
+    t.st.cat.conn().execute_batch(
+        "INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created) VALUES
+           (50, 'backup', 'acme', '{\"group_id\":1}', 'ok', 'scheduler', 10),
+           (51, 'retention', 'acme', '{\"chain\":true,\"group_id\":1,\"after_job\":50}', 'ok', 'scheduler', 11),
+           (52, 'file_index', 'acme', '{\"source\":\"vm-101\",\"time\":5,\"after_job\":50}', 'queued', 'scheduler', 11),
+           (53, 'offsite', 'acme', '{\"chain\":true,\"after_job\":51}', 'queued', 'scheduler', 12);",
+    )
+    .unwrap();
+    let r = t.get("/api/v1/jobs/50", &otto).await;
+    let f: Vec<(i64, String)> = r.body["followups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| (x["id"].as_i64().unwrap(), x["kind"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(f, vec![(51, "retention".into()), (52, "file_index".into())]);
+    assert_eq!(t.get("/api/v1/jobs/51", &otto).await.body["followups"][0]["id"], 53);
+    // the tenant's own users see them too (same scope as the job)
+    assert_eq!(
+        t.get("/api/v1/jobs/50", &tina).await.body["followups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

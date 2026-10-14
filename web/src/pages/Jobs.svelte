@@ -5,9 +5,10 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { route, navigate, href } from '../lib/router.svelte';
-  import { fmtAgo, fmtRate, fmtTime } from '../lib/format';
+  import { fmtAgo, fmtEntryRate, fmtRate, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
-  import { JOB_KINDS, kindLabel } from '../lib/jobs';
+  import { JOB_KINDS, kindLabel, jobSubject, afterJob, waitText } from '../lib/jobs';
+  import { rowLink } from '../lib/rowlink';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
@@ -18,6 +19,8 @@
   let jobs: Job[] = $state([]);
   let error: string | null = $state(null);
   let loaded = $state(false);
+  // group names for the job subjects (none when the account may not list groups)
+  let groups = $state(new Map<number, string>());
   let stateF = $state(route.query.get('state') ?? '');
   let kind = $state(route.query.get('kind') ?? '');
 
@@ -33,6 +36,9 @@
 
   onMount(() => {
     load();
+    get<{ id: number; name: string }[]>('/groups')
+      .then((gs) => (groups = new Map(gs.map((g) => [g.id, g.name]))))
+      .catch(() => {});
     // Refresh while anything is active.
     const iv = setInterval(() => {
       if (jobs.some((j) => j.state === 'queued' || j.state === 'running')) load();
@@ -105,9 +111,15 @@
         </thead>
         <tbody>
           {#each jobs as j (j.id)}
-            <tr>
+            {@const subject = jobSubject(j, groups)}
+            {@const after = afterJob(j)}
+            <tr use:rowLink={`/jobs/${j.id}`}>
               <td><a href={href(`/jobs/${j.id}`)}>#{j.id}</a></td>
-              <td>{kindLabel(j.kind)}</td>
+              <td>
+                {kindLabel(j.kind)}
+                {#if subject}<div class="muted small">{subject}</div>{/if}
+                {#if after}<div class="muted small"><a href={href(`/jobs/${after}`)} title={t.jobs.afterTitle}>{t.jobs.after(after)}</a></div>{/if}
+              </td>
               <td>{j.tenant}</td>
               <td
                 ><JobState state={j.state} />{#if j.result?.warnings}
@@ -117,6 +129,12 @@
               <td>{j.requested_by}</td>
               <td class="nowrap" title={fmtTime(j.created)}>{fmtAgo(j.created)}</td>
               <td class="prog">
+                {#if j.state === 'queued' && waitText(j.progress)}
+                  <div class="muted small">
+                    {waitText(j.progress)}{#if j.progress?.waiting === 'busy' && j.progress.job}
+                      <a href={href(`/jobs/${j.progress.job}`)}>#{j.progress.job}</a>{/if}
+                  </div>
+                {/if}
                 {#if j.state === 'running' && j.progress}
                   {@const p = j.progress}
                   <div class="pcell">
@@ -124,7 +142,7 @@
                     <span class="tabular small nowrap"
                       >{(p.percent ?? p.item_percent) !== null && (p.percent ?? p.item_percent) !== undefined
                         ? `${Math.round((p.percent ?? p.item_percent)!)} %`
-                        : ''}{p.rate ? ` · ${fmtRate(p.rate)}` : ''}</span
+                        : ''}{p.rate ? ` · ${fmtRate(p.rate)}` : p.entries_rate ? ` · ${fmtEntryRate(p.entries_rate)}` : ''}</span
                     >
                   </div>
                   {#if p.item}<div class="muted small mono nowrap">{p.item}{p.items && p.item_index ? ` (${p.item_index}/${p.items})` : ''}</div>{/if}

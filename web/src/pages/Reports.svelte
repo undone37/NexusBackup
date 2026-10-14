@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { API, get, put, post, act, errText, qs } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -195,7 +196,7 @@
           </thead>
           <tbody>
             {#each sched.reports as x (x.name)}
-              <tr>
+              <tr use:rowClick={() => edit(x)}>
                 <th scope="row">{x.name}</th>
                 <td>{x.types.map((k) => t.reports.types[k]).join(', ')}</td>
                 <td class="nowrap"><span class="mono">{x.schedule}</span>{#if x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}</td>

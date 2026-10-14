@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { rowClick, rowLink } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { href, route } from '../lib/router.svelte';
@@ -144,7 +145,7 @@
         </thead>
         <tbody>
           {#each schedules as s (s.group_id)}
-            <tr>
+            <tr use:rowClick={writer ? () => editSchedule(s) : null}>
               <td><strong>{s.group}</strong></td>
               {#if !session.user?.tenant}<td>{s.tenant}</td>{/if}
               <td class="nowrap">{t.rtest.everyShort(s.every_days)}</td>
@@ -205,7 +206,7 @@
         <tbody>
           {#each shown as x (x.id)}
             {@const bad = (x.checks ?? []).filter((c) => !c.ok)}
-            <tr>
+            <tr use:rowLink={`/jobs/${x.job_id}`}>
               <td><strong>{x.source}</strong>{#if !session.user?.tenant}<span class="muted small">&nbsp;· {x.tenant}</span>{/if}{#if x.name}<div class="muted small mono">{x.target} {x.name}</div>{/if}</td>
               <td class="nowrap"><a href={href(`/files?tenant=${x.tenant}&source=${x.source}&time=${x.time}`)}>{fmtTime(x.time)}</a></td>
               <td><span class="chip {stateChip(x.state)}">{t.rtest.states[x.state] ?? x.state}</span></td>

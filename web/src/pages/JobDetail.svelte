@@ -5,8 +5,8 @@
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { href } from '../lib/router.svelte';
-  import { terminal, downloadUrl, kindLabel, logLines, clock } from '../lib/jobs';
-  import { fmtBytes, fmtDuration, fmtRate, fmtTime, fmtValue } from '../lib/format';
+  import { terminal, downloadUrl, kindLabel, logLines, clock, afterJob, waitText } from '../lib/jobs';
+  import { fmtBytes, fmtDuration, fmtEntryRate, fmtRate, fmtTime, fmtValue } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job } from '../lib/types';
   import JobState from '../components/JobState.svelte';
@@ -16,6 +16,8 @@
   let { id }: { id: string } = $props();
 
   let job = $state<Job | null>(null);
+  // group names for the parameters (none when the account may not list groups)
+  let groups = $state(new Map<number, string>());
   let error: string | null = $state(null);
   let logEl: HTMLPreElement | undefined = $state();
 
@@ -45,6 +47,9 @@
 
   onMount(() => {
     load();
+    get<{ id: number; name: string }[]>('/groups')
+      .then((gs) => (groups = new Map(gs.map((g) => [g.id, g.name]))))
+      .catch(() => {});
     const iv = setInterval(() => {
       if (live) load();
     }, 2000);
@@ -56,6 +61,7 @@
     if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id))))) return;
     if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled)) load();
   }
+  import { rowLink } from '../lib/rowlink';
   // Phase 29: the scan back's scanned snapshots and recommended restore point
   import ScanBackResult from '../components/ScanBackResult.svelte';
   import type { ScanBackResult as ScanBackResultData } from '../lib/types';
@@ -89,10 +95,21 @@
         <dd>{kindLabel(job.kind)} <span class="muted mono">{job.kind}</span></dd>
         <dt>{t.state}</dt>
         <dd><JobState state={job.state} /></dd>
+        {#if job.state === 'queued' && waitText(job.progress)}
+          <dt>{t.jobs.waitingFor}</dt>
+          <dd>
+            {waitText(job.progress)}{#if job.progress?.waiting === 'busy' && job.progress.job}
+              <a href={href(`/jobs/${job.progress.job}`)}>#{job.progress.job}</a>{/if}
+          </dd>
+        {/if}
         <dt>{t.tenant}</dt>
         <dd>{job.tenant}</dd>
         <dt>{t.jobs.requestedBy}</dt>
         <dd>{job.requested_by}</dd>
+        {#if afterJob(job)}
+          <dt>{t.jobs.origin}</dt>
+          <dd><a href={href(`/jobs/${afterJob(job)}`)}>#{afterJob(job)}</a> <span class="muted">{t.jobs.afterTitle}</span></dd>
+        {/if}
         <dt>{t.jobs.created}</dt>
         <dd>{fmtTime(job.created)}</dd>
         <dt>{t.jobs.started}</dt>
@@ -116,8 +133,20 @@
       <h2 id="jp">{t.jobs.params}</h2>
       <dl class="kv">
         {#each Object.entries(job.params ?? {}).filter(([k]) => k !== 'download_token') as [k, v] (k)}
-          <dt>{k}</dt>
-          <dd class="mono">{k === 'time' && typeof v === 'number' ? `${v} (${fmtTime(v)})` : fmtValue(v)}</dd>
+          <dt title={k}>{t.jobs.paramLabels[k] ?? k}</dt>
+          <dd>
+            {#if k === 'group_id' && typeof v === 'number'}
+              <a href={href('/groups')}>{groups.get(v) ?? t.jobs.groupN(v)}</a>
+            {:else if (k === 'after_job' || k === 'retry_of') && typeof v === 'number'}
+              <a href={href(`/jobs/${v}`)}>#{v}</a>
+            {:else if (k === 'time' || k === 'keep_until') && typeof v === 'number'}
+              {fmtTime(v)} <span class="muted mono small">{v}</span>
+            {:else if typeof v === 'boolean'}
+              {v ? t.yes : t.no}
+            {:else}
+              <span class="mono">{fmtValue(v)}</span>
+            {/if}
+          </dd>
         {:else}
           <dd class="muted">—</dd>
         {/each}
@@ -171,12 +200,24 @@
               {prog.entries_total ? t.jobs.entriesOf(prog.entries, prog.entries_total) : t.jobs.entries(prog.entries)}
             </dd>
           {/if}
-          <dt>{t.jobs.transferred}</dt>
-          <dd class="tabular">{fmtBytes(prog.bytes ?? 0)}</dd>
-          <dt>{t.jobs.rate}</dt>
-          <dd class="tabular">{fmtRate(prog.rate)}</dd>
+          {#if !prog.bytes && prog.entries_done}
+            <!-- a job that counts entries (file index): entries, not bytes -->
+            <dt>{t.jobs.listed}</dt>
+            <dd class="tabular">{t.jobs.entriesCount(prog.entries_done)}</dd>
+            <dt>{t.jobs.rate}</dt>
+            <dd class="tabular">{fmtEntryRate(prog.entries_rate)}</dd>
+          {:else}
+            <dt>{t.jobs.transferred}</dt>
+            <dd class="tabular">{fmtBytes(prog.bytes ?? 0)}</dd>
+            <dt>{t.jobs.rate}</dt>
+            <dd class="tabular">{fmtRate(prog.rate)}</dd>
+          {/if}
           <dt>{t.jobs.eta}</dt>
-          <dd class="tabular">{prog.eta === null || prog.eta === undefined ? '—' : t.jobs.etaAbout(fmtDuration(prog.eta))}</dd>
+          <dd class="tabular">
+            {(prog.eta ?? prog.item_eta) === null || (prog.eta ?? prog.item_eta) === undefined
+              ? '—'
+              : t.jobs.etaAbout(fmtDuration((prog.eta ?? prog.item_eta)!))}
+          </dd>
           <dt>{t.jobs.elapsed}</dt>
           <dd class="tabular">{fmtDuration(prog.elapsed)}</dd>
         </dl>
@@ -199,6 +240,26 @@
           </div>
         {/if}
       {/if}
+    </section>
+  {/if}
+  {#if job.followups?.length}
+    <section class="card" aria-labelledby="jfu">
+      <h2 id="jfu">{t.jobs.followups}</h2>
+      <p class="muted small">{t.jobs.followupsHint}</p>
+      <div class="table-wrap">
+        <table>
+          <tbody>
+            {#each job.followups as f (f.id)}
+              <tr use:rowLink={`/jobs/${f.id}`}>
+                <td><a href={href(`/jobs/${f.id}`)}>#{f.id}</a></td>
+                <td>{kindLabel(f.kind)}</td>
+                <td><JobState state={f.state} /></td>
+                <td class="muted nowrap">{fmtTime(f.finished ?? f.started ?? f.created)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     </section>
   {/if}
   {@const res = job.result}
