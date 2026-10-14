@@ -249,6 +249,11 @@ done
 # full restores attach the guest NIC to a bridge: SDN.Use on its zone
 pveum acl modify /sdn/zones/localnetwork --users nexus@pve --roles PVESDNUser
 pveum acl modify /sdn/zones/localnetwork --tokens 'nexus@pve!backup' --roles PVESDNUser
+# Sys.Modify on /: Proxmox VE asks for it to create a VM with a boot order (`startup`), e.g. a restore
+# test or instant recovery of such a guest; a role with only that privilege
+pveum role add NexusSysModify -privs Sys.Modify
+pveum acl modify / --users nexus@pve --roles NexusSysModify
+pveum acl modify / --tokens 'nexus@pve!backup' --roles NexusSysModify
 ```
 
 A token with privilege separation gets the **intersection** of its own and its user's permissions: grant the roles

@@ -341,8 +341,10 @@ No root-only operation is needed. The token needs on `/vms/<target>`: `VM.Alloca
 `Datastore.AllocateSpace` on the target storage (disk move, cloud-init drive); `SDN.Use` on the bridge's
 zone. Using the IR volumes needs no privilege on the NexusBackup storage: PVE allows a VM to use
 volumes it owns (`check_volume_access`, owner = target vmid). `vmgenid` can only be set by root,
-hence it is never sent. Lab token: PVEVMAdmin + PVEDatastoreAdmin + PVEAuditor on `/`,
-PVESDNUser on `/sdn/zones/localnetwork` (unchanged).
+hence it is never sent. `startup` (boot order) needs `Sys.Modify` on `/` (PVE `check_vm_modify_config_perm`);
+IR and restore-test VMs drop it (temporary, like `onboot`), the token has it anyway (role `NexusSysModify`, manual
+04). Lab token: PVEVMAdmin + PVEDatastoreAdmin + PVEAuditor + NexusSysModify on `/`, PVESDNUser on
+`/sdn/zones/localnetwork`.
 
 ## Restore tests (Phase 25, `restoretest.rs`)
 `nexus-pve <cfg> restore-test <spec.json>` boots VMs with the IR flow above, but never moves a disk: the VM
