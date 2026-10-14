@@ -492,4 +492,38 @@ for name, extra in [("v5-1k", []), ("v4-1k", ["-m", "crc=0", "-n", "ftype=0", "-
         put("fsindex", "xfs_walk", name, data)
         put("fsindex", "disk_walk", "xfs-" + name, data)
 
+
+def crc32c_raw(data, c=0xFFFFFFFF):
+    for b in data:
+        c ^= b
+        for _ in range(8):
+            c = (c >> 1) ^ 0x82F63B78 if c & 1 else c >> 1
+    return c
+
+
+def thin_node(blk, leaf, kv, mx=252):
+    b = bytearray(4096)
+    struct.pack_into("<IQIII", b, 4, 2 if leaf else 1, blk, len(kv), mx, 8)
+    for i, (k, v) in enumerate(kv):
+        struct.pack_into("<Q", b, 32 + i * 8, k)
+        struct.pack_into("<Q", b, 32 + mx * 8 + i * 8, v)
+    struct.pack_into("<I", b, 0, crc32c_raw(b[4:]) ^ 121107)
+    return bytes(b)
+
+
+def thin_meta(maps, block_sectors=128):
+    """dm-thin pool metadata as crates/fsindex/tests/images.rs `thin_metadata` writes it."""
+    sb = bytearray(4096)
+    struct.pack_into("<QI", sb, 32, 27022010, 2)
+    struct.pack_into("<Q", sb, 320, 1)
+    struct.pack_into("<II", sb, 336, block_sectors, 8)
+    struct.pack_into("<I", sb, 0, crc32c_raw(sb[4:]) ^ 160774)
+    vals = [(v, d << 24 | 5) for v, d in maps]
+    a, b = vals[:len(vals) // 2], vals[len(vals) // 2:]
+    return (bytes(sb) + thin_node(1, True, [(1, 2)]) + thin_node(2, False, [(a[0][0], 3), (b[0][0], 4)])
+            + thin_node(3, True, a) + thin_node(4, True, b))
+
+
+put("fsindex", "lvm_thin", "pool", thin_meta([(0, 5), (1, 6), (2, 7), (9, 1), (10, 0), (40, 3)]))
+
 print("seeds written")

@@ -85,3 +85,10 @@ path = "fuzz_targets/xfs_walk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "lvm_thin"
+path = "fuzz_targets/lvm_thin.rs"
+test = false
+doc = false
+bench = false

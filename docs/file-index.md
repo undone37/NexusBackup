@@ -136,8 +136,8 @@ SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse rea
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
 key is the set of chunk ids, the granularity is the volume). btrfs and ZFS volumes (XFS until Phase 31c, see
 below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
-BitLocker, LUKS, ReFS, Windows dynamic disks (LDM), Storage Spaces, md RAID, LVM thin/cache/VDO/RAID5 are reported
-with their reason.
+BitLocker, LUKS, ReFS, Windows dynamic disks (LDM), Storage Spaces, md RAID, LVM cache/VDO/RAID5 are reported with
+their reason (LVM thin volumes are read since Phase 31c, see below).
 
 Lab measurement (restore-vm fixtures, 1.1 GB GPT disk with ext4, XFS, NTFS, btrfs, vfat, LVM; 256 MB ZFS disk):
 the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and ext4-on-LVM in **0.14 s**
@@ -184,6 +184,19 @@ cache, so XFS directories get records and are taken over unread like NTFS ones. 
 btrfs and ZFS. Tests: mkfs.xfs with a protofile (no root), v5 with 4 KiB and 1 KiB blocks and v4 without file
 types, each with short form, block, leaf, node and B+tree directories; fuzz target `xfs_walk` (checksums are not
 verified in fuzz builds, `cfg(fuzzing)`, so the fuzzer reaches the parsers behind them).
+
+**LVM thin volumes (Phase 31c).** A thin LV's blocks come from its pool's dm-thin metadata (the pool's `_tmeta` LV,
+mapped like any LV): the superblock (magic, version 1/2, 4 KiB metadata blocks, checksum), the top-level B+tree
+(thin device id from the LV's `device_id` -> root of its mapping tree) and the device's mapping tree (thin block ->
+pool data block, in key order). Consecutive mappings become one segment on the pool's `_tdata` LV (and through it on
+the disks); unmapped blocks read zeros, as dm-thin returns them. Every node's checksum (persistent-data CRC-32C with
+the block type's constant), block number, layout and key order is checked; tree depth 16, every node once, at most
+2^21 runs per thin LV (more: "too fragmented", reported). Thin snapshots are thin LVs of their own and are listed;
+thin LVs with an external origin are reported. The pool LV is reported as `skipped` ("its thin volumes are
+listed"). The metadata is read as committed on disk (dm-thin writes it transactionally); the volume key includes a
+hash of the mapping, so a thin LV whose mapping changed is parsed again (its old read set no longer describes it).
+Test: LVM metadata, pool metadata and an ext4 spread over the pool in reverse block order, written by the test
+(lvcreate needs root); a damaged node and a device missing from the metadata are reported. Fuzz target `lvm_thin`.
 
 **Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
 reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)

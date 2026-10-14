@@ -308,12 +308,26 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
             Some(at),
         );
     }
-    for lv in lvm::volumes(&texts, &pvs) {
+    for mut lv in lvm::volumes(&texts, &pvs) {
         let info = Volume {
             browse: format!("lvm/{}", dm_name(&lv.vg, &lv.name)),
             device: format!("{}/{}", lv.vg, lv.name),
             ..Default::default()
         };
+        if lv.pool {
+            reports.push(Volume {
+                key: format!("lvm:{}", lv.id),
+                fs: "thin-pool".into(),
+                state: "skipped".into(),
+                reason: lv.map.err(),
+                ..info
+            });
+            continue;
+        }
+        if let Some(t) = &lv.thin {
+            // Phase 31c: the thin LV's blocks from its pool's metadata
+            lv.map = lvm::thin_segments(&io, t);
+        }
         match lv.map {
             Err(why) => reports.push(Volume {
                 key: format!("lvm:{}", lv.id),

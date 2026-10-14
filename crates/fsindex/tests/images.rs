@@ -1020,3 +1020,139 @@ fn xfs_directory_formats() {
         assert!(ran >= 2, "mkfs.xfs ran");
     }
 }
+
+/// A dm-thin B+tree node: `leaf`, (key, value) pairs; at block `blk`.
+fn thin_node(blk: u64, leaf: bool, kv: &[(u64, u64)]) -> Vec<u8> {
+    let max = 252usize;
+    let mut b = vec![0u8; 4096];
+    b[4..8].copy_from_slice(&(if leaf { 2u32 } else { 1 }).to_le_bytes());
+    b[8..16].copy_from_slice(&blk.to_le_bytes());
+    b[16..20].copy_from_slice(&(kv.len() as u32).to_le_bytes());
+    b[20..24].copy_from_slice(&(max as u32).to_le_bytes());
+    b[24..28].copy_from_slice(&8u32.to_le_bytes());
+    for (i, (k, v)) in kv.iter().enumerate() {
+        b[32 + i * 8..40 + i * 8].copy_from_slice(&k.to_le_bytes());
+        b[32 + max * 8 + i * 8..40 + max * 8 + i * 8].copy_from_slice(&v.to_le_bytes());
+    }
+    let c = fsindex::lvm::pd_csum(&b, 121_107);
+    b[0..4].copy_from_slice(&c.to_le_bytes());
+    b
+}
+
+/// dm-thin pool metadata: superblock (block 0), the top-level tree (block 1: device 1 ->
+/// block 2), device 1's mapping tree (block 2: internal node over the leaves 3 and 4).
+fn thin_metadata(maps: &[(u64, u64)], block_sectors: u32) -> Vec<u8> {
+    let mut m = vec![0u8; 5 * 4096];
+    let mut sb = vec![0u8; 4096];
+    sb[32..40].copy_from_slice(&27_022_010u64.to_le_bytes());
+    sb[40..44].copy_from_slice(&2u32.to_le_bytes());
+    sb[320..328].copy_from_slice(&1u64.to_le_bytes());
+    sb[336..340].copy_from_slice(&block_sectors.to_le_bytes());
+    sb[340..344].copy_from_slice(&8u32.to_le_bytes());
+    let c = fsindex::lvm::pd_csum(&sb, 160_774);
+    sb[0..4].copy_from_slice(&c.to_le_bytes());
+    m[..4096].copy_from_slice(&sb);
+    m[4096..8192].copy_from_slice(&thin_node(1, true, &[(1, 2)]));
+    let vals: Vec<(u64, u64)> = maps.iter().map(|&(v, d)| (v, d << 24 | 5)).collect();
+    let (a, b) = vals.split_at(vals.len() / 2);
+    m[8192..12288].copy_from_slice(&thin_node(2, false, &[(a[0].0, 3), (b[0].0, 4)]));
+    m[12288..16384].copy_from_slice(&thin_node(3, true, a));
+    m[16384..20480].copy_from_slice(&thin_node(4, true, b));
+    m
+}
+
+/// Phase 31c: a thin LV in a thin pool (metadata and data LVs on a PV), its ext4
+/// spread over the pool's data blocks in reverse order, zero blocks unmapped.
+#[test]
+fn lvm_thin_volume_with_ext4() {
+    let d = tempfile::tempdir().unwrap();
+    let tree = d.path().join("tree");
+    let expect = sample(&tree, "/dev/vg0/thin1 / ext4 defaults 0 1\n");
+    let img = d.path().join("ext.img");
+    if !run(
+        "mkfs.ext4",
+        &["-q", "-F", "-d", tree.to_str().unwrap(), img.to_str().unwrap(), "8M"],
+    ) {
+        return;
+    }
+    let fsimg = fs::read(&img).unwrap();
+    let ext = 4usize << 20;
+    let bs = 64usize << 10;
+    let text = r#"vg0 {
+id = "thin-vg-id"
+seqno = 9
+status = ["RESIZEABLE", "READ", "WRITE"]
+extent_size = 8192
+physical_volumes {
+pv0 { id = "AAAAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAAAA" device = "/dev/vda" pe_start = 2048 pe_count = 3 }
+}
+logical_volumes {
+pool { id = "pool-id" status = ["READ", "WRITE", "VISIBLE"] segment_count = 1
+segment1 { start_extent = 0 extent_count = 2 type = "thin-pool" metadata = "pool_tmeta" pool = "pool_tdata" transaction_id = 2 chunk_size = 128 discards = "passdown" zero_new_blocks = 1 } }
+thin1 { id = "thin1-id" status = ["READ", "WRITE", "VISIBLE"] segment_count = 1
+segment1 { start_extent = 0 extent_count = 2 type = "thin" thin_pool = "pool" transaction_id = 0 device_id = 1 } }
+gone { id = "gone-id" status = ["READ", "WRITE", "VISIBLE"] segment_count = 1
+segment1 { start_extent = 0 extent_count = 1 type = "thin" thin_pool = "pool" transaction_id = 1 device_id = 2 } }
+pool_tmeta { id = "tmeta-id" status = ["READ", "WRITE"] segment_count = 1
+segment1 { start_extent = 0 extent_count = 1 type = "striped" stripe_count = 1 stripes = ["pv0", 0] } }
+pool_tdata { id = "tdata-id" status = ["READ", "WRITE"] segment_count = 1
+segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 1 stripes = ["pv0", 1] } }
+}
+}
+"#;
+    let mut a = vec![0u8; (1 << 20) + 3 * ext];
+    pv(&mut a, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", text);
+    // the thin LV's 64 KiB blocks: zero ones unmapped, the others at data block 127 - n
+    let mut maps = Vec::new();
+    let data = (1 << 20) + ext;
+    for (n, chunk) in fsimg.chunks(bs).enumerate() {
+        if chunk.iter().all(|b| *b == 0) {
+            continue;
+        }
+        let db = 127 - n;
+        a[data + db * bs..data + db * bs + chunk.len()].copy_from_slice(chunk);
+        maps.push((n as u64, db as u64));
+    }
+    assert!(maps.len() > 2 && maps.len() < 128, "{} blocks mapped", maps.len());
+    let meta = thin_metadata(&maps, 128);
+    a[1 << 20..(1 << 20) + meta.len()].copy_from_slice(&meta);
+    let pa = d.path().join("a.img");
+    fs::write(&pa, &a).unwrap();
+    let l = list(&[&pa]);
+    let v = vol(&l, "lvm/vg0-thin1");
+    assert_eq!(
+        (v.volume.fs.as_str(), v.volume.state.as_str()),
+        ("ext4", "indexed"),
+        "{:?}",
+        v.volume
+    );
+    assert_eq!(got(v, &["lost+found"]), expect);
+    let mut vols: Vec<Volume> = l.iter().map(|x| x.volume.clone()).collect();
+    fsindex::mapping::assign(&mut vols);
+    let m = fsindex::mapping::Mapper::new(&vols);
+    assert_eq!(m.guest("lvm/vg0-thin1/etc/fstab"), "/etc/fstab");
+    let pool = vol(&l, "lvm/vg0-pool");
+    assert_eq!(
+        (pool.volume.state.as_str(), pool.volume.fs.as_str()),
+        ("skipped", "thin-pool")
+    );
+    let gone = vol(&l, "lvm/vg0-gone");
+    assert_eq!(gone.volume.state, "unsupported");
+    assert!(gone
+        .volume
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("thin device 2 not in the pool metadata"));
+    // a damaged metadata node: the thin LV is reported, nothing else breaks
+    a[(1 << 20) + 3 * 4096 + 40] ^= 1;
+    fs::write(&pa, &a).unwrap();
+    let l = list(&[&pa]);
+    let v = vol(&l, "lvm/vg0-thin1");
+    assert_eq!(v.volume.state, "unsupported", "{:?}", v.volume);
+    assert!(
+        v.volume.reason.as_deref().unwrap().contains("damaged"),
+        "{:?}",
+        v.volume
+    );
+}

@@ -2,10 +2,10 @@
 //!
 //! `nexus-fsindex` lists the files of a VM snapshot's disk images read-only:
 //! partition tables (GPT, MBR with logical partitions), LVM2 (linear, striped,
-//! mirror / raid1 by reading the first leg), ext2/3/4 (crate `ext4-view`), NTFS
+//! mirror / raid1 by reading the first leg, thin), ext2/3/4 (crate `ext4-view`), NTFS
 //! (crate `ntfs`), FAT12/16/32 (crate `fatfs`), exFAT and XFS (own parsers).
 //! Other file systems and containers (btrfs, ReFS, BitLocker, LUKS, Windows LDM,
-//! Storage Spaces, ZFS, md RAID, LVM thin) are reported per volume as "not
+//! Storage Spaces, ZFS, md RAID, LVM cache/VDO) are reported per volume as "not
 //! indexed: <reason>"; the micro-VM stays the fallback for them.
 //!
 //! Guest file systems are untrusted input. The parsers run in the helper

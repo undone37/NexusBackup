@@ -571,7 +571,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   split between helpers and per-directory records + takeover as NTFS; the micro-VM fallback only for btrfs/ZFS;
   tests: mkfs.xfs protofile images v5 4k, v5 1k (directory blocks of 4 fs blocks), v4 ftype=0, all five directory
   formats, mount `/` from its fstab; hostile XFS volume fails alone; fuzz target `xfs_walk` (+ disk_walk seeds)
-- [ ] 31c: LVM thin, btrfs, Windows LDM, owners/SIDs, content hashes
+- [x] 31c LVM thin volumes: dm-thin pool metadata (superblock, top-level and per-device mapping B+trees, checksums,
+  key order, depth/loop/run bounds) -> segments on the pool's data LV, unmapped blocks read zeros; pool LV
+  `skipped`; external-origin thin LVs reported; volume key hashes the mapping; test with hand-written LVM + pool
+  metadata and an ext4 in reverse block order (damaged node, missing device); fuzz target `lvm_thin`
+- [ ] 31c: btrfs, Windows LDM, owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

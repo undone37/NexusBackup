@@ -1,10 +1,12 @@
 //! LVM2 (read-only): PV label and metadata area, the text metadata of the
 //! volume group, and the mapping of logical volumes to disk bytes. Linear,
-//! striped, mirror and raid1 (first leg) LVs; thin, cache, VDO, raid4/5/6/10
-//! and snapshots are reported, not mapped. A volume group with a missing PV is
-//! skipped as a whole (Cohesity does the same).
+//! striped, mirror and raid1 (first leg) LVs, and thin LVs (Phase 31c: the
+//! pool's dm-thin metadata B+trees map each thin block to a pool data block,
+//! [`thin_segments`]); cache, VDO, raid4/5/6/10, old-style snapshots and thin
+//! LVs with an external origin are reported, not mapped. A volume group with a
+//! missing PV is skipped as a whole (Cohesity does the same).
 
-use crate::disk::{le32, le64, Segment, Vol};
+use crate::disk::{le32, le64, Io, Segment, Vol};
 use std::collections::BTreeMap;
 
 const MDA_MAGIC: &[u8] = b" LVM2 x[5A%r0N*>";
@@ -307,8 +309,22 @@ pub struct Lv {
     pub vg: String,
     pub name: String,
     pub id: String,
-    /// segments on disks, or why the LV cannot be read
+    /// segments on disks, or why the LV cannot be read (thin LVs: empty, see `thin`)
     pub map: Result<Vec<Segment>, String>,
+    /// a thin LV: its segments come from the pool's metadata ([`thin_segments`])
+    pub thin: Option<Thin>,
+    /// a thin pool (holds no file system; its thin LVs are listed)
+    pub pool: bool,
+}
+
+/// Where a thin LV's blocks are: its pool's metadata and data LVs, its device id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thin {
+    pub meta: Vec<Segment>,
+    pub data: Vec<Segment>,
+    pub dev: u64,
+    /// bytes of the thin LV
+    pub size: u64,
 }
 
 /// Where each PV (by UUID without dashes) starts: (disk, byte offset).
@@ -379,6 +395,8 @@ fn vg_volumes(vg: &str, sec: &[(String, Val)], pvs: &PvMap) -> Vec<Lv> {
             .unwrap_or_default()
             .to_owned(),
         map,
+        thin: None,
+        pool: false,
     };
     let visible: Vec<&str> = lvs
         .iter()
@@ -400,7 +418,23 @@ fn vg_volumes(vg: &str, sec: &[(String, Val)], pvs: &PvMap) -> Vec<Lv> {
         pv_at: &pv_at,
         ext: ext as u64 * 512,
     };
-    visible.iter().map(|n| lv(n, ctx.map(n, 0))).collect()
+    visible
+        .iter()
+        .map(|n| match ctx.seg_type(n).as_deref() {
+            Some("thin-pool") => Lv {
+                pool: true,
+                ..lv(n, Err("LVM thin pool (its thin volumes are listed)".into()))
+            },
+            Some("thin") => match ctx.thin(n) {
+                Ok(t) => Lv {
+                    thin: Some(t),
+                    ..lv(n, Ok(Vec::new()))
+                },
+                Err(e) => lv(n, Err(e)),
+            },
+            _ => lv(n, ctx.map(n, 0)),
+        })
+        .collect()
 }
 
 struct Ctx<'a> {
@@ -410,6 +444,60 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// The segment sections of LV `name`.
+    fn segments(&self, name: &str) -> Vec<&[(String, Val)]> {
+        get(self.lvs, name)
+            .and_then(Val::sec)
+            .unwrap_or_default()
+            .iter()
+            .filter(|(k, _)| k.starts_with("segment"))
+            .filter_map(|(_, s)| s.sec())
+            .collect()
+    }
+
+    /// The type of LV `name`'s first segment.
+    fn seg_type(&self, name: &str) -> Option<String> {
+        let s = *self.segments(name).first()?;
+        Some(get(s, "type")?.str()?.to_owned())
+    }
+
+    /// A thin LV: its pool's metadata and data LVs (mapped like any LV), its device id.
+    fn thin(&self, name: &str) -> Result<Thin, String> {
+        let segs = self.segments(name);
+        let [s] = segs.as_slice() else {
+            return Err("LVM thin volume with several segments".into());
+        };
+        if get(s, "external_origin").is_some() {
+            return Err("LVM thin volume with an external origin is not indexed".into());
+        }
+        let count = get(s, "extent_count")
+            .and_then(Val::int)
+            .filter(|x| *x > 0)
+            .ok_or("segment length")? as u64;
+        let dev = get(s, "device_id")
+            .and_then(Val::int)
+            .filter(|x| (0..1 << 24).contains(x))
+            .ok_or("thin volume without a device id")? as u64;
+        let pool = get(s, "thin_pool")
+            .and_then(Val::str)
+            .ok_or("thin volume without a pool")?;
+        let ps = self.segments(pool);
+        let p = ps
+            .iter()
+            .find(|p| get(p, "type").and_then(Val::str) == Some("thin-pool"))
+            .ok_or_else(|| format!("thin pool {pool} not in the metadata"))?;
+        let (Some(meta), Some(data)) = (get(p, "metadata").and_then(Val::str), get(p, "pool").and_then(Val::str))
+        else {
+            return Err(format!("thin pool {pool} without metadata or data volume"));
+        };
+        Ok(Thin {
+            meta: self.map(meta, 1)?,
+            data: self.map(data, 1)?,
+            dev,
+            size: count.checked_mul(self.ext).ok_or("segment length")?,
+        })
+    }
+
     fn map(&self, name: &str, depth: usize) -> Result<Vec<Segment>, String> {
         if depth > 4 {
             return Err("logical volume stacked too deeply".into());
@@ -483,7 +571,7 @@ impl Ctx<'_> {
                     let sub = self.map(img, depth + 1)?;
                     segs.extend(crop(&sub, off.max(0) as u64 * self.ext, len, lstart)?);
                 }
-                "thin" | "thin-pool" => return Err("LVM thin volumes are not indexed yet".into()),
+                "thin" | "thin-pool" => return Err("LVM thin volume stacked under another volume".into()),
                 "cache" | "cache-pool" | "writecache" => return Err("LVM cache volumes are not indexed".into()),
                 "vdo" | "vdo-pool" => return Err("LVM VDO volumes are not indexed".into()),
                 "snapshot" => return Err("LVM snapshot volumes are not indexed".into()),
@@ -536,6 +624,171 @@ fn crop(segs: &[Segment], from: u64, len: u64, to: u64) -> Result<Vec<Segment>, 
     Ok(out)
 }
 
+// ------------------------------------------------------- dm-thin metadata
+
+/// dm-thin metadata (persistent-data, little-endian, 4 KiB blocks).
+const THIN_MAGIC: u64 = 27_022_010;
+const META_BLOCK: u64 = 4096;
+const SUPERBLOCK_XOR: u32 = 160_774;
+const BTREE_XOR: u32 = 121_107;
+const NODE_INTERNAL: u32 = 1;
+const NODE_LEAF: u32 = 2;
+const MAX_THIN_DEPTH: usize = 16;
+/// Mapping runs (consecutive blocks) of one thin LV; more: too fragmented to index.
+pub const MAX_THIN_RUNS: usize = 1 << 21;
+
+/// persistent-data's block checksum: CRC-32C of everything after the field,
+/// seed !0, no final inversion, xor'ed with the block type's constant.
+pub fn pd_csum(b: &[u8], xor: u32) -> u32 {
+    let mut c = !0u32;
+    for &x in b.get(4..).unwrap_or_default() {
+        c ^= u32::from(x);
+        for _ in 0..8 {
+            c = if c & 1 != 0 { (c >> 1) ^ 0x82F6_3B78 } else { c >> 1 };
+        }
+    }
+    c ^ xor
+}
+
+fn pd_csum_ok(b: &[u8], xor: u32) -> bool {
+    // the fuzzer cannot forge checksums: let it reach the parser behind them
+    cfg!(fuzzing) || pd_csum(b, xor) == le32(b, 0)
+}
+
+/// One B+tree node of the metadata: (leaf?, keys, values).
+fn thin_node(meta: &Vol, block: u64) -> Result<(bool, Vec<u64>, Vec<u64>), String> {
+    let at = block.checked_mul(META_BLOCK).ok_or("thin metadata: block number")?;
+    let b = meta
+        .read_vec(at, META_BLOCK as usize)
+        .map_err(|e| format!("thin metadata: {e}"))?;
+    if b.len() as u64 != META_BLOCK || !pd_csum_ok(&b, BTREE_XOR) || le64(&b, 8) != block {
+        return Err(format!("thin metadata: node {block} damaged"));
+    }
+    let (flags, n, max, vsize) = (le32(&b, 4), le32(&b, 16) as usize, le32(&b, 20) as usize, le32(&b, 24));
+    if vsize != 8 || n > max || 32 + max * 16 > b.len() || !matches!(flags, NODE_INTERNAL | NODE_LEAF) {
+        return Err(format!("thin metadata: node {block} layout"));
+    }
+    let keys = (0..n).map(|i| le64(&b, 32 + i * 8)).collect();
+    let vals = (0..n).map(|i| le64(&b, 32 + max * 8 + i * 8)).collect();
+    Ok((flags == NODE_LEAF, keys, vals))
+}
+
+/// The value of `key` in the tree at `root`.
+fn thin_lookup(meta: &Vol, root: u64, key: u64) -> Result<Option<u64>, String> {
+    let mut at = root;
+    for _ in 0..MAX_THIN_DEPTH {
+        let (leaf, keys, vals) = thin_node(meta, at)?;
+        let i = keys.partition_point(|k| *k <= key);
+        if leaf {
+            return Ok((i > 0 && keys[i - 1] == key).then(|| vals[i - 1]));
+        }
+        if i == 0 {
+            return Ok(None);
+        }
+        at = vals[i - 1];
+    }
+    Err("thin metadata: tree too deep".into())
+}
+
+/// Every (key, value) of the tree below `block` in key order, to `f` (`false`: stop).
+fn thin_scan(
+    meta: &Vol,
+    block: u64,
+    depth: usize,
+    seen: &mut std::collections::HashSet<u64>,
+    f: &mut dyn FnMut(u64, u64) -> Result<bool, String>,
+) -> Result<bool, String> {
+    if depth > MAX_THIN_DEPTH || !seen.insert(block) || seen.len() as u64 > meta.size() / META_BLOCK {
+        return Err("thin metadata: tree loops".into());
+    }
+    let (leaf, keys, vals) = thin_node(meta, block)?;
+    for (k, v) in keys.into_iter().zip(vals) {
+        let go_on = if leaf {
+            f(k, v)?
+        } else {
+            thin_scan(meta, v, depth + 1, seen, f)?
+        };
+        if !go_on {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The segments of a thin LV: its mapped blocks on the pool data LV's disks, its
+/// unmapped blocks as zeros (what dm-thin returns for them).
+pub fn thin_segments(io: &Io, t: &Thin) -> Result<Vec<Segment>, String> {
+    let meta = Vol::new(io.clone(), t.meta.clone());
+    let sb = meta
+        .read_vec(0, META_BLOCK as usize)
+        .map_err(|e| format!("thin metadata: {e}"))?;
+    if sb.len() as u64 != META_BLOCK || le64(&sb, 32) != THIN_MAGIC {
+        return Err("thin pool metadata: no superblock".into());
+    }
+    if !pd_csum_ok(&sb, SUPERBLOCK_XOR) || le64(&sb, 8) != 0 {
+        return Err("thin pool metadata: superblock checksum".into());
+    }
+    let (version, bs_sectors, mbs) = (le32(&sb, 40), u64::from(le32(&sb, 336)), le32(&sb, 340));
+    if !(1..=2).contains(&version) || mbs != 8 || !(8..=1 << 22).contains(&bs_sectors) {
+        return Err("thin pool metadata: unsupported layout".into());
+    }
+    let bs = bs_sectors * 512;
+    let root = thin_lookup(&meta, le64(&sb, 320), t.dev)?
+        .ok_or_else(|| format!("thin device {} not in the pool metadata", t.dev))?;
+    let data_size: u64 = t.data.iter().map(|s| s.len).sum();
+    let blocks = t.size.div_ceil(bs);
+    // runs of consecutive mappings: (thin block, data block, count)
+    let mut runs: Vec<(u64, u64, u64)> = Vec::new();
+    let mut last: Option<u64> = None;
+    thin_scan(&meta, root, 0, &mut Default::default(), &mut |vb, v| {
+        if last.is_some_and(|l| vb <= l) {
+            return Err("thin metadata: mappings out of order".into());
+        }
+        last = Some(vb);
+        if vb >= blocks {
+            return Ok(false);
+        }
+        let db = v >> 24;
+        if db
+            .checked_add(1)
+            .and_then(|e| e.checked_mul(bs))
+            .is_none_or(|e| e > data_size)
+        {
+            return Err("thin metadata: block outside the pool".into());
+        }
+        match runs.last_mut() {
+            Some(r) if r.0 + r.2 == vb && r.1 + r.2 == db => r.2 += 1,
+            _ => {
+                if runs.len() >= MAX_THIN_RUNS {
+                    return Err(format!("thin volume too fragmented (more than {MAX_THIN_RUNS} runs)"));
+                }
+                runs.push((vb, db, 1));
+            }
+        }
+        Ok(true)
+    })?;
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    let hole = |start: u64, end: u64| Segment {
+        start,
+        len: end - start,
+        legs: Vec::new(),
+        stripe: 0,
+    };
+    for (vb, db, n) in runs {
+        let (start, len) = (vb * bs, (n * bs).min(t.size - vb * bs));
+        if start > at {
+            out.push(hole(at, start));
+        }
+        out.extend(crop(&t.data, db * bs, len, start)?);
+        at = start + len;
+    }
+    if at < t.size {
+        out.push(hole(at, t.size));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,6 +833,7 @@ version = 1
         let lvs = volumes(&[META.to_owned()], &pvs);
         let names: Vec<_> = lvs.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["root", "mirrored", "pool"]);
+        assert!(lvs[2].pool);
         let e = 4u64 << 20;
         let base0 = (1 << 20) + 2048 * 512;
         let base1 = 2048 * 512;
@@ -609,7 +863,7 @@ version = 1
                 stripe: 0
             }]
         );
-        assert!(lvs[2].map.as_ref().unwrap_err().contains("thin"));
+        assert!(lvs[2].map.as_ref().unwrap_err().contains("thin pool"));
         // a missing PV skips the whole volume group
         pvs.remove("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
         let lvs = volumes(&[META.to_owned()], &pvs);
