@@ -259,6 +259,15 @@ pveum acl modify / --tokens 'nexus@pve!backup' --roles NexusSysModify
 A token with privilege separation gets the **intersection** of its own and its user's permissions: grant the roles
 to both, or the appliance sees no guests (empty inventory, "guest not found").
 
+**Why Sys.Modify on `/`:** a guest's **Start/Shutdown order** (`startup` in its configuration, in the Proxmox VE GUI
+under Options) decides in which order the host starts and stops guests, so Proxmox VE treats it as a host-wide
+setting: whoever creates a VM that has one needs `Sys.Modify` on `/`, not only rights on the VM. The appliance
+creates such VMs when it boots a snapshot for a **restore test** or an **instant recovery**, and it keeps the
+original's order so the recovered VM starts and stops like the original. The appliance uses no other function of
+`Sys.Modify`, so the role `NexusSysModify` above holds this one privilege only (the built-in `PVESysAdmin` grants
+much more). Without it, restore tests and instant recoveries of guests with a start order fail with
+`PVE API 403 Forbidden: "Permission check failed (/, Sys.Modify)"`; guests without a start order are not affected.
+
 > **Status:** These broad roles are lab settings. A minimal privilege set is still to be defined (listed as a
 > production gap).
 

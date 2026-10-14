@@ -150,10 +150,9 @@ pub fn ir_config(
     let mut push = |k: &str, v: String| out.params.push((k.to_owned(), v));
     for (k, v) in lines {
         match k {
-            // `startup` (host boot order) also needs Sys.Modify on / (found on the PVE lab host: a
-            // restore test of a VM with `startup: order=2` was refused with 403)
+            // `startup` (boot / shutdown order) stays: PVE wants Sys.Modify on / for it (manual 04)
             "meta" | "lock" | "parent" | "vmstate" | "runningmachine" | "runningcpu" | "snaptime" | "onboot"
-            | "startup" | "vmgenid" | "digest" => {}
+            | "vmgenid" | "digest" => {}
             "template" => bail!("VM templates cannot be instantly recovered"),
             _ if k.starts_with("unused") => {}
             "smbios1" => {
@@ -714,13 +713,13 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
         assert_eq!(p["smbios1"], "manufacturer=QUNNRQ==,base64=1");
         assert_eq!(p["sshkeys"], "ssh-ed25519%20AAAA%20nexus-lab%0A");
         assert_eq!(p["boot"], "order=scsi0;net0");
+        assert_eq!(p["startup"], "order=2", "the boot order stays (needs Sys.Modify on /)");
         assert_eq!(p["memory"], "1024");
         for gone in [
             "vmgenid",
             "lock",
             "meta",
             "onboot",
-            "startup",
             "parent",
             "unused0",
             "scsi1",
