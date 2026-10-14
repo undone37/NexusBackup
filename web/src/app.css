@@ -808,6 +808,13 @@ select.auto {
 td.mono {
   white-space: nowrap;
 }
+/* long hostnames, paths: wrap within the column instead of widening the table */
+td.mono.wrap {
+  white-space: normal;
+  overflow-wrap: break-word;
+  min-width: 10rem;
+  max-width: 18rem;
+}
 td.mono.details {
   white-space: normal;
 }

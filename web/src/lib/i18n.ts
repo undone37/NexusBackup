@@ -901,6 +901,10 @@ export const en = {
       "This change allows more bandwidth or a wider sync window: it needs approval.",
   },
   sources: {
+    protection: "Protection",
+    moreLabel: (name: string) => `More actions for source ${name}`,
+    unprotected: "in no protection group",
+    unprotectedHint: "Nothing backs this source up yet: add it to a protection group.",
     // Phase 21a: change trends (GET /stats/trends)
     trends: "Change trends",
     trendsIntro:

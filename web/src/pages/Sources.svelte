@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import JobState from '../components/JobState.svelte';
   import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount, onDestroy } from 'svelte';
@@ -9,7 +11,7 @@
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds, pointer } from '../lib/plugins';
   import { buildValue, initValues, secretFlags, type FormValues } from '../lib/schema';
-  import type { Agent, Plugin, PluginSource, Source, SourceKind, Tenant } from '../lib/types';
+  import type { Agent, Group, Plugin, PluginSource, Source, SourceKind, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
@@ -23,7 +25,7 @@
   import FileSelection from '../components/FileSelection.svelte';
   import SourceLimits from '../components/SourceLimits.svelte';
   import { limitsConfig, limitsForm } from '../lib/limits';
-  import { fmtBytes } from '../lib/format';
+  import { fmtAgo, fmtBytes } from '../lib/format';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   let items: Source[] = $state([]);
@@ -33,6 +35,7 @@
   let error: string | null = $state(null);
   let loaded = $state(false);
 
+  let protection = $state(new Map<number, { n: number; last: NonNullable<Group['last_backup']> | null }>());
   async function load() {
     try {
       [items, tenants, agents] = await Promise.all([
@@ -43,6 +46,20 @@
       error = null;
     } catch (e) {
       error = errText(e);
+    }
+    // per source: its groups and the newest of their last backups (the Protection column)
+    try {
+      const gs = await get<Group[]>('/groups');
+      const m = new Map<number, { n: number; last: NonNullable<Group['last_backup']> | null }>();
+      for (const g of gs) {
+        const e = m.get(g.source_id) ?? { n: 0, last: null };
+        e.n += 1;
+        if (g.last_backup && (!e.last || g.last_backup.id > e.last.id)) e.last = g.last_backup;
+        m.set(g.source_id, e);
+      }
+      protection = m;
+    } catch {
+      /* no access to groups: no Protection column figures */
     }
     try {
       plugins = await get<Plugin[]>('/plugins');
@@ -560,6 +577,21 @@
     if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
     if (await act(del(`/sources/${x.id}`), t.deleted)) load();
   }
+  /** The other actions of a source row (Edit is a button of its own). */
+  function sourceActions(x: Source): MenuItem[] {
+    const out: MenuItem[] = [];
+    if (isPlugin(x)) out.push({ label: t.sources.validate, onselect: () => validate(x) });
+    if (hasInventory(x)) out.push({ label: t.inventory.open, onselect: () => ((invOf = x), (invOpen = true)) });
+    if (x.kind === 'nfs' || x.kind === 'smb') out.push({ label: t.nas.split, onselect: () => openSplit(x) });
+    if (can.backup(session.user))
+      out.push(
+        isPaused(x.maintenance_until)
+          ? { label: t.runctl.endMaintenance, onselect: () => endMaintenance(x) }
+          : { label: t.runctl.maintenance, onselect: () => ((maintSource = x), (maintOpen = true)) },
+      );
+    out.push({ label: t.delete, onselect: () => remove(x) });
+    return out;
+  }
 </script>
 
 <div class="page-head">
@@ -582,6 +614,7 @@
             <th scope="col">{t.name}</th>
             <th scope="col">{t.tenant}</th>
             <th scope="col">{t.kind}</th>
+            <th scope="col">{t.sources.protection}</th>
             <th scope="col">{t.sources.target}</th>
             <th scope="col">{t.sources.details}</th>
             <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
@@ -605,9 +638,21 @@
               >
               <td>{x.tenant}</td>
               <td>{kindTitle(x.kind)}</td>
+              <td class="nowrap">
+                {#if protection.get(x.id)}
+                  {@const pr = protection.get(x.id)!}
+                  <a href={href('/groups')}>{t.policies.groupsN(pr.n)}</a>
+                  {#if pr.last}<div>
+                      <JobState state={pr.last.state} />
+                      {#if pr.last.finished}<span class="muted small" title={fmtTime(pr.last.finished)}>{fmtAgo(pr.last.finished)}</span>{/if}
+                    </div>{/if}
+                {:else if loaded}
+                  <span class="chip warn" title={t.sources.unprotectedHint}>{t.sources.unprotected}</span>
+                {/if}
+              </td>
               {#if isPlugin(x)}
                 {@const c = checks[x.id]}
-                <td class="mono">{endpointOf(x)}</td>
+                <td class="mono wrap">{endpointOf(x)}</td>
                 <td>
                   <span class="mono">{summaryOf(x)}</span>
                   {#if c?.busy}
@@ -621,55 +666,30 @@
                 </td>
               {:else if x.kind === 'linux'}
                 <td>{t.sources.agent} <strong>{agentName(x.config?.agent_id)}</strong></td>
-                <td class="mono" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
+                <td class="mono wrap" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
                   >{(x.config?.paths ?? []).join(' ')}</td
                 >
               {:else if x.kind === 'nfs'}
-                <td class="mono">{x.config?.host}:{x.config?.export}</td>
-                <td class="mono">NFS {x.config?.version ?? '4.2'}{x.config?.snapshot_dir ? ` · ${x.config.snapshot_dir}` : ''}</td>
+                <td class="mono wrap">{x.config?.host}:{x.config?.export}</td>
+                <td class="mono wrap">NFS {x.config?.version ?? '4.2'}{x.config?.snapshot_dir ? ` · ${x.config.snapshot_dir}` : ''}</td>
               {:else if x.kind === 'smb'}
-                <td class="mono">//{x.config?.host}/{x.config?.share}</td>
-                <td class="mono"
+                <td class="mono wrap">//{x.config?.host}/{x.config?.share}</td>
+                <td class="mono wrap"
                   >SMB {x.config?.version ?? '3'} · {x.config?.sec ?? 'ntlmssp'}{x.config?.seal ? ' · seal' : ''}{x.config
                     ?.snapshot_dir
                     ? ` · ${x.config.snapshot_dir}`
                     : ''}</td
                 >
               {:else if x.kind === 'truenas'}
-                <td class="mono">{x.config?.host}:{x.config?.port}</td>
-                <td class="mono">{(x.config?.datasets ?? []).join(' ')}{x.config?.recursive ? ' (+)' : ''}</td>
+                <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
+                <td class="mono wrap">{(x.config?.datasets ?? []).join(' ')}{x.config?.recursive ? ' (+)' : ''}</td>
               {:else}
-                <td class="mono">{x.config?.host}:{x.config?.port}</td>
-                <td class="mono">{x.config?.token_id}</td>
+                <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
+                <td class="mono wrap">{x.config?.token_id}</td>
               {/if}
               <td class="actions">
-                {#if isPlugin(x)}
-                  <button type="button" class="small" disabled={checks[x.id]?.busy} onclick={() => validate(x)}
-                    >{t.sources.validate}</button
-                  >
-                {/if}
-                {#if hasInventory(x)}
-                  <button type="button" class="small" onclick={() => ((invOf = x), (invOpen = true))}>{t.inventory.open}</button>
-                {/if}
-                {#if x.kind === 'nfs' || x.kind === 'smb'}
-                  <button type="button" class="small" onclick={() => openSplit(x)}>{t.nas.split}</button>
-                {/if}
-                {#if can.backup(session.user)}
-                  {#if isPaused(x.maintenance_until)}
-                    <button type="button" class="small" onclick={() => endMaintenance(x)}>{t.runctl.endMaintenance}</button>
-                  {:else}
-                    <button
-                      type="button"
-                      class="small"
-                      onclick={() => {
-                        maintSource = x;
-                        maintOpen = true;
-                      }}>{t.runctl.maintenance}</button
-                    >
-                  {/if}
-                {/if}
                 <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
-                <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
+                <Menu label={t.agents.more} ariaLabel={t.sources.moreLabel(x.name)} items={sourceActions(x)} />
               </td>
             </tr>
           {/each}

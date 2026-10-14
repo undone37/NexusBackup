@@ -679,7 +679,7 @@ async function main() {
     }],
     ['sources', async () => {
       await go('/sources');
-      await ev(`$rowClick('pg-shop', 'Validate connection'); return true;`);
+      await ev(`$rowMenu('pg-shop', 'Validate connection'); return true;`);
       await until(`return document.body.innerText.includes('Connection OK')`, 'validation', 30000);
       await shot('sources');
       const edit = async (name, file, height) => {
@@ -696,7 +696,7 @@ async function main() {
       await edit('fs01-data', 'source-smb', 1250);
       await edit('pg-shop', 'source-postgresql', 2000);
       // Phase 13c: guest inventory of the PVE cluster
-      await ev(`$rowClick('pve-cluster', 'Inventory'); return true;`);
+      await ev(`$rowMenu('pve-cluster', 'Inventory'); return true;`);
       await until(`return document.querySelector('dialog[open]')?.innerText.includes('build-runner')`, 'inventory');
       await shot('source-inventory');
       await closeDialogs();
@@ -1216,7 +1216,7 @@ async function main() {
       await ev(`document.querySelector('dialog[open] #lim-par').closest('fieldset').scrollIntoView(); return true;`);
       await shot('source-limits', { height: 1100, scrolled: true });
       await closeDialogs();
-      await ev(`$rowClick('fs01-data', 'Split'); return true;`);
+      await ev(`$rowMenu('fs01-data', 'Split'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #sp-roots')`, 'split dialog');
       await ev(`$fill('#sp-roots', '/Finance\\n/Projects\\n/Home'); $fill('#sp-pw', 'demo-password'); return true;`);
       await shot('source-split');
