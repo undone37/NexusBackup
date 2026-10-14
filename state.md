@@ -555,7 +555,8 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
 - [ ] Lab: Debian LVM + XFS guest (XFS through the micro-VM fallback) not run; incremental re-parse took 150 s
   for an unchanged-looking C: (the volume's chunks change with every Windows snapshot, so per-volume reuse rarely
   applies to a running Windows system volume: per-directory reuse is 31c)
-- [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14)
+- [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14); lab: member
+  server C: rose from 5.6 % to 98.1 % against an estimate of 390,899 entries (previous snapshot's count)
 - [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, per-directory
   reuse, content hashes
 
