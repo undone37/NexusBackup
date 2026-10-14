@@ -30,6 +30,8 @@
 
   const local = $derived(snaps.filter((s) => s.tenant === tenant && s.local));
   const sources = $derived([...new Set(local.map((s) => s.source))].sort());
+  // the guest's or agent's name next to the source (snapshot labels)
+  const sourceLabel = $derived(new Map(local.filter((s) => s.label).map((s) => [s.source, s.label!])));
   const versions = $derived(local.filter((s) => s.source === source).sort((a, b) => b.time - a.time));
   const bases = $derived(versions.filter((s) => s.time < Number(time)));
   const label = (s: Snapshot) => `${fmtTime(s.time)}${s.anomalous ? ` · ${t.changes.flagged}` : ''}`;
@@ -124,7 +126,7 @@
     <label for="c-source">{t.changes.source}</label>
     <select id="c-source" bind:value={source} onchange={pickSource} required>
       <option value="" disabled>—</option>
-      {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option>{/each}
     </select>
   </div>
   <div class="field">

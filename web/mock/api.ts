@@ -4146,7 +4146,7 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, label: GUEST_NAMES[`${s.tenant}/${s.source.replace(/^(vm|ct)-/, '')}`] ?? null, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), scan_state: scanState(s), flagged: flaggedSnap(s), clean_point: s.clean_point ?? null, ...snapIndex(s) }))
+    .map((s) => ({ ...s, label: GUEST_NAMES[`${s.tenant}/${s.source.replace(/^(vm|ct)-/, '')}`] ?? db.agents.find((a) => `host-${a.id}` === s.source)?.name ?? null, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), scan_state: scanState(s), flagged: flaggedSnap(s), clean_point: s.clean_point ?? null, ...snapIndex(s) }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });

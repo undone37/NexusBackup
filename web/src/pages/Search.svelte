@@ -77,6 +77,8 @@
   });
 
   const sources = $derived([...new Set(snaps.filter((s) => s.tenant === tenant && s.local).map((s) => s.source))].sort());
+  // the guest's or agent's name next to the source (snapshot labels)
+  const sourceLabel = $derived(new Map(snaps.filter((s) => s.label).map((s) => [s.source, s.label!])));
   const tenantGroups = $derived(groups.filter((g) => g.tenant === tenant));
   const hitKey = (h: FileHit) => `${h.source}\0${h.path}`;
   const verKey = (h: FileHit, i: number) => `${hitKey(h)}\0${i}`;
@@ -357,7 +359,7 @@
     <label for="s-source">{t.search.source}</label>
     <select id="s-source" bind:value={source}>
       <option value="">{t.search.anySource}</option>
-      {#each sources as s (s)}<option value={s}>{s}</option>{/each}
+      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option>{/each}
     </select>
   </div>
   {#if !fallback}
