@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RunningJobs from '../components/RunningJobs.svelte';
   import { rowLink } from '../lib/rowlink';
   import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import { onMount } from 'svelte';
@@ -325,6 +326,8 @@
 {/if}
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
+<RunningJobs groups={new Map(groups.map((g) => [g.id, g.name]))} />
+
 {#if kpi && pr && jb && cap && os}
   <section class="kpis" class:nine={!!rtk !== !!hwSum} class:ten={!!rtk && !!hwSum} aria-label={t.dash.title}>
     <KpiTile
@@ -334,6 +337,7 @@
       sub={t.dash.kProtectionSub(pr.protected, pr.objects)}
       meter={pr.objects ? pr.protected / pr.objects : null}
       tone={pr.protected < pr.objects ? 'warn' : 'ok'}
+      href={href('/groups')}
     />
     <KpiTile
       icon={IconClock}
@@ -341,6 +345,7 @@
       value={String(pr.sla_breach)}
       sub={t.dash.kSlaSub(pr.sla_ok, pr.never)}
       tone={toneOf(pr.sla_breach > 0, pr.never > 0)}
+      href={href('/alerts')}
     />
     <KpiTile
       icon={IconJobs}
@@ -357,18 +362,21 @@
       sub={t.dash.kStorageSub(fmtBytes(cap.free), fmtBytes(cap.total))}
       meter={usedShare}
       tone={toneOf((usedShare ?? 0) > 0.9, (usedShare ?? 0) > 0.75)}
+      href={href('/storage')}
     />
     <KpiTile
       icon={IconLayers}
       label={t.dash.kReduction}
       value={fmtRatio(cap.reduction)}
       sub={t.dash.kReductionSub(fmtRatio(cap.dedup), fmtRatio(cap.compression))}
+      href={href('/storage')}
     />
     <KpiTile
       icon={IconTrend}
       label={t.dash.kForecast}
       value={cap.forecast_full_days === null ? t.dash.kForecastNone : t.dash.kForecastDays(cap.forecast_full_days)}
       sub={t.dash.kForecastSub}
+      href={href('/storage')}
       tone={toneOf(cap.forecast_full_days !== null && cap.forecast_full_days < 30, cap.forecast_full_days !== null && cap.forecast_full_days < 90)}
     />
     <KpiTile
@@ -387,6 +395,7 @@
       sub={t.dash.kVerify(fmtAgo(os.last_verify)) + (os.verify_failed ? ` · ${os.verify_failed} ${t.dash.failed_.toLowerCase()}` : '')}
       meter={os.lock_coverage}
       tone={toneOf(os.verify_failed > 0, os.lock_coverage !== null && os.lock_coverage < 1)}
+      href={href('/storage')}
     />
     {#if rtk}
       <KpiTile

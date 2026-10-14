@@ -227,6 +227,11 @@ export const en = {
     toLogin: "Go to sign in",
   },
   dash: {
+    runningNow: "Running now",
+    queuedN: (n: number) => `${n} queued`,
+    runningFor: (d: string) => `running for ${d}`,
+    nothingRunning: "No job is running.",
+    nothingRunningQueued: "No job is running; queued jobs start as soon as their turn comes (see Jobs for why they wait).",
     title: "Dashboard",
     approvalsBanner: (n: number) =>
       `Approvals are disabled although ${n} people could approve. Enable them so that destructive or weakening actions need a second person.`,
