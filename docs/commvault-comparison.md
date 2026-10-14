@@ -61,7 +61,7 @@ Status: **has** = built (lab-proven at least), **partial** = some of it built or
 | Reports, alerts | reports, SIEM integrations (CrowdStrike, Splunk) | scheduled reports, syslog/HTTPS forwarding, Splunk HEC, notification rules | has |
 | **Multi-tenancy / MSP** | | | |
 | Tenants | Companies, tenant admins, per-tenant IdP | tenants, tenant admin, per-tenant OIDC, view-as-tenant, billing export, onboarding wizard | has |
-| Multi-site management | Global Command Center: aggregated dashboards/jobs/alerts over many CommCells, blueprints [21] | one appliance per UI | missing |
+| Multi-site management | Global Command Center: aggregated dashboards/jobs/alerts over many CommCells, blueprints [21] | `nexusctl fleet`: read-only overview (dashboard, open alerts, failed jobs) of many appliances, text / JSON / static HTML (Phase 33); no blueprints | partial |
 | PSA integration | HaloPSA ticket creation from alerts [1] | alert rule channel "PSA": tickets in HaloPSA, ConnectWise PSA, Autotask with notes and closing (Phase 33) | has |
 | **Cloud / SaaS** | Commvault Cloud SaaS, Air Gap Protect (vendor-hosted immutable storage), Clumio for S3/GCS | customer-owned Storage Box / S3 Object Lock / vault appliance; no vendor-operated service | different model |
 | **Compliance / governance** | Risk Analysis (classification, PII), FedRAMP, SEC 17a-4 claims [9][18] | backup ≠ archive (plan §1.2); legal hold; hash-chained audit with external anchor | partial (by design) |
@@ -180,7 +180,8 @@ Effort: S = days, M = 1–2 weeks, L = more. Phase numbers are suggestions (Phas
    reads of snapshot disks plus `QueryChangedDiskAreas`, or nbdkit with a customer-supplied VDDK. Needs a spike
    before the item is scheduled.
 7. **Multi-appliance overview:** CLI only, or a separate small web service (another component to harden)? Proposal:
-   CLI and a static HTML report first.
+   CLI and a static HTML report first. **Decided 2026-10-14 (Phase 33): CLI and static HTML report** (`nexusctl
+   fleet`, read-scoped tokens only).
 
 ## Sources
 

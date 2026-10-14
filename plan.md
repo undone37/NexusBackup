@@ -916,6 +916,11 @@ T70–T75. Decisions and deviations:
   gated requests still wait for the tenant; a tenant admin's own request counts as the tenant's consent;
   impersonating sessions never decide; source/agent/policy deletion are not gated (refused while in use, no data
   effect). Details: docs/control-plane.md "Tenant-side approvers".
+- **Multi-appliance overview** (implemented): `nexusctl fleet` (open question 7: CLI and a static HTML report, no web
+  service): per appliance its own read token from a file (mode 0600) or environment variable, never inline;
+  `/auth/me` now reports the token's scope and anything but `read` is refused; dashboard, open alerts, failed jobs
+  of the last N hours; parallel, unreachable appliances listed; `--html` (no scripts, escaped, 0600), `--json`,
+  `--check` (exit 2 for monitoring). No figures from `crates/reports` (the dashboard JSON has them already).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

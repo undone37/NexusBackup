@@ -601,3 +601,8 @@ Phase 30's), threat model T70–T75.
   tests: catalog unit + migration, web-api `tests/phase33.rs` (three scenarios), tenant-admin route classification,
   scheduler `tests/phase33.rs`; UI (Approvals page box and tenant decisions, Tenants page Approvers dialog + chip),
   mock, manual 10/11, screenshot (scene `p33approvers`), threat model T71
+- [x] multi-appliance overview: `nexusctl fleet` (config with token_file/token_env, read scope enforced through
+  `/auth/me` `token`, parallel pull of dashboard / open alerts / failed jobs, text, JSON, static HTML, `--check`);
+  tests: unit (config, token file mode, rendering and escaping), `crates/nexusctl/tests/fleet.rs` (two real web-api
+  routers, operator token refused, unreachable appliance); manual 09, control-plane, threat model T72
+- [ ] lab: `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs

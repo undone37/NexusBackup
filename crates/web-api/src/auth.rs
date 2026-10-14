@@ -668,7 +668,9 @@ pub async fn logout(State(st): State<St>, ctx: Ctx) -> ApiResult<Response> {
 /// `{user, csrf, break_glass}` — lets the SPA recover its CSRF token after a
 /// reload; `break_glass` (`{at, user, alert, forced_solo}` or null) drives the
 /// banner after a console recovery until the alert is acknowledged;
-/// `console_shell` the banner while a console root shell runs (14c).
+/// `console_shell` the banner while a console root shell runs (14c); `token`
+/// (Phase 33) the API token of a token request (`{name, scope}`, else null), so a
+/// client such as `nexusctl fleet` can insist on a read-only token.
 pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Value>> {
     let bg = crate::dashboard::break_glass(&st.cat.conn(), &ctx)?;
     let shell = crate::console::shell_banner(&st.cat.conn(), &ctx)?;
@@ -680,8 +682,9 @@ pub async fn me(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<serde_json::Va
         .impersonating
         .as_ref()
         .map(|t| json!({"tenant": t, "role": ctx.user.role}));
+    let token = ctx.token.as_ref().map(|t| json!({"name": t.name, "scope": t.scope}));
     Ok(Json(
         json!({"user": ctx.user, "csrf": ctx.csrf, "break_glass": bg, "console_shell": shell, "vault_mode": vault,
-               "impersonating": imp, "incident": incident, "freeze": freeze, "step_up": step_up}),
+               "impersonating": imp, "incident": incident, "freeze": freeze, "step_up": step_up, "token": token}),
     ))
 }

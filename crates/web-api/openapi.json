@@ -456,7 +456,7 @@
         }
       }
     },
-    "/auth/me": { "get": { "summary": "The signed-in user (role, tenant)", "tags": ["account"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/auth/me": { "get": { "summary": "The signed-in user (role, tenant); `token` = the API token of a token request ({name, scope}), `incident` = incident mode", "tags": ["account"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/dashboard": { "get": { "summary": "Dashboard KPIs (cached up to 60 s)", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/storage": { "get": { "summary": "Storage accounting per tenant and group", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/usage": {

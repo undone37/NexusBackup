@@ -530,6 +530,33 @@ nexusctl openapi                        # the API description
 certificate or its CA when it is not publicly trusted. A run whose `--keep-until` lies beyond the approval limit
 creates an approval request and says so.
 
+**Several appliances: `nexusctl fleet`.** A service provider that runs one appliance per customer gets a read-only
+overview of all of them on the workstation: for each appliance whether it answers, incident mode, protected objects,
+SLA breaches, open alerts per severity, failed jobs of the last 24 hours and store use, then the open critical and
+warning alerts and the failed jobs by name. Nothing is changed anywhere. Create a **read** API token on each
+appliance (a token with operator scope is refused) and list them in a configuration file:
+
+```json
+{"appliances": [
+  {"name": "acme", "url": "https://backup.acme.example:8443", "token_file": "~/.config/nexusctl/acme.token",
+   "ca": "~/.config/nexusctl/acme-ca.pem"},
+  {"name": "globex", "url": "https://10.20.0.5:8443", "token_env": "NEXUS_TOKEN_GLOBEX"}]}
+```
+
+```sh
+chmod 600 ~/.config/nexusctl/*.token     # token files readable by others are refused
+nexusctl fleet --config ~/.config/nexusctl/fleet.json
+nexusctl fleet --config fleet.json --hours 72 --html /tmp/fleet.html   # also a static HTML report
+nexusctl fleet --config fleet.json --check                             # exit code 2 if one needs attention
+```
+
+Tokens never go into the configuration file itself (`token_file` or `token_env` only). The appliances are asked in
+parallel; one that cannot be reached is listed as **UNREACHABLE** with the reason, the others still show. `--json`
+prints everything the appliances answered. The HTML report has no scripts and is written readable by you only. The
+workstation must be allowed through each appliance's inbound firewall for the web interface (**Settings → Firewall**,
+port 8443). `--check` is meant for a monitoring system: exit code 2 when an appliance is unreachable, in incident
+mode, or has a critical alert, a failed job or an SLA breach.
+
 > **Status:** The OpenAPI document is maintained by hand; a test checks that it covers every endpoint on the token
 > allow-list. `nexusctl` is tested against the web-api in process; it is not packaged yet (build it from source).
 

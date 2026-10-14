@@ -15,6 +15,12 @@ fn real_main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
+    // Phase 33: several appliances, each with its own token from the fleet configuration
+    if cli.cmd[0] == "fleet" {
+        let (out, code) = nexusctl::fleet::cli(&cli.cmd[1..], cli.json)?;
+        print!("{out}");
+        std::process::exit(code);
+    }
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let ca = cli.ca.or_else(|| env("NEXUS_CA"));
     let conn = Conn {

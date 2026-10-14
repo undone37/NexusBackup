@@ -1234,3 +1234,18 @@ adds `tenant_approvals: bool`. `{enabled: false}` requests the approval action `
   tenant after its opt-in (within 7 days), naming when it may decide.
 - The previous release ignores the tables: a rollback would execute gated requests without the tenant (documented
   in docs/threat-model.md T71).
+
+## Multi-appliance overview (Phase 33, `crates/nexusctl/src/fleet.rs`)
+`nexusctl fleet [--config FILE] [--hours N] [--html OUT] [--check] [--json]` on an administrator's workstation (never
+on an appliance; no new appliance component). Configuration (`--config` / `NEXUS_FLEET`): `{appliances: [{name, url,
+token_file | token_env, ca?}]}`, at most 200; inline tokens are refused, token files readable by group or others as
+well. Per appliance, in parallel, with its own token: `GET /auth/me` (Phase 33: `token: {name, scope}`; any scope
+but `read` is refused, so the overview never holds write access), `GET /dashboard`, `GET /alerts?state=open`, `GET
+/jobs?state=failed&limit=500` (kept: finished within `--hours`, default 24). Output: a table per appliance (state
+ok / attention / incident / unreachable, protected/objects, SLA breaches, open alerts critical/warning/info, failed
+jobs, store use, offsite lag) followed by up to 20 critical/warning alerts and failed jobs each; `--json` the raw
+answers; `--html` a static report (CSP `default-src 'none'`, every value HTML-escaped, file mode 0600); `--check`
+exit code 2 when an appliance is unreachable, in incident mode, or has a critical alert, a failed job or an SLA
+breach. Network: workstation → each appliance's web port (inbound allow-list); the appliances need no egress for it.
+No blueprints, no write actions (docs/commvault-comparison.md decision 7: CLI and a static HTML report first; a
+separate web service was not built).
