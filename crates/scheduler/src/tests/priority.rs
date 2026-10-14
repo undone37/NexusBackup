@@ -38,7 +38,7 @@ fn restore_priority_holds_and_expires() {
         .unwrap()
         .contains("restore priority is on (by alice: DR)"));
     s.start_jobs().unwrap();
-    assert_eq!(s.running(), vec![(manual_backup, "source:2".into())]);
+    assert_eq!(s.running(), vec![(manual_backup, "group:2".into())]);
     assert_eq!(state(&s, sched_backup), "queued");
     assert_eq!(state(&s, gc), "queued");
     // nothing new is queued meanwhile

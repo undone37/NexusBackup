@@ -192,7 +192,8 @@ async fn group_exclude_disks_parallel_and_quorum() {
             &r.body["exclude_disks_mode"],
             &r.body["parallel_guests"]
         ),
-        (&json!({}), &json!("placeholder"), &json!(1))
+        (&json!({}), &json!("placeholder"), &json!(4)),
+        "Phase 32: four guests at once by default"
     );
     let id = r.body["id"].as_i64().unwrap();
     for (k, v) in [
@@ -222,13 +223,13 @@ async fn group_exclude_disks_parallel_and_quorum() {
     // parallelism and the restore mode apply directly
     let mut upd = base.clone();
     upd.as_object_mut().unwrap().remove("tenant");
-    upd["parallel_guests"] = json!(4);
+    upd["parallel_guests"] = json!(2);
     upd["exclude_disks_mode"] = json!("omit");
     let r = t.put(&format!("/api/v1/groups/{id}"), &alice, upd.clone()).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     assert_eq!(
         t.one::<i64>(&format!("SELECT parallel_guests FROM groups WHERE id = {id}")),
-        4
+        2
     );
     // excluding a disk backs up less: approval
     upd["exclude_disks"] = json!({"*": ["scsi1", "scsi1"], "101": ["virtio2"]});

@@ -6,15 +6,47 @@
 //!
 //! Per-storage caps (source `storage_caps`, Phase 22b): a guest with a disk on a
 //! storage that already has its cap of running backups waits; other guests pass it.
+//!
+//! Lock files (Phase 32): an item runs only while it holds all of its `locks`
+//! (`File::try_lock`, exclusive), across every `nexus-pve` process of the
+//! appliance: one per node (PVE runs one vzdump per node anyway, so a second
+//! backup there would only wait inside its task, holding a worker) and one per
+//! guest (a guest in two groups is never backed up twice at once). A worker
+//! whose candidates are all locked by another process looks again every
+//! [`RETRY`].
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
-/// One guest to back up: its node and the PVE storages of its disks.
+/// How often a worker looks again for an item whose locks another process holds.
+pub const RETRY: Duration = Duration::from_secs(2);
+
+/// One guest to back up: its node, the PVE storages of its disks and the lock
+/// files it must hold while it runs.
 pub struct Item<T> {
     pub item: T,
     pub node: String,
     pub storages: Vec<String>,
+    pub locks: Vec<PathBuf>,
+}
+
+/// All of `paths`, exclusively, or none (one is held elsewhere or unusable).
+fn try_lock_all(paths: &[PathBuf]) -> Option<Vec<File>> {
+    let mut held = Vec::new();
+    for p in paths {
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(p)
+            .ok()?;
+        f.try_lock().ok()?;
+        held.push(f);
+    }
+    Some(held)
 }
 
 #[derive(Default)]
@@ -25,10 +57,12 @@ struct State {
     storages: HashMap<String, usize>,
 }
 
-/// Index into `pending` of the next item: the first one whose node has the
-/// fewest running backups among those whose storages are all below their cap.
-fn pick<T>(st: &State, items: &[Item<T>], caps: &HashMap<String, usize>) -> Option<usize> {
-    st.pending
+/// Index into `pending` of the next item with its locks: the first one whose
+/// node has the fewest running backups among those whose storages are all below
+/// their cap and whose lock files are free.
+fn pick<T>(st: &State, items: &[Item<T>], caps: &HashMap<String, usize>) -> Option<(usize, Vec<File>)> {
+    let mut cands: Vec<(usize, usize)> = st
+        .pending
         .iter()
         .enumerate()
         .filter(|(_, &i)| {
@@ -37,8 +71,12 @@ fn pick<T>(st: &State, items: &[Item<T>], caps: &HashMap<String, usize>) -> Opti
                     .is_none_or(|c| st.storages.get(s).copied().unwrap_or(0) < (*c).max(1))
             })
         })
-        .min_by_key(|(pos, &i)| (st.nodes.get(&items[i].node).copied().unwrap_or(0), *pos))
-        .map(|(pos, _)| pos)
+        .map(|(pos, &i)| (pos, i))
+        .collect();
+    cands.sort_by_key(|&(pos, i)| (st.nodes.get(&items[i].node).copied().unwrap_or(0), pos));
+    cands
+        .into_iter()
+        .find_map(|(pos, i)| try_lock_all(&items[i].locks).map(|held| (pos, held)))
 }
 
 /// Runs `work` for every item with at most `n` at once and at most `caps[s]`
@@ -60,25 +98,28 @@ pub fn run<T: Sync, R: Send>(
             s.spawn(|| loop {
                 let i = {
                     let mut st = state.lock().unwrap();
-                    let pos = loop {
+                    let picked = loop {
                         if st.pending.is_empty() {
                             break None;
                         }
                         match pick(&st, items, caps) {
                             Some(p) => break Some(p),
-                            // every pending guest waits for a capped storage
-                            None => st = freed.wait(st).unwrap(),
+                            // every pending guest waits for a capped storage or a lock
+                            // (another process frees those without notifying: look again)
+                            None => st = freed.wait_timeout(st, RETRY).unwrap().0,
                         }
                     };
-                    let Some(pos) = pos else { break };
+                    let Some((pos, held)) = picked else { break };
                     let i = st.pending.remove(pos);
                     *st.nodes.entry(items[i].node.clone()).or_default() += 1;
                     for x in &items[i].storages {
                         *st.storages.entry(x.clone()).or_default() += 1;
                     }
-                    i
+                    (i, held)
                 };
+                let (i, held) = i;
                 let r = work(&items[i].item);
+                drop(held);
                 let mut st = state.lock().unwrap();
                 *st.nodes.entry(items[i].node.clone()).or_default() -= 1;
                 for x in &items[i].storages {
@@ -131,7 +172,49 @@ mod tests {
             item: i,
             node: node.into(),
             storages: storages.iter().map(|s| s.to_string()).collect(),
+            locks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn lock_files_serialise_across_workers_and_processes() {
+        let d = tempfile::tempdir().unwrap();
+        let (na, nb, g1) = (
+            d.path().join("node-a"),
+            d.path().join("node-b"),
+            d.path().join("guest-1"),
+        );
+        let with = |i: u32, locks: &[&std::path::PathBuf]| Item {
+            locks: locks.iter().map(|p| p.to_path_buf()).collect(),
+            ..it(i, "x", &[])
+        };
+        // 0 and 1 share node a; 2 is on node b but its guest lock is held by "another process"
+        let items = [with(0, &[&na]), with(1, &[&na]), with(2, &[&nb, &g1])];
+        let other = File::create(&g1).unwrap();
+        other.lock().unwrap();
+        let on_a = AtomicUsize::new(0);
+        let max_a = AtomicUsize::new(0);
+        let order = Mutex::new(Vec::new());
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(other); // the other process ends
+        });
+        run(&items, 3, &HashMap::new(), |&i| {
+            if i < 2 {
+                let n = on_a.fetch_add(1, Ordering::SeqCst) + 1;
+                max_a.fetch_max(n, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                on_a.fetch_sub(1, Ordering::SeqCst);
+            }
+            order.lock().unwrap().push(i);
+        });
+        releaser.join().unwrap();
+        assert_eq!(max_a.load(Ordering::SeqCst), 1, "one backup per node at a time");
+        assert_eq!(
+            order.into_inner().unwrap().last(),
+            Some(&2),
+            "waited for the other process' lock"
+        );
     }
 
     #[test]
@@ -142,16 +225,16 @@ mod tests {
             pending: vec![0, 1, 2, 3],
             ..Default::default()
         };
-        assert_eq!(pick(&st, &items, &caps), Some(0), "idle: list order");
+        assert_eq!(pick(&st, &items, &caps).map(|p| p.0), Some(0), "idle: list order");
         st.pending = vec![1, 2, 3];
         st.nodes.insert("a".into(), 1);
-        assert_eq!(pick(&st, &items, &caps), Some(1), "b before the busy a");
+        assert_eq!(pick(&st, &items, &caps).map(|p| p.0), Some(1), "b before the busy a");
         st.nodes.insert("b".into(), 1);
         st.nodes.insert("c".into(), 2);
         st.pending = vec![1, 3];
-        assert_eq!(pick(&st, &items, &caps), Some(0), "a(1) before c(2)");
+        assert_eq!(pick(&st, &items, &caps).map(|p| p.0), Some(0), "a(1) before c(2)");
         st.pending.clear();
-        assert_eq!(pick(&st, &items, &caps), None);
+        assert_eq!(pick(&st, &items, &caps).map(|p| p.0), None);
     }
 
     #[test]
@@ -168,12 +251,12 @@ mod tests {
         };
         st.storages.insert("ceph".into(), 1);
         assert_eq!(
-            pick(&st, &items, &caps),
+            pick(&st, &items, &caps).map(|p| p.0),
             Some(1),
             "guest 1 waits for ceph, guest 2 passes"
         );
         st.pending = vec![1];
-        assert_eq!(pick(&st, &items, &caps), None);
+        assert_eq!(pick(&st, &items, &caps).map(|p| p.0), None);
     }
 
     #[test]

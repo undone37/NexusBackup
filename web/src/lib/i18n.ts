@@ -1661,7 +1661,7 @@ export const en = {
     } as Record<string, string>,
     parallel: "Guests backed up at once",
     parallelHint:
-      "1 = one after the other. PVE: spread across nodes first (a node may run its vzdump jobs one by one). Plugin sources: separate plugin processes.",
+      "1 = one after the other. PVE: one backup per node at a time (Proxmox VE runs one vzdump per node), so this many nodes work at once; other groups of the cluster run alongside. Plugin sources: separate plugin processes.",
     disksShort: (n: number) => `${n} disk${n === 1 ? "" : "s"} excluded`,
     parallelShort: (n: number) => `${n} at once`,
     indexFiles: "File index",

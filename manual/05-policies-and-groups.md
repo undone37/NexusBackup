@@ -323,8 +323,11 @@ A Proxmox VE group has two more settings in its dialog:
   - **left out of the restored VM**: the restored VM has no such disk (its line is removed from the configuration).
   The choice is stored in each snapshot at backup time; changing it later affects new snapshots only. Instant
   recovery always leaves excluded disks out.
-- **Guests backed up at once** (1–8, default 1): how many guests of the group are backed up in parallel. The appliance spreads
-  them over the cluster nodes (the next guest goes to the node with the fewest running backups). Snapshots, the
+- **Guests backed up at once** (1–8, default 4 for new groups): how many guests of the group are backed up in parallel.
+  Proxmox VE runs one backup (vzdump) per node at a time, so the appliance backs up **at most one guest per node**
+  across all groups and jobs: the setting is in effect how many nodes work for this group at once, and on a single
+  node the guests run one after the other whatever it says. Several groups of the same cluster run at the same time
+  (each on nodes the others leave free), and a guest that is in two groups is never backed up twice at once. Snapshots, the
   per-guest statistics, retries of failed guests and **Cancel** work per guest as before; a cancel stops every running
   vzdump task. The same setting runs several guests of a **plugin** group (e.g. several PostgreSQL databases) at once.
   The source can cap it (**Guests at once (source cap)**, and per PVE storage, see

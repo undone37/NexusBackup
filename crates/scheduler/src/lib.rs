@@ -191,8 +191,11 @@ pub struct Config {
     pub tick_secs: u64,
     /// between ticks: pick up newly queued jobs
     pub poll_secs: u64,
-    /// running jobs at once (over all sources)
+    /// running jobs at once (over all sources); default 2 per CPU, 8..=32 (Phase 32)
     pub max_parallel: usize,
+    /// of those, at most this many background jobs ([`background`]: file index, scans,
+    /// verify, …) so backups and restores always find a slot; default CPUs / 2, 2..=8
+    pub max_background: usize,
     /// bytes of output kept per job
     pub log_max: usize,
     /// a running job's output so far and progress go to the catalog this often
@@ -250,6 +253,19 @@ pub struct Config {
     pub config_backup_timeout_secs: u64,
 }
 
+fn cpus() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
+/// Job kinds that never hold back a backup or restore (Phase 32: at most
+/// `max_background` of them run at once).
+pub fn background(kind: &str) -> bool {
+    matches!(
+        kind,
+        "file_index" | "snapshot_scan" | "verify" | "hash_hunt" | "file_changes" | "snapshot_diff"
+    )
+}
+
 impl Default for Config {
     fn default() -> Self {
         let lib = Path::new("/var/lib/nexus");
@@ -281,7 +297,8 @@ impl Default for Config {
             firewall_settle_secs: 3,
             tick_secs: 30,
             poll_secs: 2,
-            max_parallel: 4,
+            max_parallel: (cpus() * 2).clamp(8, 32),
+            max_background: (cpus() / 2).clamp(2, 8),
             log_max: 256 << 10,
             live_ms: 2000,
             maintenance: "daily 03:00".into(),
@@ -393,6 +410,8 @@ pub struct Scheduler {
     pub db: Arc<Catalog>,
     ctx: Arc<Ctx>,
     running: HashMap<i64, String>,
+    /// the running jobs that are [`background`] ones
+    running_background: HashSet<i64>,
     tx: Sender<Finished>,
     rx: Receiver<Finished>,
     /// first time an item without scheduled history was seen (no immediate run)
@@ -563,6 +582,7 @@ impl Scheduler {
             db,
             ctx,
             running: HashMap::new(),
+            running_background: HashSet::new(),
             tx,
             rx,
             first_seen: HashMap::new(),
@@ -1231,6 +1251,9 @@ impl Scheduler {
             if self.running.len() >= self.cfg.max_parallel {
                 break;
             }
+            if background(&job.kind) && self.running_background.len() >= self.cfg.max_background {
+                continue; // the other slots stay free for backups and restores
+            }
             if self.held_by_priority(&job, priority)? {
                 continue; // restore priority: waits for its end
             }
@@ -1268,6 +1291,9 @@ impl Scheduler {
                 &json!({"kind": job.kind, "tenant": job.tenant, "key": plan.key}),
             )?;
             self.running.insert(job.id, plan.key.clone());
+            if background(&job.kind) {
+                self.running_background.insert(job.id);
+            }
             let (tx, ctx, id) = (self.tx.clone(), self.ctx.clone(), job.id);
             std::thread::spawn(move || {
                 let f = execute(id, &plan, &ctx);
@@ -1319,6 +1345,7 @@ impl Scheduler {
     /// Records a finished job, then queues follow-ups and raises alerts.
     pub fn finish(&mut self, mut f: Finished) -> Result<()> {
         self.running.remove(&f.id);
+        self.running_background.remove(&f.id);
         self.ctx.cancels.remove(f.id);
         self.cancel_sent.remove(&f.id);
         let job = self.job(f.id)?;
@@ -2688,7 +2715,12 @@ impl Scheduler {
                 if vmids.is_empty() {
                     bail!("nothing to back up: no guests");
                 }
-                plan.key = format!("source:{source_id}");
+                // Phase 32: per group (or guest), not per source: groups of one cluster run at once;
+                // nexus-pve's lock files keep one backup per node and per guest across them
+                plan.key = match &group_row {
+                    Some(g) => format!("group:{}", g.id),
+                    None => format!("guest:{tenant}/vm-{}", vmids[0]),
+                };
                 plan.files = self.pve_config(tenant, source_id, &dir, &vmids)?;
                 if let Some(g) = &group_row {
                     // exclude_disks, restore mode, parallel guests (selection.rs)
@@ -2777,7 +2809,7 @@ impl Scheduler {
                 });
             }
             "retention" => {
-                let (source_id, vmids, gfs) = match p["group_id"].as_i64() {
+                let (_source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
                         if !g.agents.is_empty() || !g.datasets.is_empty() || g.share || g.plugin.is_some() {
@@ -2804,7 +2836,11 @@ impl Scheduler {
                         (self.resolve_source(job, Some(v))?, vec![v], gfs)
                     }
                 };
-                plan.key = format!("source:{source_id}");
+                // like the PVE backup (Phase 32): after its own group's backup, beside other groups
+                plan.key = match p["group_id"].as_i64() {
+                    Some(g) => format!("group:{g}"),
+                    None => format!("guest:{tenant}/vm-{}", vmids.first().copied().unwrap_or_default()),
+                };
                 let sources = vmids
                     .iter()
                     .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])

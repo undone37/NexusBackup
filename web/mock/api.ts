@@ -3006,7 +3006,7 @@ function groupSelection(src: (typeof db.sources)[number], b: Json): Pick<MockGro
   if (Object.keys(ex).length && src.kind !== 'pve') throw new HttpError(400, 'exclude_disks: only for groups of a pve source');
   const mode = b.exclude_disks_mode ?? 'placeholder';
   if (!['placeholder', 'omit'].includes(mode)) throw new HttpError(400, 'exclude_disks_mode: placeholder or omit');
-  const par = b.parallel_guests ?? 1;
+  const par = b.parallel_guests ?? 4;
   if (!(Number.isInteger(par) && par >= 1 && par <= 8)) throw new HttpError(400, 'parallel_guests: 1..=8');
   return { exclude_disks: ex, exclude_disks_mode: mode, parallel_guests: par };
 }

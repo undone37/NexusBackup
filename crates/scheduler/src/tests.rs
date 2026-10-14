@@ -89,29 +89,53 @@ fn state(s: &Scheduler, id: i64) -> String {
 }
 
 #[test]
-fn fifo_with_per_source_exclusivity() {
+fn fifo_with_per_group_exclusivity() {
     let e = env(4);
     let mut s = sched(&e);
-    let a = manual(&s, "backup", "t1", json!({"group_id": 1})); // source 1
-    let b = manual(&s, "backup", "t1", json!({"group_id": 3})); // source 1 again: waits
-    let c = manual(&s, "backup", "t1", json!({"group_id": 2})); // source 2: may pass b
+    let a = manual(&s, "backup", "t1", json!({"group_id": 1})); // group 1 (source 1)
+    let b = manual(&s, "backup", "t1", json!({"group_id": 1})); // group 1 again: waits
+    let c = manual(&s, "backup", "t1", json!({"group_id": 3})); // group 3, same source: runs beside it (Phase 32)
     s.start_jobs().unwrap();
-    assert_eq!(s.running(), vec![(a, "source:1".into()), (c, "source:2".into())]);
+    assert_eq!(s.running(), vec![(a, "group:1".into()), (c, "group:3".into())]);
     assert_eq!(state(&s, b), "queued");
     s.start_jobs().unwrap(); // nothing new while busy
     assert_eq!(s.running().len(), 2);
     s.wait_idle(Duration::from_secs(20)).unwrap();
     assert_eq!((state(&s, a).as_str(), state(&s, c).as_str()), ("ok", "ok"));
-    // follow-up retentions (sources 1 and 2) were queued after b: b goes first on source 1
+    // follow-up retentions (groups 1 and 3) were queued after b: b goes first in group 1
     s.start_jobs().unwrap();
     let r = s.running();
-    assert_eq!(r[0], (b, "source:1".into()));
-    assert_eq!(r[1].1, "source:2", "retention of group 2 runs beside it");
+    assert_eq!(r[0], (b, "group:1".into()));
+    assert_eq!(r[1].1, "group:3", "retention of group 3 runs beside it");
     assert_eq!(r.len(), 2);
     s.wait_idle(Duration::from_secs(20)).unwrap();
     let calls = fs::read_to_string(e.d.path().join("calls")).unwrap();
     assert_eq!(calls.matches("backup-all").count(), 3);
     assert_eq!(fs::read_dir(&e.cfg.runtime_dir).unwrap().count(), 0, "job dirs removed");
+}
+
+/// Phase 32: background jobs (file index, scans, verify, …) take at most
+/// `max_background` slots; backups and restores still find one.
+#[test]
+fn background_jobs_leave_slots_for_backups() {
+    let mut e = env(4);
+    e.cfg.max_background = 2;
+    let mut s = sched(&e);
+    let idx: Vec<i64> = [100, 101, 200]
+        .iter()
+        .map(|v| manual(&s, "file_index", "t1", json!({"source": format!("vm-{v}"), "time": 5})))
+        .collect();
+    let backup = manual(&s, "backup", "t1", json!({"group_id": 2}));
+    s.start_jobs().unwrap();
+    let running: Vec<i64> = s.running().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(
+        running,
+        vec![idx[0], idx[1], backup],
+        "two background jobs, the backup passes the third"
+    );
+    assert_eq!(state(&s, idx[2]), "queued");
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert!(super::background("file_index") && super::background("verify") && !super::background("backup"));
 }
 
 /// Live progress (docs/control-plane.md "Live progress"): while the connector

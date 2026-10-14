@@ -104,8 +104,10 @@ pub fn placeholder() -> String {
     "placeholder".into()
 }
 
-pub fn one() -> u32 {
-    1
+/// Guests at once when a group request leaves it out (Phase 32: 4; for PVE groups the
+/// nodes bound it anyway, one backup per node).
+pub fn default_parallel() -> u32 {
+    4
 }
 
 /// Some disk excluded by `new` but not by `old`.

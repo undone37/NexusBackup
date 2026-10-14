@@ -85,7 +85,9 @@ or per vmid). The scheduler passes them to `nexus-pve` as device names:
 - Containers: `exclude_disks` does not apply (a note in the job log); mount points with `backup=0` are skipped
   by vzdump.
 
-### Parallel guests (Phase 15f)
+### Parallel guests (Phase 15f; Phase 32: one per node)
+Phase 32: every guest runs only with its node and guest lock files (docs/control-plane.md "Concurrency caps"): one
+backup per node and per guest across all jobs, groups of a cluster run side by side, new groups default to 4.
 `"parallel": N` (group `parallel_guests`, 1..=8, default 1 = one guest after the other) lets `backup-all` back
 up up to N guests at once. The nodes of all guests come from one `/cluster/resources` call; each free worker
 takes the next guest on the node with the fewest running backups, so the load spreads over the cluster (at most

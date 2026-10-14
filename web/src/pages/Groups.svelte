@@ -244,7 +244,7 @@
         .map(([k, l]) => `${k}: ${l.join(', ')}`)
         .join('\n'),
       disksMode: x?.exclude_disks_mode ?? 'placeholder',
-      parallel: x?.parallel_guests ?? 1,
+      parallel: x?.parallel_guests ?? 4,
     };
     // Phase 31b: on by default for new Proxmox VE groups
     indexFiles = x ? !!x.index_files : true;

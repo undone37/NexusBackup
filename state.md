@@ -560,3 +560,23 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
 - [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, per-directory
   reuse, content hashes
 
+
+## Phase 32 — Throughput: more at once (2026-10-14)
+Decision (maintainer): backups stay on vzdump, which runs one backup per PVE node at a time (global vzdump lock),
+so per node the guests run one after the other; parallelism comes from nodes, groups and background work.
+- [x] Measured on the PVE lab host (Windows Server, incremental): 26 s per guest = 16 s vzdump preparation
+  (fleecing images, guest-agent freeze, NBD export), 4 s reading, the rest commit and teardown: about 140
+  incremental guests per node and hour; the appliance side is not the bottleneck
+- [x] scheduler: `max_parallel` default 2 per CPU (8..=32, was 4), `max_background` (CPUs / 2, 2..=8) for
+  file_index / snapshot_scan / verify / hash_hunt / file_changes / snapshot_diff so backups always find a slot;
+  PVE backup and retention keyed per group (was per source): the groups of one cluster run side by side
+- [x] nexus-pve: lock files per node and per guest across all jobs (`pve::parallel`, `File::try_lock` in the
+  scheduler's private /tmp): one backup per node (no worker waits inside a vzdump task) and a guest in two groups is
+  never backed up twice at once; every backup-all goes through the runner
+- [x] new groups: 4 guests at once (was 1); existing groups keep their value; UI hint + manual 05
+- [x] file index: LRU chunk cache of 128 chunks (was a FIFO of 32), log line with the chunks read from the store
+- [x] lab appliance VM: 16 GiB RAM, 8 CPUs (chunk workers follow the CPUs, up to 8)
+- [ ] lab: file index time with the LRU cache on the Windows member server; several groups at once (one node:
+  serialised by the node lock, needs a second PVE node to show the speed-up)
+- [ ] open: per-directory reuse of unchanged Windows volumes (31c) would cut the file index of a running system
+  volume from 150 s to seconds

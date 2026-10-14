@@ -23,9 +23,10 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// Decrypted chunks kept for the helper's reads (it reads metadata spread
-/// over the disk, often several times).
-const CHUNK_CACHE: usize = 32;
+/// Decrypted chunks kept for the helper's reads, least recently used out (it
+/// reads metadata spread over the disk, often several times: an NTFS walk jumps
+/// between the MFT and the directory indexes). 128 x 4 MiB = 512 MiB per job.
+const CHUNK_CACHE: usize = 128;
 /// Report format version.
 const VERSION: u32 = 1;
 
@@ -37,6 +38,8 @@ struct StoreSource<'a> {
     names: Vec<String>,
     disks: Vec<(u64, u64, &'a [ChunkId])>,
     cache: VecDeque<((usize, u64), Vec<u8>)>,
+    /// chunks read from the store (cache misses)
+    loads: u64,
 }
 
 impl Source for StoreSource<'_> {
@@ -59,8 +62,14 @@ impl Source for StoreSource<'_> {
             let pos = off + done as u64;
             let n = pos / cs;
             let i = match self.cache.iter().position(|(k, _)| *k == (d, n)) {
-                Some(i) => i,
+                Some(i) => {
+                    // least recently used out: a hit moves to the front
+                    let hit = self.cache.remove(i).expect("position in range");
+                    self.cache.push_front(hit);
+                    0
+                }
                 None => {
+                    self.loads += 1;
                     let id = ids
                         .get(n as usize)
                         .ok_or_else(|| io::Error::other("chunk outside the index"))?;
@@ -152,6 +161,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             })
             .collect(),
         cache: VecDeque::new(),
+        loads: 0,
     };
     let disk_no: HashMap<String, usize> = src.names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
     let prev = previous(store, m);
@@ -193,6 +203,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         .unwrap_or_default();
     let mut n = 0u32;
     let mut last: Option<std::time::Instant> = None;
+    let started = std::time::Instant::now();
     let mut listed = parent::list_with_progress(
         &mut src,
         &helper,
@@ -217,6 +228,13 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         },
     )
     .context("guest file systems")?;
+    // where the time goes: every cache miss decrypts and decompresses one chunk (stderr:
+    // stdout is the job result)
+    eprintln!(
+        "fsindex: volumes listed in {:.1?}, {} chunk(s) read from the store",
+        started.elapsed(),
+        src.loads
+    );
     // fill the reused volumes from the previous snapshot's name index
     let mut reused = 0;
     if listed.iter().any(|l| l.reused) {

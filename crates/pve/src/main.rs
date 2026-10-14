@@ -56,6 +56,16 @@ fn one() -> usize {
     1
 }
 
+/// Lock files of `backup-all` (pve::parallel): the private /tmp of the scheduler, shared by
+/// every nexus-pve it starts (`NEXUS_PVE_LOCK_DIR` overrides).
+fn lock_dir() -> Result<PathBuf> {
+    let d = std::env::var_os("NEXUS_PVE_LOCK_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("nexus-pve-locks"));
+    fs::create_dir_all(&d).with_context(|| format!("lock dir {}", d.display()))?;
+    Ok(d)
+}
+
 #[derive(Deserialize)]
 struct ApiFile {
     host: String,
@@ -132,6 +142,11 @@ fn main() -> Result<()> {
     let Some(a) = cfg.api else {
         bail!("{cmd}: this configuration has no PVE API (store-only)");
     };
+    // the cluster's name in lock files (backup-all)
+    let cluster_key: String = format!("{}_{}", a.host, a.port)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
     let api = api(a)?;
     let vmids = cfg.vmids.clone();
     let mut exclude = BTreeMap::new();
@@ -298,9 +313,9 @@ fn main() -> Result<()> {
                 }
                 _ => cfg.parallel,
             };
-            let failed: Vec<u32> = if parallel <= 1 || vmids.len() <= 1 {
-                vmids.iter().copied().filter(|&vmid| one(&store, vmid)).collect()
-            } else {
+            // Phase 32: one backup per node and per guest across all jobs (pve::parallel lock files)
+            let locks = lock_dir()?;
+            let failed: Vec<u32> = {
                 let nodes = cluster.guest_nodes()?;
                 let items: Vec<pve::parallel::Item<u32>> = vmids
                     .iter()
@@ -318,10 +333,15 @@ fn main() -> Result<()> {
                                 }),
                             _ => Vec::new(),
                         };
+                        let mut lock = vec![locks.join(format!("guest-{cluster_key}-{v}"))];
+                        if !node.is_empty() {
+                            lock.push(locks.join(format!("node-{cluster_key}-{node}")));
+                        }
                         pve::parallel::Item {
                             item: *v,
                             node,
                             storages,
+                            locks: lock,
                         }
                     })
                     .collect();

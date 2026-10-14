@@ -1825,7 +1825,7 @@ pub struct GroupReq {
     exclude_disks: Value,
     #[serde(default = "crate::selection::placeholder")]
     exclude_disks_mode: String,
-    #[serde(default = "crate::selection::one")]
+    #[serde(default = "crate::selection::default_parallel")]
     parallel_guests: u32,
 }
 
@@ -1857,7 +1857,7 @@ pub struct GroupUpdate {
     exclude_disks: Value,
     #[serde(default = "crate::selection::placeholder")]
     exclude_disks_mode: String,
-    #[serde(default = "crate::selection::one")]
+    #[serde(default = "crate::selection::default_parallel")]
     parallel_guests: u32,
 }
 
