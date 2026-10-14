@@ -233,4 +233,44 @@ fn index_reuse_and_change() {
     assert!(paths(&n3).contains(&"vda2/bob/new.doc".to_string()));
     let notes = n3.iter().find(|e| e.0 == "vda2/ann/notes.txt").unwrap();
     assert_eq!(notes.1, 9);
+
+    // Phase 31c: content hashes. The same disk with hashes asked for: the volumes listed
+    // without hashes are not reused, every regular file gets its SHA-256 (name index v2/v3)
+    let hashes = fsindex::Limits {
+        hashes: Some(fsindex::HashBudget::for_listing(3600)),
+        ..Default::default()
+    };
+    let idx = s.store_image(&b[..], 4 << 20).unwrap();
+    let m4 = s
+        .commit_snapshot("vm-100", 4000, &[("drive-scsi0", idx.clone())])
+        .unwrap();
+    let r4 = pve::fsindex::index(&s, &m4, hashes).unwrap();
+    assert_eq!(
+        (r4["parsed"].as_u64(), r4["reused"].as_u64()),
+        (Some(2), Some(0)),
+        "{r4}"
+    );
+    let n4 = s.load_names(&m4).unwrap().unwrap();
+    let sha = |n: &NameIndex, p: &str| n.iter().position(|e| e.0 == p).and_then(|i| n.hash(i).copied());
+    use sha2::Digest;
+    let v2: [u8; 32] = sha2::Sha256::digest(b"v2 longer").into();
+    assert_eq!(sha(&n4, "vda2/ann/notes.txt"), Some(v2));
+    assert_eq!(
+        sha(&n4, "vda1/etc/hostname"),
+        Some(sha2::Sha256::digest(b"web1").into())
+    );
+    assert_eq!(sha(&n4, "vda2/ann"), None, "directories have none");
+    assert_eq!(r4["hashes"].as_u64(), Some(5), "{r4}");
+    // again with hashes: both volumes reused, their hashes carried over
+    let m5 = s.commit_snapshot("vm-100", 5000, &[("drive-scsi0", idx)]).unwrap();
+    let r5 = pve::fsindex::index(&s, &m5, hashes).unwrap();
+    assert_eq!(
+        (r5["parsed"].as_u64(), r5["reused"].as_u64()),
+        (Some(0), Some(2)),
+        "{r5}"
+    );
+    assert_eq!(
+        sha(&s.load_names(&m5).unwrap().unwrap(), "vda2/ann/notes.txt"),
+        Some(v2)
+    );
 }

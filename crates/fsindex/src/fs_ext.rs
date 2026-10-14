@@ -6,6 +6,25 @@ use crate::walk::Out;
 use crate::{Volume, KIND_DIR, KIND_FILE, KIND_OTHER, KIND_SYMLINK, MAX_DEPTH, MAX_PATH};
 use ext4_view::{Ext4, PathBuf};
 
+/// SHA-256 of a file's `size` bytes.
+fn hash_file(fs: &Ext4, path: &PathBuf, size: u64) -> Result<[u8; 32], String> {
+    use sha2::Digest;
+    let mut f = fs.open(path).map_err(|e| e.to_string())?;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; crate::walk::HASH_READ];
+    let mut done = 0u64;
+    while done < size {
+        let n = f.read_bytes(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("short read".into());
+        }
+        let n = (n as u64).min(size - done) as usize;
+        h.update(&buf[..n]);
+        done += n as u64;
+    }
+    Ok(h.finalize().into())
+}
+
 pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // needs_recovery (incompat 0x4): mounted when the snapshot was taken
     let sb = v.read_vec(1024, 1024).map_err(|e| e.to_string())?;
@@ -14,10 +33,24 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // s_first_ino: about one entry each
     let used = le32(&sb, 0).saturating_sub(le32(&sb, 0x10));
     out.expect(u64::from(used.saturating_sub(le32(&sb, 0x54).saturating_sub(1))));
+    // the crate allocates per block group from these numbers: a file system larger than its
+    // volume (hostile counts) is refused before it does
+    let bs = 1024u64
+        .checked_shl(le32(&sb, 0x18))
+        .filter(|b| *b <= 65536)
+        .ok_or("ext4: block size")?;
+    // (the high half counted always, as the crate counts it)
+    let blocks = u64::from(le32(&sb, 0x150)) << 32 | u64::from(le32(&sb, 0x4));
+    let per_group = u64::from(le32(&sb, 0x20)).max(1);
+    if blocks.checked_mul(bs).is_none_or(|b| b > v.size().saturating_add(bs)) || blocks / per_group > 1 << 24 {
+        return Err("ext4: file system larger than its volume".into());
+    }
     let fs = Ext4::load(Box::new(v.clone())).map_err(|e| format!("ext4: {e}"))?;
     info.label = fs.label().to_str().ok().filter(|s| !s.is_empty()).map(str::to_owned);
     info.uuid = Some(fs.uuid().to_string().to_lowercase());
-    if let Ok(t) = fs.read("/etc/fstab") {
+    // (the size first: the crate reads a whole file into memory, a hostile size would be GBs)
+    let small = fs.metadata("/etc/fstab").is_ok_and(|m| m.len() <= 64 << 10);
+    if let Some(Ok(t)) = small.then(|| fs.read("/etc/fstab")) {
         if t.len() <= 64 << 10 {
             info.fstab = Some(String::from_utf8_lossy(&t).into_owned());
         }
@@ -101,7 +134,22 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                     continue;
                 }
             };
-            if own && !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), None)? {
+            // Phase 31c: the content's SHA-256 (budgeted)
+            let mut sha = None;
+            if kind == KIND_FILE && out.hashing() {
+                if !out.hash_budget(size) {
+                    info.unhashed_files += 1;
+                } else {
+                    match hash_file(&fs, &e.path(), size) {
+                        Ok(h) => {
+                            sha = Some(h);
+                            info.hashed_files += 1;
+                        }
+                        Err(_) => info.unhashed_files += 1,
+                    }
+                }
+            }
+            if own && !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), sha.as_ref())? {
                 return Ok(());
             }
             if kind == KIND_DIR && out.walks(&path, depth + 1) {

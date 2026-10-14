@@ -1,6 +1,6 @@
 # Plan: guest file index without the restore micro-VM (Phase 31)
 
-Status: proposed 2026-10-13 by maintainer request; 31a and 31b implemented 2026-10-14 (deviations: plan.md Phase 31, state.md "Phase 31"). Goal: every snapshot's files are searchable, the same
+Status: proposed 2026-10-13 by maintainer request; 31a and 31b implemented 2026-10-14, 31c 2026-10-14/15 (deviations: plan.md Phase 31, state.md "Phase 31"). Goal: every snapshot's files are searchable, the same
 way for VM/CT disks (Windows, Linux) and for agent, NAS and plugin snapshots, without booting the restore micro-VM,
 and searches stay fast with many snapshots and millions of files.
 

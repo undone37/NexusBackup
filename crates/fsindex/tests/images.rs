@@ -1400,3 +1400,133 @@ fn ldm_simple_and_spanned_volumes() {
         v2.volume
     );
 }
+
+/// Phase 31c: content hashes (SHA-256 of every regular file) on ext4, NTFS and XFS,
+/// with 1 and 3 helpers; a budget too small leaves files unhashed and says so.
+#[test]
+fn content_hashes() {
+    use sha2::Digest;
+    let d = tempfile::tempdir().unwrap();
+    let p = |n: &str| d.path().join(n);
+    let content: Vec<(&str, Vec<u8>)> = vec![
+        ("docs/a.txt", b"alpha".to_vec()),
+        ("docs/big.bin", (0..3_000_000u32).map(|i| (i % 251) as u8).collect()),
+        ("empty", Vec::new()),
+        ("deep/x/y/z.dat", vec![9u8; 70_000]),
+    ];
+    let want: std::collections::BTreeMap<String, [u8; 32]> = content
+        .iter()
+        .map(|(n, c)| (n.to_string(), sha2::Sha256::digest(c).into()))
+        .collect();
+    let mut imgs = Vec::new();
+    let tree = p("tree");
+    for (n, c) in &content {
+        fs::create_dir_all(tree.join(n).parent().unwrap()).unwrap();
+        fs::write(tree.join(n), c).unwrap();
+    }
+    if run(
+        "mkfs.ext4",
+        &[
+            "-q",
+            "-F",
+            "-d",
+            tree.to_str().unwrap(),
+            p("ext.img").to_str().unwrap(),
+            "16M",
+        ],
+    ) {
+        imgs.push(p("ext.img"));
+    }
+    if ntfs_img(&p("ntfs.img"), 16 << 20, "Data", &content) {
+        imgs.push(p("ntfs.img"));
+    }
+    let mut proto = vec!["/dev/null".to_string(), "0 0".into(), "d--755 0 0".into()];
+    proto.extend([
+        "docs d--755 0 0".to_string(),
+        format!("a.txt ---644 0 0 {}", tree.join("docs/a.txt").display()),
+        format!("big.bin ---644 0 0 {}", tree.join("docs/big.bin").display()),
+        "$".into(),
+        format!("empty ---644 0 0 {}", tree.join("empty").display()),
+        "deep d--755 0 0".into(),
+        "x d--755 0 0".into(),
+        "y d--755 0 0".into(),
+        format!("z.dat ---644 0 0 {}", tree.join("deep/x/y/z.dat").display()),
+        "$".into(),
+        "$".into(),
+        "$".into(),
+        "$".into(),
+    ]);
+    fs::write(p("proto"), proto.join("\n") + "\n").unwrap();
+    sized(&p("xfs.img"), 320 << 20);
+    if run(
+        "mkfs.xfs",
+        &["-q", "-p", p("proto").to_str().unwrap(), p("xfs.img").to_str().unwrap()],
+    ) {
+        imgs.push(p("xfs.img"));
+    }
+    let hashes = Limits {
+        hashes: Some(fsindex::HashBudget {
+            max_bytes: 1 << 30,
+            max_secs: 600,
+        }),
+        ..Default::default()
+    };
+    for img in &imgs {
+        for parts in [1, 3] {
+            let src = files(&[img.as_path()]);
+            let h = Helper { parts, ..helper() };
+            let l = parent::list(&src, &h, hashes, &mut |_| false).unwrap();
+            let v = &l[0];
+            assert_eq!(v.volume.state, "indexed", "{img:?}: {:?}", v.volume);
+            let got: std::collections::BTreeMap<String, [u8; 32]> = v
+                .entries
+                .iter()
+                .filter(|e| e.kind == fsindex::KIND_FILE && want.contains_key(&e.path))
+                .map(|e| {
+                    (
+                        e.path.clone(),
+                        e.sha256.unwrap_or_else(|| panic!("{img:?}: {e:?} without a hash")),
+                    )
+                })
+                .collect();
+            assert_eq!(got, want, "{img:?} ({parts} helpers)");
+            assert!(v
+                .entries
+                .iter()
+                .all(|e| e.sha256.is_none() || e.kind == fsindex::KIND_FILE));
+            assert!(
+                v.volume.hashed && v.volume.unhashed_files == 0,
+                "{img:?}: {:?}",
+                v.volume
+            );
+            assert!(v.dirs.iter().all(|r| r.hashed), "{img:?}: records listed with hashes");
+        }
+        // no hashes asked for: none, records not marked
+        let l = parent::list(&files(&[img.as_path()]), &helper(), Limits::default(), &mut |_| false).unwrap();
+        assert!(l[0].entries.iter().all(|e| e.sha256.is_none()) && !l[0].volume.hashed);
+        assert!(l[0].dirs.iter().all(|r| !r.hashed));
+        // a budget of 1 MiB: the big file stays unhashed, the volume says so
+        let small = Limits {
+            hashes: Some(fsindex::HashBudget {
+                max_bytes: 1 << 20,
+                max_secs: 600,
+            }),
+            ..Default::default()
+        };
+        let l = parent::list(&files(&[img.as_path()]), &helper(), small, &mut |_| false).unwrap();
+        let big = l[0].entries.iter().find(|e| e.path == "docs/big.bin").unwrap();
+        assert_eq!(big.sha256, None, "{img:?}");
+        assert!(
+            !l[0].volume.hashed && l[0].volume.unhashed_files >= 1,
+            "{img:?}: {:?}",
+            l[0].volume
+        );
+        assert!(
+            l[0].dirs.iter().any(|r| r.rel == "docs" && !r.hashed) || l[0].dirs.is_empty(),
+            "{img:?}: the directory with the unhashed file is listed again next time"
+        );
+    }
+    if tool("mkfs.ext4").is_some() {
+        assert!(!imgs.is_empty());
+    }
+}

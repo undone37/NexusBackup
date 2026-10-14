@@ -59,9 +59,38 @@ pub struct Out<'a> {
     fatal: Option<io::Error>,
     notes: u64,
     first_note: Option<String>,
+    /// Phase 31c: content bytes still to hash, and until when
+    hash_left: Option<(u64, Instant)>,
+    /// a file was left unhashed for lack of budget (since `take_budget_miss`)
+    budget_miss: bool,
 }
 
+/// Bytes read at a time when hashing a file.
+pub const HASH_READ: usize = 1 << 20;
+
 impl Out<'_> {
+    /// Whether hashes were asked for.
+    pub fn hashing(&self) -> bool {
+        self.hash_left.is_some()
+    }
+
+    /// Takes `size` bytes from the hash budget; `false` (and noted) when it is spent.
+    pub fn hash_budget(&mut self, size: u64) -> bool {
+        let Some((left, until)) = &mut self.hash_left else {
+            return false;
+        };
+        if *left < size || Instant::now() > *until {
+            self.budget_miss = true;
+            return false;
+        }
+        *left -= size;
+        true
+    }
+
+    /// Whether a file was left unhashed for lack of budget since the last call.
+    pub fn take_budget_miss(&mut self) -> bool {
+        std::mem::take(&mut self.budget_miss)
+    }
     /// Emits one entry. `Ok(false)`: a limit was hit, stop walking.
     pub fn emit(&mut self, info: &mut Volume, path: &str, size: u64, mtime: i64, kind: u8) -> Result<bool, String> {
         self.emit_ext(info, path, size, mtime, kind, None, None)
@@ -183,6 +212,10 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         fatal: None,
         notes: 0,
         first_note: None,
+        hash_left: limits
+            .hashes
+            .map(|h| (h.max_bytes, Instant::now() + Duration::from_secs(h.max_secs))),
+        budget_miss: false,
     };
     let disks = io.borrow().disks().min(names.len());
     let mut cands = Vec::new();
@@ -484,6 +517,7 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         io.borrow_mut().forget();
         out.notes = 0;
         out.first_note = None;
+        out.take_budget_miss();
         let res = catch_unwind(AssertUnwindSafe(|| walker(&vol, &mut out, &mut info)));
         if let Some(e) = out.fatal.take() {
             return Err(e);
@@ -514,6 +548,8 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                 info.reason = Some(format!("{} parser failed on this volume", info.fs));
             }
         }
+        // Phase 31c: complete as far as hashes go (nothing left for lack of budget)
+        info.hashed = out.hashing() && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs") && !out.take_budget_miss();
         if info.dirty && info.state == "indexed" && info.fs != "ext4" {
             // ext4-view applies the journal; NTFS $LogFile / FAT are not replayed
             info.reason = Some("crash-consistent snapshot: changes of the last seconds may be missing".into());
@@ -591,6 +627,10 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
         fatal: None,
         notes: 0,
         first_note: None,
+        hash_left: limits
+            .hashes
+            .map(|h| (h.max_bytes, Instant::now() + Duration::from_secs(h.max_secs))),
+        budget_miss: false,
     };
     let mut info = Volume::default();
     walker(vol, &mut out, &mut info)?;

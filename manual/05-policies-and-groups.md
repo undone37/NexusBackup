@@ -228,13 +228,17 @@ Files of host, TrueNAS, NFS/SMB and plugin snapshots are always findable under *
 
 After each backup of the group, the appliance queues a **File index** job per VM or container snapshot. For a VM it
 reads the partition tables and file systems of the backed-up disks itself, with a sandboxed parser that only reads
-(no VM is booted, nothing is mounted): GPT and MBR partitions, LVM (linear, striped, mirrored), ext4, NTFS, FAT and
-exFAT. XFS, btrfs and ZFS volumes are listed with the restore micro-VM instead. A container's stored tar stream is
-read directly. Only the metadata of changed volumes is read again, so the job usually takes seconds to a few minutes.
-Linux paths are shown with their mount points from the guest's `/etc/fstab`, Windows paths with `C:` for the system
-volume. Volumes the parser cannot read (BitLocker or LUKS encryption, ReFS, Storage Spaces, Windows dynamic disks) are
-skipped and reported per snapshot (**partly indexed** on the Snapshots page and in the search). Only snapshots taken
-while the setting is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
+(no VM is booted, nothing is mounted): GPT and MBR partitions, LVM (linear, striped, mirrored, thin), Windows dynamic
+disks (simple, spanned and mirrored volumes), ext4, NTFS, XFS, btrfs (single disk), FAT and exFAT. ZFS and btrfs
+spread over several disks are listed with the restore micro-VM instead. A container's stored tar stream is read
+directly. Only the metadata of changed volumes and folders is read again, so the job usually takes seconds to a few
+minutes. Linux paths are shown with their mount points from the guest's `/etc/fstab`, Windows paths with the drive
+letters from the guest's registry (`C:` for the system volume when the registry does not say). The index also keeps
+each file's owner (Windows account SID, Linux user and group number); the search API returns it with each version
+of a hit (`versions[].owner`).
+Volumes the parser cannot read (BitLocker or LUKS encryption, ReFS, Storage Spaces, striped or RAID-5 dynamic volumes)
+are skipped and reported per snapshot (**partly indexed** on the Snapshots page and in the search). Only snapshots
+taken while the setting is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).
 
 ### File search scope
 
@@ -270,8 +274,10 @@ The **Threat detection** part of a group's dialog (every source kind) has two op
   capability (version with Phase 28) compute the hashes while they read; for older agents, shares, TrueNAS
   datasets and plugin file trees the appliance computes them, and unchanged files take the hash of the previous
   snapshot. The first backup after switching it on reads the files once more from the store, so it takes longer.
-  Containers are hashed together with **Index files in VM/CT disks**; VM disks are not hashed yet. The list of
-  groups shows **File hashes**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#ioc-hash-hunt).
+  Containers and VM disks (NTFS, ext4 and XFS volumes) are hashed together with **Index files in VM/CT disks**: the
+  first file index after switching it on reads every file of the guest's disks once (up to half of the job's time;
+  files left over are hashed with the next snapshot), later ones only the changed folders. The list of groups shows
+  **File hashes**. See [11 Alerts and monitoring](11-alerts-and-monitoring.md#ioc-hash-hunt).
 
 ![Protection group: threat detection](images/group-threat-scan.png)
 

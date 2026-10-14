@@ -96,6 +96,15 @@ pub struct Volume {
     /// entries skipped (path too long, names that do not decode, …)
     #[serde(default)]
     pub skipped_entries: u64,
+    /// Phase 31c, with hashes asked for: regular files hashed / not hashed (budget spent,
+    /// compressed or encrypted data, deduplicated, read errors)
+    #[serde(default)]
+    pub hashed_files: u64,
+    #[serde(default)]
+    pub unhashed_files: u64,
+    /// every regular file has its hash, or cannot have one (none left for a later run)
+    #[serde(default)]
+    pub hashed: bool,
     /// how the SYSTEM hive's `MountedDevices` names this volume: `guid:<GPT partition
     /// or dynamic volume GUID>`, `mbr:<disk signature>:<byte offset>`
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +145,10 @@ pub struct DirRec {
     pub dedup: u64,
     #[serde(default)]
     pub skipped: u64,
+    /// listed with hashes, none of its files left unhashed for lack of budget (a listing
+    /// that wants hashes takes only such records over)
+    #[serde(default)]
+    pub hashed: bool,
 }
 
 /// The sealed per-snapshot volume report (`fsindex` side file, crate
@@ -187,6 +200,27 @@ pub struct Limits {
     /// which share of the directory trees this helper walks (Phase 32)
     #[serde(default)]
     pub part: Part,
+    /// Phase 31c: SHA-256 of regular files' contents (NTFS, ext4, XFS), within this budget
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashes: Option<HashBudget>,
+}
+
+/// How much file content one helper reads for hashes (all volumes of a listing).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct HashBudget {
+    pub max_bytes: u64,
+    pub max_secs: u64,
+}
+
+impl HashBudget {
+    /// The default for a listing with `budget_secs`: half of its time (the listing must
+    /// finish), up to 1 TiB of file content.
+    pub fn for_listing(budget_secs: u64) -> HashBudget {
+        HashBudget {
+            max_bytes: 1 << 40,
+            max_secs: budget_secs / 2,
+        }
+    }
 }
 
 impl Default for Limits {
@@ -195,6 +229,7 @@ impl Default for Limits {
             max_entries: 5_000_000,
             budget_secs: 3600,
             part: Part::default(),
+            hashes: None,
         }
     }
 }

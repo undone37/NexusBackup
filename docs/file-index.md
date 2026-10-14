@@ -104,8 +104,8 @@ in the sealed name index, so a hunt for known-bad hashes (IOC feeds) needs no re
   list; otherwise read back from the store (older agents, the first run after switching it on). The job log has a
   line `file hashes: N while reading, N from the previous snapshot, N read back from the store, N failed`.
 - **Containers:** with `index_files` and `file_hashes` the `file_index` job hashes every regular file of the root
-  tar (`nexus-pve … ct-files … index hashes`). **VM disks** get no hashes yet (the walk in the micro-VM would read
-  every file; decision: later, opt-in).
+  tar (`nexus-pve … ct-files … index hashes`). **VM disks** too since Phase 31c (`files … index hashes`, see
+  "Content hashes of VM disk files" below).
 - **Hash lists:** `PUT /hash-lists/{name} {text}` (admins, security officers; text or CSV, the first SHA-256 per
   line; MD5/SHA-1 skipped and counted); at most 20 lists, 100 000 hashes each, 500 000 together; stored normalised
   in `hash_lists` (catalog v43), audited with their SHA-256.
@@ -243,6 +243,22 @@ from the previous name index. The search index (`nexus-index`, crate `fileindex`
 (stored field, the schema change rebuilds the tenant indexes once) and returns it with each version of a hit
 (`versions[].owner`). Not yet: a search filter by owner (needs the web-api parameter and the UI, Phase 33 area) and
 names for SIDs / uids (the guest's SAM / `passwd`).
+
+**Content hashes of VM disk files (Phase 31c).** For groups with `index_files` and `file_hashes` the scheduler
+queues `file_index {source, time, hashes: true}` for VM snapshots as for containers, and `nexus-pve … files <vmid>
+<time> index hashes` asks the helpers for the SHA-256 of every regular file: NTFS through the file's unnamed `$DATA`
+(compressed and encrypted attributes, and deduplicated stubs, are left unhashed: the crate would return their raw
+bytes), ext4 through `ext4-view`'s file reader, XFS through its extents (holes and unwritten extents read as zeros).
+btrfs, FAT and exFAT files stay unhashed for now. The content is read through the same pipe and caches as the
+metadata (the helper never sees a key), 1 MiB at a time, and only by the helper that owns the directory. Budget per
+helper: half of the listing's time budget and 1 TiB of content (`HashBudget`); files beyond it stay unhashed and are
+counted (`hashed_files` / `unhashed_files` per volume, `hashes` / `unhashed` in the job result). The entry frame
+carries the hash (`extra` bit 1, 32 bytes; the parent accepts it on files only) and the name index stores it as v2
+(v3 with owners), so the IOC hash hunt covers VM disks without a restore. Taking over: a directory record and a
+volume carry `hashed` (listed with hashes, nothing left unhashed for lack of budget); a listing with hashes takes over
+only such directories and reuses only such volumes, so the first listing with hashes after switching the option on
+reads the files once, and a directory cut short by the budget is listed (and its files hashed) again next time. A
+directory's read set includes the content it read, so a changed file always means a new listing of its directory.
 
 **Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
 reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)

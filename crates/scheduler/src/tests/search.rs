@@ -223,6 +223,30 @@ fn vm_index_follows_group_backups() {
         panic!()
     };
     assert_eq!(&args[1..], ["ct-files", "300", "7", "index"]);
+    // Phase 31c: VM disks get content hashes too (groups with file_hashes)
+    let hashed = Job {
+        params: json!({"source": "vm-100", "time": 5, "hashes": true}),
+        ..job.clone()
+    };
+    let Step::Cli { args: a, .. } = &s.plan(&hashed).unwrap().steps[0] else {
+        panic!()
+    };
+    assert_eq!(&a[1..], ["files", "100", "5", "index", "hashes"]);
+    s.db.conn()
+        .execute("UPDATE groups SET file_hashes = 1 WHERE id = 1", [])
+        .unwrap();
+    s.queue_name_index(
+        &Job {
+            params: json!({"group_id": 1}),
+            ..job.clone()
+        },
+        Some(&json!({"snapshots": [{"source": "vm-100", "time": 9}]})),
+    )
+    .unwrap();
+    assert_eq!(
+        index_jobs(&s).last().unwrap(),
+        &json!({"source": "vm-100", "time": 9, "hashes": true})
+    );
     let cfg: Value = serde_json::from_slice(&plan.files[0].1).unwrap();
     assert!(cfg.get("api").is_none(), "no PVE credentials: {cfg}");
     for bad in [json!({"source": "host-x", "time": 1}), json!({"source": "vm-1"})] {

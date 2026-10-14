@@ -163,6 +163,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         // for this directory's record (Phase 31c): its subdirectories, complete or not, its counters
         let mut subdirs: Vec<(u64, String)> = Vec::new();
         let mut complete = true;
+        let mut budget_miss = false;
         let (dedup0, skipped0) = (info.dedup_files, info.skipped_entries);
         let dir = match ntfs.file(&mut fs, rec) {
             Ok(d) => d,
@@ -173,15 +174,16 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 continue;
             }
         };
-        let idx = match dir.directory_index(&mut fs) {
-            Ok(i) => i,
-            Err(e) => {
-                if own {
-                    out.note(info, format!("/{rel}: {e}"));
+        let idx =
+            match index_root_ok(&dir, &mut fs).and_then(|()| dir.directory_index(&mut fs).map_err(|e| e.to_string())) {
+                Ok(i) => i,
+                Err(e) => {
+                    if own {
+                        out.note(info, format!("/{rel}: {e}"));
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         let mut it = idx.entries();
         let mut seen = std::collections::HashSet::new();
         while let Some(e) = it.next(&mut fs) {
@@ -284,7 +286,25 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 .and_then(|s| s.security_id())
                 .and_then(|id| owner_of.get(&id))
                 .map(String::as_str);
-            if own && !out.emit_ext(info, &path, size, nt_to_unix(mtime), kind, owner, None)? {
+            // Phase 31c: the content's SHA-256 (not of deduplicated stubs; budgeted)
+            let mut sha = None;
+            if kind == KIND_FILE && own && out.hashing() {
+                if tag == Some(TAG_DEDUP) {
+                    info.unhashed_files += 1;
+                } else if !out.hash_budget(size) {
+                    info.unhashed_files += 1;
+                    budget_miss = true;
+                } else {
+                    match hash_data(&file, &mut fs, size) {
+                        Ok(h) => {
+                            sha = Some(h);
+                            info.hashed_files += 1;
+                        }
+                        Err(_) => info.unhashed_files += 1,
+                    }
+                }
+            }
+            if own && !out.emit_ext(info, &path, size, nt_to_unix(mtime), kind, owner, sha.as_ref())? {
                 return Ok(());
             }
             if kind == KIND_DIR {
@@ -306,6 +326,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 subdirs,
                 dedup: info.dedup_files - dedup0,
                 skipped: info.skipped_entries - skipped0,
+                hashed: out.hashing() && !budget_miss,
                 ..Default::default()
             });
         }
@@ -316,6 +337,53 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         info.drives = drives(&ntfs, &mut fs).unwrap_or_default();
     }
     Ok(())
+}
+
+/// The index record size a directory's `$INDEX_ROOT` names: the crate allocates a
+/// record of it for every index block it reads, so a hostile size is refused first.
+fn index_root_ok(dir: &NtfsFile, fs: &mut Padded) -> Result<(), String> {
+    let mut attrs = dir.attributes();
+    while let Some(item) = attrs.next(fs) {
+        let item = item.map_err(|e| e.to_string())?;
+        let a = item.to_attribute().map_err(|e| e.to_string())?;
+        if a.ty().ok() != Some(NtfsAttributeType::IndexRoot) {
+            continue;
+        }
+        let r = a
+            .resident_structured_value::<ntfs::structured_values::NtfsIndexRoot>()
+            .map_err(|e| e.to_string())?;
+        let n = r.index_record_size();
+        if !(512..=65536).contains(&n) || !n.is_power_of_two() {
+            return Err(format!("index record size {n}"));
+        }
+    }
+    Ok(())
+}
+
+/// SHA-256 of a file's unnamed `$DATA` (`size` bytes); compressed or encrypted data
+/// (the crate would return it raw) is an error.
+fn hash_data(f: &NtfsFile, fs: &mut Padded, size: u64) -> Result<[u8; 32], String> {
+    use ntfs::NtfsAttributeFlags as F;
+    use sha2::Digest;
+    let item = f.data(fs, "").ok_or("no data")?.map_err(|e| e.to_string())?;
+    let a = item.to_attribute().map_err(|e| e.to_string())?;
+    if a.flags().intersects(F::COMPRESSED | F::ENCRYPTED) || a.value_length() != size {
+        return Err("compressed or encrypted".into());
+    }
+    let mut v = a.value(fs).map_err(|e| e.to_string())?;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; crate::walk::HASH_READ];
+    let mut done = 0u64;
+    while done < size {
+        let n = v.read(fs, &mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("short read".into());
+        }
+        let n = (n as u64).min(size - done) as usize;
+        h.update(&buf[..n]);
+        done += n as u64;
+    }
+    Ok(h.finalize().into())
 }
 
 /// The SYSTEM hive of the volume, read in place through the file's `$DATA`.
@@ -356,6 +424,7 @@ fn drives(ntfs: &Ntfs, fs: &mut Padded) -> Result<Vec<(String, String)>, String>
     let mut rec = ROOT;
     for name in ["WINDOWS", "SYSTEM32", "CONFIG", "SYSTEM"] {
         let dir = ntfs.file(fs, rec).map_err(e)?;
+        index_root_ok(&dir, fs)?;
         let idx = dir.directory_index(fs).map_err(e)?;
         let mut finder = idx.finder();
         let hit = finder

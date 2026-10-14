@@ -337,6 +337,52 @@ impl Xfs {
         Ok(out)
     }
 
+    /// SHA-256 of a regular file's content (holes and unwritten extents are zeros).
+    pub fn hash_file(&self, ino: &Inode) -> Result<[u8; 32], String> {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        let size = ino.size;
+        if ino.format == 1 {
+            let d = ino.fork.get(..size as usize).ok_or("xfs: inline data")?;
+            h.update(d);
+            return Ok(h.finalize().into());
+        }
+        let zeros = vec![0u8; crate::walk::HASH_READ];
+        let feed_zeros = |h: &mut sha2::Sha256, mut n: u64| {
+            while n > 0 {
+                let k = n.min(zeros.len() as u64) as usize;
+                h.update(&zeros[..k]);
+                n -= k as u64;
+            }
+        };
+        let mut pos = 0u64;
+        for e in self.extents(ino)? {
+            let start = e.off.saturating_mul(self.bs);
+            if start >= size {
+                break;
+            }
+            if start < pos {
+                return Err("xfs: overlapping extents".into());
+            }
+            feed_zeros(&mut h, start - pos);
+            let len = (e.len * self.bs).min(size - start);
+            if e.unwritten {
+                feed_zeros(&mut h, len);
+            } else {
+                let base = self.fsb_off(e.fsb)?;
+                let mut done = 0;
+                while done < len {
+                    let k = (len - done).min(crate::walk::HASH_READ as u64);
+                    h.update(&self.read(base + done, k)?);
+                    done += k;
+                }
+            }
+            pos = start + len;
+        }
+        feed_zeros(&mut h, size.saturating_sub(pos));
+        Ok(h.finalize().into())
+    }
+
     /// The entries of directory `ino`: (name, inode number, file type from the entry
     /// if the file system records it). `Err` for an unreadable directory; damaged
     /// blocks inside it are skipped and counted in `bad`.
@@ -575,6 +621,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         }
         let mut subdirs = Vec::new();
         let mut seen = HashSet::new();
+        let mut budget_miss = false;
         for (name, n, ft) in entries {
             if name == b"." || name == b".." {
                 continue;
@@ -613,7 +660,23 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             let kind = ino.kind();
             let size = if kind == KIND_FILE { ino.size } else { 0 };
             let owner = format!("{}:{}", ino.uid, ino.gid);
-            if !out.emit_ext(info, &path, size, ino.mtime, kind, Some(&owner), None)? {
+            // Phase 31c: the content's SHA-256 (budgeted)
+            let mut sha = None;
+            if kind == KIND_FILE && out.hashing() {
+                if !out.hash_budget(size) {
+                    info.unhashed_files += 1;
+                    budget_miss = true;
+                } else {
+                    match fs.hash_file(&ino) {
+                        Ok(h) => {
+                            sha = Some(h);
+                            info.hashed_files += 1;
+                        }
+                        Err(_) => info.unhashed_files += 1,
+                    }
+                }
+            }
+            if !out.emit_ext(info, &path, size, ino.mtime, kind, Some(&owner), sha.as_ref())? {
                 return Ok(());
             }
             if kind == KIND_DIR {
@@ -634,6 +697,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 rel,
                 subdirs,
                 skipped: info.skipped_entries - skipped0,
+                hashed: out.hashing() && !budget_miss,
                 ..Default::default()
             });
         }

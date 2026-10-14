@@ -642,15 +642,18 @@ pub fn index_roots(
     Ok((out, true))
 }
 
-/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index | index-vm`
+/// `nexus-pve … files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index [hashes] | index-vm`
 /// (`index`: crates/pve/src/fsindex.rs; `index-vm`: the walk in the micro-VM):
 /// all fixed indexes (disks) of the VM snapshot attached. Image directory from
 /// `NEXUS_RESTORE_VM_DIR` (default `/usr/lib/nexus/restore-vm`), QEMU from `NEXUS_QEMU`.
 pub fn cli(store: &Store, vmid: u32, time: u64, args: &[String]) -> Result<()> {
-    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index | index-vm";
-    // Phase 31a: the name index without booting the micro-VM (sandboxed parser)
-    if matches!(args, [c] if c == "index") {
-        return crate::fsindex::cli(store, &crate::backup::source_name(vmid), time);
+    let usage = "files <vmid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index [hashes] | index-vm";
+    // Phase 31a: the name index without booting the micro-VM (sandboxed parser); Phase 31c:
+    // `hashes` adds the content hashes (groups with `file_hashes`)
+    if let [c, rest @ ..] = args {
+        if c == "index" && rest.len() <= 1 && rest.iter().all(|a| a == "hashes") {
+            return crate::fsindex::cli(store, &crate::backup::source_name(vmid), time, !rest.is_empty());
+        }
     }
     let m = store.load_manifest(&crate::backup::source_name(vmid), time)?;
     let mut disks = Vec::new();

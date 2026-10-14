@@ -173,6 +173,9 @@ fn merge(out: &mut [Listed], part: Vec<Listed>) {
         l.volume.windows |= p.volume.windows;
         l.volume.dedup_files += p.volume.dedup_files;
         l.volume.skipped_entries += p.volume.skipped_entries;
+        l.volume.hashed_files += p.volume.hashed_files;
+        l.volume.unhashed_files += p.volume.unhashed_files;
+        l.volume.hashed &= p.volume.hashed;
         l.reads.extend(p.reads);
         l.entries.extend(p.entries);
         l.dirs.extend(p.dirs);

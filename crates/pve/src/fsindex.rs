@@ -51,6 +51,8 @@ struct StoreSource<'a> {
     history: Hist,
     /// directories taken over from it
     taken: AtomicU64,
+    /// Phase 31c: content hashes asked for (only records listed with hashes are taken over)
+    hashes: bool,
 }
 
 /// (volume key, directory) -> (its entries, its record in this snapshot's disk numbers)
@@ -195,7 +197,11 @@ impl Source for StoreSource<'_> {
         self.disks[d].0
     }
     fn dir(&self, key: &str, rel: &str) -> Option<(Vec<Entry>, DirRec)> {
-        let hit = self.history.get(&(key.to_owned(), rel.to_owned())).cloned();
+        let hit = self
+            .history
+            .get(&(key.to_owned(), rel.to_owned()))
+            .filter(|(_, r)| r.hashed || !self.hashes)
+            .cloned();
         if hit.is_some() {
             self.taken.fetch_add(1, Ordering::Relaxed);
         }
@@ -293,6 +299,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         loads: AtomicU64::new(0),
         history: Hist::new(),
         taken: AtomicU64::new(0),
+        hashes: limits.hashes.is_some(),
     };
     let disk_no: HashMap<String, usize> = src.names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
     let prev = previous(store, m);
@@ -307,6 +314,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     // a volume is reused when every chunk its last parse read is unchanged
     let unchanged = |rec: &VolumeRec| {
         rec.volume.state == "indexed"
+            && (rec.volume.hashed || limits.hashes.is_none())
             && !rec.reads.is_empty()
             && rec.reads.iter().all(|(disk, c, id)| {
                 disk_no.get(disk).is_some_and(|&d| {
@@ -505,6 +513,8 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         "parsed": parsed,
         "reused": reused,
         "dirs_taken_over": src.taken.load(Ordering::Relaxed),
+        "hashes": names.sha256.len(),
+        "unhashed": listed.iter().map(|l| l.volume.unhashed_files).sum::<u64>(),
         "micro_vm": fallback,
         "elapsed_ms": t0.elapsed().as_millis() as u64,
     }))
@@ -587,10 +597,15 @@ fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], li
     true
 }
 
-/// `nexus-pve … files <vmid> <time> index`: see [`index`].
-pub fn cli(store: &Store, source: &str, time: u64) -> Result<()> {
+/// `nexus-pve … files <vmid> <time> index [hashes]`: see [`index`]; `hashes`: the
+/// SHA-256 of every regular file too (groups with `file_hashes`, Phase 31c).
+pub fn cli(store: &Store, source: &str, time: u64, hashes: bool) -> Result<()> {
     let m = store.load_manifest(source, time)?;
-    let out = index(store, &m, Limits::default())?;
+    let mut limits = Limits::default();
+    if hashes {
+        limits.hashes = Some(fsindex::HashBudget::for_listing(limits.budget_secs));
+    }
+    let out = index(store, &m, limits)?;
     println!("{out}");
     Ok(())
 }

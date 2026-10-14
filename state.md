@@ -594,7 +594,18 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   forged columns, ext4/NTFS (ntfs-3g `permissions`) owners, $SDS parser with mirror blocks and byte flips, frame
   round trip + hostile owners, pve owners after reuse, fileindex hit owners. Open: owner search filter (web-api
   parameter + UI), SID / uid names
-- [ ] 31c: content hashes for VM disk files
+- [x] 31c content hashes for VM disk files (groups with `index_files` + `file_hashes`): scheduler queues
+  `hashes` for VM snapshots too, `files … index hashes`; helpers hash NTFS `$DATA` (not compressed / encrypted /
+  dedup stubs), ext4 (ext4-view reader) and XFS (extents, holes as zeros), budget per helper (half the listing time,
+  1 TiB), counters per volume and in the job result; hashes in the entry frame (files only) -> name index v2/v3;
+  `hashed` on directory records and volumes: a hashing listing takes over / reuses only hashed ones; tests: SHA-256
+  of known files on ext4/NTFS/XFS with 1 and 3 helpers, budget too small, pve no-hash -> hash -> reuse with hashes,
+  scheduler args/queue; the walk fuzz targets (ntfs/ext4/xfs) hash too. Fuzz findings fixed (both inside the
+  crates, contained by the helper's rlimit before, now refused up front; regression inputs in tests/regress): an
+  NTFS `$INDEX_ROOT` with a huge index record size, an ext4 superblock whose block count made `ext4-view` allocate
+  25 GB of block group descriptors (file system larger than its volume); `/etc/fstab` is read only up to 64 KiB
+- [ ] 31c open: btrfs / FAT / exFAT hashes, owner search filter (web-api + UI), SID/uid names, GPT dynamic disks
+  checked against Windows, micro-VM restore from dynamic volumes, lab run of the new walkers on real guests
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)
