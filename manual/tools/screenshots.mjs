@@ -781,7 +781,7 @@ async function main() {
       await shot('replication-source-new', { height: 1150 });
       await closeDialogs();
       // Phase 17a: sync window and bandwidth windows of a source
-      await ev(`$rowClick('hq-primary', 'Windows'); return true;`);
+      await ev(`$rowMenu('hq-primary', 'Windows'); return true;`);
       await until(`return !!document.querySelector('dialog[open] #w-tz')`, 'windows dialog');
       await shot('replication-windows', { height: 1300 });
       await closeDialogs();
@@ -1254,13 +1254,13 @@ async function main() {
     ['vault-close', async () => {
       await login('so');
       await go('/replication');
-      await ev(`$rowClick('hq-primary', 'Close vault (pause pulling now)'); return true;`);
+      await ev(`$rowMenu('hq-primary', 'Close vault (pause pulling now)'); return true;`);
       await confirmOk();
       await settle();
       await shot('replication-closed');
       await login('admin');
       await go('/replication');
-      await ev(`$rowClick('hq-primary', 'Request reopening'); return true;`);
+      await ev(`$rowMenu('hq-primary', 'Request reopening'); return true;`);
       await confirmOk();
       await login('so');
       const q = (await api('GET', '/quorum')).body.find((x) => x.action === 'replication.reopen' && x.state === 'pending');
