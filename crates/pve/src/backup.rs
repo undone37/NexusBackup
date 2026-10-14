@@ -329,6 +329,7 @@ impl Cluster {
     }
 
     /// Polls `job <vmid>` until the plugin published the job of the running vzdump task.
+    /// The node's job of this backup's vzdump task `upid` (refused: the job of an older task).
     pub(crate) fn wait_job(&self, node: &str, ssh: &SshNode, vmid: u32, upid: &str, kind: &str) -> Result<Job> {
         loop {
             if let Some(exit) = self.api.task_status(node, upid)? {
@@ -339,6 +340,21 @@ impl Cluster {
                 let job = serde_json::from_slice::<Job>(&out).context("job JSON")?;
                 if job.kind != kind {
                     bail!("node published a {} job for {vmid}, expected {kind}", job.kind);
+                }
+                // The job of another vzdump task of this guest (one whose appliance went away
+                // still holds the guest's backup lock; found on the PVE lab host): serving it
+                // would end that task and leave ours waiting for us forever. Ours sets the
+                // archive time when its backup starts, after the lock: never before the task.
+                if let Some(start) = upid_start(upid) {
+                    if job.time()? < start {
+                        let _ = self.api.stop_task(upid);
+                        bail!(
+                            "another backup task of guest {vmid} on node {node} still waits for an appliance (job {}, \
+                             published before this backup started): stop that vzdump task in the Proxmox VE task \
+                             list, then back up again",
+                            job.archive
+                        );
+                    }
                 }
                 return Ok(job);
             }
@@ -1036,8 +1052,35 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
     Ok(serde_json::json!({ "version": 1, "archives": archives }))
 }
 
+/// Start time of a PVE task: `UPID:node:pid:pstart:starttime:type:id:user:` (hex).
+fn upid_start(upid: &str) -> Option<u64> {
+    u64::from_str_radix(upid.split(':').nth(4)?, 16).ok()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn upid_start_and_older_jobs() {
+        // the lab case: the orphaned task's job (20:34) vs. our task started 20:39:35
+        let ours = "UPID:pve-test:0000D2DB:000CD731:6ACFCC67:vzdump:101:nexus@pve!backup:";
+        assert_eq!(super::upid_start(ours), Some(1792003175));
+        let job = |archive: &str| super::Job {
+            archive: archive.into(),
+            ..serde_json::from_value(serde_json::json!({"vmid": 101, "archive": "x", "devices": [], "config": ""}))
+                .unwrap()
+        };
+        assert!(
+            job("nexus-101-1792002845").time().unwrap() < 1792003175,
+            "older job: refused"
+        );
+        assert!(
+            job("nexus-101-1792003679").time().unwrap() >= 1792003175,
+            "ours (after the lock)"
+        );
+        assert_eq!(super::upid_start("UPID:x"), None);
+        assert_eq!(super::upid_start("UPID:n:1:2:zz:vzdump:1:u:"), None);
+    }
 
     #[test]
     fn scan_extents_merge_dirty_and_tail() {
