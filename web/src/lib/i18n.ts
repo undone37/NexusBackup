@@ -2419,6 +2419,8 @@ export const en = {
     readOnly: "Read-only: only administrators change plugins.",
   },
   quorum: {
+    unchanged: (n: number) => `${n} unchanged field${n === 1 ? '' : 's'}`,
+    noFieldChanged: "No field changes (the request only repeats the current values).",
     approveConfirm: (id: number, action: string, by: string) =>
       `Approve request #${id} (${action}) by ${by}? It is executed immediately and cannot be undone.`,
     title: "Approvals",

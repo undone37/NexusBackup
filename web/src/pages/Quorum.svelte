@@ -183,16 +183,31 @@
               </tr>
             </thead>
             <tbody>
-              {#each d as row (row.k)}
-                <tr class:changed={row.changed}>
-                  <td class="mono">{row.k}{#if row.changed}<span class="visually-hidden"> (changed)</span>{/if}</td>
+              <!-- what changes first; the unchanged fields only on request -->
+              {#each d.filter((row) => row.changed) as row (row.k)}
+                <tr class="changed">
+                  <td class="mono">{row.k}<span class="visually-hidden"> (changed)</span></td>
                   <td class="mono">{fmtValue(row.before)}</td>
                   <td class="mono"><strong>{fmtValue(row.after)}</strong></td>
                 </tr>
+              {:else}
+                <tr><td colspan="3" class="muted">{t.quorum.noFieldChanged}</td></tr>
               {/each}
             </tbody>
           </table>
         </div>
+        {@const same = d.filter((row) => !row.changed)}
+        {#if same.length}
+          <details class="unchanged">
+            <summary class="muted small">{t.quorum.unchanged(same.length)}</summary>
+            <dl class="kv">
+              {#each same as row (row.k)}
+                <dt class="mono">{row.k}</dt>
+                <dd class="mono">{fmtValue(row.after)}</dd>
+              {/each}
+            </dl>
+          </details>
+        {/if}
       {/if}
       {#if q.action === 'policy.update' && q.state === 'pending'}
         {@const now = simOf(q.params)}
