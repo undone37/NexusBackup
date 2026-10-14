@@ -260,6 +260,10 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                 info.fs = "xfs".into();
                 crate::xfs::walk
             }
+            Kind::Btrfs => {
+                info.fs = "btrfs".into();
+                crate::btrfs::walk
+            }
             Kind::LvmPv => {
                 match (lvm::read_pv(vol), at) {
                     (Ok(pv), Some(at)) => {
@@ -466,6 +470,7 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
         "vfat" => crate::fat::walk,
         "exfat" => crate::exfat::walk,
         "xfs" => crate::xfs::walk,
+        "btrfs" => crate::btrfs::walk,
         _ => return Err(format!("unknown parser {fs}")),
     };
     let mut c = Count(0);

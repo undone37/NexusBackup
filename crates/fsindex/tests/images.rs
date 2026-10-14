@@ -745,15 +745,24 @@ fn hostile_volumes_fail_alone() {
     exf[511] = 0xaa;
     let mut xfs = noise(4 << 20);
     xfs[0..4].copy_from_slice(b"XFSB");
+    let mut btrfs = noise(4 << 20);
+    btrfs[0x10040..0x10048].copy_from_slice(b"_BHRfS_M");
+    btrfs[0x10088..0x10090].copy_from_slice(&1u64.to_le_bytes());
     let mut paths = Vec::new();
-    for (n, b) in [("ntfs", ntfs), ("ext", ext), ("exfat", exf), ("xfs", xfs)] {
+    for (n, b) in [
+        ("ntfs", ntfs),
+        ("ext", ext),
+        ("exfat", exf),
+        ("xfs", xfs),
+        ("btrfs", btrfs),
+    ] {
         let p = d.path().join(n);
         fs::write(&p, b).unwrap();
         paths.push(p);
     }
     let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
     let l = list(&refs);
-    assert_eq!(l.len(), 4, "{l:?}");
+    assert_eq!(l.len(), 5, "{l:?}");
     assert!(
         l.iter().all(|x| x.volume.state == "failed"),
         "{:?}",
@@ -1155,4 +1164,81 @@ segment1 { start_extent = 0 extent_count = 2 type = "striped" stripe_count = 1 s
         "{:?}",
         v.volume
     );
+}
+
+/// Phase 31c: btrfs through the own parser (mkfs.btrfs --rootdir, no root): the
+/// top-level subvolume with nested subvolumes (listed as directories with their
+/// contents), a default subvolume (listed alone, as the micro-VM mounts it),
+/// 4 KiB nodes, zstd-compressed files (sizes are logical).
+#[test]
+fn btrfs_subvolumes() {
+    let d = tempfile::tempdir().unwrap();
+    let tree = d.path().join("tree");
+    let uuid = "0b7e5c1d-2222-4333-8444-555566667777";
+    let mut expect = sample(&tree, &format!("UUID={uuid} / btrfs defaults 0 0\n"));
+    fs::create_dir_all(tree.join("srv/data/inner")).unwrap();
+    for i in 0..300 {
+        fs::write(tree.join(format!("srv/data/f{i:03}.txt")), format!("{i}")).unwrap();
+        expect.push((format!("srv/data/f{i:03}.txt"), 0, format!("{i}").len() as u64));
+    }
+    fs::write(tree.join("srv/data/inner/x.bin"), vec![3u8; 70_000]).unwrap();
+    std::os::unix::fs::symlink("../etc/fstab", tree.join("srv/link")).unwrap();
+    expect.extend([
+        ("srv".into(), 1, 0),
+        ("srv/data".into(), 1, 0),
+        ("srv/data/inner".into(), 1, 0),
+        ("srv/data/inner/x.bin".into(), 0, 70_000),
+        ("srv/link".into(), 2, 0),
+    ]);
+    expect.sort();
+    let home: Vec<(String, u8, u64)> = expect
+        .iter()
+        .filter_map(|(p, k, n)| Some((p.strip_prefix("home/")?.to_owned(), *k, *n)))
+        .collect();
+    let mut ran = 0;
+    for (name, args, want) in [
+        (
+            "subvolumes",
+            vec!["-u", "rw:srv/data", "-u", "rw:srv/data/inner"],
+            &expect,
+        ),
+        ("default", vec!["-u", "default:home", "-n", "4096"], &home),
+        ("zstd", vec!["--compress", "zstd", "-u", "rw:srv"], &expect),
+    ] {
+        let img = d.path().join(format!("{name}.img"));
+        sized(&img, 256 << 20);
+        let mut a = vec!["-q", "-L", "pool", "-U", uuid, "-r", tree.to_str().unwrap()];
+        a.extend(&args);
+        a.push(img.to_str().unwrap());
+        if !run("mkfs.btrfs", &a) {
+            continue;
+        }
+        ran += 1;
+        let l = list(&[&img]);
+        let v = vol(&l, "vda");
+        assert_eq!(
+            (v.volume.fs.as_str(), v.volume.state.as_str()),
+            ("btrfs", "indexed"),
+            "{name}: {:?}",
+            v.volume
+        );
+        assert_eq!(&got(v, &[]), want, "{name}");
+        assert_eq!(v.volume.label.as_deref(), Some("pool"));
+        assert_eq!(v.volume.uuid.as_deref(), Some(uuid));
+        let mtime = v
+            .entries
+            .iter()
+            .find(|e| e.path.ends_with("a.bin") || e.path == "etc/fstab");
+        if let Some(e) = mtime {
+            assert_eq!(e.mtime, MTIME, "{name}: {e:?}");
+        }
+        if name == "subvolumes" {
+            let mut vols = vec![v.volume.clone()];
+            fsindex::mapping::assign(&mut vols);
+            assert_eq!(vols[0].mount.as_deref(), Some("/"), "root from its own fstab");
+        }
+    }
+    if tool("mkfs.btrfs").is_some() {
+        assert!(ran >= 1, "mkfs.btrfs ran");
+    }
 }

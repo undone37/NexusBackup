@@ -575,7 +575,12 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   key order, depth/loop/run bounds) -> segments on the pool's data LV, unmapped blocks read zeros; pool LV
   `skipped`; external-origin thin LVs reported; volume key hashes the mapping; test with hand-written LVM + pool
   metadata and an ext4 in reverse block order (damaged node, missing device); fuzz target `lvm_thin`
-- [ ] 31c: btrfs, Windows LDM, owners/SIDs, content hashes
+- [x] 31c btrfs walker (`fsindex::btrfs`, single device): superblock, sys chunk array + chunk tree, root tree, fs
+  trees, default subvolume first (as the micro-VM mounts it), subvolumes/snapshots as directories, CRC-32C nodes,
+  bounded; no directory records (copy-on-write: read sets always change), split between helpers; multi-device btrfs
+  -> probe "unsupported" -> micro-VM fallback; tests: mkfs.btrfs --rootdir with nested subvolumes, default
+  subvolume + 4 KiB nodes, zstd; hostile btrfs fails alone; fuzz target `btrfs_walk` (sparse disk records)
+- [ ] 31c: Windows LDM, owners/SIDs, content hashes
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

@@ -134,8 +134,8 @@ volume the browse name, device, file system, label, UUID, PARTUUID, state (`inde
 `LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows: drive letters from the system volume's
 SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
-key is the set of chunk ids, the granularity is the volume). btrfs and ZFS volumes (XFS until Phase 31c, see
-below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
+key is the set of chunk ids, the granularity is the volume). ZFS and multi-device btrfs volumes (XFS and btrfs
+until Phase 31c, see below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
 BitLocker, LUKS, ReFS, Windows dynamic disks (LDM), Storage Spaces, md RAID, LVM cache/VDO/RAID5 are reported with
 their reason (LVM thin volumes are read since Phase 31c, see below).
 
@@ -184,6 +184,21 @@ cache, so XFS directories get records and are taken over unread like NTFS ones. 
 btrfs and ZFS. Tests: mkfs.xfs with a protofile (no root), v5 with 4 KiB and 1 KiB blocks and v4 without file
 types, each with short form, block, leaf, node and B+tree directories; fuzz target `xfs_walk` (checksums are not
 verified in fuzz builds, `cfg(fuzzing)`, so the fuzzer reaches the parsers behind them).
+
+**btrfs (Phase 31c).** Single-device btrfs is read by an own parser too (`fsindex::btrfs`): superblock (CRC-32C
+checked when that is the checksum type; xxhash, SHA-256 and BLAKE2 file systems are read without verifying),
+the system chunk array and the chunk tree (logical to physical; single, DUP and RAID1 profiles by their first stripe),
+the root tree and the file system trees (directory index items, inode items; inline and uncompressed extents for
+`/etc/fstab`). The listing starts at the default subvolume, as the micro-VM mounts it (no `subvol=`), so the browse
+paths match the file browser; subvolumes and snapshots below it are directories with their contents. Tree nodes are
+checked (address, fsid or metadata UUID, level, item bounds), descents are bounded by the strictly decreasing node
+level, directories are entered once; extent tree v2 and the RAID stripe tree are refused. A log tree is not replayed
+(`dirty`). btrfs gets no directory records: it is copy-on-write, every change rewrites the path up to the tree
+root, so a directory's read set would always have changed; unchanged volumes are still reused whole, and the
+helpers split the tree as for the other file systems. Multi-device btrfs is reported by the probe and goes to the
+micro-VM fallback (as does ZFS). Tests: mkfs.btrfs `--rootdir` (top level with nested subvolumes, a default
+subvolume with 4 KiB nodes, zstd compression); fuzz target `btrfs_walk` (input: sparse records of a 512 MiB disk,
+seeds are the non-zero blocks of small images; run with `-max_len` 1 MiB).
 
 **LVM thin volumes (Phase 31c).** A thin LV's blocks come from its pool's dm-thin metadata (the pool's `_tmeta` LV,
 mapped like any LV): the superblock (magic, version 1/2, 4 KiB metadata blocks, checksum), the top-level B+tree

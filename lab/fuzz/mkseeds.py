@@ -526,4 +526,40 @@ def thin_meta(maps, block_sectors=128):
 
 put("fsindex", "lvm_thin", "pool", thin_meta([(0, 5), (1, 6), (2, 7), (9, 1), (10, 0), (40, 3)]))
 
+
+def btrfs_seed(extra):
+    """A small btrfs (4 KiB nodes) from a directory, as sparse records for btrfs_walk:
+    [u32 sector][u16 length][bytes] per non-zero 4 KiB block."""
+    exe = find_tool("mkfs.btrfs")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        root, img = os.path.join(d, "root"), os.path.join(d, "img")
+        os.makedirs(os.path.join(root, "etc"))
+        os.makedirs(os.path.join(root, "home", "sub"))
+        with open(os.path.join(root, "etc", "fstab"), "w") as f:
+            f.write("LABEL=x / btrfs defaults 0 0\n")
+        for i in range(6):
+            with open(os.path.join(root, "home", "sub", f"f{i}"), "wb") as f:
+                f.write(b"y" * (i * 900))
+        with open(img, "wb") as f:
+            f.truncate(256 << 20)
+        r = subprocess.run([exe, "-q", "-n", "4096", "-r", root] + extra + [img], capture_output=True)
+        if r.returncode != 0:
+            return None
+        out = bytearray()
+        with open(img, "rb") as f:
+            data = f.read()
+        for at in range(0, len(data), 4096):
+            blk = data[at:at + 4096]
+            if blk.count(0) != len(blk):
+                out += struct.pack("<IH", at // 512, len(blk)) + blk
+        return bytes(out)
+
+
+for name, extra in [("plain", []), ("subvol", ["-u", "rw:home/sub", "-u", "default:home"])]:
+    data = btrfs_seed(extra)
+    if data:
+        put("fsindex", "btrfs_walk", name, data)
+
 print("seeds written")

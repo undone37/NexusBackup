@@ -337,8 +337,8 @@ fn single_file_restore_from_disk_images() {
 }
 
 /// Phase 31a: the sandboxed parser lists the same entries as the micro-VM walk
-/// for every file system it reads (ext4, NTFS, FAT, ext4 on LVM, XFS since
-/// Phase 31c); btrfs and ZFS are reported as unsupported. Directory sizes and times differ by
+/// for every file system it reads (ext4, NTFS, FAT, ext4 on LVM, XFS and btrfs
+/// since Phase 31c); ZFS is reported as unsupported. Directory sizes and times differ by
 /// design (the kernel reports block sizes; not compared).
 /// Needs the micro-VM image, its fixtures, /dev/kvm and a built nexus-fsindex:
 /// `cargo build --release -p fsindex && cargo test --release -p pve --test restore_vm fsindex_matches -- --ignored --nocapture`
@@ -385,7 +385,7 @@ fn fsindex_matches_micro_vm_listing() {
             .map(|(p, s, t, k)| (p.to_owned(), k, if k == 0 { s } else { 0 }, if k == 0 { t } else { 0 }))
             .collect()
     };
-    for root in ["vda1", "vda2", "vda3", "vda5", "lvm/vgtest-data"] {
+    for root in ["vda1", "vda2", "vda3", "vda4", "vda5", "lvm/vgtest-data"] {
         let (a, b) = (set(&vm_names, root), set(&ours, root));
         assert!(!a.is_empty(), "{root}: micro-VM listed nothing");
         assert_eq!(a, b, "{root}: micro-VM vs nexus-fsindex");
@@ -401,11 +401,12 @@ fn fsindex_matches_micro_vm_listing() {
             )
         })
         .collect();
-    for b in ["vda4", "vdb1"] {
-        assert!(states.contains(&(b.into(), "unsupported".into())), "{b}: {states:?}");
-    }
+    assert!(
+        states.contains(&("vdb1".into(), "unsupported".into())),
+        "ZFS: {states:?}"
+    );
 
-    // the next snapshot: unchanged volumes reused, btrfs / ZFS through the micro-VM
+    // the next snapshot: unchanged volumes reused, ZFS through the micro-VM
     std::env::remove_var("NEXUS_FSINDEX_NO_VM");
     std::env::set_var("NEXUS_RESTORE_VM_DIR", &cfg.image_dir);
     let m2 = store
@@ -416,7 +417,7 @@ fn fsindex_matches_micro_vm_listing() {
     eprintln!("second snapshot with the micro-VM fallback {:.1?}: {r}", t.elapsed());
     assert_eq!(
         (r["reused"].as_u64(), r["micro_vm"].as_bool()),
-        (Some(5), Some(true)),
+        (Some(6), Some(true)),
         "{r}"
     );
     let ours = store.load_names(&m2).unwrap().unwrap();

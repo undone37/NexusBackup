@@ -92,3 +92,10 @@ path = "fuzz_targets/lvm_thin.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "btrfs_walk"
+path = "fuzz_targets/btrfs_walk.rs"
+test = false
+doc = false
+bench = false

@@ -9,6 +9,7 @@ pub enum Kind {
     Fat,
     Exfat,
     Xfs,
+    Btrfs,
     LvmPv,
     Swap,
     /// recognized, not indexed: (fs name, reason)
@@ -69,7 +70,11 @@ pub fn probe(v: &Vol) -> Kind {
         return Kind::Ext;
     }
     if at(0x10040, b"_BHRfS_M") {
-        return Kind::Unsupported("btrfs", "btrfs is not indexed yet");
+        // num_devices: a file system over several disks goes to the micro-VM
+        if crate::disk::le64(&head, 0x10088) != 1 {
+            return Kind::Unsupported("btrfs", "multi-device btrfs is not indexed");
+        }
+        return Kind::Btrfs;
     }
     for s in 0..4 {
         if at(s * 512, b"LABELONE") && at(s * 512 + 24, b"LVM2 001") {
