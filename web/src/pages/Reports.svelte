@@ -1,5 +1,6 @@
 <script lang="ts">
   import { rowClick } from '../lib/rowlink';
+  import { jobLink } from '../lib/jobs';
   import { onMount } from 'svelte';
   import { API, get, put, post, act, errText, qs } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -115,7 +116,7 @@
   }
 
   async function sendNow(x: ScheduledReport) {
-    const r = await act(post<{ job_id: number }>(`/settings/reports/${encodeURIComponent(x.name)}/send`), (d) => t.reports.sendQueued(d.job_id));
+    const r = await act(post<{ job_id: number }>(`/settings/reports/${encodeURIComponent(x.name)}/send`), (d) => t.reports.sendQueued(d.job_id), (d) => jobLink({ id: d.job_id }));
     if (r) load();
   }
 </script>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { jobLink } from '../lib/jobs';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { href } from '../lib/router.svelte';
@@ -132,7 +133,7 @@
 
   // ---- actions
   async function checkNow(p: RecoveryPlan) {
-    if (await act(post(`/recovery-plans/${p.id}/readiness`), t.rplan.checkQueued)) setTimeout(load, 4000);
+    if (await act(post(`/recovery-plans/${p.id}/readiness`), t.rplan.checkQueued, jobLink)) setTimeout(load, 4000);
   }
   async function testRun(p: RecoveryPlan) {
     if (await act(post<{ run_id: number }>(`/recovery-plans/${p.id}/test`), (d) => t.rplan.testStarted(d.run_id))) load();

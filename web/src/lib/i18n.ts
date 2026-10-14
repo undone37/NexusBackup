@@ -2961,6 +2961,7 @@ export const en = {
     growth: "Growth",
     growthN: (d: number) => `${d} days`,
     growthChip: (g: string) => `${g} in 30 days`,
+    tenantSnapshots: "Snapshots of this tenant",
     perTenant: "By tenant",
     perGroup: "By protection group",
     ungrouped: "Not in a group",

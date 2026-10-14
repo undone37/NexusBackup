@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { rowLink } from '../lib/rowlink';
+  import { href } from '../lib/router.svelte';
   import { get, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
   import { fmtAgo, fmtBytes, fmtPct, fmtRatio, fmtTime } from '../lib/format';
@@ -101,8 +103,8 @@
         </thead>
         <tbody>
           {#each data.tenants as x (x.tenant)}
-            <tr>
-              <th scope="row">{x.tenant}</th>
+            <tr use:rowLink={`/snapshots?tenant=${encodeURIComponent(x.tenant)}`}>
+              <th scope="row"><a href={href(`/snapshots?tenant=${encodeURIComponent(x.tenant)}`)} title={t.storage.tenantSnapshots}>{x.tenant}</a></th>
               <td class="num">{fmtBytes(x.used)}</td>
               <td class="nowrap">
                 {#if x.quota_bytes}
