@@ -150,8 +150,10 @@ pub fn ir_config(
     let mut push = |k: &str, v: String| out.params.push((k.to_owned(), v));
     for (k, v) in lines {
         match k {
+            // `startup` (host boot order) also needs Sys.Modify on / (found on the PVE lab host: a
+            // restore test of a VM with `startup: order=2` was refused with 403)
             "meta" | "lock" | "parent" | "vmstate" | "runningmachine" | "runningcpu" | "snaptime" | "onboot"
-            | "vmgenid" | "digest" => {}
+            | "startup" | "vmgenid" | "digest" => {}
             "template" => bail!("VM templates cannot be instantly recovered"),
             _ if k.starts_with("unused") => {}
             "smbios1" => {
@@ -659,6 +661,7 @@ memory: 1024
 meta: creation-qemu=11.0.0,ctime=1791493828
 name: testvm100
 net0: virtio=BC:24:11:C0:4F:D0,bridge=vmbr1
+startup: order=2
 net1: e1000=BC:24:11:C0:4F:D1,bridge=vmbr0,firewall=1,link_down=0
 onboot: 1
 parent: snap1
@@ -717,6 +720,7 @@ scsi0: local-lvm:vm-100-disk-0,size=2G
             "lock",
             "meta",
             "onboot",
+            "startup",
             "parent",
             "unused0",
             "scsi1",
