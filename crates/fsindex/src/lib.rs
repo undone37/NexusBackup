@@ -2,11 +2,13 @@
 //!
 //! `nexus-fsindex` lists the files of a VM snapshot's disk images read-only:
 //! partition tables (GPT, MBR with logical partitions), LVM2 (linear, striped,
-//! mirror / raid1 by reading the first leg), ext2/3/4 (crate `ext4-view`), NTFS
-//! (crate `ntfs`), FAT12/16/32 (crate `fatfs`) and exFAT (own parser). Other
-//! file systems and containers (XFS, btrfs, ReFS, BitLocker, LUKS, Windows LDM,
-//! Storage Spaces, ZFS, md RAID, LVM thin) are reported per volume as "not
-//! indexed: <reason>"; the micro-VM stays the fallback for them.
+//! mirror / raid1 by reading the first leg, thin), Windows dynamic disks (LDM:
+//! simple, spanned, mirrored), ext2/3/4 (crate `ext4-view`), NTFS (crate
+//! `ntfs`), FAT12/16/32 (crate `fatfs`), exFAT, XFS and single-device btrfs
+//! (own parsers). Other file systems and containers (multi-device btrfs, ReFS,
+//! BitLocker, LUKS, striped / RAID-5 dynamic volumes, Storage Spaces, ZFS, md
+//! RAID, LVM cache/VDO) are reported per volume as "not indexed: <reason>"; the
+//! micro-VM stays the fallback for ZFS and multi-device btrfs.
 //!
 //! Guest file systems are untrusted input. The parsers run in the helper
 //! process (`src/main.rs`): no keys, no files, no network (SELinux domain
@@ -15,19 +17,23 @@
 //! nexus-pve) reads the snapshot from the chunk store, answers, records which
 //! chunks each volume's parse read, and writes the sealed name index.
 
+pub mod btrfs;
 pub mod disk;
 pub mod exfat;
 pub mod fat;
 pub mod fs_ext;
 pub mod fs_ntfs;
+pub mod ldm;
 pub mod lvm;
 pub mod mapping;
 pub mod parent;
 pub mod part;
 pub mod probe;
 pub mod proto;
+pub mod regf;
 pub mod sandbox;
 pub mod walk;
+pub mod xfs;
 
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +96,22 @@ pub struct Volume {
     /// entries skipped (path too long, names that do not decode, …)
     #[serde(default)]
     pub skipped_entries: u64,
+    /// Phase 31c, with hashes asked for: regular files hashed / not hashed (budget spent,
+    /// compressed or encrypted data, deduplicated, read errors)
+    #[serde(default)]
+    pub hashed_files: u64,
+    #[serde(default)]
+    pub unhashed_files: u64,
+    /// every regular file has its hash, or cannot have one (none left for a later run)
+    #[serde(default)]
+    pub hashed: bool,
+    /// how the SYSTEM hive's `MountedDevices` names this volume: `guid:<GPT partition
+    /// or dynamic volume GUID>`, `mbr:<disk signature>:<byte offset>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub win_id: Option<String>,
+    /// Windows system volume: the drive letters of its SYSTEM hive (`D:`, `win_id`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drives: Vec<(String, String)>,
     /// where the guest mounts it (set by the parent, [`mapping`]): `/`, `/home`,
     /// `C:`; `None`: shown as its label or `vol<N>`
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +149,10 @@ pub struct DirRec {
     pub dedup: u64,
     #[serde(default)]
     pub skipped: u64,
+    /// listed with hashes, none of its files left unhashed for lack of budget (a listing
+    /// that wants hashes takes only such records over)
+    #[serde(default)]
+    pub hashed: bool,
 }
 
 /// The sealed per-snapshot volume report (`fsindex` side file, crate
@@ -150,13 +176,23 @@ pub struct VolumeRec {
 pub const REPORT_FILE: &str = "fsindex";
 
 /// One listed entry; `path` relative to the volume root, `/`-separated.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Entry {
     pub path: String,
     pub size: u64,
     /// seconds since the epoch
     pub mtime: i64,
     pub kind: u8,
+    /// Phase 31c: the owner (Windows SID `S-1-5-21-…`, Linux `uid:gid`)
+    pub owner: Option<String>,
+    /// Phase 31c: SHA-256 of a regular file's content (when hashes were asked for)
+    pub sha256: Option<[u8; 32]>,
+}
+
+/// Whether an owner text is one the walkers write (SID or `uid:gid`): checked by
+/// the parent, the text comes from the guest.
+pub fn valid_owner(s: &str) -> bool {
+    (1..=184).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b':')
 }
 
 /// Limits of one listing (all volumes of a snapshot together).
@@ -168,6 +204,27 @@ pub struct Limits {
     /// which share of the directory trees this helper walks (Phase 32)
     #[serde(default)]
     pub part: Part,
+    /// Phase 31c: SHA-256 of regular files' contents (NTFS, ext4, XFS), within this budget
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hashes: Option<HashBudget>,
+}
+
+/// How much file content one helper reads for hashes (all volumes of a listing).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct HashBudget {
+    pub max_bytes: u64,
+    pub max_secs: u64,
+}
+
+impl HashBudget {
+    /// The default for a listing with `budget_secs`: half of its time (the listing must
+    /// finish), up to 1 TiB of file content.
+    pub fn for_listing(budget_secs: u64) -> HashBudget {
+        HashBudget {
+            max_bytes: 1 << 40,
+            max_secs: budget_secs / 2,
+        }
+    }
 }
 
 impl Default for Limits {
@@ -176,6 +233,7 @@ impl Default for Limits {
             max_entries: 5_000_000,
             budget_secs: 3600,
             part: Part::default(),
+            hashes: None,
         }
     }
 }

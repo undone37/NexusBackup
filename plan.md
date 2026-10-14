@@ -892,6 +892,19 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   - Owner/SID filters, XFS walker, LVM thin, btrfs, LDM, Windows drive letters from the SYSTEM hive, per-directory
     reuse, content hashes: 31c (open). Lab runs on the PVE lab host (Windows Server / Windows 11 / DC VMs) not done
     (not allowed in this run); compared against the micro-VM on the restore-vm fixtures instead.
+- **Implemented 31c (2026-10-14/15).** Per-directory reuse (NTFS, XFS); drive letters from the SYSTEM hive (own regf
+  parser); XFS and single-device btrfs walkers (own parsers; the micro-VM fallback only for ZFS and multi-device
+  btrfs); LVM thin volumes (dm-thin metadata); Windows dynamic disks (LDM, simple/spanned/mirrored); owners (NTFS
+  SIDs, `uid:gid`; name index v3; returned with search hits); content hashes of VM disk files (NTFS, ext4, XFS) for
+  groups with `file_hashes`. Deviations from docs/file-index-v2-plan.md:
+  - btrfs has no per-directory records (copy-on-write rewrites the path to the root on every change); ext4 neither
+    (crate cache); both are reused per volume.
+  - Owners are stored and returned, not yet filterable (the search filter needs a web-api parameter and the UI); SIDs
+    and uids are not resolved to names.
+  - Dynamic volumes get their own browse paths (`ldm/<name>`); the micro-VM cannot open them, restores go through the
+    Windows agent. GPT dynamic disks follow libldm's layout, not yet checked against a Windows-made disk.
+  - Hashes: btrfs, FAT and exFAT files stay unhashed; NTFS compressed / encrypted / deduplicated files too.
+  - No new catalog migration was needed.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

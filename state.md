@@ -565,7 +565,51 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   layout signature instead. Lab (Windows Server C:, 391k entries, 94,230 directories): second snapshot 77,911
   directories taken over, 2,841 chunks decrypted instead of 7,176, 19 s instead of 33 s (first snapshot of the
   day 150-217 s before Phase 32)
-- [ ] 31c: XFS walker, LVM thin, btrfs, Windows LDM, drive letters from the SYSTEM hive, owners/SIDs, content hashes
+- [x] 31c Windows drive letters from the SYSTEM hive (`MountedDevices`): own read-only regf parser
+  (`fsindex::regf`), hive read in place on the system volume by helper 0, matched by GPT partition GUID / LDM volume
+  GUID (`DMIO:ID:`) or MBR signature + offset (`win_id`); MBR partitions get `PARTUUID=<sig>-<nn>`; tests: unit
+  (hostile hives, ri loops, byte flips), real GPT + MBR disks with mkntfs/ntfs-3g (C:, E:, F:); fuzz target
+  `regf_hive`
+- [x] 31c XFS walker (`fsindex::xfs`, own parser): v4/v5 (CRCs checked), inodes by number, big time stamps,
+  64-bit extent counters, local/extent/B+tree forks, short form/block/leaf/node/B+tree directories, bounded;
+  split between helpers and per-directory records + takeover as NTFS; the micro-VM fallback only for btrfs/ZFS;
+  tests: mkfs.xfs protofile images v5 4k, v5 1k (directory blocks of 4 fs blocks), v4 ftype=0, all five directory
+  formats, mount `/` from its fstab; hostile XFS volume fails alone; fuzz target `xfs_walk` (+ disk_walk seeds)
+- [x] 31c LVM thin volumes: dm-thin pool metadata (superblock, top-level and per-device mapping B+trees, checksums,
+  key order, depth/loop/run bounds) -> segments on the pool's data LV, unmapped blocks read zeros; pool LV
+  `skipped`; external-origin thin LVs reported; volume key hashes the mapping; test with hand-written LVM + pool
+  metadata and an ext4 in reverse block order (damaged node, missing device); fuzz target `lvm_thin`
+- [x] 31c btrfs walker (`fsindex::btrfs`, single device): superblock, sys chunk array + chunk tree, root tree, fs
+  trees, default subvolume first (as the micro-VM mounts it), subvolumes/snapshots as directories, CRC-32C nodes,
+  bounded; no directory records (copy-on-write: read sets always change), split between helpers; multi-device btrfs
+  -> probe "unsupported" -> micro-VM fallback; tests: mkfs.btrfs --rootdir with nested subvolumes, default
+  subvolume + 4 KiB nodes, zstd; hostile btrfs fails alone; fuzz target `btrfs_walk` (sparse disk records)
+- [x] 31c Windows dynamic disks (`fsindex::ldm`, as the kernel's ldm.c): private header, TOCBLOCK, VMDB, VBLKs
+  (fragments), disks/volumes/components/partitions; simple + spanned (+ mirrored by first plex) volumes as
+  `ldm/<name>`, striped / RAID-5 / missing disk reported; volume GUID as `win_id` (hive drive letters apply);
+  test: two MBR disks, NTFS system volume (C: from the hive), ext4 spanned over both disks (D:), striped + RAID-5,
+  second disk missing; fuzz target `ldm_db`. Open: GPT dynamic disks unverified against Windows; the micro-VM does
+  not assemble dynamic volumes (restore through the Windows agent)
+- [x] 31c owners: NTFS owner SID ($STANDARD_INFORMATION security id -> $Secure:$SDS), ext4/XFS/btrfs `uid:gid`;
+  entry frame `extra` byte (owner, later hash), validated by the parent; name index v3 (`names3:` context, owner
+  table + per-entry index, written only with owners; readers v3 -> v2 -> v1; mismatching owner columns refused);
+  carried over on directory takeover / volume reuse; fileindex stores the owner per version and returns it in hits
+  (`versions[].owner`, schema change = one rebuild); tests: chunkstore v3 round trip + older contexts refused +
+  forged columns, ext4/NTFS (ntfs-3g `permissions`) owners, $SDS parser with mirror blocks and byte flips, frame
+  round trip + hostile owners, pve owners after reuse, fileindex hit owners. Open: owner search filter (web-api
+  parameter + UI), SID / uid names
+- [x] 31c content hashes for VM disk files (groups with `index_files` + `file_hashes`): scheduler queues
+  `hashes` for VM snapshots too, `files … index hashes`; helpers hash NTFS `$DATA` (not compressed / encrypted /
+  dedup stubs), ext4 (ext4-view reader) and XFS (extents, holes as zeros), budget per helper (half the listing time,
+  1 TiB), counters per volume and in the job result; hashes in the entry frame (files only) -> name index v2/v3;
+  `hashed` on directory records and volumes: a hashing listing takes over / reuses only hashed ones; tests: SHA-256
+  of known files on ext4/NTFS/XFS with 1 and 3 helpers, budget too small, pve no-hash -> hash -> reuse with hashes,
+  scheduler args/queue; the walk fuzz targets (ntfs/ext4/xfs) hash too. Fuzz findings fixed (both inside the
+  crates, contained by the helper's rlimit before, now refused up front; regression inputs in tests/regress): an
+  NTFS `$INDEX_ROOT` with a huge index record size, an ext4 superblock whose block count made `ext4-view` allocate
+  25 GB of block group descriptors (file system larger than its volume); `/etc/fstab` is read only up to 64 KiB
+- [ ] 31c open: btrfs / FAT / exFAT hashes, owner search filter (web-api + UI), SID/uid names, GPT dynamic disks
+  checked against Windows, micro-VM restore from dynamic volumes, lab run of the new walkers on real guests
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)

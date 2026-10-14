@@ -20,7 +20,8 @@ all=(nbd:nbd_client nbd:nbd_server chunkstore:sealed_open chunkstore:meta_decode
      pve:agent_request keyd:keyd_request web-api:validators web-api:api_router truenas:hostile_stream
      nas:helper_request replication:hostile_primary plugin-host:hostile_plugin
      fsindex:part_table fsindex:lvm_meta fsindex:ext4_walk fsindex:ntfs_walk fsindex:fat_walk
-     fsindex:exfat_walk fsindex:helper_frames fsindex:disk_walk)
+     fsindex:exfat_walk fsindex:helper_frames fsindex:disk_walk fsindex:regf_hive fsindex:xfs_walk
+     fsindex:lvm_thin fsindex:btrfs_walk fsindex:ldm_db)
 if [ $# -gt 0 ]; then targets=("$@"); else targets=("${all[@]}"); fi
 san=${SANITIZER:-none}
 logs=target/fuzz-logs
@@ -35,11 +36,13 @@ if printf '%s\n' "${targets[@]}" | grep -q '^offsite:' && [ ! -e crates/offsite/
 fi
 
 run() {
-  local c=${1%%:*} t=${1##*:} rc=0
+  local c=${1%%:*} t=${1##*:} rc=0 len=65536
+  # btrfs_walk: sparse records of a whole small file system
+  [ "$t" = btrfs_walk ] && len=1048576
   mkdir -p "crates/$c/fuzz/corpus/$t" "crates/$c/fuzz/seeds/$t"
   (cd "crates/$c" && cargo +nightly fuzz run -s "$san" --target-dir ../../target/fuzz "$t" \
      "fuzz/corpus/$t" "fuzz/seeds/$t" -- -max_total_time="$secs" -rss_limit_mb=1024 \
-     -max_len=65536 -timeout="${TIMEOUT:-60}" -print_final_stats=1) >"$logs/$t.log" 2>&1 || rc=$?
+     -max_len="$len" -timeout="${TIMEOUT:-60}" -print_final_stats=1) >"$logs/$t.log" 2>&1 || rc=$?
   printf '%-14s %-6s %s\n' "$t" "$([ $rc = 0 ] && echo ok || echo CRASH)" \
     "$(grep -E '^stat::number_of_executed_units' "$logs/$t.log" | awk '{print $2 " execs"}')"
 }

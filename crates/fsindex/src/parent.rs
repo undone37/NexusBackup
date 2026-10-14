@@ -5,7 +5,7 @@
 //! volume marked `failed`; at most [`MAX_RESTARTS`] times.
 //!
 //! Phase 32: with `Helper::parts` > 1, that many helpers (each single-threaded
-//! and sandboxed as before) walk the NTFS / ext4 volumes together, each its
+//! and sandboxed as before) walk the NTFS / ext4 / XFS / btrfs volumes together, each its
 //! share of the directory trees ([`crate::Part`]); the parent serves them on one
 //! thread each, so chunks are read and decrypted in parallel, and merges their
 //! listings. Other file systems are listed by helper 0 alone.
@@ -58,7 +58,7 @@ pub struct Helper {
     pub bin: std::path::PathBuf,
     /// RLIMIT_AS of the helper
     pub mem_mb: u64,
-    /// helpers walking one NTFS / ext4 volume together (1 = one helper)
+    /// helpers walking one NTFS / ext4 / XFS / btrfs volume together (1 = one helper)
     pub parts: u32,
 }
 
@@ -74,7 +74,7 @@ impl Helper {
 
 /// File systems whose trees the helpers split ([`crate::Part`]).
 fn split(fs: &str) -> bool {
-    fs == "ntfs" || fs == "ext4"
+    matches!(fs, "ntfs" | "ext4" | "xfs" | "btrfs")
 }
 
 enum Run {
@@ -121,7 +121,7 @@ pub fn list_with_progress(
                         part: Part { index: i, count: k },
                         ..limits
                     };
-                    // helpers 1.. leave everything but NTFS / ext4 to helper 0
+                    // helpers 1.. leave everything but NTFS / ext4 / XFS / btrfs to helper 0
                     let mut re = |v: &Volume| (i > 0 && !split(&v.fs)) || (reuse.lock().unwrap())(v);
                     let mut pr = |v: &Volume, n: u64, e: Option<u64>| {
                         let sum = {
@@ -151,7 +151,7 @@ pub fn list_with_progress(
     Ok(out)
 }
 
-/// Adds the NTFS / ext4 volumes of another helper's share to helper 0's listing.
+/// Adds the NTFS / ext4 / XFS / btrfs volumes of another helper's share to helper 0's listing.
 fn merge(out: &mut [Listed], part: Vec<Listed>) {
     let rank = |s: &str| match s {
         "failed" => 3,
@@ -173,6 +173,9 @@ fn merge(out: &mut [Listed], part: Vec<Listed>) {
         l.volume.windows |= p.volume.windows;
         l.volume.dedup_files += p.volume.dedup_files;
         l.volume.skipped_entries += p.volume.skipped_entries;
+        l.volume.hashed_files += p.volume.hashed_files;
+        l.volume.unhashed_files += p.volume.unhashed_files;
+        l.volume.hashed &= p.volume.hashed;
         l.reads.extend(p.reads);
         l.entries.extend(p.entries);
         l.dirs.extend(p.dirs);

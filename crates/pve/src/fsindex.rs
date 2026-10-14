@@ -3,8 +3,8 @@
 //! the guest file systems; this side reads the snapshot from the chunk store
 //! (the helper gets bytes, never keys), reuses the listing of every volume
 //! whose metadata chunks did not change since the previous snapshot, falls
-//! back to the micro-VM for the volumes the helper cannot read (XFS, btrfs,
-//! ZFS) when its image is installed, and writes the sealed name index plus
+//! back to the micro-VM for the volumes the helper cannot read (ZFS,
+//! multi-device btrfs) when its image is installed, and writes the sealed name index plus
 //! the sealed volume report (`fsindex`).
 //!
 //! Name-index paths stay the file browser's paths (`vda1/etc/hosts`,
@@ -32,8 +32,9 @@ const CHUNK_CACHE: usize = 128;
 /// Report format version.
 const VERSION: u32 = 1;
 
-/// File systems the micro-VM mounts that the helper does not parse.
-const VM_FALLBACK: &[&str] = &["xfs", "btrfs", "zfs_member"];
+/// File systems the micro-VM mounts that the helper does not parse (btrfs: only
+/// multi-device file systems reach this).
+const VM_FALLBACK: &[&str] = &["btrfs", "zfs_member"];
 
 /// (disk, chunk index) and the decoded chunk
 type Cached = ((usize, u64), Arc<Vec<u8>>);
@@ -50,6 +51,8 @@ struct StoreSource<'a> {
     history: Hist,
     /// directories taken over from it
     taken: AtomicU64,
+    /// Phase 31c: content hashes asked for (only records listed with hashes are taken over)
+    hashes: bool,
 }
 
 /// (volume key, directory) -> (its entries, its record in this snapshot's disk numbers)
@@ -122,19 +125,14 @@ fn history(store: &Store, pm: &Manifest, pr: &Report, names: &[String], cur: &[&
         .filter_map(|k| Some((format!("{}/", browse.get(k.as_str())?), k)))
         .collect();
     let names_idx = store.load_names(pm)?.unwrap_or_default();
-    for (p, size, mtime, kind) in names_idx.iter() {
+    for (i, (p, size, mtime, kind)) in names_idx.iter().enumerate() {
         for (pre, key) in &prefixes {
             let Some(rest) = p.strip_prefix(pre.as_str()) else {
                 continue;
             };
             let dir = rest.rsplit_once('/').map_or("", |(d, _)| d);
             if let Some((entries, _)) = out.get_mut(&(key.clone(), dir.to_owned())) {
-                entries.push(Entry {
-                    path: rest.to_owned(),
-                    size,
-                    mtime,
-                    kind,
-                });
+                entries.extend(entry_at(&names_idx, i, p, size, mtime, kind, pre));
             }
             break;
         }
@@ -142,6 +140,19 @@ fn history(store: &Store, pm: &Manifest, pr: &Report, names: &[String], cur: &[&
     // a volume the previous report does not know by its key has no entries to take over
     out.retain(|(k, _), _| browse.contains_key(k.as_str()));
     Ok(out)
+}
+
+/// Entry `i` (`p`, …) of a name index below `prefix` (`vda1/`), with its owner and hash.
+#[allow(clippy::too_many_arguments)]
+fn entry_at(n: &NameIndex, i: usize, p: &str, size: u64, mtime: i64, kind: u8, prefix: &str) -> Option<Entry> {
+    Some(Entry {
+        path: p.strip_prefix(prefix)?.to_owned(),
+        size,
+        mtime,
+        kind,
+        owner: n.owner(i).map(str::to_owned),
+        sha256: n.hash(i).copied(),
+    })
 }
 
 impl StoreSource<'_> {
@@ -186,7 +197,11 @@ impl Source for StoreSource<'_> {
         self.disks[d].0
     }
     fn dir(&self, key: &str, rel: &str) -> Option<(Vec<Entry>, DirRec)> {
-        let hit = self.history.get(&(key.to_owned(), rel.to_owned())).cloned();
+        let hit = self
+            .history
+            .get(&(key.to_owned(), rel.to_owned()))
+            .filter(|(_, r)| r.hashed || !self.hashes)
+            .cloned();
         if hit.is_some() {
             self.taken.fetch_add(1, Ordering::Relaxed);
         }
@@ -284,6 +299,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         loads: AtomicU64::new(0),
         history: Hist::new(),
         taken: AtomicU64::new(0),
+        hashes: limits.hashes.is_some(),
     };
     let disk_no: HashMap<String, usize> = src.names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
     let prev = previous(store, m);
@@ -298,6 +314,7 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     // a volume is reused when every chunk its last parse read is unchanged
     let unchanged = |rec: &VolumeRec| {
         rec.volume.state == "indexed"
+            && (rec.volume.hashed || limits.hashes.is_none())
             && !rec.reads.is_empty()
             && rec.reads.iter().all(|(disk, c, id)| {
                 disk_no.get(disk).is_some_and(|&d| {
@@ -381,14 +398,8 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             let pre = format!("{}/", rec.volume.browse);
             l.entries = names
                 .iter()
-                .filter_map(|(p, size, mtime, kind)| {
-                    p.strip_prefix(&pre).map(|rest| fsindex::Entry {
-                        path: rest.to_owned(),
-                        size,
-                        mtime,
-                        kind,
-                    })
-                })
+                .enumerate()
+                .filter_map(|(i, (p, size, mtime, kind))| entry_at(&names, i, p, size, mtime, kind, &pre))
                 .collect();
             let browse = l.volume.browse.clone();
             l.volume = Volume {
@@ -421,8 +432,11 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
     for (l, v) in listed.iter_mut().zip(&vols) {
         l.volume.mount = v.mount.clone();
     }
-    // name index: the browse paths, with the directories above the volumes
+    // name index: the browse paths, with the directories above the volumes; owners
+    // (Phase 31c) as a table, each text once
     let mut names = NameIndex::default();
+    let (mut owners, mut owner_no): (Vec<String>, HashMap<String, u32>) = (Vec::new(), HashMap::new());
+    let mut owner: Vec<u32> = Vec::new();
     let mut dirs = BTreeSet::new();
     let mut complete = true;
     for l in &listed {
@@ -438,11 +452,29 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
             acc.push_str(c);
             if dirs.insert(acc.clone()) {
                 names.push(&acc, 0, 0, KIND_DIR);
+                owner.push(0);
             }
         }
         for e in &l.entries {
+            let i = names.len();
             names.push(&format!("{}/{}", l.volume.browse, e.path), e.size, e.mtime, e.kind);
+            if names.len() == i {
+                continue;
+            }
+            if let Some(h) = e.sha256.filter(|_| e.kind == chunkstore::names::KIND_FILE) {
+                names.set_hash(i, h);
+            }
+            owner.push(match &e.owner {
+                Some(o) => *owner_no.entry(o.clone()).or_insert_with(|| {
+                    owners.push(o.clone());
+                    owners.len() as u32
+                }),
+                None => 0,
+            });
         }
+    }
+    if !owners.is_empty() {
+        names.set_owners(owners, owner);
     }
     let report = Report {
         version: VERSION,
@@ -481,6 +513,8 @@ pub fn index(store: &Store, m: &Manifest, limits: Limits) -> Result<Value> {
         "parsed": parsed,
         "reused": reused,
         "dirs_taken_over": src.taken.load(Ordering::Relaxed),
+        "hashes": names.sha256.len(),
+        "unhashed": listed.iter().map(|l| l.volume.unhashed_files).sum::<u64>(),
         "micro_vm": fallback,
         "elapsed_ms": t0.elapsed().as_millis() as u64,
     }))
@@ -495,7 +529,7 @@ pub fn summary(v: &Volume) -> Value {
     })
 }
 
-/// Lists the volumes only the micro-VM can read (XFS, btrfs, ZFS) through it,
+/// Lists the volumes only the micro-VM can read (ZFS, multi-device btrfs) through it,
 /// if its image is installed. Returns whether it ran.
 fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], limits: Limits) -> bool {
     let want: Vec<usize> = (0..listed.len())
@@ -554,6 +588,7 @@ fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], li
                     size,
                     mtime,
                     kind,
+                    ..Default::default()
                 })
             })
             .collect();
@@ -562,10 +597,15 @@ fn vm_fallback(store: &Store, idx: &[(String, Index)], listed: &mut [Listed], li
     true
 }
 
-/// `nexus-pve … files <vmid> <time> index`: see [`index`].
-pub fn cli(store: &Store, source: &str, time: u64) -> Result<()> {
+/// `nexus-pve … files <vmid> <time> index [hashes]`: see [`index`]; `hashes`: the
+/// SHA-256 of every regular file too (groups with `file_hashes`, Phase 31c).
+pub fn cli(store: &Store, source: &str, time: u64, hashes: bool) -> Result<()> {
     let m = store.load_manifest(source, time)?;
-    let out = index(store, &m, Limits::default())?;
+    let mut limits = Limits::default();
+    if hashes {
+        limits.hashes = Some(fsindex::HashBudget::for_listing(limits.budget_secs));
+    }
+    let out = index(store, &m, limits)?;
     println!("{out}");
     Ok(())
 }

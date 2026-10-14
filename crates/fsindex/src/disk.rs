@@ -76,7 +76,8 @@ impl DiskIo for Local<std::fs::File> {
 pub struct Segment {
     pub start: u64,
     pub len: u64,
-    /// one leg: linear; several: striped with `stripe` bytes per stripe
+    /// one leg: linear; several: striped with `stripe` bytes per stripe; none:
+    /// zeros (unmapped blocks of a thin LV)
     pub legs: Vec<(usize, u64)>,
     pub stripe: u64,
 }
@@ -122,8 +123,8 @@ impl Vol {
         &self.segs
     }
 
-    /// (disk, offset, bytes available there) of volume offset `off`.
-    fn locate(&self, off: u64) -> io::Result<(usize, u64, u64)> {
+    /// (disk and offset, `None` for zeros; bytes available there) of volume offset `off`.
+    fn locate(&self, off: u64) -> io::Result<(Option<(usize, u64)>, u64)> {
         let i = self.segs.partition_point(|s| s.start + s.len <= off);
         let s = self
             .segs
@@ -132,9 +133,15 @@ impl Vol {
             .ok_or_else(|| invalid("read beyond the volume"))?;
         let rel = off - s.start;
         let left = s.len - rel;
+        if s.legs.is_empty() {
+            return Ok((None, left));
+        }
         if s.legs.len() == 1 {
             let (d, o) = s.legs[0];
-            return Ok((d, o.checked_add(rel).ok_or_else(|| invalid("offset overflow"))?, left));
+            return Ok((
+                Some((d, o.checked_add(rel).ok_or_else(|| invalid("offset overflow"))?)),
+                left,
+            ));
         }
         let n = s.legs.len() as u64;
         let stripe_no = rel / s.stripe;
@@ -145,7 +152,7 @@ impl Vol {
             .and_then(|x| x.checked_add(within))
             .and_then(|x| x.checked_add(o))
             .ok_or_else(|| invalid("offset overflow"))?;
-        Ok((d, at, (s.stripe - within).min(left)))
+        Ok((Some((d, at)), (s.stripe - within).min(left)))
     }
 
     pub fn read_at(&self, off: u64, buf: &mut [u8]) -> io::Result<()> {
@@ -154,9 +161,12 @@ impl Vol {
         }
         let mut done = 0;
         while done < buf.len() {
-            let (d, at, avail) = self.locate(off + done as u64)?;
+            let (at, avail) = self.locate(off + done as u64)?;
             let k = (avail.min((buf.len() - done) as u64)) as usize;
-            self.io.borrow_mut().read(d, at, &mut buf[done..done + k])?;
+            match at {
+                Some((d, at)) => self.io.borrow_mut().read(d, at, &mut buf[done..done + k])?,
+                None => buf[done..done + k].fill(0),
+            }
             done += k;
         }
         Ok(())
@@ -170,9 +180,12 @@ impl Vol {
         let mut out = Vec::new();
         let mut p = off;
         while p < end {
-            let Ok((d, at, avail)) = self.locate(p) else { break };
+            let Ok((at, avail)) = self.locate(p) else { break };
             let k = avail.min(end - p).max(1);
-            out.extend((at / block..=(at + k - 1) / block).map(|b| (d, b)));
+            // unmapped (thin) ranges read zeros: no disk block
+            if let Some((d, at)) = at {
+                out.extend((at / block..=(at + k - 1) / block).map(|b| (d, b)));
+            }
             p += k;
         }
         out
@@ -269,6 +282,10 @@ mod tests {
         Rc::new(RefCell::new(Local { disks }))
     }
 
+    fn io_of(disks: Vec<Vec<u8>>) -> Io {
+        io(disks)
+    }
+
     #[test]
     fn striped_and_linear() {
         let a: Vec<u8> = (0..64u8).collect();
@@ -301,5 +318,25 @@ mod tests {
         v.read_at(14, &mut x).unwrap();
         assert_eq!(x, [106, 107, 40]);
         assert!(v.read_at(23, &mut x).is_err());
+        // a segment without legs reads zeros (unmapped thin blocks)
+        let io2 = io_of(vec![(0..8u8).collect()]);
+        let z = Vol::new(
+            io2,
+            vec![
+                Segment {
+                    start: 0,
+                    len: 4,
+                    legs: vec![],
+                    stripe: 0,
+                },
+                Segment {
+                    start: 4,
+                    len: 4,
+                    legs: vec![(0, 2)],
+                    stripe: 0,
+                },
+            ],
+        );
+        assert_eq!(z.read_vec(0, 8).unwrap(), [0, 0, 0, 0, 2, 3, 4, 5]);
     }
 }

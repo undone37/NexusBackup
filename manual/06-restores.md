@@ -439,13 +439,15 @@ files that only they hold cannot be found:
 |---|---|---|
 | waiting to be indexed | the snapshot was taken a moment ago, or the index service is catching up (a note above the results counts them) | wait; after 48 hours the alert `index_backlog` is raised |
 | partly indexed: `vdb1: BitLocker-encrypted volume` (or LUKS) | the volume is encrypted inside the guest; the appliance has no key | browse and restore the disk with the restore micro-VM, or protect that data with an agent |
-| partly indexed: `ReFS`, `Storage Spaces`, Windows dynamic disks | file systems and volume managers the parser does not read yet | as above; Windows dynamic disks are planned |
-| partly indexed: `XFS` / `btrfs` / `ZFS`, listed only by the restore micro-VM | these are listed by the restore micro-VM; without it installed the volume is skipped | browse and restore them as usual: the file browser uses the restore micro-VM |
+| partly indexed: `ReFS`, `Storage Spaces`, striped or RAID-5 dynamic volumes | file systems and volume layouts the parser does not read | as above |
+| partly indexed: `ZFS` or btrfs over several disks, listed only by the restore micro-VM | these are listed by the restore micro-VM; without it installed the volume is skipped | browse and restore them as usual: the file browser uses the restore micro-VM |
 | partly indexed: corrupted partition table, missing LVM disk, parser limit | the disk layout cannot be read safely | check the guest; the rest of the snapshot is indexed |
 | file index off | the VM/CT group has the file index switched off ([05](05-policies-and-groups.md#file-index-of-vmct-disks)) | switch it on; later snapshots are indexed |
 
 Crash-consistent VM snapshots are read as they are on disk (no journal replay), so files changed in the last
-seconds before the snapshot may be missing from the index; they are still in the snapshot.
+seconds before the snapshot may be missing from the index; they are still in the snapshot. Files on Windows dynamic
+volumes are found by the search (paths `ldm/<volume>/…` in the file browser), but the restore micro-VM cannot open
+dynamic volumes: restore them through the Windows agent.
 
 What is searched:
 

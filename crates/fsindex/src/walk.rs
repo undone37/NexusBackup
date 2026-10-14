@@ -3,7 +3,7 @@
 use crate::disk::{Io, Segment, Vol};
 use crate::part::{PType, Table};
 use crate::probe::Kind;
-use crate::{disk_name, dm_name, lvm, Limits, Volume};
+use crate::{disk_name, dm_name, ldm, lvm, Limits, Volume};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
@@ -14,6 +14,19 @@ pub trait Driver {
     /// listing of the previous snapshot, or a parser crashed on it before).
     fn begin(&mut self, v: &Volume) -> io::Result<bool>;
     fn entry(&mut self, path: &str, size: u64, mtime: i64, kind: u8) -> io::Result<()>;
+    /// An entry with its owner and content hash (Phase 31c); default: without them.
+    fn entry_ext(
+        &mut self,
+        path: &str,
+        size: u64,
+        mtime: i64,
+        kind: u8,
+        owner: Option<&str>,
+        sha256: Option<&[u8; 32]>,
+    ) -> io::Result<()> {
+        let _ = (owner, sha256);
+        self.entry(path, size, mtime, kind)
+    }
     /// The volume is done (`state` set); also called for volumes that are
     /// not parsed (unsupported, skipped, reused).
     fn end(&mut self, v: &Volume) -> io::Result<()>;
@@ -50,11 +63,55 @@ pub struct Out<'a> {
     fatal: Option<io::Error>,
     notes: u64,
     first_note: Option<String>,
+    /// Phase 31c: content bytes still to hash, and until when
+    hash_left: Option<(u64, Instant)>,
+    /// a file was left unhashed for lack of budget (since `take_budget_miss`)
+    budget_miss: bool,
 }
 
+/// Bytes read at a time when hashing a file.
+pub const HASH_READ: usize = 1 << 20;
+
 impl Out<'_> {
+    /// Whether hashes were asked for.
+    pub fn hashing(&self) -> bool {
+        self.hash_left.is_some()
+    }
+
+    /// Takes `size` bytes from the hash budget; `false` (and noted) when it is spent.
+    pub fn hash_budget(&mut self, size: u64) -> bool {
+        let Some((left, until)) = &mut self.hash_left else {
+            return false;
+        };
+        if *left < size || Instant::now() > *until {
+            self.budget_miss = true;
+            return false;
+        }
+        *left -= size;
+        true
+    }
+
+    /// Whether a file was left unhashed for lack of budget since the last call.
+    pub fn take_budget_miss(&mut self) -> bool {
+        std::mem::take(&mut self.budget_miss)
+    }
     /// Emits one entry. `Ok(false)`: a limit was hit, stop walking.
     pub fn emit(&mut self, info: &mut Volume, path: &str, size: u64, mtime: i64, kind: u8) -> Result<bool, String> {
+        self.emit_ext(info, path, size, mtime, kind, None, None)
+    }
+
+    /// [`Self::emit`] with the entry's owner and content hash (Phase 31c).
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_ext(
+        &mut self,
+        info: &mut Volume,
+        path: &str,
+        size: u64,
+        mtime: i64,
+        kind: u8,
+        owner: Option<&str>,
+        sha256: Option<&[u8; 32]>,
+    ) -> Result<bool, String> {
         if self.total >= self.limits.max_entries {
             self.stopped = Some(format!("entry limit ({}) reached", self.limits.max_entries));
             return Ok(false);
@@ -63,13 +120,24 @@ impl Out<'_> {
             self.stopped = Some(format!("time budget ({} s) spent", self.limits.budget_secs));
             return Ok(false);
         }
-        if let Err(e) = self.driver.entry(path, size, mtime, kind) {
+        if let Err(e) = self.driver.entry_ext(path, size, mtime, kind, owner, sha256) {
             self.fatal = Some(e);
             return Err("output closed".into());
         }
         self.total += 1;
         info.entries += 1;
         Ok(true)
+    }
+
+    /// Whether the time budget is spent (walkers check it where they may work long
+    /// without emitting entries); sets `stopped`.
+    pub fn out_of_time(&mut self) -> bool {
+        if Instant::now() > self.deadline {
+            self.stopped
+                .get_or_insert_with(|| format!("time budget ({} s) spent", self.limits.budget_secs));
+            return true;
+        }
+        false
     }
 
     /// The walker's estimate of the volume's entries (live progress only).
@@ -170,6 +238,10 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         fatal: None,
         notes: 0,
         first_note: None,
+        hash_left: limits
+            .hashes
+            .map(|h| (h.max_bytes, Instant::now() + Duration::from_secs(h.max_secs))),
+        budget_miss: false,
     };
     let disks = io.borrow().disks().min(names.len());
     let mut cands = Vec::new();
@@ -207,6 +279,7 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                             size: p.len,
                             key: format!("{name}@{}+{}", p.start, p.len),
                             partuuid: p.guid.clone(),
+                            win_id: p.win_id.clone(),
                             ..Default::default()
                         },
                         ptype: p.ptype,
@@ -233,13 +306,8 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         };
         match ptype {
             PType::Reserved => return,
-            PType::Ldm => {
-                return reports.push(unsupported(
-                    info,
-                    "ldm",
-                    "Windows dynamic disk (LDM) is not indexed yet",
-                ))
-            }
+            // dynamic disks: their volumes come from the LDM database (below)
+            PType::Ldm | PType::LdmMeta => return,
             PType::StorageSpaces => {
                 return reports.push(unsupported(info, "storage_spaces", "Storage Spaces are not indexed"))
             }
@@ -269,6 +337,14 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
             Kind::Exfat => {
                 info.fs = "exfat".into();
                 crate::exfat::walk
+            }
+            Kind::Xfs => {
+                info.fs = "xfs".into();
+                crate::xfs::walk
+            }
+            Kind::Btrfs => {
+                info.fs = "btrfs".into();
+                crate::btrfs::walk
             }
             Kind::LvmPv => {
                 match (lvm::read_pv(vol), at) {
@@ -305,6 +381,90 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         };
         todo.push((vol.clone(), info, walker));
     };
+    // Phase 31c: Windows dynamic disks (the private header: MBR disks at sector 6, GPT disks
+    // at the end of the LDM metadata partition)
+    let mut ldm_members: Vec<(ldm::Member, Volume)> = Vec::new();
+    for c in &cands {
+        let (disk, start) = c.vol_disk_offset();
+        let at = match (&c.ptype, &c.info.partuuid) {
+            (PType::Ldm, p) if p.as_deref().is_none_or(|p| !p.contains('-') || p.len() < 36) => 6 * 512,
+            (PType::LdmMeta, _) => start + c.vol.size().saturating_sub(512),
+            _ => continue,
+        };
+        if ldm_members.iter().all(|(m, _)| m.disk != disk) {
+            ldm_members.push((ldm::Member { disk, privhead: at }, c.info.clone()));
+        }
+    }
+    let ldm_vols = if ldm_members.is_empty() {
+        Ok(Vec::new())
+    } else {
+        ldm::volumes(&io, &ldm_members.iter().map(|m| m.0).collect::<Vec<_>>())
+    };
+    match ldm_vols {
+        Err(why) => {
+            for (_, info) in ldm_members {
+                reports.push(Volume {
+                    fs: "ldm".into(),
+                    state: "unsupported".into(),
+                    reason: Some(format!("Windows dynamic disk: {why}")),
+                    ..info
+                });
+            }
+        }
+        Ok(vols) => {
+            let mut names = std::collections::HashSet::new();
+            for dv in vols {
+                let mut name: String = dv
+                    .name
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                if name.is_empty() || !names.insert(name.clone()) {
+                    name = dv.guid.clone();
+                    names.insert(name.clone());
+                }
+                let info = Volume {
+                    browse: format!("ldm/{name}"),
+                    device: format!("ldm/{name}"),
+                    size: dv.size,
+                    win_id: Some(format!("guid:{}", dv.guid)),
+                    ..Default::default()
+                };
+                match dv.map {
+                    Err(why) => reports.push(Volume {
+                        key: format!("ldm:{}", dv.guid),
+                        fs: "ldm".into(),
+                        state: "unsupported".into(),
+                        reason: Some(why),
+                        ..info
+                    }),
+                    Ok(segs) => {
+                        let vol = Vol::new(io.clone(), segs.clone());
+                        let info = Volume {
+                            key: format!("ldm:{}:{}", dv.guid, seg_key(&segs)),
+                            ..info
+                        };
+                        classify(
+                            &vol,
+                            info,
+                            &PType::Data,
+                            &mut texts,
+                            &mut pvs,
+                            &mut todo,
+                            &mut reports,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+    }
     for c in cands {
         let at = c.vol_disk_offset();
         classify(
@@ -318,12 +478,26 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
             Some(at),
         );
     }
-    for lv in lvm::volumes(&texts, &pvs) {
+    for mut lv in lvm::volumes(&texts, &pvs) {
         let info = Volume {
             browse: format!("lvm/{}", dm_name(&lv.vg, &lv.name)),
             device: format!("{}/{}", lv.vg, lv.name),
             ..Default::default()
         };
+        if lv.pool {
+            reports.push(Volume {
+                key: format!("lvm:{}", lv.id),
+                fs: "thin-pool".into(),
+                state: "skipped".into(),
+                reason: lv.map.err(),
+                ..info
+            });
+            continue;
+        }
+        if let Some(t) = &lv.thin {
+            // Phase 31c: the thin LV's blocks from its pool's metadata
+            lv.map = lvm::thin_segments(&io, t);
+        }
         match lv.map {
             Err(why) => reports.push(Volume {
                 key: format!("lvm:{}", lv.id),
@@ -369,6 +543,7 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         io.borrow_mut().forget();
         out.notes = 0;
         out.first_note = None;
+        out.take_budget_miss();
         let res = catch_unwind(AssertUnwindSafe(|| walker(&vol, &mut out, &mut info)));
         if let Some(e) = out.fatal.take() {
             return Err(e);
@@ -399,6 +574,8 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                 info.reason = Some(format!("{} parser failed on this volume", info.fs));
             }
         }
+        // Phase 31c: complete as far as hashes go (nothing left for lack of budget)
+        info.hashed = out.hashing() && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs") && !out.take_budget_miss();
         if info.dirty && info.state == "indexed" && info.fs != "ext4" {
             // ext4-view applies the journal; NTFS $LogFile / FAT are not replayed
             info.reason = Some("crash-consistent snapshot: changes of the last seconds may be missing".into());
@@ -461,6 +638,8 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
         "ntfs" => crate::fs_ntfs::walk,
         "vfat" => crate::fat::walk,
         "exfat" => crate::exfat::walk,
+        "xfs" => crate::xfs::walk,
+        "btrfs" => crate::btrfs::walk,
         _ => return Err(format!("unknown parser {fs}")),
     };
     let mut c = Count(0);
@@ -476,6 +655,10 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
         fatal: None,
         notes: 0,
         first_note: None,
+        hash_left: limits
+            .hashes
+            .map(|h| (h.max_bytes, Instant::now() + Duration::from_secs(h.max_secs))),
+        budget_miss: false,
     };
     let mut info = Volume::default();
     walker(vol, &mut out, &mut info)?;

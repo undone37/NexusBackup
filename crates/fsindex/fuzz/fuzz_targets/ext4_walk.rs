@@ -20,6 +20,11 @@ fuzz_target!(|data: &[u8]| {
     let limits = fsindex::Limits {
         max_entries: 100_000,
         budget_secs: 10,
+        // the content hashes (Phase 31c) read file data through the parsers too
+        hashes: Some(fsindex::HashBudget {
+            max_bytes: 16 << 20,
+            max_secs: 10,
+        }),
         ..Default::default()
     };
     static QUIET: std::sync::Once = std::sync::Once::new();

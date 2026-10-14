@@ -14,8 +14,10 @@ pub enum PType {
     Data,
     Lvm,
     Swap,
-    /// Windows dynamic disk (LDM): not indexed (31c)
+    /// Windows dynamic disk (LDM): the MBR partition 0x42 or the GPT LDM data partition
     Ldm,
+    /// GPT LDM metadata partition (its last sector holds the private header)
+    LdmMeta,
     StorageSpaces,
     /// Microsoft reserved, BIOS boot: no file system, not reported
     Reserved,
@@ -30,8 +32,11 @@ pub struct Part {
     pub start: u64,
     pub len: u64,
     pub ptype: PType,
-    /// GPT unique partition GUID (lowercase), `PARTUUID=`
+    /// GPT unique partition GUID (lowercase); MBR: `<disk signature>-<number>` as
+    /// Linux writes it; `PARTUUID=`
     pub guid: Option<String>,
+    /// how Windows' `MountedDevices` names it ([`crate::Volume::win_id`])
+    pub win_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +89,8 @@ fn gpt_type(g: &str) -> Option<PType> {
         "00000000-0000-0000-0000-000000000000" => return None,
         "e6d6d379-f507-44c2-a23c-238f2a3df928" => PType::Lvm,
         "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" => PType::Swap,
-        "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3" | "af9b60a0-1431-4f62-bc68-3311714a69ad" => PType::Ldm,
+        "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3" => PType::LdmMeta,
+        "af9b60a0-1431-4f62-bc68-3311714a69ad" => PType::Ldm,
         "e75caf8f-f680-4cee-afa3-b001e56efc2d" => PType::StorageSpaces,
         "e3c9e316-0b5c-4db8-817d-f92df00215ae" | "21686148-6449-6e6f-744e-656564454649" => PType::Reserved,
         "a19d880f-05fc-4d3b-a006-743f0f84911e" => PType::LinuxRaid,
@@ -148,6 +154,7 @@ fn gpt_at(v: &Vol, lba: u64, ss: u64) -> Result<Vec<Part>, String> {
             len: (last - first + 1) * ss,
             ptype: pt,
             guid: Some(guid(&e[16..32])),
+            win_id: Some(format!("guid:{}", guid(&e[16..32]))),
         });
         if out.len() > MAX_PARTS {
             return Err("too many partitions".into());
@@ -229,7 +236,17 @@ pub fn parse(v: &Vol) -> io::Result<Table> {
                 len: n * SECTOR,
                 ptype: pt,
                 guid: None,
+                win_id: None,
             });
+        }
+    }
+    // the disk signature names the partitions: Linux `PARTUUID=ssssssss-nn`,
+    // Windows `MountedDevices` (signature, byte offset)
+    let sig = le32(&s0, 440);
+    if sig != 0 {
+        for p in &mut out {
+            p.guid = Some(format!("{sig:08x}-{:02x}", p.number));
+            p.win_id = Some(format!("mbr:{sig:08x}:{}", p.start));
         }
     }
     Ok(Table::Mbr(out))
@@ -264,6 +281,7 @@ fn logical(v: &Vol, ext: u64, out: &mut Vec<Part>) -> Result<(), String> {
                     len: n * SECTOR,
                     ptype: pt,
                     guid: None,
+                    win_id: None,
                 });
             }
             number += 1;

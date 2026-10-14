@@ -2,8 +2,9 @@
 //! point mapping"): Linux volumes from the root file system's `/etc/fstab`
 //! (`UUID=`, `LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`,
 //! `/dev/disk/by-*/…`); Windows `C:` is the NTFS volume holding
-//! `Windows/System32`; every other volume shows as its label or `vol<N>`.
-//! Exact Windows drive letters (SYSTEM hive, `MountedDevices`) are 31c.
+//! `Windows/System32`, the other Windows volumes get their letters from its
+//! SYSTEM hive (`MountedDevices`, Phase 31c, [`crate::regf`]); every other
+//! volume shows as its label or `vol<N>`.
 
 use crate::Volume;
 
@@ -99,9 +100,34 @@ pub fn assign(vols: &mut [Volume]) {
             }
         }
     }
-    // Windows: the system volume is C:
-    if let Some(v) = vols.iter_mut().find(|v| v.windows && v.mount.is_none() && listed(v)) {
-        v.mount = Some("C:".into());
+    // Windows: the drive letters of the system volume's SYSTEM hive (`MountedDevices`,
+    // matched by GPT partition / dynamic volume GUID or MBR signature + offset); the
+    // system volume is C: when the hive does not name it
+    let Some(sys) = vols.iter().position(|v| v.windows && v.mount.is_none() && listed(v)) else {
+        return;
+    };
+    let letters: Vec<(String, String)> = vols[sys]
+        .drives
+        .iter()
+        .filter(|(l, id)| {
+            let b = l.as_bytes();
+            b.len() == 2 && b[0].is_ascii_uppercase() && b[1] == b':' && !id.is_empty() && id.len() <= 64
+        })
+        .take(26)
+        .cloned()
+        .collect();
+    for (letter, id) in letters {
+        if vols.iter().any(|v| v.mount.as_deref() == Some(letter.as_str())) {
+            continue;
+        }
+        if let Some(v) = vols.iter_mut().find(|v| {
+            v.mount.is_none() && listed(v) && v.win_id.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(&id))
+        }) {
+            v.mount = Some(letter);
+        }
+    }
+    if vols[sys].mount.is_none() && !vols.iter().any(|v| v.mount.as_deref() == Some("C:")) {
+        vols[sys].mount = Some("C:".into());
     }
 }
 
@@ -219,5 +245,42 @@ mod tests {
         assert_eq!(map.guest("vdd2"), "C:");
         assert_eq!(map.guest("vdc"), "vdc", "no volume: unchanged");
         assert_eq!(map.guest("vda10/x"), "vda10/x", "prefix must end at a component");
+    }
+
+    #[test]
+    fn windows_drive_letters_from_the_hive() {
+        let with = |browse: &str, id: &str| Volume {
+            win_id: Some(id.into()),
+            ..vol(browse, "drive-scsi0", None, None)
+        };
+        let mut sys = with("vda3", "guid:aaaa");
+        sys.windows = true;
+        sys.drives = vec![
+            ("C:".into(), "GUID:AAAA".into()),
+            ("D:".into(), "mbr:12345678:1048576".into()),
+            ("E:".into(), "guid:nowhere".into()),
+            ("../x".into(), "guid:bbbb".into()),
+            ("F:".into(), "guid:bbbb".into()),
+        ];
+        let mut failed = with("vdc1", "guid:cccc");
+        failed.state = "failed".into();
+        let mut vols = vec![
+            with("vda1", "guid:efi"),
+            sys,
+            with("vdb1", "mbr:12345678:1048576"),
+            with("lvm/x", "guid:bbbb"),
+            failed,
+        ];
+        assign(&mut vols);
+        let m: Vec<_> = vols.iter().map(|v| v.mount.as_deref()).collect();
+        assert_eq!(m, [None, Some("C:"), Some("D:"), Some("F:"), None]);
+        // a hive that does not name the system volume: it is still C:
+        vols[1].drives.retain(|d| d.0 != "C:");
+        assign(&mut vols);
+        assert_eq!(vols[1].mount.as_deref(), Some("C:"));
+        // a hive that gives C: to another volume: the system volume shows as its label / vol<N>
+        vols[1].drives = vec![("C:".into(), "mbr:12345678:1048576".into())];
+        assign(&mut vols);
+        assert_eq!((vols[1].mount.as_deref(), vols[2].mount.as_deref()), (None, Some("C:")));
     }
 }

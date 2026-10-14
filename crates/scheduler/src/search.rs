@@ -359,8 +359,8 @@ impl Scheduler {
             time.to_string(),
             "index".into(),
         ];
-        // Phase 28: containers with `file_hashes` (VM disks: not yet, docs/file-index.md)
-        if ct && p["hashes"] == true {
+        // Phase 28: containers with `file_hashes`; Phase 31c: VM disks too (nexus-fsindex)
+        if p["hashes"] == true {
             args.push("hashes".into());
         }
         plan.steps.push(Step::Cli {
@@ -401,7 +401,7 @@ impl Scheduler {
             if source.starts_with("vm-") || source.starts_with("ct-") {
                 // after_job: shown with its backup (follow-up jobs)
                 let mut p = json!({"source": source, "time": time, "after_job": job.id});
-                if hashes && source.starts_with("ct-") {
+                if hashes {
                     p["hashes"] = json!(true);
                 }
                 let id = self

@@ -387,17 +387,275 @@ def fx_frame(tag, payload):
     return tag + struct.pack("<I", len(payload)) + payload
 
 
-def fx_ent(path, kind=0, size=5, mtime=1700000000):
+def fx_ent(path, kind=0, size=5, mtime=1700000000, owner=None, sha=None):
     p = path.encode()
-    return bytes([kind]) + struct.pack("<QqH", size, mtime, len(p)) + p
+    extra = (1 if owner else 0) | (2 if sha else 0)
+    tail = bytes([extra])
+    if owner:
+        tail += bytes([len(owner)]) + owner.encode()
+    if sha:
+        tail += sha
+    return bytes([kind]) + struct.pack("<QqH", size, mtime, len(p)) + p + tail
 
 
 vol_json = json.dumps({"key": "drive-scsi0@0+1", "browse": "vda1", "device": "drive-scsi0", "fs": "ext4",
                        "size": 1, "state": "indexed"}).encode()
 put("fsindex", "helper_frames", "listing",
-    fx_frame(b"B", vol_json) + fx_frame(b"E", fx_ent("etc", 1) + fx_ent("etc/hosts")) + fx_frame(b"Z", vol_json)
+    fx_frame(b"B", vol_json) + fx_frame(b"E", fx_ent("etc", 1, owner="0:0") + fx_ent("etc/hosts", owner="S-1-5-32-544",
+                                                     sha=bytes(range(32)))) + fx_frame(b"Z", vol_json)
     + fx_frame(b"Q", b""))
 put("fsindex", "helper_frames", "hostile",
     fx_frame(b"B", vol_json.replace(b"vda1", b"../x")) + fx_frame(b"E", fx_ent("../etc/passwd") + fx_ent("/abs")))
+
+
+def hive(keys):
+    """A minimal registry hive (as crates/fsindex/src/regf.rs `build`): the root key with
+    one subkey per (name, [(value name, type, data)])."""
+    bins = bytearray(b"hbin" + bytes(28))
+
+    def cell(data):
+        off = len(bins)
+        n = (len(data) + 4 + 7) // 8 * 8
+        bins.extend(struct.pack("<i", -n) + data)
+        bins.extend(bytes(off + n - len(bins)))
+        return off
+
+    def key(name, subs, values):
+        lst = cell(b"lf" + struct.pack("<H", len(subs)) + b"".join(struct.pack("<II", s, 0) for s in subs)) if subs else 0
+        vl = cell(b"".join(struct.pack("<I", v) for v in values)) if values else 0
+        k = bytearray(0x4c)
+        k[0:4] = b"nk" + struct.pack("<H", 0x20)
+        struct.pack_into("<I", k, 0x14, len(subs))
+        struct.pack_into("<I", k, 0x1c, lst)
+        struct.pack_into("<II", k, 0x24, len(values), vl)
+        struct.pack_into("<H", k, 0x48, len(name))
+        return cell(bytes(k) + name.encode())
+
+    def value(name, ty, data):
+        if len(data) <= 4:
+            size, at = len(data) | 0x80000000, struct.unpack("<I", data.ljust(4, b"\0"))[0]
+        else:
+            size, at = len(data), cell(data)
+        return cell(b"vk" + struct.pack("<HIIIHH", len(name), size, at, ty, 1, 0) + name.encode())
+
+    subs = [key(n, [], [value(*v) for v in vals]) for n, vals in keys]
+    root = key("ROOT", subs, [])
+    size = (len(bins) + 4095) // 4096 * 4096
+    bins.extend(bytes(size - len(bins)))
+    struct.pack_into("<I", bins, 8, size)
+    base = bytearray(4096)
+    base[0:4] = b"regf"
+    struct.pack_into("<IIIIII", base, 4, 1, 1, 0, 0, 1, 5)
+    struct.pack_into("<II", base, 36, root, size)
+    x = 0
+    for i in range(127):
+        x ^= struct.unpack_from("<I", base, i * 4)[0]
+    struct.pack_into("<I", base, 508, {0: 1, 0xFFFFFFFF: 0xFFFFFFFE}.get(x, x))
+    return bytes(base + bins)
+
+
+def dmio(g):
+    return b"DMIO:ID:" + __import__("uuid").UUID(g).bytes_le
+
+
+put("fsindex", "regf_hive", "system", hive([
+    ("Select", [("Current", 4, struct.pack("<I", 1))]),
+    ("MountedDevices", [("\\DosDevices\\C:", 3, dmio("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0")),
+                        ("\\DosDevices\\E:", 3, struct.pack("<IQ", 0xdeadbeef, 1 << 20)),
+                        ("\\??\\Volume{x}", 3, "\\??\\SCSI#CdRom".encode("utf-16-le"))]),
+]))
+
+
+def xfs_seed(extra):
+    """The first 64 KiB of a small XFS (1 KiB blocks, external log: the root inode chunk lies
+    within them) holding a few directories and files."""
+    exe = find_tool("mkfs.xfs")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        img, log, src, proto = (os.path.join(d, n) for n in ("img", "log", "src", "proto"))
+        for p, n in ((img, 32 << 20), (log, 16 << 20)):
+            with open(p, "wb") as f:
+                f.truncate(n)
+        with open(src, "wb") as f:
+            f.write(b"x" * 1500)
+        lines = ["/dev/null", "0 0", "d--755 0 0", "etc d--755 0 0", f"fstab ---644 0 0 {src}", "$",
+                 "home d--755 0 0"] + [f"f{i} ---644 0 0 {src}" for i in range(12)] + ["$",
+                 "link l--777 0 0 etc/fstab", "$"]
+        with open(proto, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        env = dict(os.environ, QA_CHECK_FS="1", TEST_DIR="1", TEST_DEV="1")
+        r = subprocess.run([exe, "-q", "-b", "size=1024", "-d", "agcount=1", "-l", f"logdev={log},size=10m",
+                            "-p", proto] + extra + [img], capture_output=True, env=env)
+        if r.returncode != 0:
+            return None
+        with open(img, "rb") as f:
+            return f.read(65536)
+
+
+for name, extra in [("v5-1k", []), ("v4-1k", ["-m", "crc=0", "-n", "ftype=0", "-i", "size=256"])]:
+    data = xfs_seed(extra)
+    if data:
+        put("fsindex", "xfs_walk", name, data)
+        put("fsindex", "disk_walk", "xfs-" + name, data)
+
+
+def crc32c_raw(data, c=0xFFFFFFFF):
+    for b in data:
+        c ^= b
+        for _ in range(8):
+            c = (c >> 1) ^ 0x82F63B78 if c & 1 else c >> 1
+    return c
+
+
+def thin_node(blk, leaf, kv, mx=252):
+    b = bytearray(4096)
+    struct.pack_into("<IQIII", b, 4, 2 if leaf else 1, blk, len(kv), mx, 8)
+    for i, (k, v) in enumerate(kv):
+        struct.pack_into("<Q", b, 32 + i * 8, k)
+        struct.pack_into("<Q", b, 32 + mx * 8 + i * 8, v)
+    struct.pack_into("<I", b, 0, crc32c_raw(b[4:]) ^ 121107)
+    return bytes(b)
+
+
+def thin_meta(maps, block_sectors=128):
+    """dm-thin pool metadata as crates/fsindex/tests/images.rs `thin_metadata` writes it."""
+    sb = bytearray(4096)
+    struct.pack_into("<QI", sb, 32, 27022010, 2)
+    struct.pack_into("<Q", sb, 320, 1)
+    struct.pack_into("<II", sb, 336, block_sectors, 8)
+    struct.pack_into("<I", sb, 0, crc32c_raw(sb[4:]) ^ 160774)
+    vals = [(v, d << 24 | 5) for v, d in maps]
+    a, b = vals[:len(vals) // 2], vals[len(vals) // 2:]
+    return (bytes(sb) + thin_node(1, True, [(1, 2)]) + thin_node(2, False, [(a[0][0], 3), (b[0][0], 4)])
+            + thin_node(3, True, a) + thin_node(4, True, b))
+
+
+put("fsindex", "lvm_thin", "pool", thin_meta([(0, 5), (1, 6), (2, 7), (9, 1), (10, 0), (40, 3)]))
+
+
+def btrfs_seed(extra):
+    """A small btrfs (4 KiB nodes) from a directory, as sparse records for btrfs_walk:
+    [u32 sector][u16 length][bytes] per non-zero 4 KiB block."""
+    exe = find_tool("mkfs.btrfs")
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        root, img = os.path.join(d, "root"), os.path.join(d, "img")
+        os.makedirs(os.path.join(root, "etc"))
+        os.makedirs(os.path.join(root, "home", "sub"))
+        with open(os.path.join(root, "etc", "fstab"), "w") as f:
+            f.write("LABEL=x / btrfs defaults 0 0\n")
+        for i in range(6):
+            with open(os.path.join(root, "home", "sub", f"f{i}"), "wb") as f:
+                f.write(b"y" * (i * 900))
+        with open(img, "wb") as f:
+            f.truncate(256 << 20)
+        r = subprocess.run([exe, "-q", "-n", "4096", "-r", root] + extra + [img], capture_output=True)
+        if r.returncode != 0:
+            return None
+        out = bytearray()
+        with open(img, "rb") as f:
+            data = f.read()
+        for at in range(0, len(data), 4096):
+            blk = data[at:at + 4096]
+            if blk.count(0) != len(blk):
+                out += struct.pack("<IH", at // 512, len(blk)) + blk
+        return bytes(out)
+
+
+for name, extra in [("plain", []), ("subvol", ["-u", "rw:home/sub", "-u", "default:home"])]:
+    data = btrfs_seed(extra)
+    if data:
+        put("fsindex", "btrfs_walk", name, data)
+
+
+# Windows dynamic disk (LDM), as crates/fsindex/src/ldm.rs `build` writes it
+def ldm_num(v):
+    b = v.to_bytes(8, "big").lstrip(b"\0") or b"\0"
+    return bytes([len(b)]) + b
+
+
+def ldm_text(s):
+    return bytes([len(s)]) + s.encode()
+
+
+def ldm_rec(ty, body, size):
+    return b"VBLK" + bytes(15) + bytes([ty]) + struct.pack(">I", size) + body
+
+
+def ldm_disk4(i, name, guid):
+    b = ldm_num(i) + ldm_text(name)
+    r = len(b)
+    return ldm_rec(0x44, (b + guid).ljust(r + 45, b"\0"), r + 45)
+
+
+def ldm_volume(i, name, kind, size, guid):
+    b = ldm_num(i) + ldm_text(name) + ldm_text(kind) + ldm_text("")
+    r_dis = len(b)
+    b = (b + b"ACTIVE").ljust(r_dis + 0x15, b"\0") + ldm_num(1)
+    r_child = len(b) - 0x15
+    b = b.ljust(r_child + 0x25, b"\0") + ldm_num(size)
+    r_size = len(b) - 0x25
+    b = (b.ljust(r_size + 0x29, b"\0") + b"\x07" + guid).ljust(r_size + 58, b"\0")
+    return ldm_rec(0x51, b, r_size + 58)
+
+
+def ldm_comp(i, name, kind, parent):
+    b = ldm_num(i) + ldm_text(name) + ldm_text("ACTIVE")
+    r_vstate = len(b)
+    b = (b + bytes([kind])).ljust(r_vstate + 5, b"\0") + ldm_num(1)
+    r_child = len(b) - 5
+    b = b.ljust(r_child + 0x15, b"\0") + ldm_num(parent)
+    r_parent = len(b) - 0x15
+    return ldm_rec(0x32, b.ljust(r_parent + 22, b"\0"), r_parent + 22)
+
+
+def ldm_part(i, name, start, off, size, parent, disk):
+    b = ldm_num(i) + ldm_text(name)
+    b = b + bytes(12) + struct.pack(">QQ", start, off) + ldm_num(size) + ldm_num(parent) + ldm_num(disk)
+    r = len(b) - 0x1c
+    return ldm_rec(0x33, b.ljust(r + 28, b"\0"), r + 28)
+
+
+def ldm_disk(sectors=128, cs=24, csize=100, slot=128):
+    g = bytes(range(16))
+    recs = [ldm_disk4(1, "Disk1", g), ldm_volume(2, "Volume1", "gen", 8, b"\x11" * 16),
+            ldm_comp(3, "Volume1-01", 2, 2), ldm_part(4, "Disk1-01", 0, 0, 8, 3, 1),
+            ldm_volume(5, "Volume2", "raid5", 8, b"\x22" * 16)]
+    d = bytearray(sectors * 512)
+    d[446 + 4] = 0x42
+    struct.pack_into("<II", d, 446 + 8, 1, sectors - 1)
+    d[510:512] = b"\x55\xaa"
+    ph = bytearray(512)
+    ph[0:8] = b"PRIVHEAD"
+    struct.pack_into(">HH", ph, 0x0c, 2, 12)
+    h = g.hex()
+    ph[0x30:0x30 + 36] = f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}".encode()
+    struct.pack_into(">Q", ph, 0x11b, 100)
+    struct.pack_into(">QQ", ph, 0x12b, cs, csize)
+    d[6 * 512:7 * 512] = ph
+    base = cs * 512
+    d[base + 512:base + 520] = b"TOCBLOCK"
+    vm = base + 17 * 512
+    slots = [b""] * 4
+    for g_, r in enumerate(recs):
+        hdr = bytearray(r[:16])
+        struct.pack_into(">IHH", hdr, 8, g_ + 1, 0, 1)
+        slots.append(bytes(hdr) + r[16:])
+    last = len(slots) + 4
+    d[vm:vm + 4] = b"VMDB"
+    struct.pack_into(">III", d, vm + 4, last, slot, 512)
+    struct.pack_into(">HH", d, vm + 0x12, 4, 10)
+    for k in range(4, last):
+        at = vm + k * slot
+        d[at:at + 4] = b"VBLK"
+        if k < len(slots):
+            d[at:at + len(slots[k])] = slots[k]
+    return bytes(d)
+
+
+put("fsindex", "ldm_db", "simple", ldm_disk())
+put("fsindex", "disk_walk", "ldm", ldm_disk())
 
 print("seeds written")

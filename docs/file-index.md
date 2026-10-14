@@ -95,16 +95,17 @@ in the sealed name index, so a hunt for known-bad hashes (IOC feeds) needs no re
 
 - **Format:** name index v2 (`chunkstore::names`): the v1 columns plus a sparse list `(entry index, SHA-256)`,
   sealed with the context `names2:<source>/<time>` (v1: `names:<source>/<time>`). An index without hashes is still
-  written as v1, so the previous release reads every snapshot taken without the option. Readers try v2, then v1;
-  out-of-range or unordered hash entries are refused. Never offsite (derived data, rebuilt from the snapshot).
+  written as v1, so the previous release reads every snapshot taken without the option. Readers try v3 (owners,
+  Phase 31c, below), v2, then v1; out-of-range or unordered hash entries are refused. Never offsite (derived data,
+  rebuilt from the snapshot).
 - **Where the hashes come from** (`Store::enable_file_hashes`, at commit): computed while reading by the connector
   (NAS shares, TrueNAS, plugin file trees: `store_file*`) or by the agent (`file-hash` capability,
   docs/agent-protocol.md); carried over from the previous snapshot of the source for files with the same chunk
   list; otherwise read back from the store (older agents, the first run after switching it on). The job log has a
   line `file hashes: N while reading, N from the previous snapshot, N read back from the store, N failed`.
 - **Containers:** with `index_files` and `file_hashes` the `file_index` job hashes every regular file of the root
-  tar (`nexus-pve … ct-files … index hashes`). **VM disks** get no hashes yet (the walk in the micro-VM would read
-  every file; decision: later, opt-in).
+  tar (`nexus-pve … ct-files … index hashes`). **VM disks** too since Phase 31c (`files … index hashes`, see
+  "Content hashes of VM disk files" below).
 - **Hash lists:** `PUT /hash-lists/{name} {text}` (admins, security officers; text or CSV, the first SHA-256 per
   line; MD5/SHA-1 skipped and counted); at most 20 lists, 100 000 hashes each, 500 000 together; stored normalised
   in `hash_lists` (catalog v43), audited with their SHA-256.
@@ -131,12 +132,13 @@ download and restore work unchanged. The micro-VM walk is still available as `fi
 Every snapshot gets a sealed volume report `snapshots/<source>/<time>/fsindex` (chunkstore `snapfile.rs`): per
 volume the browse name, device, file system, label, UUID, PARTUUID, state (`indexed`, `skipped`, `unsupported`,
 `failed`, `partial`) with a reason, the guest mount point (from the root file system's `/etc/fstab`: `UUID=`,
-`LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows `C:` = the NTFS volume with
-`Windows/System32`; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
+`LABEL=`, `PARTUUID=`, `/dev/mapper/…`, `/dev/<vg>/<lv>`; Windows: drive letters from the system volume's
+SYSTEM hive, see below; else the label or `vol<N>`) and the chunks its parse read. A volume whose read chunks are
 unchanged in the next snapshot is not parsed again; its listing is copied from the previous name index (the cache
-key is the set of chunk ids, the granularity is the volume). XFS, btrfs and ZFS volumes are listed through the
-micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off); BitLocker, LUKS, ReFS, Windows dynamic
-disks (LDM), Storage Spaces, md RAID, LVM thin/cache/VDO/RAID5 are reported with their reason.
+key is the set of chunk ids, the granularity is the volume). ZFS and multi-device btrfs volumes (XFS and btrfs
+until Phase 31c, see below) are listed through the micro-VM when its image is installed (`NEXUS_FSINDEX_NO_VM` turns that off);
+BitLocker, LUKS, ReFS, striped and RAID-5 dynamic volumes, Storage Spaces, md RAID, LVM cache/VDO/RAID5 are reported
+with their reason (LVM thin volumes and simple / spanned dynamic volumes are read since Phase 31c, see below).
 
 Lab measurement (restore-vm fixtures, 1.1 GB GPT disk with ext4, XFS, NTFS, btrfs, vfat, LVM; 256 MB ZFS disk):
 the helper lists the same entries as the micro-VM walk for ext4, NTFS, vfat and ext4-on-LVM in **0.14 s**
@@ -165,9 +167,110 @@ included: its index root and allocation blocks and its children's MFT records) a
 snapshot's record is unchanged (chunk ids compared, nothing decrypted) the parent adds the previous name index's
 entries of that directory and answers with its subdirectories, which the helper walks on without reading the
 directory. A renamed or moved directory has another path and is listed again. Volumes taken over whole carry their
-records on. ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
+records on. XFS directories get records the same way (see below). ext4 keeps no records: crate `ext4-view` caches blocks itself, so the helper cannot see everything a
 listing depends on; ext4 volumes are taken over per volume as before. The job log line says how many directories
 were taken over; the result has `dirs_taken_over`.
+
+**XFS (Phase 31c).** The helper reads XFS itself (`fsindex::xfs`, no maintained crate exists): the superblock (v4
+and v5; on v5 the superblock, inode, extent-tree and directory block CRC-32C checksums are checked and unknown
+incompatible features refuse the volume), inodes by number (an inode number encodes its AG, block and slot, so the AG
+inode B+trees are not needed; v5 inodes must carry their own number), big time stamps and 64-bit extent counters,
+data forks in local, extent and B+tree format, and directories in every format (short form in the inode; block, leaf,
+node and B+tree directories by their data blocks below 32 GiB, also when a directory block spans several file system
+blocks; leaf and free index blocks are not needed for a listing). Bounds: B+tree depth 10, 2^20 extents per fork,
+1 GiB of directory data per directory, every block number checked against the AG geometry, directories entered
+once, the time budget checked per directory. The XFS log is never replayed (as for the other file systems). XFS
+volumes are split between the helpers like NTFS and ext4, and every block goes through the helper's logged block
+cache, so XFS directories get records and are taken over unread like NTFS ones. The micro-VM fallback stays for
+btrfs and ZFS. Tests: mkfs.xfs with a protofile (no root), v5 with 4 KiB and 1 KiB blocks and v4 without file
+types, each with short form, block, leaf, node and B+tree directories; fuzz target `xfs_walk` (checksums are not
+verified in fuzz builds, `cfg(fuzzing)`, so the fuzzer reaches the parsers behind them).
+
+**btrfs (Phase 31c).** Single-device btrfs is read by an own parser too (`fsindex::btrfs`): superblock (CRC-32C
+checked when that is the checksum type; xxhash, SHA-256 and BLAKE2 file systems are read without verifying),
+the system chunk array and the chunk tree (logical to physical; single, DUP and RAID1 profiles by their first stripe),
+the root tree and the file system trees (directory index items, inode items; inline and uncompressed extents for
+`/etc/fstab`). The listing starts at the default subvolume, as the micro-VM mounts it (no `subvol=`), so the browse
+paths match the file browser; subvolumes and snapshots below it are directories with their contents. Tree nodes are
+checked (address, fsid or metadata UUID, level, item bounds), descents are bounded by the strictly decreasing node
+level, directories are entered once; extent tree v2 and the RAID stripe tree are refused. A log tree is not replayed
+(`dirty`). btrfs gets no directory records: it is copy-on-write, every change rewrites the path up to the tree
+root, so a directory's read set would always have changed; unchanged volumes are still reused whole, and the
+helpers split the tree as for the other file systems. Multi-device btrfs is reported by the probe and goes to the
+micro-VM fallback (as does ZFS). Tests: mkfs.btrfs `--rootdir` (top level with nested subvolumes, a default
+subvolume with 4 KiB nodes, zstd compression); fuzz target `btrfs_walk` (input: sparse records of a 512 MiB disk,
+seeds are the non-zero blocks of small images; run with `-max_len` 1 MiB).
+
+**LVM thin volumes (Phase 31c).** A thin LV's blocks come from its pool's dm-thin metadata (the pool's `_tmeta` LV,
+mapped like any LV): the superblock (magic, version 1/2, 4 KiB metadata blocks, checksum), the top-level B+tree
+(thin device id from the LV's `device_id` -> root of its mapping tree) and the device's mapping tree (thin block ->
+pool data block, in key order). Consecutive mappings become one segment on the pool's `_tdata` LV (and through it on
+the disks); unmapped blocks read zeros, as dm-thin returns them. Every node's checksum (persistent-data CRC-32C with
+the block type's constant), block number, layout and key order is checked; tree depth 16, every node once, at most
+2^21 runs per thin LV (more: "too fragmented", reported). Thin snapshots are thin LVs of their own and are listed;
+thin LVs with an external origin are reported. The pool LV is reported as `skipped` ("its thin volumes are
+listed"). The metadata is read as committed on disk (dm-thin writes it transactionally); the volume key includes a
+hash of the mapping, so a thin LV whose mapping changed is parsed again (its old read set no longer describes it).
+Test: LVM metadata, pool metadata and an ext4 spread over the pool in reverse block order, written by the test
+(lvcreate needs root); a damaged node and a device missing from the metadata are reported. Fuzz target `lvm_thin`.
+
+**Windows dynamic disks (Phase 31c).** The LDM database is read as the Linux kernel's `block/partitions/ldm.c` reads
+it (`fsindex::ldm`): the private header (MBR disks with partition type 0x42: sector 6; GPT disks: the last sector of
+the LDM metadata partition), the table of contents, the database header (`VMDB` 4.10) and its `VBLK` records
+(fragmented records joined; disks `DSK3`/`DSK4`, volumes `VOL5`, components `CMP3`, partitions `PRT3`; every
+variable-length field and record size checked as the kernel checks it). Of the disks of the snapshot, the newest
+database copy wins; disks are matched by the GUIDs of their private headers. Simple and spanned volumes become
+volumes `ldm/<name>` (segments on one or several disks); mirrored volumes are read by their first plex; striped and
+RAID-5 volumes, volumes whose disk is missing and damaged databases are reported. Each dynamic volume carries its
+volume GUID as `win_id`, so the drive letters of the SYSTEM hive (`DMIO:ID:` + volume GUID) apply to them. Browse
+paths of dynamic volumes (`ldm/<name>/…`) are the index's own: the restore micro-VM does not assemble dynamic volumes,
+so their files are found by the search and listed, but are restored through the Windows agent. Several disk groups
+in one VM: only the newest database's group is read. The layout of GPT dynamic disks follows libldm and is not yet
+checked against a Windows-made disk (MBR layout as the kernel). Test: two MBR disks with a database written by the
+test (simple NTFS system volume whose hive names the dynamic volumes C: and D:, an ext4 spanned over both disks, a
+striped and a RAID-5 volume; the second disk missing). Fuzz target `ldm_db`.
+
+**Owners (Phase 31c).** The helper records each entry's owner: NTFS the owner SID of the security descriptor its
+`$STANDARD_INFORMATION` security id names (`$Secure:$SDS`, read once per volume and helper, at most 32 MiB, the 256
+KiB mirror blocks skipped, every entry's self offset and length checked; NTFS 1.x files without a security id have
+none), ext4 / XFS / btrfs `uid:gid` (numbers: the guest's `/etc/passwd` is not consulted); FAT and exFAT have none.
+The entry frame carries it (`E`: an `extra` byte, then `[u8 len][owner]`); the parent accepts only `A-Z a-z 0-9 - :`
+up to 184 bytes. The name index stores owners as **v3** (context `names3:<source>/<time>`: the v2 columns plus a
+table of owner texts and per entry its position + 1, 0 = none), written only when there are owners, so the previous
+release keeps reading every v1/v2 snapshot and fails cleanly on a v3 one (no misreading); readers try v3, v2, v1 and
+refuse owner columns that do not match the entries. Directories taken over and volumes reused carry their owners
+from the previous name index. The search index (`nexus-index`, crate `fileindex`) stores the owner per file version
+(stored field, the schema change rebuilds the tenant indexes once) and returns it with each version of a hit
+(`versions[].owner`). Not yet: a search filter by owner (needs the web-api parameter and the UI, Phase 33 area) and
+names for SIDs / uids (the guest's SAM / `passwd`).
+
+**Content hashes of VM disk files (Phase 31c).** For groups with `index_files` and `file_hashes` the scheduler
+queues `file_index {source, time, hashes: true}` for VM snapshots as for containers, and `nexus-pve … files <vmid>
+<time> index hashes` asks the helpers for the SHA-256 of every regular file: NTFS through the file's unnamed `$DATA`
+(compressed and encrypted attributes, and deduplicated stubs, are left unhashed: the crate would return their raw
+bytes), ext4 through `ext4-view`'s file reader, XFS through its extents (holes and unwritten extents read as zeros).
+btrfs, FAT and exFAT files stay unhashed for now. The content is read through the same pipe and caches as the
+metadata (the helper never sees a key), 1 MiB at a time, and only by the helper that owns the directory. Budget per
+helper: half of the listing's time budget and 1 TiB of content (`HashBudget`); files beyond it stay unhashed and are
+counted (`hashed_files` / `unhashed_files` per volume, `hashes` / `unhashed` in the job result). The entry frame
+carries the hash (`extra` bit 1, 32 bytes; the parent accepts it on files only) and the name index stores it as v2
+(v3 with owners), so the IOC hash hunt covers VM disks without a restore. Taking over: a directory record and a
+volume carry `hashed` (listed with hashes, nothing left unhashed for lack of budget); a listing with hashes takes over
+only such directories and reuses only such volumes, so the first listing with hashes after switching the option on
+reads the files once, and a directory cut short by the budget is listed (and its files hashed) again next time. A
+directory's read set includes the content it read, so a changed file always means a new listing of its directory.
+
+**Windows drive letters (Phase 31c).** The NTFS volume holding `Windows/System32` is the system volume. Helper 0
+reads its `Windows/System32/config/SYSTEM` in place (random access through the file's `$DATA`, never the whole file)
+with an own read-only registry hive parser (`fsindex::regf`: base block checksum, `nk`/`vk` cells, `lf`/`lh`/`li`/`ri`
+subkey lists, every offset checked against the hive, lists and `ri` nesting bounded, big-data values not read) and
+takes the `\DosDevices\X:` values of `HKLM\SYSTEM\MountedDevices`: `DMIO:ID:` + GUID names a GPT partition (its
+unique partition GUID) or a dynamic volume, 12 bytes name an MBR partition (disk signature at 0x1B8 + byte offset).
+The volume report keeps them (`drives`, and `win_id` per volume); the parent's mount mapping accepts only `A:`-`Z:`
+and volumes it listed, gives each letter once, and keeps `C:` for the system volume when the hive does not name it
+(missing, unreadable or damaged hive: as before). The hive's transaction logs (`SYSTEM.LOG1/2`) are not replayed: a
+letter changed in the last minutes before a crash-consistent snapshot may still show the old one (Cohesity documents
+the same staleness). MBR partitions now also carry Linux's `PARTUUID=<signature>-<number>`.
 
 `groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
 browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.

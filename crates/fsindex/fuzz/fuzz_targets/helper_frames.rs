@@ -1,5 +1,6 @@
 //! The parent decoding what a compromised helper sends: entry batches must be
-//! rejected or yield relative paths without `.`/`..`/empty components.
+//! rejected or yield relative paths without `.`/`..`/empty components, owners
+//! of the allowed characters and hashes only on files.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
@@ -14,6 +15,8 @@ fuzz_target!(|data: &[u8]| {
                     for e in out {
                         assert!(!e.path.starts_with('/'));
                         assert!(e.path.split('/').all(|c| !c.is_empty() && c != "." && c != ".."));
+                        assert!(e.owner.as_deref().is_none_or(fsindex::valid_owner));
+                        assert!(e.sha256.is_none() || e.kind == fsindex::KIND_FILE);
                     }
                 }
             }

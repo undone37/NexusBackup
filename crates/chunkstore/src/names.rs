@@ -5,12 +5,16 @@
 //! nexus-pve `files … index`), and goes away with the snapshot directory.
 //! File names never leave the tenant's sealed store; searching needs the key.
 //!
-//! Format versions (both postcard, sealed): v1 (context `names:<source>/<time>`)
+//! Format versions (all postcard, sealed): v1 (context `names:<source>/<time>`)
 //! has paths, sizes, mtimes and kinds; v2 (context `names2:<source>/<time>`,
 //! Phase 28) adds the SHA-256 of regular files for the IOC hash hunt (sparse:
-//! `(entry index, hash)`). An index without hashes is still written as v1, so
-//! the previous release reads every snapshot taken without `file_hashes`.
-//! Readers try v2, then v1. The name index never goes offsite (derived data).
+//! `(entry index, hash)`); v3 (context `names3:<source>/<time>`, Phase 31c)
+//! adds owners (a table of owner texts, Windows SIDs `S-1-5-21-…` or Linux
+//! `uid:gid`, and per entry its position in the table + 1, 0 = none). An index
+//! is written in the oldest version that holds what it carries (no owners: v2
+//! or v1, no hashes either: v1), so older releases read every snapshot taken
+//! without the newer data. Readers try v3, v2, then v1. The name index never
+//! goes offsite (derived data).
 
 use crate::crypto::invalid;
 use crate::store::{write_atomic, Index, Manifest, Store, TreeEntry, TreeKind};
@@ -44,6 +48,12 @@ pub struct NameIndex {
     /// empty = no hashes recorded (written as v1)
     #[serde(default)]
     pub sha256: Vec<(u32, Sha256)>,
+    /// v3: owner texts (`S-1-5-21-…`, `1000:1000`), each once
+    #[serde(default)]
+    pub owners: Vec<String>,
+    /// v3: per entry its owner's position in `owners` + 1 (0 = none); empty = no owners
+    #[serde(default)]
+    pub owner: Vec<u32>,
 }
 
 /// On-disk layouts (postcard is positional: one struct per version).
@@ -62,6 +72,17 @@ struct V2 {
     mtime: Vec<i64>,
     kind: Vec<u8>,
     sha256: Vec<(u32, Sha256)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct V3 {
+    paths: String,
+    size: Vec<u64>,
+    mtime: Vec<i64>,
+    kind: Vec<u8>,
+    sha256: Vec<(u32, Sha256)>,
+    owners: Vec<String>,
+    owner: Vec<u32>,
 }
 
 pub const KIND_FILE: u8 = 0;
@@ -136,6 +157,24 @@ impl NameIndex {
 
     pub fn has_hashes(&self) -> bool {
         !self.sha256.is_empty()
+    }
+
+    /// Sets the owners (v3): the table and per entry its position + 1 (0 = none).
+    /// Ignored unless there is one value per entry, each within the table.
+    pub fn set_owners(&mut self, owners: Vec<String>, owner: Vec<u32>) {
+        if owner.len() == self.len() && owner.iter().all(|&o| o as usize <= owners.len()) {
+            (self.owners, self.owner) = (owners, owner);
+        }
+    }
+
+    /// The owner of entry `i`, if recorded.
+    pub fn owner(&self, i: usize) -> Option<&str> {
+        let o = *self.owner.get(i)? as usize;
+        self.owners.get(o.checked_sub(1)?).map(String::as_str)
+    }
+
+    pub fn has_owners(&self) -> bool {
+        !self.owner.is_empty()
     }
 
     /// `(path, size, sha256)` of every entry with a recorded hash.
@@ -227,22 +266,46 @@ fn ctx2(source: &str, time: u64) -> String {
     format!("names2:{source}/{time}")
 }
 
-/// Decodes a sealed name index of `source/time`, v2 or v1 (wrong key or a file
-/// of another snapshot: error). Shared by the store and `MetaReader`.
+fn ctx3(source: &str, time: u64) -> String {
+    format!("names3:{source}/{time}")
+}
+
+/// Hash entries ascending and inside, owners one per entry and inside the table.
+fn check(n: NameIndex) -> io::Result<NameIndex> {
+    if n.sha256.windows(2).any(|w| w[0].0 >= w[1].0) || n.sha256.last().is_some_and(|l| l.0 as usize >= n.len()) {
+        return Err(invalid("name index: hash entries out of order"));
+    }
+    if !n.owner.is_empty() && (n.owner.len() != n.len() || n.owner.iter().any(|&o| o as usize > n.owners.len())) {
+        return Err(invalid("name index: owners do not match the entries"));
+    }
+    Ok(n)
+}
+
+/// Decodes a sealed name index of `source/time`, v3, v2 or v1 (wrong key or a
+/// file of another snapshot: error). Shared by the store and `MetaReader`.
 pub(crate) fn decode(keys: &Keyring, source: &str, time: u64, sealed: &[u8]) -> io::Result<NameIndex> {
-    if let Ok((_, plain)) = keys.open(ctx2(source, time).as_bytes(), sealed) {
-        let v: V2 = postcard::from_bytes(&plain).map_err(ser)?;
-        let n = NameIndex {
+    if let Ok((_, plain)) = keys.open(ctx3(source, time).as_bytes(), sealed) {
+        let v: V3 = postcard::from_bytes(&plain).map_err(ser)?;
+        return check(NameIndex {
             paths: v.paths,
             size: v.size,
             mtime: v.mtime,
             kind: v.kind,
             sha256: v.sha256,
-        };
-        if n.sha256.windows(2).any(|w| w[0].0 >= w[1].0) || n.sha256.last().is_some_and(|l| l.0 as usize >= n.len()) {
-            return Err(invalid("name index: hash entries out of order"));
-        }
-        return Ok(n);
+            owners: v.owners,
+            owner: v.owner,
+        });
+    }
+    if let Ok((_, plain)) = keys.open(ctx2(source, time).as_bytes(), sealed) {
+        let v: V2 = postcard::from_bytes(&plain).map_err(ser)?;
+        return check(NameIndex {
+            paths: v.paths,
+            size: v.size,
+            mtime: v.mtime,
+            kind: v.kind,
+            sha256: v.sha256,
+            ..Default::default()
+        });
     }
     let v: V1 = postcard::from_bytes(&keys.open(ctx(source, time).as_bytes(), sealed)?.1).map_err(ser)?;
     Ok(NameIndex {
@@ -250,7 +313,7 @@ pub(crate) fn decode(keys: &Keyring, source: &str, time: u64, sealed: &[u8]) -> 
         size: v.size,
         mtime: v.mtime,
         kind: v.kind,
-        sha256: Vec::new(),
+        ..Default::default()
     })
 }
 
@@ -260,9 +323,21 @@ fn ser(e: postcard::Error) -> io::Error {
 
 impl Store {
     /// Seals and writes the name index of `source/time` (replacing an older
-    /// one): v2 when it carries hashes, else v1.
+    /// one): v3 when it carries owners, else v2 when it carries hashes, else v1.
     pub fn write_names(&self, source: &str, time: u64, names: &NameIndex) -> io::Result<()> {
-        let blob = if names.has_hashes() {
+        let blob = if names.has_owners() {
+            let v = V3 {
+                paths: names.paths.clone(),
+                size: names.size.clone(),
+                mtime: names.mtime.clone(),
+                kind: names.kind.clone(),
+                sha256: names.sha256.clone(),
+                owners: names.owners.clone(),
+                owner: names.owner.clone(),
+            };
+            self.keys()
+                .seal(ctx3(source, time).as_bytes(), &postcard::to_stdvec(&v).map_err(ser)?)
+        } else if names.has_hashes() {
             let v = V2 {
                 paths: names.paths.clone(),
                 size: names.size.clone(),
@@ -596,5 +671,56 @@ mod tests {
         .unwrap();
         let sealed = s.keys().seal(b"names2:host-a1/1", &bad);
         assert!(s.decode_names("host-a1", 1, &sealed).is_err());
+    }
+
+    /// Phase 31c: owners make it v3; without them the older versions are written.
+    #[test]
+    fn owners_are_v3_and_older_readers_are_not_misled() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path(), keys("acme", 1), opts()).unwrap();
+        s.commit_snapshot("vm-1", 1, &[("tree", Index::Tree { entries: vec![] })])
+            .unwrap();
+        let mut n = NameIndex::default();
+        n.push("Users", 0, 1, KIND_DIR);
+        n.push("Users/ann.txt", 3, 1, KIND_FILE);
+        n.push("Users/x", 3, 1, KIND_FILE);
+        n.set_hash(1, [5; 32]);
+        n.set_owners(vec!["S-1-5-32-544".into(), "S-1-5-21-1-2-3-1001".into()], vec![1, 2, 0]);
+        n.set_owners(vec![], vec![1]); // not one per entry: ignored
+        assert_eq!(
+            (n.owner(0), n.owner(1), n.owner(2), n.owner(9)),
+            (Some("S-1-5-32-544"), Some("S-1-5-21-1-2-3-1001"), None, None)
+        );
+        s.write_names("vm-1", 1, &n).unwrap();
+        let m = s.load_manifest("vm-1", 1).unwrap();
+        assert_eq!(s.load_names(&m).unwrap().unwrap(), n);
+        let raw = fs::read(d.path().join("snapshots/vm-1/1/names")).unwrap();
+        for old in ["names:vm-1/1", "names2:vm-1/1"] {
+            assert!(
+                s.keys().open(old.as_bytes(), &raw).is_err(),
+                "{old}: not readable as an older version"
+            );
+        }
+        // without owners: v2 (hashes) as before
+        n.set_owners(vec![], vec![0, 0, 0]);
+        n.owner.clear();
+        s.write_names("vm-1", 1, &n).unwrap();
+        let raw = fs::read(d.path().join("snapshots/vm-1/1/names")).unwrap();
+        assert!(s.keys().open(b"names2:vm-1/1", &raw).is_ok());
+        // forged owners (beyond the table, not one per entry) are refused on read
+        for (owners, owner) in [(vec!["a".to_string()], vec![2u32]), (vec!["a".into()], vec![1, 1])] {
+            let bad = postcard::to_stdvec(&V3 {
+                paths: "a\0".into(),
+                size: vec![1],
+                mtime: vec![1],
+                kind: vec![KIND_FILE],
+                sha256: vec![],
+                owners,
+                owner,
+            })
+            .unwrap();
+            let sealed = s.keys().seal(b"names3:vm-1/1", &bad);
+            assert!(s.decode_names("vm-1", 1, &sealed).is_err());
+        }
     }
 }

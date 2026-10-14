@@ -71,3 +71,38 @@ path = "fuzz_targets/disk_walk.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "regf_hive"
+path = "fuzz_targets/regf_hive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xfs_walk"
+path = "fuzz_targets/xfs_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lvm_thin"
+path = "fuzz_targets/lvm_thin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "btrfs_walk"
+path = "fuzz_targets/btrfs_walk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ldm_db"
+path = "fuzz_targets/ldm_db.rs"
+test = false
+doc = false
+bench = false
