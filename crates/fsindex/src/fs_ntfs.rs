@@ -7,7 +7,7 @@
 use crate::disk::{Padded, Vol};
 use crate::walk::Out;
 use crate::{nt_to_unix, Volume, KIND_DIR, KIND_FILE, KIND_SYMLINK, MAX_DEPTH, MAX_PATH};
-use ntfs::structured_values::{NtfsFileNamespace, NtfsStandardInformation, NtfsVolumeFlags};
+use ntfs::structured_values::{NtfsFileAttributeFlags, NtfsFileNamespace, NtfsStandardInformation, NtfsVolumeFlags};
 use ntfs::{Ntfs, NtfsAttributeType, NtfsFile, NtfsReadSeek};
 
 const TAG_DEDUP: u32 = 0x8000_0013;
@@ -97,6 +97,25 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 continue;
             }
             let name = key.name().to_string_lossy();
+            if !own && !key.file_attributes().contains(NtfsFileAttributeFlags::REPARSE_POINT) {
+                // another helper's entries: only the subdirectories, from the index entry (no
+                // MFT record read); reparse points go the full way (junctions are not entered)
+                if key.is_directory() && !name.is_empty() && !name.contains('/') && seen.insert(name.clone()) {
+                    let path = if rel.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{rel}/{name}")
+                    };
+                    if path.len() <= MAX_PATH
+                        && depth + 1 < MAX_DEPTH
+                        && out.walks(&path, depth + 1)
+                        && visited.insert(num)
+                    {
+                        stack.push((num, path, depth + 1));
+                    }
+                }
+                continue;
+            }
             // a hard link may show up once per name; the same name twice is a broken index
             if !seen.insert(name.clone()) || name.is_empty() || name.contains('/') {
                 info.skipped_entries += u64::from(own);

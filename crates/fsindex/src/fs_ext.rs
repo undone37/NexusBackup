@@ -59,6 +59,17 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             } else {
                 format!("{rel}/{name}")
             };
+            if !own {
+                // another helper's entries: only the subdirectories (type from the directory entry)
+                if e.file_type().is_ok_and(|t| t.is_dir())
+                    && path.len() <= MAX_PATH
+                    && depth + 1 < MAX_DEPTH
+                    && out.walks(&path, depth + 1)
+                {
+                    stack.push((e.path(), path, depth + 1));
+                }
+                continue;
+            }
             if path.len() > MAX_PATH {
                 info.skipped_entries += u64::from(own);
                 continue;

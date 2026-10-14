@@ -158,11 +158,13 @@ impl Default for Limits {
     }
 }
 
-/// Helper `index` of `count` walking one volume together (Phase 32): directories
-/// above [`PART_DEPTH`] are walked by all of them (to find the ones below) but
-/// their entries come from helper 0; every directory at or below that depth
-/// belongs to one helper by a hash of its first [`PART_DEPTH`] path components,
-/// which walks it and emits its entries. Every entry comes from exactly one helper.
+/// Helper `index` of `count` walking one volume together (Phase 32). Every
+/// directory belongs to one helper, which emits its entries: the root to helper
+/// 0, any other by a hash of its path, below [`PART_DEPTH`] by a hash of its first
+/// [`PART_DEPTH`] components (a subtree stays together). Directories above that
+/// depth are walked by all helpers to find the ones below (cheaply where they are
+/// not theirs: subdirectories only); deeper ones only by their owner. Every entry
+/// comes from exactly one helper.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Part {
     pub index: u32,
@@ -175,15 +177,15 @@ impl Default for Part {
     }
 }
 
-/// Directory depth from which the trees are split between helpers (root = 0:
-/// `Windows/System32` and `Users/alice` are split, `Windows` is not).
-pub const PART_DEPTH: usize = 2;
+/// Depth from which whole subtrees go to one helper (root = 0): with 3 the
+/// subdirectories of `Windows/WinSxS` (tens of thousands) spread over all helpers.
+pub const PART_DEPTH: usize = 3;
 
 impl Part {
     /// The helper that owns directory `rel` at `depth` (its entries, below
     /// [`PART_DEPTH`] also its walk).
     fn owner(&self, rel: &str, depth: usize) -> u32 {
-        if self.count <= 1 || depth < PART_DEPTH {
+        if self.count <= 1 || depth == 0 {
             return 0;
         }
         // FNV-1a of the first PART_DEPTH components: stable across processes
@@ -250,27 +252,29 @@ mod tests {
                 (String::new(), 0),
                 (format!("d{i}"), 1),
                 (format!("d{}/s{i}", i % 7), 2),
-                (format!("d{}/s{i}/x/y", i % 7), 4),
+                (format!("d{}/s{}/t{i}", i % 7, i % 5), 3),
+                (format!("d{}/s{}/t{i}/x/y", i % 7, i % 5), 5),
             ] {
                 let owners: Vec<u32> = parts.iter().filter(|p| p.owns(&rel, depth)).map(|p| p.index).collect();
                 assert_eq!(owners.len(), 1, "{rel}");
-                if depth < PART_DEPTH {
-                    assert_eq!(owners, [0], "{rel}: the top levels belong to helper 0");
-                    assert!(
-                        parts.iter().all(|p| p.walks(&rel, depth)),
-                        "everyone walks the top levels"
-                    );
-                } else {
+                let walkers: Vec<u32> = parts.iter().filter(|p| p.walks(&rel, depth)).map(|p| p.index).collect();
+                match depth {
+                    0 => assert_eq!(owners, [0], "the root belongs to helper 0"),
+                    d if d < PART_DEPTH => assert_eq!(walkers.len(), 4, "{rel}: everyone walks the top levels"),
+                    _ => assert_eq!(walkers, owners, "{rel}: only its owner walks it"),
+                }
+                if depth > 0 {
                     used[owners[0] as usize] += 1;
-                    let walkers: Vec<u32> = parts.iter().filter(|p| p.walks(&rel, depth)).map(|p| p.index).collect();
-                    assert_eq!(walkers, owners, "{rel}: only its owner walks it");
                 }
             }
         }
-        // a directory's subtree stays with its owner
+        // a subtree below PART_DEPTH stays with its owner; WinSxS' subdirectories spread
         let o = |rel: &str, d| parts.iter().find(|p| p.owns(rel, d)).unwrap().index;
-        assert_eq!(o("Windows/WinSxS", 2), o("Windows/WinSxS/amd64_x/y", 4));
-        assert!(used.iter().all(|&n| n > 100), "spread over all helpers: {used:?}");
+        assert_eq!(o("Windows/WinSxS/amd64_x", 3), o("Windows/WinSxS/amd64_x/y/z", 5));
+        let sxs: std::collections::BTreeSet<u32> =
+            (0..64).map(|i| o(&format!("Windows/WinSxS/amd64_{i}"), 3)).collect();
+        assert_eq!(sxs.len(), 4, "the subdirectories of one big directory use every helper");
+        assert!(used.iter().all(|&n| n > 200), "spread over all helpers: {used:?}");
         assert!(Part::default().walks("a/b/c", 3) && Part::default().owns("a/b/c", 3));
     }
 

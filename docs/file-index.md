@@ -145,14 +145,16 @@ unchanged volumes reused (`crates/pve/tests/restore_vm.rs` `fsindex_matches_micr
 
 **Parallel walk (Phase 32).** `nexus-pve` starts one helper per CPU (up to 8) for a listing; each stays
 single-threaded and sandboxed (seccomp, no threads or processes). The NTFS and ext4 trees are split between them
-(`fsindex::Part`): directories above depth 2 are walked by all of them (to find the ones below) and listed by helper 0,
-every directory from depth 2 down belongs to one helper by an FNV hash of its first two path components; FAT, exFAT
+(`fsindex::Part`): every directory belongs to one helper (the root to helper 0, others by an FNV hash of their path,
+from depth 3 down of their first three components, so a subtree stays together), which reads its entries' MFT records
+and emits them; directories above depth 3 are also walked by the other helpers, which only take the subdirectories
+from the index entries (NTFS) or directory entries (ext4) without reading the children; FAT, exFAT
 and the volume layout come from helper 0 alone. The parent serves each helper on its own thread with one shared LRU
 cache of 128 decoded chunks (a miss decrypts and decompresses outside the lock, so in parallel) and merges the
 listings per volume (worst state, union of the read chunks, entries sorted by path). Lab (Windows Server C:, 391k
-entries): 150-217 s with one helper and a FIFO cache of 32, 82-90 s with the LRU cache; most of it decrypting the
-4779 chunks the walk touches (directory index blocks are spread over the whole volume). One huge directory (WinSxS)
-stays with one helper.
+entries): 150-217 s with one helper and a FIFO cache of 32, 82-90 s with the LRU cache, 70-72 s with 8 helpers
+splitting from depth 2 (the subdirectories of `Windows/WinSxS` all went to one helper; hence depth 3 and per-directory
+owners).
 
 `groups.index_files` is on by default for new Proxmox VE groups. The job result (catalog, plaintext) names only
 browse names, file systems, mount points, states and reasons; labels, UUIDs and fstab contents stay sealed.
