@@ -984,7 +984,11 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                      ORDER BY job_id DESC LIMIT 1) AS scan, s.scan_state AS scan_state,
                     s.clean_point AS clean_point,
                     (SELECT json_object('state', state, 'reason', reason) FROM snapshot_index y
-                     WHERE y.tenant = s.tenant AND y.source = s.source AND y.time = s.time) AS file_index
+                     WHERE y.tenant = s.tenant AND y.source = s.source AND y.time = s.time) AS file_index,
+                    COALESCE((SELECT i.name FROM inventory i JOIN sources so ON so.id = i.source_id
+                              WHERE so.tenant = s.tenant AND (s.source LIKE 'vm-%' OR s.source LIKE 'ct-%')
+                                AND i.guest = substr(s.source, 4) AND i.name != '' LIMIT 1),
+                             (SELECT a.name FROM agents a WHERE 'host-' || a.id = s.source)) AS label
              FROM snapshots s
 
              LEFT JOIN legal_holds h ON h.tenant = s.tenant AND h.source = s.source AND h.time = s.time
@@ -1032,6 +1036,8 @@ pub async fn list_snapshots(State(st): State<St>, ctx: Ctx, Q(f): Q<SnapFilter>)
                         || r.get::<_, Option<String>>("scan_state")?.as_deref() == Some("hit")),
                 // Phase 29: marked by a scan back as the source's recommended restore point
                 "clean_point": r.get::<_, Option<i64>>("clean_point")?,
+                // the guest's or agent's name (inventory, agents), shown next to the source
+                "label": r.get::<_, Option<String>>("label")?,
                 // Phase 31: file index state of VM/CT snapshots (catalog v42 snapshot_index)
                 "index_state": idx.as_ref().map(|v| v["state"].clone()),
                 "index_reason": idx.as_ref().map(|v| v["reason"].clone()),

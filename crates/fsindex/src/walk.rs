@@ -24,7 +24,7 @@ pub trait Driver {
     /// Phase 31c: the previous snapshot's subdirectories of directory `rel` when its
     /// listing can be taken over unread (the parent adds its entries when `own`);
     /// `None`: list it.
-    fn reuse_dir(&mut self, _rel: &str, _own: bool) -> io::Result<Option<Vec<(u64, String)>>> {
+    fn reuse_dir(&mut self, _rel: &str, _own: bool, _layout: &str) -> io::Result<Option<Vec<(u64, String)>>> {
         Ok(None)
     }
     /// Phase 31c: an owned directory was listed completely; `blocks` its listing read.
@@ -38,6 +38,10 @@ pub struct Out<'a> {
     driver: &'a mut dyn Driver,
     /// the disks, for the per-directory read sets (Phase 31c)
     io: Option<Io>,
+    /// the volume's layout signature (empty: no directory records) and the blocks every
+    /// lookup touches that a directory's read set leaves out (NTFS: the $MFT record)
+    layout: String,
+    ignore: std::collections::HashSet<(usize, u64)>,
     total: u64,
     limits: Limits,
     deadline: Instant,
@@ -88,7 +92,10 @@ impl Out<'_> {
     /// Phase 31c: the subdirectories of `rel` when the previous snapshot's listing
     /// of it still holds (its entries are then the parent's business); `None`: list it.
     pub fn reuse_dir(&mut self, rel: &str, own: bool) -> Option<Vec<(u64, String)>> {
-        match self.driver.reuse_dir(rel, own) {
+        if self.layout.is_empty() {
+            return None;
+        }
+        match self.driver.reuse_dir(rel, own, &self.layout) {
             Ok(r) => r,
             Err(e) => {
                 self.fatal = Some(e);
@@ -104,14 +111,31 @@ impl Out<'_> {
         }
     }
 
+    /// The basis of this volume's directory records: its layout signature (empty: no
+    /// records, no takeover) and the blocks every lookup reads (left out of the read sets).
+    pub fn dir_basis(&mut self, layout: String, ignore: Vec<(usize, u64)>) {
+        self.layout = layout;
+        self.ignore = ignore.into_iter().collect();
+    }
+
     /// An owned directory was listed completely: its record for the next snapshot.
     pub fn dir_listed(&mut self, rec: &crate::DirRec) {
-        let blocks = self
+        if self.layout.is_empty() {
+            return;
+        }
+        let blocks: Vec<(usize, u64)> = self
             .io
             .as_ref()
             .map(|io| io.borrow_mut().take_accessed())
-            .unwrap_or_default();
-        if let Err(e) = self.driver.dir_listed(rec, &blocks) {
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|b| !self.ignore.contains(b))
+            .collect();
+        let rec = crate::DirRec {
+            layout: self.layout.clone(),
+            ..rec.clone()
+        };
+        if let Err(e) = self.driver.dir_listed(&rec, &blocks) {
             self.fatal = Some(e);
         }
     }
@@ -137,6 +161,8 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
     let mut out = Out {
         driver,
         io: Some(io.clone()),
+        layout: String::new(),
+        ignore: Default::default(),
         total: 0,
         limits,
         deadline: Instant::now() + Duration::from_secs(limits.budget_secs),
@@ -441,6 +467,8 @@ pub fn walk_one(vol: &Vol, fs: &str, limits: Limits) -> Result<u64, String> {
     let mut out = Out {
         driver: &mut c,
         io: None,
+        layout: String::new(),
+        ignore: Default::default(),
         total: 0,
         limits,
         deadline: Instant::now() + Duration::from_secs(limits.budget_secs),

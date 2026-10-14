@@ -297,14 +297,11 @@ impl<R: Read, W: Write> Driver for HelperDriver<R, W> {
         write_frame(&mut self.chan.borrow_mut().w, b'P', &entries.to_le_bytes())
     }
 
-    fn reuse_dir(&mut self, rel: &str, own: bool) -> io::Result<Option<Vec<(u64, String)>>> {
+    fn reuse_dir(&mut self, rel: &str, own: bool, layout: &str) -> io::Result<Option<Vec<(u64, String)>>> {
         self.flush_batch()?;
         let mut c = self.chan.borrow_mut();
-        write_frame(
-            &mut c.w,
-            b'U',
-            &serde_json::to_vec(&serde_json::json!({"rel": rel, "own": own}))?,
-        )?;
+        let q = serde_json::json!({"rel": rel, "own": own, "layout": layout});
+        write_frame(&mut c.w, b'U', &serde_json::to_vec(&q)?)?;
         c.w.flush()?;
         match read_frame(&mut c.r)? {
             (b'Y', s) => Ok(Some(serde_json::from_slice(&s)?)),

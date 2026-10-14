@@ -351,10 +351,16 @@ fn run_once(
                     struct Q {
                         rel: String,
                         own: bool,
+                        #[serde(default)]
+                        layout: String,
                     }
                     let q: Q =
                         serde_json::from_slice(&p).map_err(|e| io::Error::other(format!("directory query: {e}")))?;
-                    match src.dir(&out[i].volume.key, &q.rel) {
+                    // only with the same volume layout (a moved MFT moves the records a read set names)
+                    let hit = src
+                        .dir(&out[i].volume.key, &q.rel)
+                        .filter(|(_, r)| !q.layout.is_empty() && r.layout == q.layout);
+                    match hit {
                         Some((entries, rec)) => {
                             write_frame(&mut w, b'Y', &serde_json::to_vec(&rec.subdirs)?)?;
                             if q.own {

@@ -1117,6 +1117,8 @@ export interface JobProgress {
 }
 
 export interface Snapshot {
+  /** the guest's (inventory) or agent's name, when known */
+  label?: string | null;
   tenant: string;
   source: string;
   time: number;

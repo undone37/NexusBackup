@@ -611,6 +611,7 @@
             <tr>
               <td>
                 <span class="mono">{s.source}</span>
+                {#if s.label && !ag}<span class="muted"> {s.label}</span>{/if}
                 {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
                 {#if sh}<div class="muted">{t.snap.share(sh)}</div>{/if}
                 {#if pl}

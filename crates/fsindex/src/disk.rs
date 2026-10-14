@@ -162,6 +162,22 @@ impl Vol {
         Ok(())
     }
 
+    /// The (disk, 64 KiB block) holding the volume's bytes `[off, off + len)`
+    /// (Phase 31c: blocks a directory's read set leaves out).
+    pub fn disk_blocks(&self, off: u64, len: u64) -> Vec<(usize, u64)> {
+        let block = crate::proto::BLOCK;
+        let end = off.saturating_add(len).min(self.size);
+        let mut out = Vec::new();
+        let mut p = off;
+        while p < end {
+            let Ok((d, at, avail)) = self.locate(p) else { break };
+            let k = avail.min(end - p).max(1);
+            out.extend((at / block..=(at + k - 1) / block).map(|b| (d, b)));
+            p += k;
+        }
+        out
+    }
+
     /// Up to `n` bytes from `off` (fewer at the end of the volume).
     pub fn read_vec(&self, off: u64, n: usize) -> io::Result<Vec<u8>> {
         let n = (n as u64).min(self.size.saturating_sub(off)) as usize;

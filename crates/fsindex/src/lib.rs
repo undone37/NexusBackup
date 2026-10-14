@@ -118,6 +118,10 @@ pub struct DirRec {
     pub deps: Vec<(u32, u64)>,
     /// its subdirectories: (NTFS file record number, 0 elsewhere; name)
     pub subdirs: Vec<(u64, String)>,
+    /// signature of the volume's layout its read set assumes (NTFS: the MFT's
+    /// data runs); a record is only taken over with the same layout
+    #[serde(default)]
+    pub layout: String,
     /// its entries' share of the volume's `dedup_files` / `skipped_entries`
     #[serde(default)]
     pub dedup: u64,

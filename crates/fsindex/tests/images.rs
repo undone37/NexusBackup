@@ -200,6 +200,11 @@ fn list(paths: &[&Path]) -> Vec<Listed> {
                 x.volume.fs
             );
             assert!(!r.deps.is_empty(), "/{}: a record without what it read", r.rel);
+            assert!(
+                r.layout.starts_with("ntfs-mft-"),
+                "/{}: the MFT layout it assumes",
+                r.rel
+            );
         }
     }
     let deepest = l

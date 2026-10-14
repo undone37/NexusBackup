@@ -42,13 +42,40 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     if let Ok(vi) = ntfs.volume_info(&mut fs) {
         info.dirty = vi.flags().contains(NtfsVolumeFlags::IS_DIRTY);
     }
-    // MFT records (in use or free): an upper estimate of the entries
+    // MFT records (in use or free): an upper estimate of the entries; the MFT's data runs:
+    // the layout signature of the directory records (Phase 31c)
+    let mut layout = String::new();
     if let Some(Ok(d)) = ntfs.file(&mut fs, 0).ok().as_ref().and_then(|m| m.data(&mut fs, "")) {
         if let Ok(a) = d.to_attribute() {
             let records = a.value_length() / u64::from(ntfs.file_record_size().max(1));
             out.expect(records.saturating_sub(FIRST_USER_RECORD));
+            if let Ok(ntfs::attribute_value::NtfsAttributeValue::NonResident(nr)) = a.value(&mut fs) {
+                let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                let mut ok = true;
+                for run in nr.data_runs() {
+                    let Ok(run) = run else {
+                        ok = false;
+                        break;
+                    };
+                    let pos = run.data_position().value().map_or(0, |p| p.get());
+                    for b in pos.to_le_bytes().into_iter().chain(run.allocated_size().to_le_bytes()) {
+                        h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+                    }
+                }
+                if ok {
+                    layout = format!("ntfs-mft-{h:016x}");
+                }
+            }
         }
     }
+    // every lookup reads the $MFT record (crate ntfs finds the records through its data
+    // runs): its blocks change with their neighbours in every snapshot, the layout above
+    // stands for what matters in it
+    let mft = ntfs.mft_position().value().map(|p| p.get());
+    let ignore = mft
+        .map(|p| v.disk_blocks(p, u64::from(ntfs.file_record_size())))
+        .unwrap_or_default();
+    out.dir_basis(layout, ignore);
     let mut stack: Vec<(u64, String, usize)> = vec![(ROOT, String::new(), 0)];
     // NTFS has no directory hard links: a directory seen twice is a loop
     let mut visited = std::collections::HashSet::from([ROOT]);
