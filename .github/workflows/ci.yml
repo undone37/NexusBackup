@@ -1,25 +1,89 @@
 name: ci
-on: [push, pull_request]
+# One self-hosted runner does everything, so each push runs only the jobs whose part of the tree
+# changed (job `changes`); a docs-only push runs none. Tags do not run CI: a tag is cut from a
+# commit that already passed on main (the release workflow builds it). The weekly run checks
+# everything, including new advisories for unchanged dependencies.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
 # a newer push to the same branch makes the older run pointless
 concurrency:
   group: ci-${{ github.ref }}
   # main: a running check finishes (only the newest pending run waits); branches: the newest wins
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+env:
+  # target/ stays on the runner between runs (checkout with clean: false); without incremental
+  # artifacts it stays small enough, dependencies are still reused
+  CARGO_INCREMENTAL: 0
+  # the workspace's test build no longer fits the runner's disk with full debug info
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 jobs:
-  rust:
+  changes:
     runs-on: self-hosted
-    env:
-      # the workspace's test build no longer fits a runner's disk with full debug info
-      # (PostgreSQL / Keycloak testboxes then failed with "No space left on device")
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    outputs:
+      rust: ${{ steps.diff.outputs.rust }}
+      web: ${{ steps.diff.outputs.web }}
+      plugin: ${{ steps.diff.outputs.plugin }}
+      os: ${{ steps.diff.outputs.os }}
+      windows: ${{ steps.diff.outputs.windows }}
+      deps: ${{ steps.diff.outputs.deps }}
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0, clean: false }
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=${BASE:-$BEFORE}
+          if [ "$EVENT" = schedule ] || [ "$EVENT" = workflow_dispatch ] || [ -z "$base" ] ||
+             ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            files=ALL # new branch, force push or scheduled run: everything
+          else
+            files=$(git diff --name-only "$base" HEAD)
+          fi
+          printf '%s\n' "$files"
+          out() { # out NAME REGEX
+            if [ "$files" = ALL ] || grep -Eq "$2" <<<"$files"; then v=true; else v=false; fi
+            echo "$1=$v" | tee -a "$GITHUB_OUTPUT"
+          }
+          wf='^\.github/workflows/ci\.yml$'
+          out rust "^(crates|plugins|restore-vm)/|^Cargo\.(toml|lock)$|^(rustfmt|deny)\.toml$|$wf"
+          out web "^web/|^crates/web-api/openapi\.json$|$wf"
+          out plugin "^pve-plugin/|$wf"
+          out os "^(os|release)/|$wf"
+          out windows "^crates/agent-(core|proto|windows|gui)/|^Cargo\.lock$|$wf"
+          out deps "^Cargo\.(toml|lock)$|^deny\.toml$|$wf"
+  lint:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+        with: { clean: false }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
-      - run: command -v qemu-img >/dev/null || { if command -v dnf >/dev/null; then sudo dnf install -y qemu-img; else sudo apt-get update && sudo apt-get install -y qemu-utils; fi; }
+      # a runner disk guard for the kept target/ (the test build is the largest part)
+      - run: |
+          used=$(du -s --block-size=1G target 2>/dev/null | cut -f1 || echo 0)
+          if [ "${used:-0}" -gt 80 ]; then echo "target/ is ${used} GiB: cleaning"; cargo clean; fi
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+  test:
+    needs: [changes, lint]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+        with: { clean: false }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: command -v qemu-img >/dev/null || { if command -v dnf >/dev/null; then sudo dnf install -y qemu-img; else sudo apt-get update && sudo apt-get install -y qemu-utils; fi; }
       # Ubuntu 24.04 runners forbid unprivileged user namespaces (AppArmor); the plugin
       # sandbox tests start real sandboxes (the appliance allows them, docs/plugin-system.md)
       - run: |
@@ -28,28 +92,49 @@ jobs:
       - run: cargo test --all --no-fail-fast
       - if: always()
         run: df -h / && du -sh target
+  plugin:
+    needs: changes
+    if: needs.changes.outputs.plugin == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+        with: { clean: false }
       - run: perl -MJSON -e1 2>/dev/null || { if command -v dnf >/dev/null; then sudo dnf install -y perl-JSON; else sudo apt-get update && sudo apt-get install -y libjson-perl; fi; }
       - run: prove pve-plugin/t
+  os:
+    needs: changes
+    if: needs.changes.outputs.os == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+        with: { clean: false }
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: release/check-trust.sh
   web:
     # the SPA embedded in nexus-web-api (same Node major as os/Containerfile)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     runs-on: self-hosted
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v7
+        with: { clean: false }
       - uses: actions/setup-node@v7
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run format:check
       - run: npm run check
       - run: npm run build
   agent-windows:
     # Windows agent: cross-compile in podman (rust + mingw-w64), clippy for the Windows
     # target, size/import checks; platform-independent unit tests on Linux.
     # No Windows runner on purpose (docs/agent-windows.md "Untested").
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v7
+        with: { clean: false }
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p agent-core -p agent-windows
       - run: crates/agent-windows/build.sh --test-key --clippy
@@ -60,11 +145,14 @@ jobs:
       # desktop UI (crates/agent-gui): Windows + Linux x86_64 builds, clippy for Windows
       - run: crates/agent-gui/build.sh --no-arm64 --clippy
   audit:
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: self-hosted
     # audit-check reports through a check run
     permissions: { contents: read, checks: write }
     steps:
       - uses: actions/checkout@v7
+        with: { clean: false }
       # the self-hosted runner has no preinstalled cargo (GitHub-hosted runners do)
       - uses: dtolnay/rust-toolchain@stable
       - uses: rustsec/audit-check@v2
