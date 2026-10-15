@@ -1,11 +1,13 @@
 name: ci
 # One self-hosted runner does everything, so each push runs only the jobs whose part of the tree
-# changed (job `changes`); a docs-only push runs none. Tags do not run CI: a tag is cut from a
+# changed (job `changes`); a docs-only push runs none. Branches run CI through their pull request.
+# Tags do not run CI: a tag is cut from a
 # commit that already passed on main (the release workflow builds it). The weekly run checks
 # everything, including new advisories for unchanged dependencies.
 on:
+  # main only: a branch with a pull request (Dependabot) would otherwise run twice, once per event
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "41 4 * * 0"
