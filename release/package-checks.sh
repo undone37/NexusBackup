@@ -40,7 +40,8 @@ installed() { # installed deb|rpm
 	[ $rc = 3 ] || fail "status exit code $rc (want 3: service not running)"
 	cat /tmp/status
 	grep -q "^installed from: $1 package" /tmp/status || fail "status: package"
-	grep -q "^self-update: off; installed from a $1 package" /tmp/status || fail "status: self-update"
+	# Phase 27: package installs take signed package updates from the appliance unless agent.conf says off
+	grep -q "^self-update: allowed with $1 package updates from the appliance" /tmp/status || fail "status: self-update"
 	if command -v systemd-analyze >/dev/null; then
 		# no network-online.target etc. in a container: only unit syntax/ExecStart errors matter
 		systemd-analyze verify /usr/lib/systemd/system/nexus-agent.service 2>&1 | tee /tmp/verify

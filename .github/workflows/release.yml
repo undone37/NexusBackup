@@ -247,10 +247,18 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # final releases: a critical CVE with a fix available fails; pre-releases (vX.Y.Z-alpha, -beta, ...)
+      # only report it (maintainer decision 2026-10-15: fixes that only AlmaLinux / Debian can ship must not
+      # block alphas); a scan that did not complete fails both
       - name: No critical CVE with a fix available
         if: steps.scan.outcome != 'success'
         run: |
-          cat out/grype-blocking.txt 2>/dev/null || echo "the scan did not complete"
+          if [ ! -s out/grype-blocking.txt ]; then echo "the scan did not complete"; exit 1; fi
+          cat out/grype-blocking.txt
+          if [[ $GITHUB_REF_NAME == *-* ]]; then
+            echo "::warning::pre-release $GITHUB_REF_NAME: critical CVEs with a fix available are reported, not blocking"
+            exit 0
+          fi
           exit 1
 
   packages:

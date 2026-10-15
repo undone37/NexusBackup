@@ -93,7 +93,8 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
      referrer (oras) and uploads it with `release-metadata.json` (digest, commit,
      base image digest, pinned key hashes; no provenance attestation) to a
      **draft** GitHub release whose notes list the commits since the previous tag,
-   - then, in the same workflow, scans the image for CVEs (`cve`) and builds the agent packages (`packages`),
+   - then, in the same workflow, scans the image for CVEs (`cve`; a critical CVE with a fix available fails a final
+     release, a pre-release such as `-alpha` only reports it) and builds the agent packages (`packages`),
    - **does not sign.**
 
    When it succeeded, `iso.yml` builds the installer ISO and the rescue ISO, and its `assets` job checks that every

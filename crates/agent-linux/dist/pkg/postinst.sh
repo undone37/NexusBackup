@@ -75,7 +75,8 @@ Then click "Enroll" on the appliance. Allow TCP 7444 from the appliance only.
 Database dump hooks: /usr/share/doc/nexus-agent/examples/hooks.d/pre/
 End users see the backup status with `nexus-agent tui` once they are in the group
 nexus-agent-ui (usermod -aG nexus-agent-ui <user>).
-Updates come from the package manager (self-update is off for package installs).
+Updates: the appliance installs signed packages of the same type (apt-get / dnf);
+self_update = off in /etc/nexus-agent/agent.conf refuses them (then update with your package manager).
 
 EOF
 exit 0
