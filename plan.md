@@ -1052,6 +1052,39 @@ refers to recommendation numbers and our own short titles only, never to CIS tex
 - **Verification:** appliance lab (install from the ISO, setup, PVE backup and restore test on VM 101, update and
   rollback) with the hardened image; lab scan score before/after.
 
+### Phase 36 — Offline (air-gapped) appliance updates (added 2026-10-15 by user request)
+
+Goal: an appliance without any route to ghcr.io updates from a file an admin uploads in the web UI, with the same
+guarantees as an online update: only images signed with a pinned release key, no downgrade without force, pre-update
+checks, maintenance window, greenboot rollback, audit entry. Agent releases come along (they are in the image).
+
+- **36a Update bundle (release side):** the release workflow attaches `nexusbackup-<v>-update.tar`: the image as an
+  OCI archive plus its cosign signature (the simple-signing payload and signature the registry holds in the `.sig`
+  tag), `release-metadata.json` and a manifest with SHA-256 sums. Signed like the other blobs (`release/sign.sh
+  sign-blobs`). GitHub limits assets to 2 GiB; if the archive is larger, the bundle is split into numbered parts.
+- **36b Verification and import (appliance side), decided by a spike first:**
+  - *A: local mirror.* The bundle is loaded into a registry that only listens on the appliance's loopback; a
+    `registries.conf` mirror for `ghcr.io/undone37/nexusbackup` points there, so `bootc upgrade` and `policy.json`
+    (signature from the mirror's `.sig` tag, `matchRepository` on the original name) stay exactly as online. Needs a
+    registry binary in the image.
+  - *B: own check, then oci-archive.* The appliance verifies the signature itself (ECDSA P-256 over the
+    simple-signing payload, pinned keys, digest match) and switches with `bootc switch --transport oci-archive`;
+    needs a signed-origin story for the next online update and a policy scope for that transport.
+  - The spike decides on: does bootc enforce the policy for the chosen path, does a later online update still work,
+    disk space (the archive plus the staged deployment), and the downgrade rule (`org.opencontainers.image.version`).
+- **36c Web UI and API:** Settings, Updates gets "Upload update": chunked, resumable upload (sizes of 1-2 GB through
+  the browser), progress, then verification result (version, digest, key, release notes from the metadata) before
+  anything is staged. "Apply" follows the existing flow (pre-update checks, now or in the maintenance window,
+  approval if the update policy requires it). The upload is refused unless the signature verifies; a failed check
+  leaves the running system untouched and deletes the file. Also via `nexusctl update upload <bundle>` and from a
+  USB stick at the console (`nexus-setup`), for sites without a browser path to the appliance.
+- **36d Scope and limits:** only the appliance image (OS + services + bundled agent release + restore micro-VM).
+  Plugins already install from uploaded signed bundles (Phase 9). The PVE node plugin (.deb) stays a manual install
+  on the nodes, with the .deb downloadable from the appliance's installer page.
+- **Verification:** lab appliance with egress blocked (nftables), update from the uploaded bundle to a newer signed
+  build, rollback by greenboot after a broken build, refusal of an unsigned, re-signed-with-another-key, truncated
+  and older bundle; then an online update afterwards still works.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---

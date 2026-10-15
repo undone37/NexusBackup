@@ -786,3 +786,7 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
 Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.
 
+## Phase 36 — Offline (air-gapped) appliance updates (added 2026-10-15)
+Scope: plan.md Phase 36 (signed update bundle as a release asset, spike: local mirror registry vs own signature
+check + oci-archive, upload in Settings > Updates / nexusctl / console USB, same checks as online). Not started.
+
