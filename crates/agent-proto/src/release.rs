@@ -5,16 +5,25 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Artifact kinds an agent can install in-band.
+// Artifact kinds an agent can install in-band.
+/// Agent executable alone (bundle and manual installs replace the binary).
 pub const KIND_BINARY: &str = "binary";
+/// Agent Debian package.
 pub const KIND_DEB: &str = "deb";
+/// Agent RPM package.
 pub const KIND_RPM: &str = "rpm";
+/// Agent Windows installer (MSI, with the desktop UI).
 pub const KIND_MSI: &str = "msi";
+/// `nexus-agent-desktop` Debian package (desktop UI), sent before the agent package.
 pub const KIND_DESKTOP_DEB: &str = "desktop-deb";
+/// `nexus-agent-desktop` RPM package (desktop UI), sent before the agent package.
 pub const KIND_DESKTOP_RPM: &str = "desktop-rpm";
-/// Download-only kinds (installer downloads on the appliance).
+// Download-only kinds (installer downloads on the appliance).
+/// Linux install bundle (download only).
 pub const KIND_BUNDLE: &str = "bundle";
+/// Windows setup executable (download only).
 pub const KIND_EXE: &str = "exe";
+/// Every artifact kind a manifest may list.
 pub const KINDS: &[&str] = &[
     KIND_BINARY,
     KIND_DEB,
@@ -28,14 +37,18 @@ pub const KINDS: &[&str] = &[
 
 /// How an agent was installed (`install=` capability).
 pub const INSTALLS: &[&str] = &["bundle", "deb", "rpm", "msi", "manual"];
+/// Architectures of artifacts and of the `arch=` capability.
 pub const ARCHES: &[&str] = &["x86_64", "aarch64"];
+/// Operating systems of artifacts.
 pub const OSES: &[&str] = &["linux", "windows"];
 
 /// `manifest.json` of a release (signed as a whole: `manifest.json.sig`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    /// manifest format, always 1
     pub format: u32,
+    /// release version, `X.Y.Z`
     pub version: String,
     /// highest agent protocol of this release, e.g. "1.8"
     #[serde(default)]
@@ -46,23 +59,30 @@ pub struct Manifest {
     /// RFC 3339 build time
     #[serde(default)]
     pub released: String,
+    /// release notes, plain text (at most 4096 bytes; absent: "")
     #[serde(default)]
     pub notes: String,
+    /// the files of the release (at most 64, names unique)
     pub artifacts: Vec<Artifact>,
 }
 
+/// One file of a release, as listed in [`Manifest::artifacts`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     /// relative path below the release directory (`linux-x86_64/nexus-agent`)
     pub name: String,
+    /// one of [`KINDS`]
     pub kind: String,
+    /// one of [`OSES`]
     pub os: String,
+    /// one of [`ARCHES`]
     pub arch: String,
     /// version of the program inside (the desktop UI has its own)
     pub version: String,
+    /// file size in bytes (1..=[`crate::MAX_UPDATE`])
     pub size: u64,
-    /// lowercase hex
+    /// SHA-256 of the file, lowercase hex
     pub sha256: String,
 }
 
@@ -74,6 +94,7 @@ impl Manifest {
         Ok(m)
     }
 
+    /// Checks the structure of an already decoded manifest (see [`Manifest::parse`]).
     pub fn check(&self) -> Result<(), String> {
         if self.format != 1 {
             return Err(format!("manifest format {} is not supported", self.format));
@@ -109,6 +130,7 @@ impl Manifest {
         Ok(())
     }
 
+    /// The artifact listed under `name`.
     pub fn artifact(&self, name: &str) -> Option<&Artifact> {
         self.artifacts.iter().find(|a| a.name == name)
     }
@@ -169,9 +191,13 @@ pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 /// `linux` / `windows`).
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize)]
 pub struct HostFacts {
+    /// `linux` or `windows`
     pub os: String,
+    /// one of [`ARCHES`] (`arch=`; default `x86_64`)
     pub arch: String,
+    /// one of [`INSTALLS`] (`install=`)
     pub install: String,
+    /// version of the installed desktop UI package (`gui=`); `None`: not installed
     pub gui_version: Option<String>,
 }
 
@@ -210,6 +236,7 @@ impl HostFacts {
         }
     }
 
+    /// The `arch=` / `install=` / `gui=` capabilities an agent announces.
     pub fn to_caps(&self) -> Vec<String> {
         let mut c = vec![format!("arch={}", self.arch), format!("install={}", self.install)];
         if let Some(g) = &self.gui_version {

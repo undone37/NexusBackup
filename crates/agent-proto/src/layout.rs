@@ -13,15 +13,19 @@ pub const LAYOUT_VERSION: u32 = 1;
 /// Path of the layout file inside a host snapshot (relative to `/`).
 pub const LAYOUT_PATH: &str = ".nexus-system/layout.json";
 
+/// The whole machine layout (JSON object, every field optional).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Layout {
+    /// [`LAYOUT_VERSION`] of the writer (0 when absent)
     pub version: u32,
+    /// host name at backup time
     pub hostname: String,
     /// `PRETTY_NAME` of /etc/os-release
     pub os: String,
     /// `ID` and `ID_LIKE` of /etc/os-release (picks the boot loader / initramfs tools)
     pub os_id: String,
+    /// running kernel release (`uname -r`)
     pub kernel: String,
     /// /proc/cmdline
     pub cmdline: String,
@@ -29,43 +33,55 @@ pub struct Layout {
     pub firmware: String,
     /// "grub2", "systemd-boot" or "" (unknown)
     pub bootloader: String,
+    /// whole disks holding the system's file systems
     pub disks: Vec<Disk>,
+    /// LVM volume groups
     pub vgs: Vec<Vg>,
     /// software RAID arrays (detected; not recreated)
     pub md: Vec<Md>,
     /// LUKS containers (detected; not recreated)
     pub luks: Vec<Luks>,
+    /// mounted on-disk file systems
     pub filesystems: Vec<FileSystem>,
+    /// swap partitions and LVs (swap files are restored as files)
     pub swaps: Vec<Swap>,
     /// /etc/fstab as it was (reference; the restored copy is the one used)
     pub fstab: String,
+    /// network interfaces except `lo` (reference for the operator)
     pub network: Vec<NetIf>,
     /// what could not be recorded
     pub warnings: Vec<String>,
 }
 
+/// One whole disk.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Disk {
     /// kernel name, e.g. `sda`, `nvme0n1`, `vda`
     pub name: String,
+    /// device path, e.g. `/dev/sda`
     pub path: String,
     /// bytes
     pub size: u64,
     /// logical sector size in bytes
     pub sector_size: u32,
+    /// model string as the kernel reports it ("" if none)
     pub model: String,
     /// "gpt", "dos" or "" (no partition table: whole-disk PV / file system)
     pub table: String,
     /// disk GUID (gpt) or disk identifier (dos)
     pub id: String,
+    /// partitions in table order
     pub partitions: Vec<Partition>,
 }
 
+/// One partition of a [`Disk`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Partition {
+    /// device path, e.g. `/dev/sda1`
     pub path: String,
+    /// partition number in the table (1-based)
     pub number: u32,
     /// sectors
     pub start: u64,
@@ -77,35 +93,47 @@ pub struct Partition {
     pub uuid: String,
     /// GPT partition name
     pub name: String,
+    /// MBR boot flag
     pub bootable: bool,
     /// GPT attribute bits as sfdisk prints them
     pub attrs: String,
 }
 
+/// One LVM volume group.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Vg {
+    /// VG name
     pub name: String,
+    /// LVM UUID of the VG
     pub uuid: String,
     /// bytes
     pub extent_size: u64,
+    /// its physical volumes
     pub pvs: Vec<Pv>,
+    /// its logical volumes
     pub lvs: Vec<Lv>,
 }
 
+/// One LVM physical volume of a [`Vg`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Pv {
+    /// device path (a partition or a whole disk)
     pub device: String,
+    /// LVM UUID of the PV
     pub uuid: String,
     /// bytes
     pub size: u64,
 }
 
+/// One LVM logical volume of a [`Vg`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Lv {
+    /// LV name
     pub name: String,
+    /// LVM UUID of the LV
     pub uuid: String,
     /// bytes (virtual size for thin volumes)
     pub size: u64,
@@ -119,41 +147,55 @@ pub struct Lv {
     pub dm_path: String,
 }
 
+/// A software RAID array (recorded for the operator, not recreated).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Md {
+    /// array device, e.g. `/dev/md0`
     pub path: String,
+    /// RAID level as lsblk names it, e.g. `raid1`
     pub level: String,
+    /// member device paths
     pub devices: Vec<String>,
 }
 
+/// A LUKS container (recorded for the operator, not recreated).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Luks {
     /// the encrypted device (partition / LV)
     pub device: String,
+    /// UUID of the LUKS header
     pub uuid: String,
     /// the opened mapping, e.g. `/dev/mapper/luks-…`
     pub mapping: String,
 }
 
+/// A mounted file system on a disk, partition or LV.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct FileSystem {
     /// block device: a partition, `/dev/mapper/<vg>-<lv>`, …
     pub device: String,
+    /// file system type as the kernel names it (`ext4`, `xfs`, `btrfs`, `vfat`, ...)
     pub fstype: String,
     /// e.g. "FAT32", "1.0"
     pub version: String,
+    /// file system UUID (recreated with the same value, `/etc/fstab` refers to it)
     pub uuid: String,
+    /// file system label ("" if none)
     pub label: String,
+    /// where it was mounted (a btrfs file system once per subvolume)
     pub mounts: Vec<Mount>,
 }
 
+/// One mount of a [`FileSystem`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Mount {
+    /// absolute mount point
     pub mountpoint: String,
+    /// mount options, comma-separated as `findmnt` prints them
     pub options: String,
 }
 
@@ -168,18 +210,25 @@ impl Mount {
     }
 }
 
+/// A swap partition or LV.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct Swap {
+    /// device path
     pub device: String,
+    /// swap UUID (recreated with the same value)
     pub uuid: String,
+    /// swap label ("" if none)
     pub label: String,
 }
 
+/// A network interface.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub struct NetIf {
+    /// interface name, e.g. `eth0`
     pub name: String,
+    /// MAC address, `aa:bb:cc:dd:ee:ff`
     pub mac: String,
     /// "address/prefix"
     pub addrs: Vec<String>,

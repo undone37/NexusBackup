@@ -8,6 +8,8 @@
 //! start a restore or read backup data; `request_backup` only queues a request that the
 //! appliance picks up with its next poll.
 
+#![warn(missing_docs)]
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -32,23 +34,33 @@ pub const MAX_LINE: usize = 1 << 20;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Agent and backup state; reply [`Status`].
     Status,
+    /// Session summaries; reply [`Sessions`].
     Sessions {
         /// newest first, capped at [`MAX_SESSIONS`]; absent = all
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// One session with its log tail; reply [`SessionDetail`], refused for an unknown id.
     Session {
+        /// appliance job id ([`Session::id`])
         id: u64,
     },
+    /// Queue a "back up now" request for the appliance's next poll; reply [`Requested`].
+    /// Refused within [`REQUEST_INTERVAL_SECS`] of the last one, before enrollment and
+    /// while the UI policy hides the button.
     RequestBackup,
 }
 
+/// What the agent does right now (tray icon, status line).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
+    /// nothing running or queued, the last session did not fail
     #[default]
     Idle,
+    /// a backup or restore session is in progress ([`Status::running`])
     Running,
     /// a "back up now" request waits for the appliance's next poll
     Requested,
@@ -65,8 +77,10 @@ pub struct UiPolicy {
     /// header text shown instead of the product name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
+    /// hide "request backup now" (the service also refuses `request_backup`)
     #[serde(default)]
     pub hide_backup_now: bool,
+    /// no tray icon; the menu entry still opens the window
     #[serde(default)]
     pub hide_tray: bool,
 }
@@ -74,11 +88,15 @@ pub struct UiPolicy {
 /// Progress of the backup that runs right now.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct Running {
+    /// start of the session, Unix seconds
     pub started: u64,
-    /// unknown on the first backup (no previous size to compare with)
+    /// 0..=99, read bytes against the last successful backup; unknown on the first
+    /// backup (no previous size to compare with)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub percent: Option<u8>,
+    /// source bytes read so far
     pub read_bytes: u64,
+    /// bytes sent to the appliance so far
     pub transferred_bytes: u64,
 }
 
@@ -93,14 +111,19 @@ pub struct Status {
     /// appliance display name, from its last session summary
     #[serde(default)]
     pub managed_by: Option<String>,
+    /// the agent holds an appliance certificate
     pub enrolled: bool,
     /// agent version
     pub version: String,
+    /// what the agent does right now
     pub state: AgentState,
+    /// progress of the session in progress; absent while none runs
     #[serde(default)]
     pub running: Option<Running>,
+    /// end of the newest successful session; absent: none recorded
     #[serde(default)]
     pub last_success: Option<u64>,
+    /// next scheduled run as told by the appliance; absent: unknown or none scheduled
     #[serde(default)]
     pub next_run: Option<u64>,
     /// last session (poll or job) opened by the appliance
@@ -108,23 +131,32 @@ pub struct Status {
     pub last_seen_by_appliance: Option<u64>,
     /// the appliance reached this agent recently (within a few poll intervals)
     pub reachable: bool,
+    /// branding and visibility from the appliance; absent: defaults (nothing hidden)
     #[serde(default)]
     pub ui_policy: UiPolicy,
 }
 
+/// What a session did.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
+    /// backup of this agent
     Backup,
+    /// file restore to this agent
     Restore,
 }
 
+/// Outcome of a session (chart colour: green, yellow, red, grey).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionResult {
+    /// finished without warnings
     Success,
+    /// finished, with [`Session::warnings`] warnings
     Warning,
+    /// no snapshot (backup) or not every file restored; see [`Session::first_error`]
     Failed,
+    /// cancelled by an operator
     Cancelled,
 }
 
@@ -133,14 +165,23 @@ pub enum SessionResult {
 pub struct Session {
     /// appliance job id
     pub id: u64,
+    /// backup or restore
     pub kind: SessionKind,
+    /// start, Unix seconds
     pub started: u64,
+    /// end, Unix seconds
     pub ended: u64,
+    /// outcome
     pub result: SessionResult,
+    /// source bytes read on the agent (restore: bytes written)
     pub read_bytes: u64,
+    /// bytes the appliance received (restore: sent)
     pub transferred_bytes: u64,
+    /// bytes newly stored after deduplication (0 for a restore)
     pub new_bytes: u64,
+    /// number of warning lines in the session's log
     pub warnings: u32,
+    /// first error line of a failed session; absent otherwise
     #[serde(default)]
     pub first_error: Option<String>,
     /// snapshot (restore point) time created by a backup session
@@ -151,12 +192,14 @@ pub struct Session {
 /// Reply to `sessions`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Sessions {
+    /// newest first
     pub sessions: Vec<Session>,
 }
 
 /// Reply to `session {id}`: the session's fields plus `log_tail`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SessionDetail {
+    /// the summary, flattened into the reply object
     #[serde(flatten)]
     pub session: Session,
     /// ≤ [`MAX_LOG_TAIL`] lines, already redacted by the appliance
@@ -167,7 +210,9 @@ pub struct SessionDetail {
 /// Reply to `request_backup`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Requested {
+    /// id of the queued request (16 hex digits), also in the agent log
     pub request_id: String,
+    /// when it was queued, Unix seconds
     pub queued_at: u64,
 }
 
@@ -176,6 +221,7 @@ pub struct Requested {
 pub enum Error {
     /// the service answered `{"ok": false, "error": ...}`
     Refused(String),
+    /// connection, timeout or a malformed reply line
     Io(io::Error),
 }
 
@@ -226,6 +272,7 @@ pub fn encode_request(r: &Request) -> String {
     line
 }
 
+/// Parses a request line (service side); `InvalidData` for an unknown or malformed request.
 pub fn decode_request(line: &str) -> io::Result<Request> {
     serde_json::from_str(line.trim_end()).map_err(|e| bad(format!("bad request: {e}")))
 }
@@ -317,18 +364,22 @@ impl Client {
         decode_reply(&line)
     }
 
+    /// Sends `status`.
     pub fn status(&mut self) -> Result<Status, Error> {
         self.call(&Request::Status)
     }
 
+    /// Sends `sessions`: at most `limit` summaries (all when `None`), newest first.
     pub fn sessions(&mut self, limit: Option<usize>) -> Result<Vec<Session>, Error> {
         self.call::<Sessions>(&Request::Sessions { limit }).map(|s| s.sessions)
     }
 
+    /// Sends `session`: one summary with its log tail.
     pub fn session(&mut self, id: u64) -> Result<SessionDetail, Error> {
         self.call(&Request::Session { id })
     }
 
+    /// Sends `request_backup`; [`Error::Refused`] when rate-limited or not allowed.
     pub fn request_backup(&mut self) -> Result<Requested, Error> {
         self.call(&Request::RequestBackup)
     }

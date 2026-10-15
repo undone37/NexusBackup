@@ -1,6 +1,8 @@
 //! Wire protocol between the appliance and `nexus-agent` (docs/agent-protocol.md).
 //! Framing: `u32 BE length | postcard(Message)`, max `MAX_FRAME`.
 
+#![warn(missing_docs)]
+
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -10,29 +12,47 @@ pub mod edge;
 pub mod layout;
 pub mod release;
 
+/// Protocol major version exchanged in `Hello` / `HelloReply` (must match). Minor
+/// versions (v1.1 to v1.8) are additive and negotiated by capabilities.
 pub const VERSION: u32 = 1;
+/// TCP port the agent listens on unless configured otherwise.
 pub const DEFAULT_PORT: u16 = 7444;
+/// TLS ALPN of agent sessions (enrollment and mTLS).
 pub const ALPN: &[u8] = b"nexus-agent/1";
+/// Largest frame body (postcard bytes after the length prefix).
 pub const MAX_FRAME: usize = 8 << 20;
+/// Largest chunk, bytes (raw and LZ4-compressed data, `raw_len`, update pieces).
 pub const MAX_CHUNK: usize = 4 << 20;
+/// Most entries per `Entries` / `RestoreEntries` batch, hashes per `Want` / `EntryHashes`.
 pub const MAX_BATCH: usize = 10_000;
+/// Longest `Entry::path` / `link_target` and filter path or regex, bytes.
 pub const MAX_PATH: usize = 4096;
+/// Largest sum of xattr name and value bytes of one entry.
 pub const MAX_XATTR: usize = 64 << 10;
 /// include roots / regexes / file system types per `PrepareEx` (each)
 pub const MAX_FILTERS: usize = 256;
+/// FastCDC minimum chunk size of agent file data, bytes.
 pub const CDC_MIN: u32 = 128 << 10;
+/// FastCDC average chunk size, bytes.
 pub const CDC_AVG: u32 = 512 << 10;
+/// FastCDC maximum chunk size, bytes.
 pub const CDC_MAX: u32 = 4 << 20;
+/// TLS exporter label of the enrollment proofs ([`enroll_proof`], 32 bytes, no context).
 pub const EXPORTER_LABEL: &[u8] = b"nexus-agent enroll";
 
 /// Plain (unkeyed) BLAKE3 of a chunk; mapped to keyed IDs only on the appliance.
 pub type Hash = [u8; 32];
 
+/// How the agent snapshots a volume (postcard tags fixed: new kinds are appended).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotKind {
+    /// LVM snapshot of the logical volume
     Lvm,
+    /// ZFS snapshot of the dataset
     Zfs,
+    /// btrfs read-only snapshot of the subvolume
     Btrfs,
+    /// no snapshot support: read live, changed files are marked `inconsistent`
     None,
     /// Windows Volume Shadow Copy (appended in v1.1, additive)
     Vss,
@@ -57,202 +77,343 @@ pub struct VssWriter {
     pub application: bool,
 }
 
+/// A mounted volume of the agent host (`Volumes`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Volume {
+    /// mount point: Linux absolute path, Windows `/C` (drive letter)
     pub mountpoint: String,
+    /// Linux: mount source (`/dev/...`, dataset); Windows: volume GUID path
     pub device: String,
+    /// file system type (`ext4`, `xfs`, `zfs`, `NTFS`, ...)
     pub fstype: String,
+    /// how a backup would snapshot it
     pub snapshot: SnapshotKind,
 }
 
+/// A snapshot the agent created for a job (`Prepared`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SnapshotInfo {
+    /// mount point of the snapshotted volume (as in [`Volume::mountpoint`])
     pub mountpoint: String,
+    /// snapshot technique
     pub kind: SnapshotKind,
+    /// snapshot name on the host (LV, ZFS / btrfs snapshot, VSS shadow set id), for logs
     pub name: String,
 }
 
+/// File type of an [`Entry`].
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// regular file; the only kind with chunks
     File,
+    /// directory
     Dir,
+    /// symbolic link; `link_target` = its target
     Symlink,
+    /// further name of a file sent earlier in the same scan; `link_target` = that path
     Hardlink,
+    /// block or character device (`mode` keeps `S_IFBLK` / `S_IFCHR`, `rdev` the number)
     Device,
+    /// named pipe
     Fifo,
+    /// unix socket
     Socket,
 }
 
+/// One file system object with its metadata and chunk list (`Entries`, `RestoreEntries`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// relative to the volume root, raw bytes (not necessarily UTF-8)
+    /// relative to the host's `/` (Windows: `C/Users/x`), `/`-separated, raw bytes
+    /// (not necessarily UTF-8); see docs/agent-protocol.md "Paths"
     pub path: Vec<u8>,
+    /// file type
     pub kind: Kind,
+    /// permission bits (`& 0o7777`; devices the full `st_mode`); Windows: synthesized from the attributes
     pub mode: u32,
+    /// owner uid; `0xFFFFFFFF` on restore to another host = keep the restoring user
     pub uid: u32,
+    /// owner gid; `0xFFFFFFFF` as for `uid`
     pub gid: u32,
+    /// file size in bytes (0 for everything but regular files)
     pub size: u64,
+    /// modification time, nanoseconds since the Unix epoch
     pub mtime_ns: i64,
+    /// status change time (Windows: change time), nanoseconds since the Unix epoch
     pub ctime_ns: i64,
+    /// inode number (Windows: file id); with size and times the key of the agent's metadata cache
     pub inode: u64,
+    /// device number of a `Device` entry, else 0
     pub rdev: u64,
     /// symlink target or hardlink target path
     pub link_target: Option<Vec<u8>>,
+    /// extended attributes (name, value), raw bytes; Windows metadata as `win.*` (docs/agent-windows.md)
     pub xattrs: Vec<(Vec<u8>, Vec<u8>)>,
+    /// content of a regular file in order: (plain BLAKE3 of the chunk, chunk length in bytes)
     pub chunks: Vec<(Hash, u32)>,
+    /// taken from the metadata cache without reading the file (size, times and inode match `base`)
     pub unchanged: bool,
+    /// the file changed while it was read without a snapshot
     pub inconsistent: bool,
 }
 
+/// Counters of a scan (`ScanDone`) or a restore (`RestoreDone`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct ScanStats {
+    /// regular files and hard links (restore: files written)
     pub files: u64,
+    /// directories
     pub dirs: u64,
+    /// total size of the regular files, bytes (restore: data bytes written)
     pub bytes: u64,
+    /// bytes actually read from changed files (scan only)
     pub read_bytes: u64,
+    /// files taken from the metadata cache without reading (scan only)
     pub unchanged: u64,
+    /// files marked `inconsistent` (scan only)
     pub inconsistent: u64,
+    /// one message per entry that was skipped or failed; a restore with errors fails the job
     pub errors: Vec<String>,
 }
 
+/// The previous backup a scan compares against (`Scan::base`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BaseRef {
     /// appliance snapshot time of the previous successful backup of this agent
     pub time: u64,
 }
 
+/// What a restore does with a file that already exists at the target.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overwrite {
+    /// keep the existing file
     Never,
+    /// replace it if it is older than the restored version (mtime)
     IfOlder,
+    /// always replace it
     Always,
 }
 
+/// One frame of the agent protocol (docs/agent-protocol.md "Messages"). The appliance
+/// sends requests, the agent answers; `job` is the appliance job id. Postcard encodes
+/// the variant index, so variants are only ever appended (v1.1 to v1.8 below).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Message {
     // enrollment (agent in enrollment mode, self-signed cert)
+    /// Appliance → agent: proof of the enrollment token (role `"appliance"`).
     Enroll {
+        /// [`enroll_proof`] of the token digest, bound to this TLS session
         proof: [u8; 32],
     },
+    /// Agent → appliance: its own proof and a certificate request.
     EnrollReply {
+        /// [`enroll_proof`] with role `"agent"`
         proof: [u8; 32],
+        /// PKCS#10 CSR of the agent's key pair, PEM
         csr_pem: String,
     },
+    /// Appliance → agent: the issued certificate; no answer, the agent switches to mTLS.
     EnrollDone {
+        /// agent certificate (`CN=nexus-agent:<agent_id>`, serverAuth), PEM
         cert_pem: String,
+        /// appliance agent CA certificate, PEM
         ca_pem: String,
+        /// agent id assigned by the appliance (16 hex)
         agent_id: String,
     },
     // session
+    /// Appliance → agent: first message of every mTLS session.
     Hello {
+        /// the appliance's [`VERSION`]
         version: u32,
     },
+    /// Agent → appliance: who it is and what it supports.
     HelloReply {
+        /// the agent's [`VERSION`]; the session ends if it differs
         version: u32,
+        /// must equal the id the appliance expects for this endpoint
         agent_id: String,
+        /// OS name (Linux: `PRETTY_NAME` of /etc/os-release; Windows: product name and
+        /// display version)
         os: String,
+        /// kernel release (Windows: `10.0.<build>.<ubr>`)
         kernel: String,
+        /// host name
         hostname: String,
+        /// agent version, `X.Y.Z`
         agent_version: String,
+        /// capabilities (`CAP_*`, `vss-writers`, `xattrs`, `win-sd`) and v1.8 host facts
+        /// (`arch=`, `install=`, `gui=`, [`release::HostFacts`])
         caps: Vec<String>,
     },
+    /// Appliance → agent: list the volumes; answer `Volumes`.
     ListVolumes,
+    /// Agent → appliance: answer to `ListVolumes`.
     Volumes {
+        /// the mounted volumes and how each would be snapshotted
         list: Vec<Volume>,
     },
+    /// Appliance → agent: run the pre-hooks and snapshot the volumes of `paths`;
+    /// answer `Prepared`. Agents with CAP_PREPARE2 get `PrepareEx` instead.
     Prepare {
+        /// appliance job id
         job: u64,
+        /// absolute host paths to back up (Windows `/C/...`)
         paths: Vec<String>,
+        /// glob patterns of paths to skip
         excludes: Vec<String>,
+        /// run the hooks configured locally in `/etc/nexus-agent/hooks.d/`
         hooks: bool,
     },
+    /// Agent → appliance: answer to `Prepare` / `PrepareEx`.
     Prepared {
+        /// job id of the request
         job: u64,
+        /// the snapshots created (empty for volumes read live)
         snapshots: Vec<SnapshotInfo>,
+        /// every volume has a snapshot and every hook succeeded; false raises `backup_inconsistent`
         consistent: bool,
+        /// hook output and notes (live volumes, skipped mounts, applied limits), text
         hook_log: String,
     },
+    /// Appliance → agent: walk the snapshots; answer a stream of `Entries`, then `ScanDone`.
     Scan {
+        /// job id of the `Prepare`
         job: u64,
+        /// previous backup to compare with; `None`: read every file
         base: Option<BaseRef>,
     },
+    /// Agent → appliance: up to [`MAX_BATCH`] entries of a scan.
     Entries {
+        /// entries in walk order, each path once
         batch: Vec<Entry>,
     },
+    /// Agent → appliance: end of a scan.
     ScanDone {
+        /// counters of the whole scan
         stats: ScanStats,
     },
+    /// Appliance → agent: send these chunks; answer one `Chunk` per hash (any order), then `WantDone`.
     Want {
+        /// job id
         job: u64,
+        /// plain BLAKE3 hashes, sorted, at most [`MAX_BATCH`]
         hashes: Vec<Hash>,
     },
+    /// Agent → appliance: the data of one requested chunk.
     Chunk {
+        /// plain BLAKE3 of `data` (the appliance verifies it)
         hash: Hash,
+        /// raw chunk bytes, at most [`MAX_CHUNK`]
         data: Vec<u8>,
     },
+    /// Agent → appliance: every chunk of the `Want` was sent.
     WantDone,
+    /// Appliance → agent: drop the snapshots and run the post-hooks; answer `Released`.
     Release {
+        /// job id
         job: u64,
+        /// the snapshot was committed: the agent commits its metadata cache for the next `base`
         success: bool,
     },
+    /// Agent → appliance: answer to `Release`.
     Released {
+        /// job id
         job: u64,
+        /// post-hook output, text
         hook_log: String,
     },
+    /// Appliance → agent: start a restore below `target`; answer `RestoreReady` or `Error`.
     RestoreBegin {
+        /// appliance job id
         job: u64,
+        /// absolute host path the entries are written below
         target: String,
+        /// what to do with existing files
         overwrite: Overwrite,
+        /// the target agent's name as typed by the user in the UI (logged by the agent)
         confirm: String,
     },
+    /// Agent → appliance: ready for `RestoreEntries`.
     RestoreReady,
+    /// Appliance → agent: up to 1000 entries; their chunks follow as `RestoreChunk`s.
     RestoreEntries {
+        /// entries to write, parents before children; paths relative to `target`
         batch: Vec<Entry>,
     },
+    /// Appliance → agent: one chunk of the last batch, in entry and chunk order
+    /// (repeated chunks are sent again).
     RestoreChunk {
+        /// plain BLAKE3 of `data`
         hash: Hash,
+        /// raw chunk bytes, at most [`MAX_CHUNK`]
         data: Vec<u8>,
     },
+    /// Appliance → agent: no more entries; answer `RestoreDone`.
     RestoreEnd,
+    /// Agent → appliance: end of the restore.
     RestoreDone {
+        /// what was written; `errors` not empty fails the job
         stats: ScanStats,
     },
+    /// Appliance → agent: self-update in one frame (agents before v1.8); answer
+    /// `UpdateDone` or `Error`.
     Update {
+        /// version of the new binary, `X.Y.Z`
         version: String,
+        /// the agent executable (below [`MAX_FRAME`])
         binary: Vec<u8>,
+        /// cosign blob signature of `binary` with the pinned release key
         signature: Vec<u8>,
     },
+    /// Agent → appliance: the update is installed; the agent restarts into it.
     UpdateDone,
+    /// Either side: a request failed.
     Error {
+        /// HTTP-like status (`agent_core::server::E_*`): 400 invalid request, 401 wrong proof
+        /// or other fleet, 403 refused, 404 unknown job, 409 busy, 410 chunks gone (file
+        /// changed after the scan), 423 locked, 426 version mismatch, 500 failure on the host
         code: u32,
+        /// human-readable reason
         message: String,
     },
     // --- v1.1, appended (old peers never send/receive these) ---
     /// Appliance → agent after `Prepared`, only if `HelloReply.caps` contains
     /// `"vss-writers"`: which VSS writers took part in the job's snapshot.
     Writers {
+        /// job id of the `Prepare`
         job: u64,
     },
+    /// Agent → appliance (v1.1): answer to `Writers`.
     WritersReport {
+        /// job id
         job: u64,
+        /// every VSS writer the agent saw
         writers: Vec<VssWriter>,
     },
     // --- v1.2, appended: LZ4 on the wire (only if HelloReply.caps contains CAP_LZ4) ---
     /// Like `Want`, but the agent may answer with `ChunkLz4` for compressible chunks.
     WantLz4 {
+        /// job id
         job: u64,
+        /// plain BLAKE3 hashes, sorted, at most [`MAX_BATCH`]
         hashes: Vec<Hash>,
     },
     /// LZ4 block of a chunk; `hash`/`raw_len` describe the uncompressed data.
     ChunkLz4 {
+        /// plain BLAKE3 of the uncompressed data
         hash: Hash,
+        /// uncompressed length in bytes, at most [`MAX_CHUNK`]
         raw_len: u32,
+        /// LZ4 block ([`lz4_pack`]), at most [`MAX_CHUNK`]
         data: Vec<u8>,
     },
     /// Restore direction, appliance → agent (agent advertised CAP_LZ4).
     RestoreChunkLz4 {
+        /// plain BLAKE3 of the uncompressed data
         hash: Hash,
+        /// uncompressed length in bytes, at most [`MAX_CHUNK`]
         raw_len: u32,
+        /// LZ4 block ([`lz4_pack`]), at most [`MAX_CHUNK`]
         data: Vec<u8>,
     },
     // --- v1.3, appended: file filters + limits, certificate renewal ---
@@ -260,47 +421,66 @@ pub enum Message {
     /// `HelloReply.caps` contains CAP_PREPARE2; old agents get `Prepare` with the
     /// globs only). Answered with `Prepared`.
     PrepareEx {
+        /// appliance job id
         job: u64,
+        /// absolute host paths to back up (Windows `/C/...`)
         paths: Vec<String>,
+        /// glob patterns of paths to skip
         excludes: Vec<String>,
+        /// run the locally configured hooks
         hooks: bool,
+        /// include roots, regex excludes, nested mounts
         filters: Filters,
+        /// bandwidth and priority of the job
         limits: Limits,
     },
     /// Appliance → agent (CAP_RENEW): generate a new key pair, answer `RenewCsr`.
     RenewCert,
+    /// Agent → appliance (v1.3): request for the new key pair.
     RenewCsr {
+        /// PKCS#10 CSR of the new key (kept in memory until `RenewDone`), PEM
         csr_pem: String,
     },
     /// The certificate issued for the `RenewCsr` key (same CN, same CA). The agent
     /// checks it, swaps key + certificate atomically and answers `RenewOk`; new
     /// connections use the new identity.
     RenewDone {
+        /// the new agent certificate, PEM
         cert_pem: String,
+        /// the appliance agent CA certificate, PEM (must be the one the agent trusts)
         ca_pem: String,
     },
+    /// Agent → appliance (v1.3): the new key and certificate are in place.
     RenewOk,
     // --- v1.4, appended: endpoint status (only if HelloReply.caps contains CAP_POLL) ---
     /// Appliance → agent after a backup / restore session ended: its summary for the
     /// endpoint UI, the next scheduled run and the per-agent UI policy. Answered with
     /// `SummaryAck`; the agent keeps the last 100 summaries.
     SessionSummary {
+        /// the finished session
         summary: Summary,
+        /// the current appliance view
         status: ApplianceStatus,
     },
+    /// Agent → appliance (v1.4): the summary is stored; the appliance marks it delivered.
     SummaryAck {
+        /// `Summary::job` of the stored summary
         job: u64,
     },
     /// Appliance → agent every few minutes (short session): the current appliance view,
     /// and `ack` = ids of earlier `BackupRequest`s the appliance has acted on (the agent
     /// drops them). Answered with `PollReply`.
     Poll {
+        /// the current appliance view
         status: ApplianceStatus,
+        /// [`BackupRequest::id`]s acted on, at most [`MAX_REQUESTS`]
         ack: Vec<String>,
     },
+    /// Agent → appliance (v1.4): answer to `Poll`.
     PollReply {
         /// "back up now" requests queued by local users, not yet acknowledged
         requests: Vec<BackupRequest>,
+        /// power and network state of the host (laptop policies)
         power: PowerState,
         /// `ApplianceStatus::policy_version` the agent stored
         policy_version: u32,
@@ -314,15 +494,21 @@ pub enum Message {
     /// digest with role `"fleet-appliance"`. Old agents fail to decode it (no failure
     /// counted); agents of another fleet answer `Error` without counting a failure.
     FleetProbe {
+        /// fleet id of the secret (16 hex, [`fleet_id`])
         fleet_id: String,
+        /// appliance proof of the fleet secret
         proof: [u8; 32],
     },
     /// The agent's answer: its proof (role `"fleet-agent"`) and what the admin sees
     /// before accepting it. The session ends here; enrollment is a later `Enroll`.
     FleetInfo {
+        /// [`enroll_proof`] of the fleet secret digest with role `"fleet-agent"`
         proof: [u8; 32],
+        /// host name
         hostname: String,
+        /// OS name as in `HelloReply::os`
         os: String,
+        /// agent version, `X.Y.Z`
         agent_version: String,
     },
     // --- v1.6, appended: machine layout + bare-metal recovery (docs/bmr.md) ---
@@ -330,33 +516,43 @@ pub enum Message {
     GetLayout,
     /// [`layout::Layout`] as JSON (at most `MAX_LAYOUT` bytes).
     Layout {
+        /// [`layout::Layout`] serialized as JSON
         json: String,
     },
     /// Appliance → rescue agent (CAP_RESCUE): recreate partitions, LVM, file systems
     /// and swap of `layout` (JSON) on the disks confirmed at the rescue console and
     /// mount them below the restore target. Answered with `RescueDone`.
     RescueApply {
+        /// appliance job id
         job: u64,
+        /// [`layout::Layout`] as JSON (at most `MAX_LAYOUT` bytes)
         layout: String,
     },
     /// Appliance → rescue agent after the restore: fix up the restored system
     /// (`/etc/fstab` UUIDs, boot loader, initramfs), unmount; `reboot` after the answer.
     RescueFinish {
+        /// appliance job id
         job: u64,
+        /// reboot the machine after answering
         reboot: bool,
     },
     /// Answer to `RescueApply` / `RescueFinish`: what was done (one step per line);
     /// `target` = where the file systems are mounted (the restore target).
     RescueDone {
+        /// job id of the request
         job: u64,
+        /// absolute path where the restored file systems are mounted
         target: String,
+        /// the steps done, one per line
         log: String,
     },
     /// v1.7 (CAP_EDGE), appliance → agent: keep a rendezvous connection to this edge
     /// proxy (`addr` = `host:port`, `cert_sha256` = pinned edge certificate); an empty
     /// `addr` removes it. `agent.conf` (`edge`, `edge_sha256`) takes precedence.
     SetEdge {
+        /// `host:port` of the edge's public port; "" = no edge (at most [`MAX_TEXT`] bytes)
         addr: String,
+        /// SHA-256 of the edge certificate, hex (at most 64 bytes)
         cert_sha256: String,
     },
     /// Answer to `SetEdge`.
@@ -368,32 +564,44 @@ pub enum Message {
     /// of the artifact; `manifest` + `manifest_sig` = the signed `manifest.json`.
     /// Answered with `UpdateReady` or `Error` (refused before any data is sent).
     UpdateBegin {
+        /// artifact kind ([`release::KINDS`]), must be the install's own
         kind: String,
+        /// artifact name as in the manifest (at most [`MAX_ARTIFACT_NAME`] bytes)
         name: String,
+        /// artifact size in bytes (at most [`MAX_UPDATE`])
         size: u64,
+        /// SHA-256 of the artifact
         sha256: [u8; 32],
+        /// cosign blob signature of the artifact (at most [`MAX_SIGNATURE`] bytes)
         signature: Vec<u8>,
+        /// the release's `manifest.json` (at most [`MAX_MANIFEST`] bytes)
         manifest: Vec<u8>,
+        /// cosign signature of `manifest` (at most [`MAX_SIGNATURE`] bytes)
         manifest_sig: Vec<u8>,
         /// an approved rollback to an older release (see `agent_core::update::ROLLBACK_FLOOR`)
         rollback: bool,
     },
+    /// Agent → appliance (v1.8): `UpdateBegin` accepted, send the data.
     UpdateReady,
     /// The next piece of the artifact announced by `UpdateBegin` (no answer).
     UpdateChunk {
+        /// at most [`MAX_CHUNK`] bytes
         data: Vec<u8>,
     },
     /// End of the artifact: the agent checks it; `apply = false` stages it (answer
     /// `UpdateStaged`, more artifacts follow), `apply = true` installs everything staged
     /// (answer `UpdateDone`, or `Error`).
     UpdateCommit {
+        /// install everything staged now (else only stage this artifact)
         apply: bool,
     },
+    /// Agent → appliance (v1.8): the artifact is checked and staged.
     UpdateStaged,
     /// Appliance → agent: the agent's update state (`update-state.json`).
     UpdateStatus,
     /// `json` = `{state, kind, from, to, at, error, log}` or `{}` when no update ran.
     UpdateState {
+        /// JSON text, at most [`MAX_UPDATE_STATE`] bytes
         json: String,
     },
     // --- Phase 28, appended after the v1.8 update messages (CAP_FILE_HASH; documented with the v1.8 notes, no
@@ -401,7 +609,9 @@ pub enum Message {
     /// Like `Scan`, but the agent sends `EntryHashes` right after every `Entries`
     /// batch: the SHA-256 of the regular files it read (IOC hash hunt).
     ScanHashed {
+        /// job id of the `Prepare`
         job: u64,
+        /// previous backup to compare with; `None`: read every file
         base: Option<BaseRef>,
     },
     /// Agent → appliance after each `Entries` batch of a `ScanHashed`: one element
@@ -409,6 +619,7 @@ pub enum Message {
     /// in this scan (unchanged) or the read failed. The appliance never trusts it
     /// for anything but the IOC search (a lying agent only hides its own files).
     EntryHashes {
+        /// SHA-256 per entry of the batch (not BLAKE3), at most [`MAX_BATCH`]
         hashes: Vec<Option<Hash>>,
     },
 }
@@ -419,10 +630,13 @@ pub enum Message {
 pub const CAP_UPDATE2: &str = "update2";
 /// Largest update artifact accepted (MSI with the desktop UI stays far below).
 pub const MAX_UPDATE: u64 = 512 << 20;
-/// Largest signature / manifest / state document in update messages.
+/// Largest signature in update messages, bytes.
 pub const MAX_SIGNATURE: usize = 64 << 10;
+/// Largest `manifest.json` in `UpdateBegin`, bytes.
 pub const MAX_MANIFEST: usize = 256 << 10;
+/// Largest `UpdateState::json`, bytes.
 pub const MAX_UPDATE_STATE: usize = 16 << 10;
+/// Longest artifact name, bytes.
 pub const MAX_ARTIFACT_NAME: usize = 200;
 
 /// Capability: the agent computes the SHA-256 of the files it reads when asked
@@ -434,25 +648,34 @@ pub const CAP_EDGE: &str = "edge";
 
 /// Capability: the agent understands `SessionSummary` and `Poll` (v1.4).
 pub const CAP_POLL: &str = "poll";
-/// Longest `Summary::log_tail` (lines) and line length (bytes) accepted.
+/// Longest `Summary::log_tail`, lines.
 pub const MAX_LOG_TAIL: usize = 200;
+/// Longest `Summary::log_tail` line and `first_error`, bytes.
 pub const MAX_LOG_LINE: usize = 1024;
 /// At most this many requests in one `PollReply`.
 pub const MAX_REQUESTS: usize = 16;
 /// Longest free-text field (names, header, errors) accepted in v1.4 messages.
 pub const MAX_TEXT: usize = 256;
 
+/// What a summarized session did.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionKind {
+    /// backup of this agent
     Backup,
+    /// file restore to this agent
     Restore,
 }
 
+/// Outcome of a summarized session.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionResult {
+    /// finished without warnings
     Success,
+    /// finished with warnings (`Summary::warnings`)
     Warning,
+    /// no snapshot committed (backup) or not every file restored
     Failed,
+    /// cancelled by an operator
     Cancelled,
 }
 
@@ -461,16 +684,25 @@ pub enum SessionResult {
 pub struct Summary {
     /// appliance job id
     pub job: u64,
+    /// backup or restore
     pub kind: SessionKind,
+    /// job start
     pub started: u64,
+    /// job end
     pub ended: u64,
+    /// outcome
     pub result: SessionResult,
+    /// source bytes the agent scanned (restore: bytes written)
     pub read_bytes: u64,
+    /// bytes the appliance received from the agent (restore: sent)
     pub transferred_bytes: u64,
+    /// bytes newly stored after deduplication (0 for a restore)
     pub new_bytes: u64,
+    /// warning lines in the agent's part of the job log
     pub warnings: u32,
-    /// "" = none
+    /// first error line of a failed session (at most [`MAX_LOG_LINE`] bytes); "" = none
     pub first_error: String,
+    /// time of the snapshot a backup committed; `None`: restore or nothing committed
     pub snapshot_time: Option<u64>,
     /// the session's job log lines (as shown to operators), last ≤ MAX_LOG_TAIL
     pub log_tail: Vec<String>,
@@ -483,7 +715,9 @@ pub struct UiPolicy {
     pub accent: String,
     /// "" = product name
     pub header: String,
+    /// hide "request backup now" in the endpoint UIs; the agent also refuses such requests
     pub hide_backup_now: bool,
+    /// no tray icon in the desktop UI
     pub hide_tray: bool,
 }
 
@@ -492,9 +726,13 @@ pub struct UiPolicy {
 pub struct ApplianceStatus {
     /// appliance display name ("managed by")
     pub appliance: String,
+    /// the appliance's clock, Unix seconds
     pub now: u64,
+    /// next scheduled backup of this agent, Unix seconds; `None`: none scheduled
     pub next_run: Option<u64>,
+    /// branding and visibility of the endpoint UIs
     pub ui_policy: UiPolicy,
+    /// version of `ui_policy` on the appliance, echoed in `PollReply`
     pub policy_version: u32,
 }
 
@@ -503,15 +741,20 @@ pub struct ApplianceStatus {
 pub struct BackupRequest {
     /// random hex, ≤ 64 characters
     pub id: String,
+    /// when it was queued, Unix seconds (the agent drops it after 7 days)
     pub queued_at: u64,
 }
 
 /// Power and network state of the agent host (laptops). `None` = unknown.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct PowerState {
+    /// running on battery
     pub on_battery: Option<bool>,
+    /// battery charge, 0..=100
     pub battery_percent: Option<u8>,
+    /// the active network connection is metered
     pub metered: Option<bool>,
+    /// name of the active network connection (at most [`MAX_TEXT`] bytes)
     pub network_name: Option<String>,
 }
 
@@ -577,6 +820,7 @@ fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
+/// Writes and flushes one frame; refuses a body above [`MAX_FRAME`].
 pub fn write_msg(w: &mut impl Write, m: &Message) -> io::Result<()> {
     let body = postcard::to_stdvec(m).map_err(|e| bad(format!("encode: {e}")))?;
     if body.len() > MAX_FRAME {
@@ -587,6 +831,8 @@ pub fn write_msg(w: &mut impl Write, m: &Message) -> io::Result<()> {
     w.flush()
 }
 
+/// Reads one frame and applies [`check`]; a length above [`MAX_FRAME`] is refused
+/// before the body is allocated.
 pub fn read_msg(r: &mut impl Read) -> io::Result<Message> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;

@@ -4,6 +4,8 @@
 //! scheduler (nudges after commits and deletions, per-source rules, health)
 //! and the service itself. No tantivy here: the web-api links only this.
 
+#![warn(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -11,47 +13,67 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
+/// Socket path of the nexus-index service unless the configuration names another.
 pub const DEFAULT_SOCKET: &str = "/run/nexus-index/index.sock";
 /// Longest request / answer line.
 pub const MAX_LINE: u64 = 16 << 20;
+/// Longest search term `q`, in bytes.
 pub const MAX_QUERY: usize = 256;
+/// Largest page size (`limit`), in file versions.
 pub const MAX_LIMIT: usize = 200;
+/// Page size when the request has no `limit`.
 pub const DEFAULT_LIMIT: usize = 50;
 
+/// One request line, `{"op": "<variant>", ...fields}`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// File search (web-api); answer: [`SearchResp`].
     Search(SearchReq),
     /// Something changed in the tenant's store (commit, deletion, hold): sync soon.
+    /// Sent by the scheduler; answer: `{"queued": tenant}`.
     Sync {
+        /// tenant whose store changed
         tenant: String,
     },
-    /// The rules of the tenant's sources (scheduler, from the groups).
+    /// The rules of the tenant's sources (scheduler, from the groups); answer:
+    /// `{"changed": bool}`, changed sources are ingested again.
     Config {
+        /// tenant the rules belong to
         tenant: String,
+        /// rules per source name; a source missing here gets [`SourceRules::default`]
         sources: BTreeMap<String, SourceRules>,
     },
+    /// Index health (web-api, scheduler); answer: [`Status`].
     Status {
+        /// only this tenant; absent: every tenant with an index on disk
         #[serde(default)]
         tenant: Option<String>,
     },
-    /// Drop the tenant's index and build it again from the name indexes.
+    /// Drop the tenant's index and build it again from the name indexes (web-api, admin
+    /// only); answer: `{"rebuilt": tenant}`.
     Rebuild {
+        /// tenant whose index is rebuilt
         tenant: String,
     },
 }
 
+/// How the search term `q` is matched.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     /// `/` in the query: path glob; `*?[`: name glob; else words
     #[default]
     Auto,
+    /// glob (`*`, `?`) or substring on the file name, case-insensitive
     Name,
+    /// glob on the whole guest path, case-insensitive
     Path,
+    /// every word (up to 8) starts a word of the path
     Words,
 }
 
+/// Filter on whether a file version is still present.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Deleted {
@@ -64,13 +86,16 @@ pub enum Deleted {
     Exclude,
 }
 
+/// One search page (`op: search`); unknown fields are refused. Checked by [`SearchReq::validate`].
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SearchReq {
+    /// tenant whose index is searched (the web-api sets the caller's tenant)
     pub tenant: String,
     /// name / path glob or words; may be empty when other filters are set
     #[serde(default)]
     pub q: String,
+    /// how `q` is matched; absent: [`Mode::Auto`]
     #[serde(default)]
     pub mode: Mode,
     /// only these sources (the web-api resolves source and group filters)
@@ -79,24 +104,31 @@ pub struct SearchReq {
     /// source kinds: vm, ct, host, nas, share, plugin
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<String>>,
-    /// file extensions without the dot
+    /// file extensions without the dot, case-insensitive; absent or empty: any
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ext: Option<Vec<String>>,
+    /// smallest file size in bytes (inclusive); absent: no lower bound
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_min: Option<u64>,
+    /// largest file size in bytes (inclusive); absent: no upper bound
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_max: Option<u64>,
+    /// earliest modification time, unix seconds (inclusive); absent: no lower bound
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtime_from: Option<i64>,
+    /// latest modification time, unix seconds (inclusive); absent: no upper bound
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtime_to: Option<i64>,
-    /// `file` | `dir`
+    /// `file` | `dir`; absent: both
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
+    /// present / deleted filter; absent: [`Deleted::Any`]
     #[serde(default)]
     pub deleted: Deleted,
+    /// page size in file versions, 1..=[`MAX_LIMIT`]; absent: [`DEFAULT_LIMIT`]
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// `next` of the previous page (opaque, at most 64 bytes); absent: first page
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -161,6 +193,7 @@ impl SearchReq {
 /// Source kinds by source name prefix.
 pub const KINDS: &[&str] = &["vm", "ct", "host", "nas", "share", "plugin"];
 
+/// Kind of a source from its name prefix (`vm-100` is `vm`); `other` for an unknown prefix.
 pub fn source_kind(source: &str) -> &'static str {
     for k in KINDS {
         if source.starts_with(&format!("{k}-")) {
@@ -173,11 +206,13 @@ pub fn source_kind(source: &str) -> &'static str {
 /// One version of a file: present in the snapshots `first` ≤ t < `gone`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Version {
+    /// file size in bytes
     pub size: u64,
+    /// modification time, unix seconds
     pub mtime: i64,
-    /// first snapshot (time) holding this version
+    /// first snapshot (time, unix seconds) holding this version
     pub first: u64,
-    /// first later indexed snapshot without it; `None`: still in the newest
+    /// first later indexed snapshot (time) without it; `None`: still in the newest
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gone: Option<u64>,
     /// owner when the name index records one (Phase 31c: VM disks; Windows SID
@@ -189,6 +224,7 @@ pub struct Version {
 /// One file (or directory) of one source, with its versions, newest first.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Hit {
+    /// source name (`vm-100`, `host-a1`, ...)
     pub source: String,
     /// guest path as shown (`/etc/hosts`, `C:/Users/ann/x.docx`, `share/x`)
     pub path: String,
@@ -196,27 +232,32 @@ pub struct Hit {
     pub browse: String,
     /// `file` | `dir` | `symlink` | `other`
     pub kind: String,
+    /// the matching versions, newest first
     pub versions: Vec<Version>,
 }
 
 /// Indexed / not indexed snapshot times of a source (timeline marks).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct SourceSnaps {
+    /// snapshot times (unix seconds) in the search index
     pub indexed: Vec<u64>,
     /// snapshots without a name index (yet) or excluded by the rules
     pub unindexed: Vec<u64>,
 }
 
+/// Answer to [`Request::Search`]: one page of hits.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct SearchResp {
+    /// files of this page, each with its matching versions
     pub hits: Vec<Hit>,
-    /// cursor of the next page
+    /// cursor of the next page; absent: last page
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
+    /// time the service spent on the query, milliseconds
     pub elapsed_ms: u64,
     /// the sources of the hits
     pub sources: BTreeMap<String, SourceSnaps>,
-    /// the index is behind (snapshots waiting to be ingested)
+    /// snapshots waiting to be ingested (the index is behind when not 0)
     pub pending: u64,
 }
 
@@ -226,13 +267,16 @@ pub struct SearchResp {
 /// specific rule wins.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SourceRules {
+    /// index this source at all; absent: true
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// apply the built-in excludes (system trees)
+    /// apply the built-in excludes ([`DEFAULT_EXCLUDES`]); absent: true
     #[serde(default = "yes")]
     pub defaults: bool,
+    /// trees to index even inside an excluded one (rule syntax above)
     #[serde(default)]
     pub include: Vec<String>,
+    /// trees to leave out of the search index (rule syntax above)
     #[serde(default)]
     pub exclude: Vec<String>,
 }
@@ -287,39 +331,48 @@ pub fn valid_rule(r: &str) -> bool {
         && r.split('/').skip(1).all(|c| c != "." && c != "..")
 }
 
+/// Index state of one tenant (part of [`Status`]).
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct TenantStatus {
+    /// tenant name
     pub tenant: String,
     /// file versions in the search index
     pub docs: u64,
     /// sealed index bytes on disk
     pub bytes: u64,
+    /// sources of the tenant that have snapshots
     pub sources: u64,
+    /// snapshots in the search index
     pub snapshots_indexed: u64,
     /// snapshots with a name index that is not in the search index yet
     pub snapshots_pending: u64,
-    /// time of the oldest such snapshot
+    /// time (unix seconds) of the oldest such snapshot; absent: none pending
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest_pending: Option<u64>,
     /// snapshots without a name index (VM/CT not indexed, excluded)
     pub snapshots_unindexed: u64,
+    /// time of the last sync (also a failed one), unix seconds; absent: none since the service started
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync: Option<u64>,
+    /// error of the last sync; absent: it succeeded
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+/// Answer to [`Request::Status`].
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Status {
+    /// the requested tenant, or every tenant with an index on disk
     pub tenants: Vec<TenantStatus>,
     /// free bytes on the index file system
     pub free_bytes: u64,
-    /// ingestion pauses below this
+    /// ingestion pauses below this many free bytes
     pub floor_bytes: u64,
     /// ingestion is paused (free space below the floor)
     pub paused: bool,
     /// decrypted index blocks in memory
     pub cache_bytes: u64,
+    /// upper bound of `cache_bytes`
     pub cache_limit: u64,
 }
 
