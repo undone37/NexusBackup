@@ -30,6 +30,11 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
     steps:
+      - name: Runner tools
+        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
+        run: |
+          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
+          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 } # release notes: the commits since the previous tag
 
@@ -203,6 +208,11 @@ jobs:
     needs: image
     runs-on: self-hosted
     steps:
+      - name: Runner tools
+        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
+        run: |
+          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
+          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
       - uses: actions/checkout@v7
 
       - name: Scan
@@ -251,6 +261,11 @@ jobs:
     needs: image
     runs-on: self-hosted
     steps:
+      - name: Runner tools
+        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
+        run: |
+          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
+          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
       - uses: actions/checkout@v7
 
       - name: Build (release keys from release/keys)

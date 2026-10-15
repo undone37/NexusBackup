@@ -73,6 +73,10 @@ on its first update check.
 
 ## Release (release manager)
 
+**Runner.** The workflows run on the self-hosted runner (AlmaLinux 10). It needs `git`, `gh` (GitHub CLI, from
+cli.github.com's rpm repository), `jq`, rootless `podman`, passwordless `sudo podman` (ISO build), `python3`, `perl`
+with `JSON`, and enough memory for the test suite (32 GiB). Every release and ISO job checks the tools first.
+
 Prerequisites: `release/keys/*.pub` holds the real public key(s) (release/keygen.md).
 podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
 `podman login ghcr.io` (the auth file is mounted read-only into the tool containers).
