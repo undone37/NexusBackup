@@ -124,9 +124,10 @@ jobs:
           echo "IMAGE_REF=$NEXUS_IMAGE_REPO@$d" >> "$GITHUB_ENV"
 
       - name: SBOM (syft) and metadata
+        # label=disable: the runner enforces SELinux, which refuses unlabeled bind mounts (as release/lib.sh)
         run: |
           mkdir -p out
-          podman run --rm --user 0 -v "$PWD/out:/out" \
+          podman run --rm --user 0 --security-opt label=disable -v "$PWD/out:/out" \
             -e SYFT_REGISTRY_AUTH_AUTHORITY=ghcr.io \
             -e SYFT_REGISTRY_AUTH_USERNAME="${{ github.actor }}" \
             -e SYFT_REGISTRY_AUTH_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
@@ -143,7 +144,7 @@ jobs:
 
       - name: Attach SBOM to the image (OCI referrer)
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | podman run --rm -i --user 0 -v "$PWD/out:/out:ro" -w /out \
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman run --rm -i --user 0 --security-opt label=disable -v "$PWD/out:/out:ro" -w /out \
             "$ORAS_IMAGE" attach --username "${{ github.actor }}" --password-stdin \
             --artifact-type application/spdx+json "$IMAGE_REF" sbom.spdx.json:application/spdx+json
 
