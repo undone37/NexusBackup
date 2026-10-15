@@ -11,7 +11,7 @@ agent-proto = { path = "../agent-proto" }
 agent-ui-proto = { path = "../agent-ui-proto" }
 base64 = "0.22"
 blake3 = "1"
-fastcdc = "3"
+fastcdc = "5"
 regex = "1"
 hex = "0.4"
 postcard = { version = "1", default-features = false, features = ["use-std"] }

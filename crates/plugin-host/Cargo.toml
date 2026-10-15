@@ -10,7 +10,7 @@ description = "nexus-pluginhost: trusted side of sandboxed plugins (docs/plugin-
 agent-conn = { path = "../agent-conn" }
 anyhow = "1"
 chunkstore = { path = "../chunkstore" }
-fastcdc = "3"
+fastcdc = "5"
 keyd = { path = "../keyd" }
 libc = "0.2"
 plugin-proto = { path = "../plugin-proto" }
