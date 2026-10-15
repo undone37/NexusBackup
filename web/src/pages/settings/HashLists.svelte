@@ -48,8 +48,9 @@
   async function upload(e: SubmitEvent) {
     e.preventDefault();
     busy = true;
-    const r = await act(put<{ count: number; skipped: number }>(`/hash-lists/${encodeURIComponent(name)}`, { text }), (d) =>
-      t.threat.uploaded(name, d.count, d.skipped),
+    const r = await act(
+      put<{ count: number; skipped: number }>(`/hash-lists/${encodeURIComponent(name)}`, { text }),
+      (d) => t.threat.uploaded(name, d.count, d.skipped),
     );
     busy = false;
     if (r) {
@@ -69,7 +70,9 @@
 <section class="card settings-section" aria-labelledby="hl-h">
   <div class="card-head">
     <h2 id="hl-h">{t.settings.tabs.iocHashes}</h2>
-    {#if lists}<span class="chip {lists.length ? 'ok' : 'warn'}">{lists.length ? t.threat.listCount(lists.length) : t.threat.noLists}</span>{/if}
+    {#if lists}<span class="chip {lists.length ? 'ok' : 'warn'}"
+        >{lists.length ? t.threat.listCount(lists.length) : t.threat.noLists}</span
+      >{/if}
   </div>
   <p>{t.threat.listsIntro}</p>
   <p class="muted">{t.threat.listsLimits}</p>
@@ -95,8 +98,11 @@
               <td class="mono" title={l.sha256}>{l.sha256.slice(0, 16)}…</td>
               <td>{l.uploaded_by} <span class="muted">{fmtTime(l.uploaded_at)}</span></td>
               <td class="actions">
-                <button type="button" class="small danger" onclick={() => remove(l)} aria-label={t.scan.deleteLabel(l.name)}
-                  ><IconTrash aria-hidden="true" />{t.delete}</button
+                <button
+                  type="button"
+                  class="small danger"
+                  onclick={() => remove(l)}
+                  aria-label={t.scan.deleteLabel(l.name)}><IconTrash aria-hidden="true" />{t.delete}</button
                 >
               </td>
             </tr>
@@ -115,7 +121,15 @@
       </div>
       <div class="field">
         <label for="hl-name">{t.threat.listName}</label>
-        <input id="hl-name" class="mono" bind:value={name} required maxlength="64" aria-invalid={name !== '' && !nameOk} aria-describedby="hl-name-hint" />
+        <input
+          id="hl-name"
+          class="mono"
+          bind:value={name}
+          required
+          maxlength="64"
+          aria-invalid={name !== '' && !nameOk}
+          aria-describedby="hl-name-hint"
+        />
         <div class="hint" id="hl-name-hint">{t.scan.fileNameHint}</div>
       </div>
     </div>

@@ -28,8 +28,12 @@
     }
   }
   // follow running operations and rebuilds closely, otherwise once a minute
-  const busy = $derived(!!hw && (hw.ops.some((o) => o.state === 'queued' || o.state === 'running') || hw.arrays.some((a) => a.action) ||
-    hw.disks.some((d) => d.smart?.self_test?.running)));
+  const busy = $derived(
+    !!hw &&
+      (hw.ops.some((o) => o.state === 'queued' || o.state === 'running') ||
+        hw.arrays.some((a) => a.action) ||
+        hw.disks.some((d) => d.smart?.self_test?.running)),
+  );
   onMount(() => {
     load();
     let last = 0;
@@ -44,11 +48,29 @@
   });
 
   const sevCls: Record<string, string> = { info: 'info', warning: 'warn', critical: 'bad' };
-  const roleCls: Record<string, string> = { system: 'plain', data: 'accent', metadata: 'accent', in_use: 'plain', empty: 'ok' };
-  const stateCls: Record<string, string> = {
-    clean: 'ok', degraded: 'bad', failed: 'bad', inactive: 'bad', recovering: 'info', resyncing: 'info', reshaping: 'info',
+  const roleCls: Record<string, string> = {
+    system: 'plain',
+    data: 'accent',
+    metadata: 'accent',
+    in_use: 'plain',
+    empty: 'ok',
   };
-  const memberCls: Record<string, string> = { active: 'ok', spare: 'plain', rebuilding: 'info', faulty: 'bad', removed: 'bad' };
+  const stateCls: Record<string, string> = {
+    clean: 'ok',
+    degraded: 'bad',
+    failed: 'bad',
+    inactive: 'bad',
+    recovering: 'info',
+    resyncing: 'info',
+    reshaping: 'info',
+  };
+  const memberCls: Record<string, string> = {
+    active: 'ok',
+    spare: 'plain',
+    rebuilding: 'info',
+    faulty: 'bad',
+    removed: 'bad',
+  };
   const opCls: Record<string, string> = { queued: 'info', running: 'info', done: 'ok', refused: 'warn', error: 'bad' };
   const sumCls: Record<string, string> = { ok: 'ok', warning: 'warn', critical: 'bad', unknown: 'plain' };
 
@@ -112,7 +134,8 @@
     opKind = kind;
     opArray = a;
     opDisk = fitting(a)[0]?.serial ?? '';
-    opFailed = kind === 'replace' ? (a.members.find((m) => m.state === 'faulty' || m.state === 'removed')?.serial ?? '') : '';
+    opFailed =
+      kind === 'replace' ? (a.members.find((m) => m.state === 'faulty' || m.state === 'removed')?.serial ?? '') : '';
     opConfirm = '';
     opOpen = true;
   }
@@ -167,7 +190,10 @@
     e.preventDefault();
     if (levelProblem || !createConfirmOk || !storeEmpty) return;
     sending = true;
-    const r = await act(post('/hardware/arrays', { role: 'data', level, disks: picked, confirm: createConfirm.trim() }), t.hw.requested);
+    const r = await act(
+      post('/hardware/arrays', { role: 'data', level, disks: picked, confirm: createConfirm.trim() }),
+      t.hw.requested,
+    );
     sending = false;
     if (r) {
       createOpen = false;
@@ -178,7 +204,9 @@
 
 <div class="page-head">
   <h1>{t.hw.title}</h1>
-  {#if hw?.scanned}<span class="stamp" title={fmtTime(hw.scanned)}>{t.hw.scanned(fmtAgo(hw.scanned), fmtAgo(hw.smart_scanned))}</span>{/if}
+  {#if hw?.scanned}<span class="stamp" title={fmtTime(hw.scanned)}
+      >{t.hw.scanned(fmtAgo(hw.scanned), fmtAgo(hw.smart_scanned))}</span
+    >{/if}
   <p class="lede">{t.hw.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -203,7 +231,10 @@
               ? t.hw.summary.ok
               : hw.summary.state === 'unknown'
                 ? t.hw.summary.unknown
-                : [hw.summary.critical ? t.hw.summary.critical(hw.summary.critical) : '', hw.summary.warnings ? t.hw.summary.warning(hw.summary.warnings) : '']
+                : [
+                    hw.summary.critical ? t.hw.summary.critical(hw.summary.critical) : '',
+                    hw.summary.warnings ? t.hw.summary.warning(hw.summary.warnings) : '',
+                  ]
                     .filter(Boolean)
                     .join(' · ')}</span
           >
@@ -211,7 +242,10 @@
         </div>
       </div>
       {#if can.scanHardware(session.user)}
-        <button type="button" onclick={rescan} disabled={busy && hw.ops.some((o) => o.op === 'scan' && o.state !== 'done')}
+        <button
+          type="button"
+          onclick={rescan}
+          disabled={busy && hw.ops.some((o) => o.op === 'scan' && o.state !== 'done')}
           ><IconRefresh aria-hidden="true" />{t.hw.rescan}</button
         >
       {/if}
@@ -239,12 +273,19 @@
             {#each hw.disks as d (d.name)}
               {@const h = health(d)}
               <tr use:rowClick={() => openDetail(d)}>
-                <td class="nowrap"><span class="mono">{d.name}</span><div class="muted small">{t.hw.types[d.type] ?? d.type}{d.transport ? ` · ${d.transport}` : ''}</div></td>
+                <td class="nowrap"
+                  ><span class="mono">{d.name}</span>
+                  <div class="muted small">
+                    {t.hw.types[d.type] ?? d.type}{d.transport ? ` · ${d.transport}` : ''}
+                  </div></td
+                >
                 <td>{d.model ?? '—'}</td>
                 <td class="mono">{d.serial ?? '—'}</td>
                 <td class="num nowrap">{fmtBytes(d.size)}</td>
                 <td>
-                  <span class="chip {roleCls[d.role] ?? 'plain'}" title={t.hw.roleHints[d.role]}>{t.hw.roles[d.role] ?? d.role}</span>
+                  <span class="chip {roleCls[d.role] ?? 'plain'}" title={t.hw.roleHints[d.role]}
+                    >{t.hw.roles[d.role] ?? d.role}</span
+                  >
                   {#if d.array}<div class="muted small mono">{d.array}</div>{/if}
                   {#if d.why}<div class="muted small">{d.why}</div>{/if}
                 </td>
@@ -253,8 +294,11 @@
                 <td class="small nowrap">{keyAttrs(d)}</td>
                 <td class="small">{lastTest(d)}</td>
                 <td class="actions">
-                  <button type="button" class="small" onclick={() => openDetail(d)} aria-label={t.hw.detailsLabel(d.name)}
-                    ><IconInfo aria-hidden="true" />{t.hw.details}</button
+                  <button
+                    type="button"
+                    class="small"
+                    onclick={() => openDetail(d)}
+                    aria-label={t.hw.detailsLabel(d.name)}><IconInfo aria-hidden="true" />{t.hw.details}</button
                   >
                 </td>
               </tr>
@@ -262,7 +306,9 @@
                 <tr class="issues-row">
                   <td></td>
                   <td colspan="9">
-                    <div class="issues">{#each d.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}</div>
+                    <div class="issues">
+                      {#each d.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}
+                    </div>
                   </td>
                 </tr>
               {/if}
@@ -280,7 +326,9 @@
         <div class="sub">{hw.store.array ? t.hw.storeOn(hw.store.array) : t.hw.storeRoot}</div>
       </div>
       {#if admin && hw.available && !hasData}
-        <button type="button" class="primary" onclick={openCreate}><IconPlus aria-hidden="true" />{t.hw.createData}</button>
+        <button type="button" class="primary" onclick={openCreate}
+          ><IconPlus aria-hidden="true" />{t.hw.createData}</button
+        >
       {/if}
     </div>
     {#if hw.arrays.length === 0}
@@ -290,11 +338,17 @@
         {#each hw.arrays as a (a.name)}
           <article class="array" aria-labelledby="hw-a-{a.name}">
             <div class="array-head">
-              <h3 id="hw-a-{a.name}"><span class="mono">{a.name}</span>{#if a.md_name}<span class="muted">&nbsp;· {a.md_name}</span>{/if}</h3>
+              <h3 id="hw-a-{a.name}">
+                <span class="mono">{a.name}</span>{#if a.md_name}<span class="muted">&nbsp;· {a.md_name}</span>{/if}
+              </h3>
               <span class="chip plain">{(a.level ?? '?').toUpperCase()}</span>
               {#if a.role}<span class="chip {roleCls[a.role] ?? 'plain'}">{t.hw.roles[a.role] ?? a.role}</span>{/if}
-              <span class="chip {stateCls[a.state] ?? 'plain'}" title={a.state_detail ?? undefined}>{t.hw.states[a.state] ?? a.state}</span>
-              <span class="muted small">{t.hw.devices(a.active_devices, a.raid_devices)}{a.size ? ` · ${fmtBytes(a.size)}` : ''}</span>
+              <span class="chip {stateCls[a.state] ?? 'plain'}" title={a.state_detail ?? undefined}
+                >{t.hw.states[a.state] ?? a.state}</span
+              >
+              <span class="muted small"
+                >{t.hw.devices(a.active_devices, a.raid_devices)}{a.size ? ` · ${fmtBytes(a.size)}` : ''}</span
+              >
             </div>
             {#if a.action && a.progress !== null}
               <div class="progress-line">
@@ -308,7 +362,9 @@
                 >
                   <span style:width="{Math.max(0, Math.min(100, a.progress))}%"></span>
                 </div>
-                <span class="small nowrap">{t.hw.progress(t.hw.actions[a.action] ?? a.action, a.progress, a.finish_minutes)}</span>
+                <span class="small nowrap"
+                  >{t.hw.progress(t.hw.actions[a.action] ?? a.action, a.progress, a.finish_minutes)}</span
+                >
               </div>
             {/if}
             <dl class="kv">
@@ -320,20 +376,27 @@
                   >
                 {/each}
               </dd>
-              {#if a.mounts.length}<dt>{t.hw.mount}</dt><dd class="mono">{a.mounts.join(', ')}</dd>{/if}
+              {#if a.mounts.length}<dt>{t.hw.mount}</dt>
+                <dd class="mono">{a.mounts.join(', ')}</dd>{/if}
               {#if a.fs}
                 <dt>{t.hw.fs}</dt>
-                <dd>{a.fs.type}{a.fs.size ? ` · ${t.hw.fsUsage(fmtBytes(a.fs.used ?? 0), fmtBytes(a.fs.size))}` : ''}</dd>
+                <dd>
+                  {a.fs.type}{a.fs.size ? ` · ${t.hw.fsUsage(fmtBytes(a.fs.used ?? 0), fmtBytes(a.fs.size))}` : ''}
+                </dd>
               {/if}
             </dl>
             {#if a.issues.length}
-              <div class="issues">{#each a.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}</div>
+              <div class="issues">
+                {#each a.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}
+              </div>
             {/if}
             {#if managed(a) && admin}
               <div class="form-actions start">
                 <button type="button" onclick={() => openOp('replace', a)}>{t.hw.replace}</button>
                 <button type="button" onclick={() => openOp('spare', a)}>{t.hw.addSpare}</button>
-                <button type="button" onclick={() => openOp('grow', a)} disabled={!growable(a)} title={t.hw.growHint}>{t.hw.grow}</button>
+                <button type="button" onclick={() => openOp('grow', a)} disabled={!growable(a)} title={t.hw.growHint}
+                  >{t.hw.grow}</button
+                >
               </div>
             {:else if a.role === 'system'}
               <p class="muted small">{t.hw.systemArray}</p>
@@ -366,7 +429,9 @@
               <tr>
                 <td class="nowrap">{t.hw.opNames[o.op] ?? o.op}</td>
                 <td><span class="chip {opCls[o.state] ?? 'plain'}">{t.hw.opStates[o.state] ?? o.state}</span></td>
-                <td class="nowrap">{o.by}{#if o.quorum_id}<div class="muted small">{t.hw.quorumRef(o.quorum_id)}</div>{/if}</td>
+                <td class="nowrap"
+                  >{o.by}{#if o.quorum_id}<div class="muted small">{t.hw.quorumRef(o.quorum_id)}</div>{/if}</td
+                >
                 <td class="nowrap" title={fmtTime(o.finished ?? o.created)}>{fmtAgo(o.finished ?? o.created)}</td>
                 <td class="detail">{o.error ?? o.detail ?? '—'}</td>
               </tr>
@@ -383,35 +448,71 @@
     {@const s = detail.smart}
     {@const h = health(detail)}
     <dl class="kv">
-      <dt>{t.hw.serial}</dt><dd class="mono">{detail.serial ?? '—'}</dd>
-      <dt>{t.hw.fields.path}</dt><dd class="mono">{detail.path}</dd>
-      <dt>{t.hw.size}</dt><dd>{fmtBytes(detail.size)} · {t.hw.types[detail.type] ?? detail.type}{detail.transport ? ` · ${detail.transport}` : ''}</dd>
-      {#if detail.wwn}<dt>{t.hw.fields.wwn}</dt><dd class="mono">{detail.wwn}</dd>{/if}
-      <dt>{t.hw.role}</dt><dd>{t.hw.roles[detail.role] ?? detail.role}{detail.array ? ` · ${detail.array}` : ''}{detail.why ? ` · ${detail.why}` : ''}</dd>
-      <dt>{t.hw.fields.health}</dt><dd><span class="chip {h.cls}">{h.text}</span></dd>
+      <dt>{t.hw.serial}</dt>
+      <dd class="mono">{detail.serial ?? '—'}</dd>
+      <dt>{t.hw.fields.path}</dt>
+      <dd class="mono">{detail.path}</dd>
+      <dt>{t.hw.size}</dt>
+      <dd>
+        {fmtBytes(detail.size)} · {t.hw.types[detail.type] ?? detail.type}{detail.transport
+          ? ` · ${detail.transport}`
+          : ''}
+      </dd>
+      {#if detail.wwn}<dt>{t.hw.fields.wwn}</dt>
+        <dd class="mono">{detail.wwn}</dd>{/if}
+      <dt>{t.hw.role}</dt>
+      <dd>
+        {t.hw.roles[detail.role] ?? detail.role}{detail.array ? ` · ${detail.array}` : ''}{detail.why
+          ? ` · ${detail.why}`
+          : ''}
+      </dd>
+      <dt>{t.hw.fields.health}</dt>
+      <dd><span class="chip {h.cls}">{h.text}</span></dd>
       {#if s?.available}
         {#each ['temperature', 'power_on_hours', 'reallocated', 'pending', 'offline_uncorrectable', 'percentage_used', 'media_errors', 'critical_warning', 'available_spare'] as k (k)}
           {@const v = (s as unknown as Record<string, number | null>)[k]}
           {#if v !== null && v !== undefined}
             <dt>{t.hw.fields[k]}</dt>
-            <dd>{k === 'temperature' ? t.hw.celsius(v) : k === 'power_on_hours' ? t.hw.hours(v) : k === 'percentage_used' || k === 'available_spare' ? `${v} %` : v}</dd>
+            <dd>
+              {k === 'temperature'
+                ? t.hw.celsius(v)
+                : k === 'power_on_hours'
+                  ? t.hw.hours(v)
+                  : k === 'percentage_used' || k === 'available_spare'
+                    ? `${v} %`
+                    : v}
+            </dd>
           {/if}
         {/each}
-        <dt>{t.hw.fields.checked}</dt><dd title={fmtTime(s.checked)}>{fmtAgo(s.checked)}</dd>
+        <dt>{t.hw.fields.checked}</dt>
+        <dd title={fmtTime(s.checked)}>{fmtAgo(s.checked)}</dd>
       {/if}
     </dl>
     {#if s?.error}<p class="banner warn" role="status">{s.error}</p>{/if}
     {#if detail.issues.length}
       <h3>{t.hw.issues}</h3>
-      <div class="issues">{#each detail.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}</div>
+      <div class="issues">
+        {#each detail.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}
+      </div>
     {/if}
     <h3>{t.hw.selfTests}</h3>
-    <p class="muted small">{s?.self_test ? lastTest(detail) : t.hw.noSelfTest}{#if s?.self_test?.last?.hours != null} · {s.self_test.last.status} ({s.self_test.last.hours} h){/if}</p>
+    <p class="muted small">
+      {s?.self_test ? lastTest(detail) : t.hw.noSelfTest}{#if s?.self_test?.last?.hours != null}
+        · {s.self_test.last.status} ({s.self_test.last.hours} h){/if}
+    </p>
     {#if admin}
       <p class="muted small">{t.hw.selfTestHint}</p>
       <div class="form-actions start">
-        <button type="button" onclick={() => selfTest(detail!, 'short')} disabled={!s?.available || !!s?.self_test?.running || !detail.serial}>{t.hw.runShort}</button>
-        <button type="button" onclick={() => selfTest(detail!, 'long')} disabled={!s?.available || !!s?.self_test?.running || !detail.serial}>{t.hw.runLong}</button>
+        <button
+          type="button"
+          onclick={() => selfTest(detail!, 'short')}
+          disabled={!s?.available || !!s?.self_test?.running || !detail.serial}>{t.hw.runShort}</button
+        >
+        <button
+          type="button"
+          onclick={() => selfTest(detail!, 'long')}
+          disabled={!s?.available || !!s?.self_test?.running || !detail.serial}>{t.hw.runLong}</button
+        >
       </div>
     {/if}
     {#if s?.available}
@@ -437,7 +538,9 @@
               {#each s.attributes as a, n (n)}
                 <tr>
                   {#if detail.type !== 'nvme'}<td class="num">{a.id ?? ''}</td>{/if}
-                  <td class="mono">{a.name}{#if a.failing}&nbsp;<span class="chip bad">{t.hw.attrFailing}</span>{/if}</td>
+                  <td class="mono"
+                    >{a.name}{#if a.failing}&nbsp;<span class="chip bad">{t.hw.attrFailing}</span>{/if}</td
+                  >
                   {#if detail.type !== 'nvme'}
                     <td class="num">{a.value ?? ''}</td>
                     <td class="num">{a.worst ?? ''}</td>
@@ -465,7 +568,9 @@
           <select id="hw-old" bind:value={opFailed}>
             <option value="">{t.hw.anyFailed}</option>
             {#each opArray.members.filter((m) => m.serial && m.state !== 'spare') as m (m.serial)}
-              <option value={m.serial}>{t.hw.memberOption(m.dev ?? '?', m.serial ?? '?', t.hw.memberStates[m.state] ?? m.state)}</option>
+              <option value={m.serial}
+                >{t.hw.memberOption(m.dev ?? '?', m.serial ?? '?', t.hw.memberStates[m.state] ?? m.state)}</option
+              >
             {/each}
           </select>
         </div>
@@ -483,7 +588,15 @@
       <p class="banner warn" role="note">{t.hw.overwrite}</p>
       <div class="field">
         <label for="hw-confirm">{t.hw.confirmOne}</label>
-        <input id="hw-confirm" class="mono" bind:value={opConfirm} autocomplete="off" spellcheck="false" placeholder={opDisk} aria-invalid={opConfirm !== '' && !opConfirmOk} />
+        <input
+          id="hw-confirm"
+          class="mono"
+          bind:value={opConfirm}
+          autocomplete="off"
+          spellcheck="false"
+          placeholder={opDisk}
+          aria-invalid={opConfirm !== '' && !opConfirmOk}
+        />
         {#if opConfirm !== '' && !opConfirmOk}<div class="hint bad">{t.hw.confirmMismatch}</div>{/if}
       </div>
       <div class="form-actions">
@@ -511,7 +624,9 @@
           <label class:disabled={d.role !== 'empty' || !d.serial}>
             <input type="checkbox" value={d.serial} bind:group={picked} disabled={d.role !== 'empty' || !d.serial} />
             <span>{diskLabel(d)}</span>
-            {#if d.role !== 'empty'}<span class="muted small">— {t.hw.unusable(t.hw.roles[d.role] ?? d.role, d.why)}</span>{/if}
+            {#if d.role !== 'empty'}<span class="muted small"
+                >— {t.hw.unusable(t.hw.roles[d.role] ?? d.role, d.why)}</span
+              >{/if}
           </label>
         {/each}
       </fieldset>
@@ -521,12 +636,21 @@
       <p class="banner warn" role="note">{t.hw.overwrite}</p>
       <div class="field">
         <label for="hw-cconfirm">{t.hw.confirmMany}</label>
-        <input id="hw-cconfirm" class="mono" bind:value={createConfirm} autocomplete="off" spellcheck="false" aria-invalid={createConfirm !== '' && !createConfirmOk} />
+        <input
+          id="hw-cconfirm"
+          class="mono"
+          bind:value={createConfirm}
+          autocomplete="off"
+          spellcheck="false"
+          aria-invalid={createConfirm !== '' && !createConfirmOk}
+        />
         {#if createConfirm !== '' && !createConfirmOk}<div class="hint bad">{t.hw.confirmMismatch}</div>{/if}
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (createOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={!!levelProblem || !createConfirmOk || !storeEmpty || sending}>{t.hw.request}</button>
+        <button type="submit" class="primary" disabled={!!levelProblem || !createConfirmOk || !storeEmpty || sending}
+          >{t.hw.request}</button
+        >
       </div>
     </form>
   {/if}

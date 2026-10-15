@@ -26,7 +26,9 @@
   // one path, a move at the start and after every gap
   const d = $derived(
     values
-      .map((v, i) => (v === null ? '' : `${i === 0 || values[i - 1] === null ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`))
+      .map((v, i) =>
+        v === null ? '' : `${i === 0 || values[i - 1] === null ? 'M' : 'L'}${x(i).toFixed(1)},${y(v).toFixed(1)}`,
+      )
       .join(''),
   );
   const step = $derived(n > 1 ? (width - 2 * P) / (n - 1) : width);

@@ -6,12 +6,17 @@
   import Modal from './Modal.svelte';
 
   // One-time activation code (or one half of it). Shown once; the server keeps only a hash.
-  let { open = $bindable(false), name, activation }: { open?: boolean; name: string; activation: Activation | null } =
-    $props();
+  let {
+    open = $bindable(false),
+    name,
+    activation,
+  }: { open?: boolean; name: string; activation: Activation | null } = $props();
 
   const link = $derived(activation ? location.origin + activation.path : '');
   const label = $derived(
-    activation && activation.parts > 1 ? t.users.activationPartLabel(activation.part, activation.parts) : t.users.activationCode,
+    activation && activation.parts > 1
+      ? t.users.activationPartLabel(activation.part, activation.parts)
+      : t.users.activationCode,
   );
 
   async function copy(text: string) {

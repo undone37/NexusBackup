@@ -9,12 +9,25 @@
   import { t } from '../lib/i18n';
   import type { OffsiteGfs, S3Remote, SftpRemote, Tenant, TenantOffsite } from '../lib/types';
 
-  let { open = $bindable(false), tenant, ondone }: { open: boolean; tenant: Tenant | null; ondone: () => void } = $props();
+  let {
+    open = $bindable(false),
+    tenant,
+    ondone,
+  }: { open: boolean; tenant: Tenant | null; ondone: () => void } = $props();
 
   const CLASSES = ['daily', 'weekly', 'monthly', 'yearly'] as const;
   let kind: 'sftp' | 's3' = $state('s3');
   let sftp = $state({ host: '', port: 23, user: '', key_file: '', host_key: '', base_dir: '' });
-  let s3 = $state({ endpoint: '', region: '', bucket: '', prefix: '', access_key: '', secret_key: '', path_style: false, lock: true });
+  let s3 = $state({
+    endpoint: '',
+    region: '',
+    bucket: '',
+    prefix: '',
+    access_key: '',
+    secret_key: '',
+    path_style: false,
+    lock: true,
+  });
   let secretSet = $state(false);
   let gfs: Record<string, string> = $state({ daily: '', weekly: '', monthly: '', yearly: '' });
   let uploaders = $state(2);
@@ -30,11 +43,29 @@
     const r = o?.remote;
     kind = r?.type === 'sftp' ? 'sftp' : 's3';
     sftp = { host: '', port: 23, user: '', key_file: '', host_key: '', base_dir: '' };
-    s3 = { endpoint: '', region: '', bucket: '', prefix: '', access_key: '', secret_key: '', path_style: false, lock: true };
+    s3 = {
+      endpoint: '',
+      region: '',
+      bucket: '',
+      prefix: '',
+      access_key: '',
+      secret_key: '',
+      path_style: false,
+      lock: true,
+    };
     secretSet = false;
     if (r?.type === 'sftp') sftp = { ...sftp, ...r, port: r.port ?? 23, base_dir: r.base_dir ?? '' };
     if (r?.type === 's3') {
-      s3 = { ...s3, endpoint: r.endpoint, region: r.region, bucket: r.bucket, prefix: r.prefix ?? '', access_key: r.access_key, path_style: !!r.path_style, lock: !!r.lock };
+      s3 = {
+        ...s3,
+        endpoint: r.endpoint,
+        region: r.region,
+        bucket: r.bucket,
+        prefix: r.prefix ?? '',
+        access_key: r.access_key,
+        path_style: !!r.path_style,
+        lock: !!r.lock,
+      };
       secretSet = !!r.secret_key_set;
     }
     gfs = Object.fromEntries(CLASSES.map((c) => [c, o?.gfs?.[c] == null ? '' : String(o.gfs[c])]));
@@ -45,14 +76,32 @@
   function target(): TenantOffsite {
     const own: OffsiteGfs = {};
     for (const c of CLASSES) if (gfs[c] !== '' && gfs[c] != null) own[c] = Number(gfs[c]);
-    const common: TenantOffsite = { uploaders: Number(uploaders) || 1, bwlimit: bwlimit ? Number(bwlimit) * 1024 : null };
+    const common: TenantOffsite = {
+      uploaders: Number(uploaders) || 1,
+      bwlimit: bwlimit ? Number(bwlimit) * 1024 : null,
+    };
     if (Object.keys(own).length) common.gfs = own;
     if (kind === 'sftp') {
-      const r: SftpRemote = { type: 'sftp', host: sftp.host.trim(), port: Number(sftp.port) || 23, user: sftp.user.trim(), key_file: sftp.key_file.trim(), host_key: sftp.host_key.trim() };
+      const r: SftpRemote = {
+        type: 'sftp',
+        host: sftp.host.trim(),
+        port: Number(sftp.port) || 23,
+        user: sftp.user.trim(),
+        key_file: sftp.key_file.trim(),
+        host_key: sftp.host_key.trim(),
+      };
       if (sftp.base_dir.trim()) r.base_dir = sftp.base_dir.trim();
       return { remote: r, ...common };
     }
-    const r: S3Remote = { type: 's3', endpoint: s3.endpoint.trim(), region: s3.region.trim(), bucket: s3.bucket.trim(), access_key: s3.access_key.trim(), path_style: s3.path_style, lock: s3.lock };
+    const r: S3Remote = {
+      type: 's3',
+      endpoint: s3.endpoint.trim(),
+      region: s3.region.trim(),
+      bucket: s3.bucket.trim(),
+      access_key: s3.access_key.trim(),
+      path_style: s3.path_style,
+      lock: s3.lock,
+    };
     if (s3.secret_key) r.secret_key = s3.secret_key;
     if (s3.prefix.trim()) r.prefix = s3.prefix.trim().replace(/^\/+|\/+$/g, '');
     return { remote: r, ...common };
@@ -87,42 +136,110 @@
     </div>
     {#if kind === 'sftp'}
       <div class="form-grid">
-        <div class="field"><label for="o2-host">{t.tenants.host}</label><input id="o2-host" bind:value={sftp.host} required /></div>
-        <div class="field"><label for="o2-port">{t.tenants.port}</label><input id="o2-port" type="number" min="1" max="65535" bind:value={sftp.port} /></div>
-        <div class="field"><label for="o2-user">{t.tenants.user}</label><input id="o2-user" bind:value={sftp.user} required /></div>
-        <div class="field"><label for="o2-dir">{t.tenants.baseDir}</label><input id="o2-dir" bind:value={sftp.base_dir} /></div>
+        <div class="field">
+          <label for="o2-host">{t.tenants.host}</label><input id="o2-host" bind:value={sftp.host} required />
+        </div>
+        <div class="field">
+          <label for="o2-port">{t.tenants.port}</label><input
+            id="o2-port"
+            type="number"
+            min="1"
+            max="65535"
+            bind:value={sftp.port}
+          />
+        </div>
+        <div class="field">
+          <label for="o2-user">{t.tenants.user}</label><input id="o2-user" bind:value={sftp.user} required />
+        </div>
+        <div class="field">
+          <label for="o2-dir">{t.tenants.baseDir}</label><input id="o2-dir" bind:value={sftp.base_dir} />
+        </div>
       </div>
-      <div class="field"><label for="o2-hk">{t.tenants.hostKey}</label><input id="o2-hk" class="mono" bind:value={sftp.host_key} spellcheck="false" required /></div>
+      <div class="field">
+        <label for="o2-hk">{t.tenants.hostKey}</label><input
+          id="o2-hk"
+          class="mono"
+          bind:value={sftp.host_key}
+          spellcheck="false"
+          required
+        />
+      </div>
       <div class="field">
         <label for="o2-key">{t.tenants.keyFile}</label>
-        <input id="o2-key" class="mono" bind:value={sftp.key_file} spellcheck="false" required aria-describedby="o2-key-hint" />
+        <input
+          id="o2-key"
+          class="mono"
+          bind:value={sftp.key_file}
+          spellcheck="false"
+          required
+          aria-describedby="o2-key-hint"
+        />
         <div class="hint" id="o2-key-hint">{t.tenants.keyFileHint}</div>
       </div>
     {:else}
       <div class="form-grid">
         <div class="field">
           <label for="o2-ep">{t.tenants.endpoint}</label>
-          <input id="o2-ep" class="mono" bind:value={s3.endpoint} required pattern="https://[^/?#@ ]+/?" spellcheck="false" />
+          <input
+            id="o2-ep"
+            class="mono"
+            bind:value={s3.endpoint}
+            required
+            pattern="https://[^/?#@ ]+/?"
+            spellcheck="false"
+          />
         </div>
-        <div class="field"><label for="o2-region">{t.tenants.region}</label><input id="o2-region" bind:value={s3.region} required pattern="[a-z0-9\-]+" maxlength="32" /></div>
+        <div class="field">
+          <label for="o2-region">{t.tenants.region}</label><input
+            id="o2-region"
+            bind:value={s3.region}
+            required
+            pattern="[a-z0-9\-]+"
+            maxlength="32"
+          />
+        </div>
         <div class="field">
           <label for="o2-bucket">{t.tenants.bucket}</label>
-          <input id="o2-bucket" class="mono" bind:value={s3.bucket} required pattern="[a-z0-9][a-z0-9.\-]{'{'}1,61{'}'}[a-z0-9]" />
+          <input
+            id="o2-bucket"
+            class="mono"
+            bind:value={s3.bucket}
+            required
+            pattern="[a-z0-9][a-z0-9.\-]{'{'}1,61{'}'}[a-z0-9]"
+          />
         </div>
-        <div class="field"><label for="o2-prefix">{t.tenants.prefix}</label><input id="o2-prefix" class="mono" bind:value={s3.prefix} spellcheck="false" /></div>
+        <div class="field">
+          <label for="o2-prefix">{t.tenants.prefix}</label><input
+            id="o2-prefix"
+            class="mono"
+            bind:value={s3.prefix}
+            spellcheck="false"
+          />
+        </div>
         <div class="field">
           <label for="o2-ak">{t.tenants.accessKey}</label>
           <input id="o2-ak" class="mono" bind:value={s3.access_key} required autocomplete="off" spellcheck="false" />
         </div>
         <div class="field">
           <label for="o2-sk">{t.tenants.secretKey}</label>
-          <input id="o2-sk" type="password" bind:value={s3.secret_key} autocomplete="new-password" required={!secretSet} aria-describedby="o2-sk-hint" />
+          <input
+            id="o2-sk"
+            type="password"
+            bind:value={s3.secret_key}
+            autocomplete="new-password"
+            required={!secretSet}
+            aria-describedby="o2-sk-hint"
+          />
           <div class="hint" id="o2-sk-hint">{secretSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
         </div>
       </div>
-      <div class="field"><label class="inline-check"><input type="checkbox" bind:checked={s3.path_style} />{t.tenants.pathStyle}</label></div>
       <div class="field">
-        <label class="inline-check"><input type="checkbox" bind:checked={s3.lock} aria-describedby="o2-lock-hint" />{t.tenants.lock}</label>
+        <label class="inline-check"><input type="checkbox" bind:checked={s3.path_style} />{t.tenants.pathStyle}</label>
+      </div>
+      <div class="field">
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={s3.lock} aria-describedby="o2-lock-hint" />{t.tenants.lock}</label
+        >
         <div class="hint" id="o2-lock-hint">{t.tenants.lockHint}</div>
       </div>
     {/if}
@@ -133,14 +250,31 @@
         {#each CLASSES as c (c)}
           <div class="field">
             <label for="o2-gfs-{c}">{t.p30.second.classes[c]}</label>
-            <input id="o2-gfs-{c}" type="number" min="0" max="10000" bind:value={gfs[c]} placeholder={t.p30.second.asLocal} />
+            <input
+              id="o2-gfs-{c}"
+              type="number"
+              min="0"
+              max="10000"
+              bind:value={gfs[c]}
+              placeholder={t.p30.second.asLocal}
+            />
           </div>
         {/each}
       </div>
     </fieldset>
     <div class="form-grid">
-      <div class="field"><label for="o2-bw">{t.tenants.bwlimit}</label><input id="o2-bw" type="number" min="0" bind:value={bwlimit} /></div>
-      <div class="field"><label for="o2-up">{t.tenants.uploaders}</label><input id="o2-up" type="number" min="1" max="8" bind:value={uploaders} /></div>
+      <div class="field">
+        <label for="o2-bw">{t.tenants.bwlimit}</label><input id="o2-bw" type="number" min="0" bind:value={bwlimit} />
+      </div>
+      <div class="field">
+        <label for="o2-up">{t.tenants.uploaders}</label><input
+          id="o2-up"
+          type="number"
+          min="1"
+          max="8"
+          bind:value={uploaders}
+        />
+      </div>
     </div>
     <div class="form-actions">
       {#if existing}<button type="button" class="danger" onclick={remove}>{t.p30.second.remove}</button>{/if}

@@ -42,12 +42,12 @@ does not verify the self-signed certificate.
 All packages are pinned to exact versions and end up in `dist` (nothing is
 loaded from third parties at run time):
 
-| package | purpose |
-|---|---|
-| `svelte` | compiler and runtime (the runtime gets bundled) |
-| `vite`, `@sveltejs/vite-plugin-svelte` | build and dev server |
-| `typescript`, `svelte-check` | type checking (`npm run check`) |
-| `@lucide/svelte` (ISC) | icons; each icon is imported by path, only the used ones are bundled |
+| package                                                                 | purpose                                                                       |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `svelte`                                                                | compiler and runtime (the runtime gets bundled)                               |
+| `vite`, `@sveltejs/vite-plugin-svelte`                                  | build and dev server                                                          |
+| `typescript`, `svelte-check`                                            | type checking (`npm run check`)                                               |
+| `@lucide/svelte` (ISC)                                                  | icons; each icon is imported by path, only the used ones are bundled          |
 | `@fontsource-variable/ibm-plex-sans`, `@fontsource/ibm-plex-mono` (OFL) | UI fonts; `app.css` references only the Latin / Latin Extended `.woff2` files |
 
 The app has no router library, no UI kit, no CSS framework, no chart library
@@ -94,13 +94,14 @@ src/lib/plugins.ts     plugin kind lookup, plugin snapshot name parsing, version
   `npm run preview` serves `dist` with the same CSP header. A headless-Chrome run
   through every screen reported no `securitypolicyviolation` events. The dev
   server runs without the CSP because Vite HMR injects inline styles.
+
 - **CSRF.** The token from `POST /auth/login` is kept only in memory and is never
   written to storage. After a reload, `GET /auth/me` returns `{user, csrf}` again.
   Every non-GET request sends `X-CSRF-Token`.
 - **Secrets.**
   - The source `token_secret` is write-only. GET returns `token_secret_set`, and
     leaving the field empty on edit keeps the stored secret.
-  - The tenant offsite config contains only a key *file path*. The web-api
+  - The tenant offsite config contains only a key _file path_. The web-api
     refuses inline secrets in that blob.
   - The TOTP provisioning URI appears only in the dialog right after a user is
     created or the TOTP is reset.

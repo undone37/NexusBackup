@@ -44,23 +44,32 @@ export function secretFlags(config: Record<string, unknown> | undefined, secretF
  * Initial form values: the stored config when editing (secrets always start empty),
  * else the schema defaults.
  */
-export function initValues(s: JsonSchema | undefined, config?: Record<string, unknown>, secretFields: string[] = []): FormValues {
+export function initValues(
+  s: JsonSchema | undefined,
+  config?: Record<string, unknown>,
+  secretFields: string[] = [],
+): FormValues {
   const out: FormValues = {};
   for (const [k, p] of properties(s)) {
     const v = secretFields.includes(k) ? undefined : config ? config[k] : p.default;
     if (p.type === 'boolean') out[k] = typeof v === 'boolean' ? v : false;
     else if (isList(p))
       out[k] = Array.isArray(v)
-        ? v.map((x) => ({ values: initValues(p.items, x as Record<string, unknown>, secretFields), set: secretFlags(x as Record<string, unknown>, secretFields) }))
+        ? v.map((x) => ({
+            values: initValues(p.items, x as Record<string, unknown>, secretFields),
+            set: secretFlags(x as Record<string, unknown>, secretFields),
+          }))
         : [];
     else if (p.type === 'array') out[k] = Array.isArray(v) ? v.map(String).join('\n') : '';
-    else if (p.type === 'integer') out[k] = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : null;
+    else if (p.type === 'integer')
+      out[k] = typeof v === 'number' ? v : typeof v === 'string' && v !== '' ? Number(v) : null;
     else out[k] = v === undefined || v === null ? '' : String(v);
   }
   return out;
 }
 
-const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/;
+const HOST_RE =
+  /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/;
 const IPV6_RE = /^\[?[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*\]?$/;
 
 const validPort = (n: number) => Number.isInteger(n) && n >= 1 && n <= 65535;

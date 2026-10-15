@@ -39,9 +39,11 @@
   let frz = $state({ config: false, deletions: false, restores: false });
   const frozenParts = (f: Incident['freeze']) =>
     f
-      ? [f.config && t.p29.freeze.names.config, f.deletions && t.p29.freeze.names.deletions, f.restores && t.p29.freeze.names.restores].filter(
-          (x): x is string => !!x,
-        )
+      ? [
+          f.config && t.p29.freeze.names.config,
+          f.deletions && t.p29.freeze.names.deletions,
+          f.restores && t.p29.freeze.names.restores,
+        ].filter((x): x is string => !!x)
       : [];
 
   async function load() {
@@ -67,7 +69,15 @@
     const body = {
       reason,
       hold: doHold
-        ? { tenants: holdTenants, sources: sources.split(',').map((s) => s.trim()).filter(Boolean), from: ts(from), to: ts(to) }
+        ? {
+            tenants: holdTenants,
+            sources: sources
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean),
+            from: ts(from),
+            to: ts(to),
+          }
         : null,
       groups: allGroups ? null : chosen,
       freeze: { ...frz },
@@ -116,7 +126,9 @@
       </div>
     {/if}
     {#if inc.leave_quorum}
-      <p class="banner pending"><span>{t.incident.leavePending(inc.leave_quorum)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+      <p class="banner pending">
+        <span>{t.incident.leavePending(inc.leave_quorum)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+      </p>
     {:else if canLeave}
       <div class="form-actions"><button type="button" onclick={leave}>{t.incident.leave}</button></div>
     {/if}
@@ -167,12 +179,19 @@
         </fieldset>
         <fieldset>
           <legend>{t.incident.groupsTitle}</legend>
-          <label class="inline-check"><input type="radio" name="inc-groups" value={true} bind:group={allGroups} />{t.incident.allGroups}</label>
-          <label class="inline-check"><input type="radio" name="inc-groups" value={false} bind:group={allGroups} />{t.incident.chosenGroups}</label>
+          <label class="inline-check"
+            ><input type="radio" name="inc-groups" value={true} bind:group={allGroups} />{t.incident.allGroups}</label
+          >
+          <label class="inline-check"
+            ><input type="radio" name="inc-groups" value={false} bind:group={allGroups} />{t.incident
+              .chosenGroups}</label
+          >
           {#if !allGroups}
             <div class="group-list">
               {#each groups as g (g.id)}
-                <label class="inline-check"><input type="checkbox" value={g.id} bind:group={chosen} />{g.tenant} / {g.name}</label>
+                <label class="inline-check"
+                  ><input type="checkbox" value={g.id} bind:group={chosen} />{g.tenant} / {g.name}</label
+                >
               {/each}
             </div>
           {/if}
@@ -181,15 +200,24 @@
           <legend>{t.p29.freeze.legend}</legend>
           <p class="hint">{t.p29.freeze.intro}</p>
           <div class="field">
-            <label class="inline-check"><input type="checkbox" bind:checked={frz.config} aria-describedby="inc-frz-config-hint" />{t.p29.freeze.config}</label>
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={frz.config} aria-describedby="inc-frz-config-hint" />{t.p29.freeze
+                .config}</label
+            >
             <p class="hint" id="inc-frz-config-hint">{t.p29.freeze.configHint}</p>
           </div>
           <div class="field">
-            <label class="inline-check"><input type="checkbox" bind:checked={frz.deletions} aria-describedby="inc-frz-del-hint" />{t.p29.freeze.deletions}</label>
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={frz.deletions} aria-describedby="inc-frz-del-hint" />{t.p29.freeze
+                .deletions}</label
+            >
             <p class="hint" id="inc-frz-del-hint">{t.p29.freeze.deletionsHint}</p>
           </div>
           <div class="field">
-            <label class="inline-check"><input type="checkbox" bind:checked={frz.restores} aria-describedby="inc-frz-res-hint" />{t.p29.freeze.restores}</label>
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={frz.restores} aria-describedby="inc-frz-res-hint" />{t.p29.freeze
+                .restores}</label
+            >
             <p class="hint" id="inc-frz-res-hint">{t.p29.freeze.restoresHint}</p>
           </div>
         </fieldset>
@@ -201,10 +229,19 @@
           </div>
           <div class="field">
             <label for="inc-totp">{t.incident.totp}</label>
-            <input id="inc-totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{'{'}6{'}'}" bind:value={totp} required />
+            <input
+              id="inc-totp"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              pattern="[0-9]{'{'}6{'}'}"
+              bind:value={totp}
+              required
+            />
           </div>
         </div>
-        <div class="form-actions"><button type="submit" class="danger"><IconSiren aria-hidden="true" />{t.incident.enter}</button></div>
+        <div class="form-actions">
+          <button type="submit" class="danger"><IconSiren aria-hidden="true" />{t.incident.enter}</button>
+        </div>
       </form>
     {/if}
   </section>

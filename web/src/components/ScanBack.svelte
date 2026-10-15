@@ -46,8 +46,8 @@
     error = null;
     try {
       const body: Record<string, number> = {};
-      if (String(budget ?? "").trim()) body.budget_min = Number(budget);
-      if (String(max ?? "").trim()) body.max = Number(max);
+      if (String(budget ?? '').trim()) body.budget_min = Number(budget);
+      if (String(max ?? '').trim()) body.max = Number(max);
       const path = `/snapshots/${encodeURIComponent(tenant)}/${encodeURIComponent(source)}/${time}/scan-back`;
       const o = await post<{ id: number }>(path, body);
       const id = o.data.id;
@@ -85,7 +85,14 @@
       <div class="form-grid">
         <div class="field">
           <label for="sb-budget">{t.p29.scanBack.budget}</label>
-          <input id="sb-budget" type="number" min="1" max="1440" bind:value={budget} aria-describedby="sb-budget-hint" />
+          <input
+            id="sb-budget"
+            type="number"
+            min="1"
+            max="1440"
+            bind:value={budget}
+            aria-describedby="sb-budget-hint"
+          />
           <div class="hint" id="sb-budget-hint">{t.p29.scanBack.budgetHint}</div>
         </div>
         <div class="field">
@@ -94,7 +101,9 @@
           <div class="hint" id="sb-max-hint">{t.p29.scanBack.maxHint}</div>
         </div>
       </div>
-      {#if job && busy}<p class="muted" aria-busy="true">{t.p29.scanBack.running} <a href={href(`/jobs/${job.id}`)}>{t.p29.scanBack.openJob(job.id)}</a></p>{/if}
+      {#if job && busy}<p class="muted" aria-busy="true">
+          {t.p29.scanBack.running} <a href={href(`/jobs/${job.id}`)}>{t.p29.scanBack.openJob(job.id)}</a>
+        </p>{/if}
       <div class="form-actions">
         <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
         <button type="submit" class="primary" disabled={busy}>{t.p29.scanBack.start}</button>

@@ -50,7 +50,11 @@
     }
   }
   onMount(async () => {
-    if (!scoped) get<Tenant[]>('/tenants').then((x) => (tenants = x), () => {});
+    if (!scoped)
+      get<Tenant[]>('/tenants').then(
+        (x) => (tenants = x),
+        () => {},
+      );
     if (officer) await load();
   });
 
@@ -70,7 +74,14 @@
   function edit(x: ScheduledReport | null) {
     editing = x;
     f = x
-      ? { name: x.name, types: [...x.types], schedule: x.schedule, timezone: x.timezone, recipients: x.recipients.join('\n'), tenant: x.tenant ?? '' }
+      ? {
+          name: x.name,
+          types: [...x.types],
+          schedule: x.schedule,
+          timezone: x.timezone,
+          recipients: x.recipients.join('\n'),
+          tenant: x.tenant ?? '',
+        }
       : blank();
     open = true;
   }
@@ -116,7 +127,11 @@
   }
 
   async function sendNow(x: ScheduledReport) {
-    const r = await act(post<{ job_id: number }>(`/settings/reports/${encodeURIComponent(x.name)}/send`), (d) => t.reports.sendQueued(d.job_id), (d) => jobLink({ id: d.job_id }));
+    const r = await act(
+      post<{ job_id: number }>(`/settings/reports/${encodeURIComponent(x.name)}/send`),
+      (d) => t.reports.sendQueued(d.job_id),
+      (d) => jobLink({ id: d.job_id }),
+    );
     if (r) load();
   }
 </script>
@@ -171,9 +186,14 @@
 {#if officer}
   <section class="card" aria-labelledby="r-sched">
     <div class="card-head">
-      <div><h2 id="r-sched">{t.reports.scheduled}</h2><div class="sub">{t.reports.scheduledLede}</div></div>
+      <div>
+        <h2 id="r-sched">{t.reports.scheduled}</h2>
+        <div class="sub">{t.reports.scheduledLede}</div>
+      </div>
       {#if admin}
-        <button type="button" class="primary" disabled={!sched?.smtp} onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.reports.add}</button>
+        <button type="button" class="primary" disabled={!sched?.smtp} onclick={() => edit(null)}
+          ><IconPlus aria-hidden="true" />{t.reports.add}</button
+        >
       {/if}
     </div>
     <ErrorBanner {error} />
@@ -200,7 +220,11 @@
               <tr use:rowClick={() => edit(x)}>
                 <th scope="row">{x.name}</th>
                 <td>{x.types.map((k) => t.reports.types[k]).join(', ')}</td>
-                <td class="nowrap"><span class="mono">{x.schedule}</span>{#if x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}</td>
+                <td class="nowrap"
+                  ><span class="mono">{x.schedule}</span>{#if x.timezone !== 'UTC'}<div class="muted">
+                      {x.timezone}
+                    </div>{/if}</td
+                >
                 <td>{x.recipients.join(', ')}</td>
                 <td>{x.tenant ?? t.reports.allTenants}</td>
                 <td class="nowrap">
@@ -211,7 +235,9 @@
                 </td>
                 {#if admin}
                   <td class="actions">
-                    <button type="button" class="small" disabled={!sched.smtp} onclick={() => sendNow(x)}><IconSend aria-hidden="true" />{t.reports.sendNow}</button>
+                    <button type="button" class="small" disabled={!sched.smtp} onclick={() => sendNow(x)}
+                      ><IconSend aria-hidden="true" />{t.reports.sendNow}</button
+                    >
                     <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                     <button type="button" class="small danger" onclick={() => remove(x)}>{t.delete}</button>
                   </td>
@@ -232,7 +258,13 @@
     <div class="form-grid">
       <div class="field">
         <label for="rs-name">{t.name}</label>
-        <input id="rs-name" bind:value={f.name} required pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]{'{0,63}'}" aria-describedby="rs-name-hint" />
+        <input
+          id="rs-name"
+          bind:value={f.name}
+          required
+          pattern="[A-Za-z0-9_\-][A-Za-z0-9._\-]{'{0,63}'}"
+          aria-describedby="rs-name-hint"
+        />
         <div class="hint" id="rs-name-hint">{t.reports.nameHint}</div>
       </div>
       <div class="field">
@@ -252,16 +284,24 @@
     </fieldset>
     <fieldset>
       <legend>{t.reports.schedule}</legend>
-      <ScheduleInput id="rs-sched" bind:value={f.schedule} kinds={['weekdays', 'daily', 'monthly']} hint={t.reports.scheduleHint} />
+      <ScheduleInput
+        id="rs-sched"
+        bind:value={f.schedule}
+        kinds={['weekdays', 'daily', 'monthly']}
+        hint={t.reports.scheduleHint}
+      />
       <div class="field">
         <label for="rs-tz">{t.runctl.timezone}</label>
         <input id="rs-tz" list="rs-tz-list" bind:value={f.timezone} required />
-        <datalist id="rs-tz-list">{#each zones as z (z)}<option value={z}></option>{/each}</datalist>
+        <datalist id="rs-tz-list"
+          >{#each zones as z (z)}<option value={z}></option>{/each}</datalist
+        >
       </div>
     </fieldset>
     <div class="field">
       <label for="rs-to">{t.reports.recipients}</label>
-      <textarea id="rs-to" bind:value={f.recipients} rows="3" spellcheck="false" required aria-describedby="rs-to-hint"></textarea>
+      <textarea id="rs-to" bind:value={f.recipients} rows="3" spellcheck="false" required aria-describedby="rs-to-hint"
+      ></textarea>
       <div class="hint" id="rs-to-hint">{t.reports.recipientsHint}</div>
     </div>
     <div class="form-actions">

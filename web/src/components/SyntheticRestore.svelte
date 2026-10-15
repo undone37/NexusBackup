@@ -25,7 +25,10 @@
   const candidates = $derived(
     agents
       .filter((a) => a.tenant === tenant)
-      .sort((a, b) => Number(b.enrolled_at !== null) - Number(a.enrolled_at !== null) || (b.last_seen ?? 0) - (a.last_seen ?? 0)),
+      .sort(
+        (a, b) =>
+          Number(b.enrolled_at !== null) - Number(a.enrolled_at !== null) || (b.last_seen ?? 0) - (a.last_seen ?? 0),
+      ),
   );
   const own = $derived(hostAgentId(source));
   const mayDownload = $derived(can.download(session.user));
@@ -87,7 +90,9 @@
     const base = { source, time, paths: [below.trim()], depth: Number(depth), mode };
     const params =
       mode === 'download' ? { ...base, format } : { ...base, target, overwrite, confirm, agent_id: agent!.id };
-    const r = await act(post<{ id: number }>('/jobs', { kind: 'synthetic_restore', tenant, params }), (d) => t.synth.started(d.id));
+    const r = await act(post<{ id: number }>('/jobs', { kind: 'synthetic_restore', tenant, params }), (d) =>
+      t.synth.started(d.id),
+    );
     busy = false;
     if (!r) return;
     open = false;
@@ -103,12 +108,28 @@
     <div class="form-grid">
       <div class="field">
         <label for="{id}-below">{t.synth.below}</label>
-        <input id="{id}-below" class="mono" bind:value={below} required autocomplete="off" spellcheck="false" aria-describedby="{id}-below-hint" />
+        <input
+          id="{id}-below"
+          class="mono"
+          bind:value={below}
+          required
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="{id}-below-hint"
+        />
         <div class="hint" id="{id}-below-hint">{t.synth.belowHint}</div>
       </div>
       <div class="field">
         <label for="{id}-depth">{t.synth.depth}</label>
-        <input id="{id}-depth" type="number" min="1" max="100" bind:value={depth} required aria-describedby="{id}-depth-hint" />
+        <input
+          id="{id}-depth"
+          type="number"
+          min="1"
+          max="100"
+          bind:value={depth}
+          required
+          aria-describedby="{id}-depth-hint"
+        />
         <div class="hint" id="{id}-depth-hint">{t.synth.depthHint}</div>
       </div>
     </div>
@@ -116,7 +137,13 @@
       <legend>{t.synth.mode}</legend>
       {#each ['download', 'host'] as m (m)}
         <label class="inline-check">
-          <input type="radio" name="{id}-mode" value={m} bind:group={mode} disabled={m === 'download' && !mayDownload} />{t.synth.modes[m]}
+          <input
+            type="radio"
+            name="{id}-mode"
+            value={m}
+            bind:group={mode}
+            disabled={m === 'download' && !mayDownload}
+          />{t.synth.modes[m]}
         </label>
       {/each}
     </fieldset>
@@ -133,7 +160,17 @@
       <div class="form-grid">
         <div class="field">
           <label for="{id}-target">{t.restoreFiles.target}</label>
-          <input id="{id}-target" class="mono" bind:value={target} required pattern="/.*" placeholder="/srv/restore" autocomplete="off" spellcheck="false" aria-describedby="{id}-target-hint" />
+          <input
+            id="{id}-target"
+            class="mono"
+            bind:value={target}
+            required
+            pattern="/.*"
+            placeholder="/srv/restore"
+            autocomplete="off"
+            spellcheck="false"
+            aria-describedby="{id}-target-hint"
+          />
           <div class="hint" id="{id}-target-hint">{t.restoreFiles.targetHint}</div>
         </div>
         <div class="field">
@@ -148,7 +185,9 @@
         <select id="{id}-agent" bind:value={agentId} required>
           {#each candidates as a (a.id)}
             <option value={a.id} disabled={a.enrolled_at === null}
-              >{a.name} ({a.host}) — {a.enrolled_at === null ? t.restoreFiles.notEnrolled : t.restoreFiles.lastSeen(fmtAgo(a.last_seen))}</option
+              >{a.name} ({a.host}) — {a.enrolled_at === null
+                ? t.restoreFiles.notEnrolled
+                : t.restoreFiles.lastSeen(fmtAgo(a.last_seen))}</option
             >
           {/each}
         </select>
@@ -158,14 +197,25 @@
       {#if agent}
         <div class="field">
           <label for="{id}-confirm">{t.restoreFiles.confirm}</label>
-          <input id="{id}-confirm" class="mono" bind:value={confirm} required autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="{id}-confirm-hint" />
+          <input
+            id="{id}-confirm"
+            class="mono"
+            bind:value={confirm}
+            required
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            aria-describedby="{id}-confirm-hint"
+          />
           <div class="hint" id="{id}-confirm-hint">{t.restoreFiles.confirmHint(agent.name)}</div>
         </div>
       {/if}
     {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={!ready}>{session.vault ? t.vault.requestRestore : t.synth.start}</button>
+      <button type="submit" class="primary" disabled={!ready}
+        >{session.vault ? t.vault.requestRestore : t.synth.start}</button
+      >
     </div>
   </form>
 </Modal>

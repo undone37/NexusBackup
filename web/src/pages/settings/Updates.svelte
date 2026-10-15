@@ -43,14 +43,26 @@
   const short = (d?: string) => (d ? d.replace(/^(sha256:)?([0-9a-f]{12})[0-9a-f]+$/, '$1$2…') : '');
   // "idle" with a newer image is shown as "update available"
   const st = $derived(u?.status === 'idle' && u.available ? 'available' : (u?.status ?? ''));
-  const stCls: Record<string, string> = { idle: 'ok', available: 'info', checking: 'info', staged: 'warn', error: 'bad', blocked: 'bad' };
+  const stCls: Record<string, string> = {
+    idle: 'ok',
+    available: 'info',
+    checking: 'info',
+    staged: 'warn',
+    error: 'bad',
+    blocked: 'bad',
+  };
 
   async function check() {
     if (await act(post('/updates/check'), t.settings.upd.checkStarted)) load();
   }
   async function saveReg(e: SubmitEvent) {
     e.preventDefault();
-    if (await act(put('/updates/registry', { username: regUser.trim(), token: regToken.trim() }), t.settings.upd.reg.saved)) {
+    if (
+      await act(
+        put('/updates/registry', { username: regUser.trim(), token: regToken.trim() }),
+        t.settings.upd.reg.saved,
+      )
+    ) {
       regToken = '';
       load();
     }
@@ -118,9 +130,13 @@
       </dl>
       {#if admin}
         <div class="form-actions">
-          <button type="button" onclick={check} disabled={u.status === 'checking'}><IconRefresh aria-hidden="true" />{t.settings.upd.check}</button>
+          <button type="button" onclick={check} disabled={u.status === 'checking'}
+            ><IconRefresh aria-hidden="true" />{t.settings.upd.check}</button
+          >
           {#if u.available && !u.staged}
-            <button type="button" class="primary" onclick={apply}><IconDownload aria-hidden="true" />{t.settings.upd.apply}</button>
+            <button type="button" class="primary" onclick={apply}
+              ><IconDownload aria-hidden="true" />{t.settings.upd.apply}</button
+            >
           {/if}
         </div>
       {/if}
@@ -129,7 +145,9 @@
       <section class="card" aria-labelledby="reg-h">
         <div class="card-head">
           <h2 id="reg-h">{t.settings.upd.reg.title}</h2>
-          <span class="chip {reg.configured ? 'ok' : ''}">{reg.configured ? t.settings.upd.reg.configured(reg.username ?? '') : t.settings.upd.reg.none}</span>
+          <span class="chip {reg.configured ? 'ok' : ''}"
+            >{reg.configured ? t.settings.upd.reg.configured(reg.username ?? '') : t.settings.upd.reg.none}</span
+          >
         </div>
         <p class="muted">{t.settings.upd.reg.intro}</p>
         {#if admin}
@@ -140,7 +158,14 @@
             </div>
             <div class="field">
               <label for="reg-token">{t.settings.upd.reg.token}</label>
-              <input id="reg-token" type="password" bind:value={regToken} required maxlength="512" autocomplete="new-password" />
+              <input
+                id="reg-token"
+                type="password"
+                bind:value={regToken}
+                required
+                maxlength="512"
+                autocomplete="new-password"
+              />
             </div>
             <div class="form-actions">
               <button type="submit" class="primary">{t.settings.upd.reg.save}</button>

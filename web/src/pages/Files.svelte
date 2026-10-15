@@ -249,7 +249,12 @@
       <span class="muted">{t.access.noDownload}</span>
     {/if}
     {#if toHost}
-      <button type="button" onclick={() => (restoreOpen = true)} aria-describedby="restore-hint" disabled={guest && !selected.length}>
+      <button
+        type="button"
+        onclick={() => (restoreOpen = true)}
+        aria-describedby="restore-hint"
+        disabled={guest && !selected.length}
+      >
         {selected.length ? (agentId ? t.snap.restorePath : t.files.restoreToHost) : t.files.restoreAll}
       </button>
     {/if}
@@ -263,12 +268,5 @@
 </div>
 
 {#if toHost}
-  <RestoreFiles
-    bind:open={restoreOpen}
-    {tenant}
-    {source}
-    {time}
-    paths={selected.length ? selected : ['/']}
-    {agents}
-  />
+  <RestoreFiles bind:open={restoreOpen} {tenant} {source} {time} paths={selected.length ? selected : ['/']} {agents} />
 {/if}

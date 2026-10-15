@@ -13,7 +13,11 @@
   import Modal from './Modal.svelte';
   import InfectedNotice from './InfectedNotice.svelte';
 
-  let { open = $bindable(false), snap, nodes = [] }: { open?: boolean; snap: Snapshot | null; nodes?: string[] } = $props();
+  let {
+    open = $bindable(false),
+    snap,
+    nodes = [],
+  }: { open?: boolean; snap: Snapshot | null; nodes?: string[] } = $props();
   let groups: Group[] = $state([]);
   let node = $state('');
   let target = $state('');
@@ -54,7 +58,7 @@
     if (moveTo.trim()) params.move_to = moveTo.trim();
     const r = await act(
       post<{ id?: number }>('/jobs', { kind: 'instant_disk', tenant: snap.tenant, params }),
-      (d) => d.id ? t.snap.jobStarted(d.id) : t.idr.requested,
+      (d) => (d.id ? t.snap.jobStarted(d.id) : t.idr.requested),
       jobLink,
     );
     busy = false;
@@ -72,24 +76,54 @@
       <div class="form-grid">
         <div class="field">
           <label for="idr-disk">{t.idr.disk}</label>
-          <input id="idr-disk" class="mono" bind:value={disk} required list="idr-disks" pattern="(scsi|virtio|sata|ide)[0-9]{'{1,3}'}" aria-describedby="idr-disk-hint" />
-          <datalist id="idr-disks">{#each ['scsi0', 'scsi1', 'scsi2', 'virtio0', 'virtio1', 'sata0'] as d (d)}<option value={d}></option>{/each}</datalist>
+          <input
+            id="idr-disk"
+            class="mono"
+            bind:value={disk}
+            required
+            list="idr-disks"
+            pattern="(scsi|virtio|sata|ide)[0-9]{'{1,3}'}"
+            aria-describedby="idr-disk-hint"
+          />
+          <datalist id="idr-disks"
+            >{#each ['scsi0', 'scsi1', 'scsi2', 'virtio0', 'virtio1', 'sata0'] as d (d)}<option value={d}
+              ></option>{/each}</datalist
+          >
           <div class="hint" id="idr-disk-hint">{t.idr.diskHint}</div>
         </div>
         <div class="field">
           <label for="idr-node">{t.snap.node}</label>
           <input id="idr-node" bind:value={node} list="idr-nodes" required autocomplete="off" />
-          <datalist id="idr-nodes">{#each nodes as n (n)}<option value={n}></option>{/each}</datalist>
+          <datalist id="idr-nodes"
+            >{#each nodes as n (n)}<option value={n}></option>{/each}</datalist
+          >
         </div>
         <div class="field">
           <label for="idr-target">{t.idr.target}</label>
-          <input id="idr-target" type="number" min="100" max="999999999" bind:value={target} required list="idr-targets" aria-describedby="idr-target-hint" />
-          <datalist id="idr-targets">{#each targets as v (v)}<option value={v}></option>{/each}</datalist>
+          <input
+            id="idr-target"
+            type="number"
+            min="100"
+            max="999999999"
+            bind:value={target}
+            required
+            list="idr-targets"
+            aria-describedby="idr-target-hint"
+          />
+          <datalist id="idr-targets"
+            >{#each targets as v (v)}<option value={v}></option>{/each}</datalist
+          >
           <div class="hint" id="idr-target-hint">{t.idr.targetHint}</div>
         </div>
         <div class="field">
           <label for="idr-key">{t.idr.key}</label>
-          <input id="idr-key" class="mono" bind:value={key} placeholder={t.idr.keyAuto} pattern="(scsi|virtio|sata|ide)[0-9]{'{1,3}'}" />
+          <input
+            id="idr-key"
+            class="mono"
+            bind:value={key}
+            placeholder={t.idr.keyAuto}
+            pattern="(scsi|virtio|sata|ide)[0-9]{'{1,3}'}"
+          />
         </div>
         <div class="field">
           <label for="idr-move">{t.idr.moveTo}</label>
@@ -99,7 +133,9 @@
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.idr.attach}</button>
+        <button type="submit" class="primary" disabled={busy}
+          >{session.vault ? t.vault.requestRestore : t.idr.attach}</button
+        >
       </div>
     </form>
   {/if}

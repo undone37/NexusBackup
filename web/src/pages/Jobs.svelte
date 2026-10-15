@@ -104,7 +104,9 @@
   </div>
   <label class="check" title={t.jobs.hideRoutineHint}>
     <input type="checkbox" bind:checked={hideRoutine} />
-    {t.jobs.hideRoutine}{#if hideRoutine && jobs.length !== shown.length}<span class="muted"> ({t.jobs.hiddenN(jobs.length - shown.length)})</span>{/if}
+    {t.jobs.hideRoutine}{#if hideRoutine && jobs.length !== shown.length}<span class="muted">
+        ({t.jobs.hiddenN(jobs.length - shown.length)})</span
+      >{/if}
   </label>
 </div>
 
@@ -140,12 +142,15 @@
               <td>
                 {kindLabel(j.kind)}
                 {#if subject}<div class="muted small">{subject}</div>{/if}
-                {#if after}<div class="muted small"><a href={href(`/jobs/${after}`)} title={t.jobs.afterTitle}>{t.jobs.after(after)}</a></div>{/if}
+                {#if after}<div class="muted small">
+                    <a href={href(`/jobs/${after}`)} title={t.jobs.afterTitle}>{t.jobs.after(after)}</a>
+                  </div>{/if}
               </td>
               <td>{j.tenant}</td>
               <td
                 ><JobState state={j.state} />{#if j.result?.warnings}
-                  <span class="chip warn" title={t.jobs.warningsTitle}>{t.jobs.warnings(j.result.warnings)}</span>{/if}{#if (j.attempt ?? 1) > 1}
+                  <span class="chip warn" title={t.jobs.warningsTitle}>{t.jobs.warnings(j.result.warnings)}</span
+                  >{/if}{#if (j.attempt ?? 1) > 1}
                   <span class="muted">{t.runctl.attempt} {j.attempt}</span>{/if}</td
               >
               <td>{j.requested_by}</td>
@@ -164,17 +169,25 @@
                     <span class="tabular small nowrap"
                       >{(p.percent ?? p.item_percent) !== null && (p.percent ?? p.item_percent) !== undefined
                         ? `${Math.round((p.percent ?? p.item_percent)!)} %`
-                        : ''}{p.rate ? ` · ${fmtRate(p.rate)}` : p.entries_rate ? ` · ${fmtEntryRate(p.entries_rate)}` : ''}</span
+                        : ''}{p.rate
+                        ? ` · ${fmtRate(p.rate)}`
+                        : p.entries_rate
+                          ? ` · ${fmtEntryRate(p.entries_rate)}`
+                          : ''}</span
                     >
                   </div>
-                  {#if p.item}<div class="muted small mono nowrap">{p.item}{p.items && p.item_index ? ` (${p.item_index}/${p.items})` : ''}</div>{/if}
+                  {#if p.item}<div class="muted small mono nowrap">
+                      {p.item}{p.items && p.item_index ? ` (${p.item_index}/${p.items})` : ''}
+                    </div>{/if}
                 {/if}
               </td>
               <td class="num">{duration(j)}</td>
               {#if can.cancelJob(session.user)}
                 <td class="actions">
                   {#if (j.state === 'queued' || j.state === 'running') && !j.cancel_by}
-                    <button type="button" class="small danger" onclick={() => cancel(j)}>{t.runctl.cancelRunning}</button>
+                    <button type="button" class="small danger" onclick={() => cancel(j)}
+                      >{t.runctl.cancelRunning}</button
+                    >
                   {:else if j.cancel_by && j.state === 'running'}
                     <span class="muted">{t.runctl.cancelRequested(j.cancel_by)}</span>
                   {/if}

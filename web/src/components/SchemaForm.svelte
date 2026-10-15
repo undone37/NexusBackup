@@ -26,7 +26,9 @@
   const all = $derived(properties(schema));
   // Scalars in the grid; booleans and lists full width below it.
   const scalars = $derived(all.filter(([, p]) => supported(p) && p.type !== 'boolean' && p.type !== 'array'));
-  const wide = $derived(all.filter(([, p]) => supported(p) && !isList(p) && (p.type === 'boolean' || p.type === 'array')));
+  const wide = $derived(
+    all.filter(([, p]) => supported(p) && !isList(p) && (p.type === 'boolean' || p.type === 'array')),
+  );
   // lists of objects (contract v1.6): one sub-form per entry
   const lists = $derived(all.filter(([, p]) => supported(p) && isList(p)));
   const itemsOf = (name: string) => (Array.isArray(values[name]) ? (values[name] as FormItem[]) : []);
@@ -74,7 +76,13 @@
       <div class="field">
         <label for={id}>{label(name, p)}</label>
         {#if p.enum}
-          <select {id} bind:value={values[name]} required={isRequired(name)} aria-invalid={!!errors[name]} aria-describedby={desc}>
+          <select
+            {id}
+            bind:value={values[name]}
+            required={isRequired(name)}
+            aria-invalid={!!errors[name]}
+            aria-describedby={desc}
+          >
             {#if !isRequired(name)}<option value="">{t.schema.unset}</option>{/if}
             {#each p.enum as o (o)}<option value={o}>{o}</option>{/each}
           </select>
@@ -144,8 +152,7 @@
         oninput={(e) => (values[name] = e.currentTarget.value)}
         spellcheck="false"
         aria-invalid={!!errors[name]}
-        aria-describedby={desc}
-      ></textarea>
+        aria-describedby={desc}></textarea>
     {/if}
     {@render hints(name, p, id)}
   </div>
@@ -162,18 +169,29 @@
       <div class="schema-item">
         <div class="schema-item-head">
           <strong>{t.schema.item(i + 1)}</strong>
-          <button type="button" class="link" onclick={() => removeItem(name, i)} aria-label="{t.schema.removeItem}: {label(name, p)} {i + 1}"
-            >{t.schema.removeItem}</button
+          <button
+            type="button"
+            class="link"
+            onclick={() => removeItem(name, i)}
+            aria-label="{t.schema.removeItem}: {label(name, p)} {i + 1}">{t.schema.removeItem}</button
           >
         </div>
-        <SchemaForm schema={p.items} bind:values={it.values} errors={itemErrors(name, i)} {secretFields} secretSet={it.set} />
+        <SchemaForm
+          schema={p.items}
+          bind:values={it.values}
+          errors={itemErrors(name, i)}
+          {secretFields}
+          secretSet={it.set}
+        />
       </div>
     {:else}
       <p class="muted">{t.schema.noItems}</p>
     {/each}
     <p>
-      <button type="button" onclick={() => addItem(name, p)} disabled={p.maxItems !== undefined && items.length >= p.maxItems}
-        >{t.schema.addItem}</button
+      <button
+        type="button"
+        onclick={() => addItem(name, p)}
+        disabled={p.maxItems !== undefined && items.length >= p.maxItems}>{t.schema.addItem}</button
       >
     </p>
   </fieldset>

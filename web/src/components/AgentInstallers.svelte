@@ -58,8 +58,12 @@
             </td>
             <td><div class="mono sha">{a.sha256}</div></td>
             <td class="actions">
-              <button type="button" class="small" disabled={busy === a.name} aria-label={t.agentUpd.downloadLabel(base(a.name))} onclick={() => download(a.name)}
-                >{t.agentUpd.download}</button
+              <button
+                type="button"
+                class="small"
+                disabled={busy === a.name}
+                aria-label={t.agentUpd.downloadLabel(base(a.name))}
+                onclick={() => download(a.name)}>{t.agentUpd.download}</button
               >
             </td>
           </tr>

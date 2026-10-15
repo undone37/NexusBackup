@@ -43,7 +43,10 @@
     e.preventDefault();
     if (s?.pending && !(await askConfirm(t.cert.replacePending))) return;
     busy = true;
-    const sans = f.sans.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+    const sans = f.sans
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
     if (await act(post('/certificate/csr', { cn: f.cn.trim(), sans }), t.cert.csrDone)) await load();
     busy = false;
   }
@@ -89,7 +92,9 @@
         <div class="row">
           <span class="chip {s.active === 'imported' ? 'ok' : 'warn'}">{t.cert.active[s.active]}</span>
           {#if admin && s.can_revert}
-            <button type="button" class="small" onclick={revert}><IconUndo aria-hidden="true" />{s.previous ? t.cert.revertPrev : t.cert.revertSelf}</button>
+            <button type="button" class="small" onclick={revert}
+              ><IconUndo aria-hidden="true" />{s.previous ? t.cert.revertPrev : t.cert.revertSelf}</button
+            >
           {/if}
         </div>
       </div>
@@ -106,7 +111,10 @@
               <dd class="mono">{c.sans.join(', ') || '—'}</dd>
             {/if}
             <dt>{t.cert.valid}</dt>
-            <dd>{fmtTime(c.not_before)} – {fmtTime(c.not_after)} <span class="chip {expiryCls(c)}">{t.cert.daysLeft(left(c))}</span></dd>
+            <dd>
+              {fmtTime(c.not_before)} – {fmtTime(c.not_after)}
+              <span class="chip {expiryCls(c)}">{t.cert.daysLeft(left(c))}</span>
+            </dd>
             <dt>{t.cert.fingerprint}</dt>
             <dd class="mono fp">{c.sha256}</dd>
           </dl>
@@ -124,22 +132,42 @@
         <p class="muted">{t.cert.csrIntro}</p>
         <div class="field">
           <label for="{id}-cn">{t.cert.cn}</label>
-          <input id="{id}-cn" class="mono" bind:value={f.cn} required maxlength="253" autocomplete="off" spellcheck="false" />
+          <input
+            id="{id}-cn"
+            class="mono"
+            bind:value={f.cn}
+            required
+            maxlength="253"
+            autocomplete="off"
+            spellcheck="false"
+          />
         </div>
         <div class="field">
           <label for="{id}-sans">{t.cert.sans}</label>
-          <textarea id="{id}-sans" class="mono" rows="3" bind:value={f.sans} spellcheck="false" aria-describedby="{id}-sans-hint"></textarea>
+          <textarea
+            id="{id}-sans"
+            class="mono"
+            rows="3"
+            bind:value={f.sans}
+            spellcheck="false"
+            aria-describedby="{id}-sans-hint"></textarea>
           <div class="hint" id="{id}-sans-hint">{t.cert.sansHint}</div>
         </div>
         <div class="form-actions">
-          <button type="submit" class="primary" disabled={busy}><IconFile aria-hidden="true" />{t.cert.generate}</button>
+          <button type="submit" class="primary" disabled={busy}><IconFile aria-hidden="true" />{t.cert.generate}</button
+          >
         </div>
         {#if s.pending}
           <div class="field">
-            <span class="field-label" id="{id}-req">{t.cert.pending(fmtTime(s.pending.created), s.pending.sans.join(', '))}</span>
-            <textarea class="mono pem" rows="8" readonly aria-labelledby="{id}-req" value={s.pending.csr_pem ?? ''}></textarea>
+            <span class="field-label" id="{id}-req"
+              >{t.cert.pending(fmtTime(s.pending.created), s.pending.sans.join(', '))}</span
+            >
+            <textarea class="mono pem" rows="8" readonly aria-labelledby="{id}-req" value={s.pending.csr_pem ?? ''}
+            ></textarea>
             <div class="row">
-              <button type="button" class="small" onclick={() => copyText(s?.pending?.csr_pem ?? '')}><IconCopy aria-hidden="true" />{t.users.copy}</button>
+              <button type="button" class="small" onclick={() => copyText(s?.pending?.csr_pem ?? '')}
+                ><IconCopy aria-hidden="true" />{t.users.copy}</button
+              >
             </div>
           </div>
         {/if}
@@ -159,12 +187,16 @@
             required
             disabled={!s.pending}
             placeholder="-----BEGIN CERTIFICATE-----"
-            spellcheck="false"
-          ></textarea>
+            spellcheck="false"></textarea>
         </div>
         {#if s.pending}
           <label class="button small file-btn"
-            >{t.cert.fromFile}<input type="file" accept=".pem,.crt,.cer,text/plain" onchange={readFile} class="visually-hidden" /></label
+            >{t.cert.fromFile}<input
+              type="file"
+              accept=".pem,.crt,.cer,text/plain"
+              onchange={readFile}
+              class="visually-hidden"
+            /></label
           >
         {/if}
         {#each warnings as w (w)}<p class="banner warn">{w}</p>{/each}

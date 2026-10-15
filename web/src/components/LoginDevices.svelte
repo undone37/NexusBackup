@@ -67,7 +67,12 @@
               <td class="nowrap">{fmtTime(d.first_seen)}</td>
               <td class="nowrap">{fmtTime(d.last_seen)}</td>
               <td class="actions">
-                <button type="button" class="small" onclick={() => forget(d)} aria-label={t.devices.forgetLabel(d.family, d.prefix)}>{t.devices.forget}</button>
+                <button
+                  type="button"
+                  class="small"
+                  onclick={() => forget(d)}
+                  aria-label={t.devices.forgetLabel(d.family, d.prefix)}>{t.devices.forget}</button
+                >
               </td>
             </tr>
           {/each}

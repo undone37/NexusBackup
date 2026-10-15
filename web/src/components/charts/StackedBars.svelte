@@ -4,8 +4,15 @@
 
   // Jobs per day, stacked by outcome (ok / warning / failed), hand-written SVG.
   // Status colors carry the outcome; the legend + tooltip + hidden table name it in text too.
-  let { data, title, height = 220 }: { data: { day: string; ok: number; warning: number; failed: number }[]; title: string; height?: number } =
-    $props();
+  let {
+    data,
+    title,
+    height = 220,
+  }: {
+    data: { day: string; ok: number; warning: number; failed: number }[];
+    title: string;
+    height?: number;
+  } = $props();
 
   const KEYS = [
     { k: 'ok', cls: 'seg-ok', sw: 'ok', label: t.dash.ok_ },
@@ -20,14 +27,20 @@
   const max = $derived(niceMax(Math.max(1, ...data.map((d) => d.ok + d.warning + d.failed))));
   // whole-number ticks: 4 or 5 steps, or 2 when neither divides evenly
   const ticks = $derived.by(() => {
-    const n = max <= 4 ? max : [4, 5, 2].find((k) => Number.isInteger(max / k)) ?? 1;
+    const n = max <= 4 ? max : ([4, 5, 2].find((k) => Number.isInteger(max / k)) ?? 1);
     return Array.from({ length: n + 1 }, (_, i) => (i * max) / n);
   });
   const band = $derived(iw / Math.max(1, data.length));
   const bw = $derived(Math.max(3, Math.min(28, band * 0.64)));
   const y = (v: number) => M.t + ih - (v / max) * ih;
   const every = $derived(Math.max(1, Math.ceil(data.length / Math.max(2, Math.floor(iw / 64)))));
-  const totals = $derived(data.reduce((a, d) => ({ ok: a.ok + d.ok, warning: a.warning + d.warning, failed: a.failed + d.failed }), { ok: 0, warning: 0, failed: 0 }));
+  const totals = $derived(
+    data.reduce((a, d) => ({ ok: a.ok + d.ok, warning: a.warning + d.warning, failed: a.failed + d.failed }), {
+      ok: 0,
+      warning: 0,
+      failed: 0,
+    }),
+  );
 
   // stacked segments with a 1.5 px gap between them (surface shows through)
   const stacks = $derived(
@@ -88,7 +101,11 @@
     {/each}
   </svg>
   {#if hd && hover !== null}
-    <div class="tooltip" style:left="{Math.min(Math.max(M.l + hover * band + band / 2, 80), w - 80)}px" style:top="{y(stacks[hover].total)}px">
+    <div
+      class="tooltip"
+      style:left="{Math.min(Math.max(M.l + hover * band + band / 2, 80), w - 80)}px"
+      style:top="{y(stacks[hover].total)}px"
+    >
       <strong>{fmtDay(hd.day, true)}</strong>
       {#each KEYS as s (s.k)}
         <div class="tt-row"><span class="swatch {s.sw}"></span>{s.label}<b>{hd[s.k]}</b></div>
@@ -102,7 +119,11 @@
   </ul>
   <table class="visually-hidden">
     <caption>{title}</caption>
-    <thead><tr><th scope="col">{t.time}</th>{#each KEYS as s (s.k)}<th scope="col">{s.label}</th>{/each}</tr></thead>
+    <thead
+      ><tr
+        ><th scope="col">{t.time}</th>{#each KEYS as s (s.k)}<th scope="col">{s.label}</th>{/each}</tr
+      ></thead
+    >
     <tbody>
       {#each data as d (d.day)}
         <tr><th scope="row">{fmtDay(d.day, true)}</th><td>{d.ok}</td><td>{d.warning}</td><td>{d.failed}</td></tr>

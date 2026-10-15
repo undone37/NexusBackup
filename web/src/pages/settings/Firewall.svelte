@@ -64,9 +64,13 @@
     const [a, p, extra] = c.split('/');
     if (extra !== undefined) return false;
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(a)) {
-      return a.split('.').every((o) => Number(o) <= 255) && (p === undefined || (/^\d{1,2}$/.test(p) && Number(p) <= 32));
+      return (
+        a.split('.').every((o) => Number(o) <= 255) && (p === undefined || (/^\d{1,2}$/.test(p) && Number(p) <= 32))
+      );
     }
-    return /^[0-9a-fA-F:.]+$/.test(a) && a.includes(':') && (p === undefined || (/^\d{1,3}$/.test(p) && Number(p) <= 128));
+    return (
+      /^[0-9a-fA-F:.]+$/.test(a) && a.includes(':') && (p === undefined || (/^\d{1,3}$/.test(p) && Number(p) <= 128))
+    );
   }
   function covers(c: string, ip: string): boolean {
     const [net, p] = c.split('/');
@@ -139,7 +143,9 @@
                   {:else if s.allow.length === 0}
                     <span class="chip warn">{t.firewall.any}</span>
                   {:else}
-                    <span class="chips">{#each s.allow as c (c)}<span class="chip info"><code>{c}</code></span>{/each}</span>
+                    <span class="chips"
+                      >{#each s.allow as c (c)}<span class="chip info"><code>{c}</code></span>{/each}</span
+                    >
                   {/if}
                   {#if s.pending}
                     <div><a class="chip warn" href={href('/quorum')}>{t.firewall.pending(s.pending)}</a></div>
@@ -155,7 +161,9 @@
                   {:else if eff.includes('0.0.0.0/0') && eff.includes('::/0')}
                     {t.firewall.any}
                   {:else}
-                    <span class="chips">{#each eff as c (c)}<code class="chip">{c}</code>{/each}</span>
+                    <span class="chips"
+                      >{#each eff as c (c)}<code class="chip">{c}</code>{/each}</span
+                    >
                   {/if}
                 </td>
                 <td class="actions">
@@ -213,7 +221,9 @@
             <dt>{label}</dt>
             <dd>
               {#if (items as string[]).length === 0}<span class="muted">{t.firewall.none}</span>
-              {:else}<span class="chips">{#each items as string[] as x (x)}<code class="chip">{endpoint(x)}</code>{/each}</span>{/if}
+              {:else}<span class="chips"
+                  >{#each items as string[] as x (x)}<code class="chip">{endpoint(x)}</code>{/each}</span
+                >{/if}
             </dd>
           {/each}
         </dl>
@@ -233,7 +243,13 @@
       {/if}
       <div class="field">
         <label for="fw-allow">{t.firewall.allowField}</label>
-        <textarea id="fw-allow" rows="6" bind:value={text} spellcheck="false" autocapitalize="none" disabled={svc.can_disable && !enabled}></textarea>
+        <textarea
+          id="fw-allow"
+          rows="6"
+          bind:value={text}
+          spellcheck="false"
+          autocapitalize="none"
+          disabled={svc.can_disable && !enabled}></textarea>
       </div>
       {#each problems as p (p)}<p class="banner error" role="alert">{p}</p>{/each}
       {#if lockout}

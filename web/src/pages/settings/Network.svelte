@@ -47,7 +47,13 @@
   const roleCls: Record<string, string> = { management: 'accent', data: 'info', replication: 'ok' };
   const resCls: Record<string, string> = { ok: 'ok', mismatch: 'warn', no_reply: 'plain', no_route: 'plain' };
   const opCls: Record<string, string> = {
-    done: 'ok', queued: 'plain', running: 'info', confirming: 'warn', refused: 'warn', error: 'bad', rolled_back: 'warn',
+    done: 'ok',
+    queued: 'plain',
+    running: 'info',
+    confirming: 'warn',
+    refused: 'warn',
+    error: 'bad',
+    rolled_back: 'warn',
   };
 
   function live(name: string) {
@@ -81,8 +87,19 @@
 
   function blank(): NetIface {
     return {
-      name: '', kind: 'ethernet', ports: [], mode: 'active-backup', parent: null, vlan_id: null, role: null, mtu: null,
-      dhcp: false, addresses: [], gateway: null, dns: [], routes: [],
+      name: '',
+      kind: 'ethernet',
+      ports: [],
+      mode: 'active-backup',
+      parent: null,
+      vlan_id: null,
+      role: null,
+      mtu: null,
+      dhcp: false,
+      addresses: [],
+      gateway: null,
+      dns: [],
+      routes: [],
     };
   }
   function edit(i: number) {
@@ -95,9 +112,15 @@
     vlanText = ed.vlan_id ? String(ed.vlan_id) : '';
     open = true;
   }
-  const words = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  const words = (s: string) =>
+    s
+      .split(/[\s,]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
   const parents = $derived([
-    ...nics.map((n) => n.name).filter((n) => !(cfg?.interfaces ?? []).some((i) => i.kind === 'bond' && i.ports.includes(n))),
+    ...nics
+      .map((n) => n.name)
+      .filter((n) => !(cfg?.interfaces ?? []).some((i) => i.kind === 'bond' && i.ports.includes(n))),
     ...(cfg?.interfaces ?? []).filter((i) => i.kind === 'bond').map((i) => i.name),
   ]);
 
@@ -254,7 +277,12 @@
       </div>
       <div class="field offsite">
         <label for="net-offsite">{t.net.offsiteRole}</label>
-        <select id="net-offsite" value={cfg?.offsite_role} disabled={!isAdmin} onchange={(e) => setOffsite((e.target as HTMLSelectElement).value as NetRole)}>
+        <select
+          id="net-offsite"
+          value={cfg?.offsite_role}
+          disabled={!isAdmin}
+          onchange={(e) => setOffsite((e.target as HTMLSelectElement).value as NetRole)}
+        >
           {#each ['management', 'data', 'replication'] as r (r)}<option value={r}>{t.net.roles[r]}</option>{/each}
         </select>
         <p class="hint">{t.net.egressHint}</p>
@@ -309,7 +337,8 @@
     <section class="card" aria-labelledby="net-mtu">
       <div class="card-head">
         <h2 id="net-mtu">{t.net.mtuTitle}</h2>
-        {#if canCheck && cur.available}<button type="button" class="small" onclick={check}>{t.net.checkNow}</button>{/if}
+        {#if canCheck && cur.available}<button type="button" class="small" onclick={check}>{t.net.checkNow}</button
+          >{/if}
       </div>
       <p class="hint">{t.net.mtuHint}</p>
       {#if !cur.mtu}
@@ -338,7 +367,9 @@
                       <span class="chip warn">{t.net.wrongIface(r.expected_dev)}</span>
                     {/if}
                   </td>
-                  <td class="wrap"><span class="chip {resCls[r.result]}">{t.net.results[r.result](r.mtu, r.path_mtu)}</span></td>
+                  <td class="wrap"
+                    ><span class="chip {resCls[r.result]}">{t.net.results[r.result](r.mtu, r.path_mtu)}</span></td
+                  >
                 </tr>
               {/each}
             </tbody>
@@ -368,7 +399,9 @@
                   <td>{fmtTime(o.created)}</td>
                   <td>{t.net.ops_[o.op] ?? o.op}</td>
                   <td><span class="chip {opCls[o.state] ?? 'plain'}">{t.net.opStates[o.state] ?? o.state}</span></td>
-                  <td>{o.by}{#if o.quorum_id}<span class="muted"> · #{o.quorum_id}</span>{/if}</td>
+                  <td
+                    >{o.by}{#if o.quorum_id}<span class="muted"> · #{o.quorum_id}</span>{/if}</td
+                  >
                   <td class="wrap">{o.error ?? o.detail ?? ''}</td>
                 </tr>
               {/each}
@@ -396,14 +429,24 @@
             <select id="ni-nic" bind:value={ed.name} required>
               <option value="" disabled>{t.net.choose}</option>
               {#each nics as d (d.name)}
-                <option value={d.name} disabled={!!usedBy(d.name, idx >= 0 ? cfg?.interfaces[idx] : undefined)}>{d.name} {d.state === 'up' ? '' : `(${d.state})`}</option>
+                <option value={d.name} disabled={!!usedBy(d.name, idx >= 0 ? cfg?.interfaces[idx] : undefined)}
+                  >{d.name} {d.state === 'up' ? '' : `(${d.state})`}</option
+                >
               {/each}
             </select>
           </div>
         {:else}
           <div class="field">
             <label for="ni-name">{t.net.name}</label>
-            <input id="ni-name" bind:value={ed.name} placeholder={ed.kind === 'bond' ? 'bond0' : t.net.vlanNameHint} maxlength="15" spellcheck="false" autocomplete="off" required={ed.kind === 'bond'} />
+            <input
+              id="ni-name"
+              bind:value={ed.name}
+              placeholder={ed.kind === 'bond' ? 'bond0' : t.net.vlanNameHint}
+              maxlength="15"
+              spellcheck="false"
+              autocomplete="off"
+              required={ed.kind === 'bond'}
+            />
           </div>
         {/if}
         <div class="field">
@@ -424,7 +467,12 @@
           {#each nics as d (d.name)}
             {@const other = usedBy(d.name, idx >= 0 ? cfg?.interfaces[idx] : undefined)}
             <label class="inline-check">
-              <input type="checkbox" value={d.name} bind:group={ed.ports} disabled={!!other && !ed.ports.includes(d.name)} />
+              <input
+                type="checkbox"
+                value={d.name}
+                bind:group={ed.ports}
+                disabled={!!other && !ed.ports.includes(d.name)}
+              />
               <code>{d.name}</code>{#if other}<span class="muted"> ({other})</span>{/if}
             </label>
           {/each}
@@ -454,7 +502,13 @@
       <label class="inline-check"><input type="checkbox" bind:checked={ed.dhcp} />{t.net.dhcp}</label>
       <div class="field">
         <label for="ni-addr">{t.net.addressesField}</label>
-        <textarea id="ni-addr" rows="2" bind:value={addrText} spellcheck="false" autocapitalize="none" placeholder="10.0.20.5/24"></textarea>
+        <textarea
+          id="ni-addr"
+          rows="2"
+          bind:value={addrText}
+          spellcheck="false"
+          autocapitalize="none"
+          placeholder="10.0.20.5/24"></textarea>
       </div>
       {#if ed.role === 'management'}
         <div class="grid">
@@ -471,7 +525,13 @@
       {/if}
       <div class="field">
         <label for="ni-routes">{t.net.routes}</label>
-        <textarea id="ni-routes" rows="3" bind:value={routesText} spellcheck="false" autocapitalize="none" placeholder="10.30.0.0/16 via 10.0.20.1"></textarea>
+        <textarea
+          id="ni-routes"
+          rows="3"
+          bind:value={routesText}
+          spellcheck="false"
+          autocapitalize="none"
+          placeholder="10.30.0.0/16 via 10.0.20.1"></textarea>
         <p class="hint">{t.net.routesHint}</p>
       </div>
       <div class="form-actions">

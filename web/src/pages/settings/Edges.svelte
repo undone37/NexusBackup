@@ -32,7 +32,13 @@
   onMount(load);
 
   const edgeState = (e: Edge) =>
-    e.enrolled_at ? (e.online ? 'online' : 'offline') : e.token_expires && e.token_expires > now ? 'pending' : 'expired';
+    e.enrolled_at
+      ? e.online
+        ? 'online'
+        : 'offline'
+      : e.token_expires && e.token_expires > now
+        ? 'pending'
+        : 'expired';
   const stateCls: Record<string, string> = { online: 'ok', offline: 'bad', pending: 'info', expired: 'warn' };
 
   // Add
@@ -44,7 +50,13 @@
   }
   async function save(e: SubmitEvent) {
     e.preventDefault();
-    const body = { name: f.name.trim(), host: f.host.trim(), port: Number(f.port), public_host: f.publicHost.trim(), public_port: Number(f.publicPort) };
+    const body = {
+      name: f.name.trim(),
+      host: f.host.trim(),
+      port: Number(f.port),
+      public_host: f.publicHost.trim(),
+      public_port: Number(f.publicPort),
+    };
     const r = await act(post<Edge & EdgeToken>('/edges', body), t.created);
     if (!r) return;
     open = false;
@@ -69,7 +81,11 @@
     load();
   }
   async function connect(x: Edge) {
-    const r = await act(post<{ id: number }>(`/edges/${encodeURIComponent(x.id)}/enroll`), (d) => t.edges.connected(d.id), jobLink);
+    const r = await act(
+      post<{ id: number }>(`/edges/${encodeURIComponent(x.id)}/enroll`),
+      (d) => t.edges.connected(d.id),
+      jobLink,
+    );
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function remove(x: Edge) {
@@ -111,18 +127,28 @@
             {#each edges as x (x.id)}
               {@const st = edgeState(x)}
               <tr>
-                <td><strong>{x.name}</strong> <div class="muted mono">{x.id}</div></td>
-                <td class="mono">{x.public_host}:{x.public_port}<div class="muted" title={t.edges.host}>{x.host}:{x.port}</div></td>
+                <td
+                  ><strong>{x.name}</strong>
+                  <div class="muted mono">{x.id}</div></td
+                >
+                <td class="mono"
+                  >{x.public_host}:{x.public_port}
+                  <div class="muted" title={t.edges.host}>{x.host}:{x.port}</div></td
+                >
                 <td>
                   <span class="chip {stateCls[st]}">{t.edges.states[st]}</span>
-                  {#if st === 'pending' || st === 'expired'}<div class="muted">{t.edges.expires}: {fmtTime(x.token_expires)}</div>{/if}
+                  {#if st === 'pending' || st === 'expired'}<div class="muted">
+                      {t.edges.expires}: {fmtTime(x.token_expires)}
+                    </div>{/if}
                 </td>
                 <td class="mono">{x.version ?? '—'}</td>
                 <td class="nowrap" title={fmtTime(x.last_seen)}>{fmtAgo(x.last_seen, now)}</td>
                 <td class="nowrap">{t.edges.agentsOnline(x.health?.agents_online.length ?? 0, x.agents)}</td>
                 <td class="actions">
                   {#if x.enrolled_at}
-                    <button type="button" class="small" onclick={() => ((detail = x), (detailOpen = true))}>{t.edges.details}</button>
+                    <button type="button" class="small" onclick={() => ((detail = x), (detailOpen = true))}
+                      >{t.edges.details}</button
+                    >
                   {/if}
                   {#if st === 'pending'}
                     <button type="button" class="small primary" onclick={() => connect(x)}>{t.edges.connect}</button>
@@ -148,7 +174,15 @@
       </div>
       <div class="field">
         <label for="ed-public">{t.edges.publicHost}</label>
-        <input id="ed-public" class="mono" bind:value={f.publicHost} required maxlength="253" spellcheck="false" aria-describedby="ed-public-hint" />
+        <input
+          id="ed-public"
+          class="mono"
+          bind:value={f.publicHost}
+          required
+          maxlength="253"
+          spellcheck="false"
+          aria-describedby="ed-public-hint"
+        />
         <div class="hint" id="ed-public-hint">{t.edges.publicHostHint}</div>
       </div>
       <div class="field">
@@ -157,7 +191,15 @@
       </div>
       <div class="field">
         <label for="ed-host">{t.edges.host}</label>
-        <input id="ed-host" class="mono" bind:value={f.host} required maxlength="253" spellcheck="false" aria-describedby="ed-host-hint" />
+        <input
+          id="ed-host"
+          class="mono"
+          bind:value={f.host}
+          required
+          maxlength="253"
+          spellcheck="false"
+          aria-describedby="ed-host-hint"
+        />
         <div class="hint" id="ed-host-hint">{t.edges.hostHint}</div>
       </div>
       <div class="field">

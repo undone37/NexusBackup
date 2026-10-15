@@ -41,7 +41,12 @@
     const name = f.name.trim();
     const r = await act(
       secondFactor(f.totp)
-        .then((totp) => post<Record<string, any>>('/auth/passkeys/register/begin', { current_password: f.password, current_totp: totp }))
+        .then((totp) =>
+          post<Record<string, any>>('/auth/passkeys/register/begin', {
+            current_password: f.password,
+            current_totp: totp,
+          }),
+        )
         .then((o) => createPasskey(o.data))
         .then((credential) => post('/auth/passkeys/register', { name, credential })),
       t.passkeys.added,
@@ -115,7 +120,13 @@
   <form onsubmit={add}>
     <div class="field">
       <label for="{id}-name">{t.passkeys.nameLabel}</label>
-      <input id="{id}-name" bind:value={f.name} maxlength="64" placeholder={t.passkeys.namePlaceholder} autocomplete="off" />
+      <input
+        id="{id}-name"
+        bind:value={f.name}
+        maxlength="64"
+        placeholder={t.passkeys.namePlaceholder}
+        autocomplete="off"
+      />
     </div>
     <fieldset>
       <legend>{t.users.reauth}</legend>
@@ -127,7 +138,15 @@
         </div>
         <div class="field">
           <label for="{id}-totp">{t.users.currentTotp}</label>
-          <input id="{id}-totp" bind:value={f.totp} inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" aria-describedby="{id}-totp-hint" />
+          <input
+            id="{id}-totp"
+            bind:value={f.totp}
+            inputmode="numeric"
+            pattern={'[0-9]{6}'}
+            maxlength="6"
+            autocomplete="one-time-code"
+            aria-describedby="{id}-totp-hint"
+          />
           <div class="hint" id="{id}-totp-hint">{t.passkeys.totpOrPasskey}</div>
         </div>
       </div>

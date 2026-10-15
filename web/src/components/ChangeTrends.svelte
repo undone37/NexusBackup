@@ -73,7 +73,10 @@
             {@const secs = tr.runs.map((r) => r.secs)}
             {@const lastRun = last(tr.runs)}
             <tr>
-              <td><a class="mono" href={href('/snapshots' + qs({ tenant: tr.tenant, source: tr.source }))}>{tr.source}</a></td>
+              <td
+                ><a class="mono" href={href('/snapshots' + qs({ tenant: tr.tenant, source: tr.source }))}>{tr.source}</a
+                ></td
+              >
               <td>{tr.tenant}</td>
               <td>
                 <div class="cell">
@@ -81,9 +84,12 @@
                     values={tr.runs.map((r) => r.new_plain)}
                     {flagged}
                     label={t.sources.trendChart(t.sources.trendBytes, tr.source, tr.runs.length)}
-                    tip={(i) => `${fmtTime(tr.runs[i].time)}: ${fmtBytes(tr.runs[i].new_plain)}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
+                    tip={(i) =>
+                      `${fmtTime(tr.runs[i].time)}: ${fmtBytes(tr.runs[i].new_plain)}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
                   />
-                  <span class="muted small" title={share(lastRun) === null ? undefined : t.sources.trendNew(fmtPct(share(lastRun), 0))}
+                  <span
+                    class="muted small"
+                    title={share(lastRun) === null ? undefined : t.sources.trendNew(fmtPct(share(lastRun), 0))}
                     >{t.sources.trendLast(fmtBytes(lastRun.new_plain))}</span
                   >
                 </div>
@@ -95,7 +101,8 @@
                       values={files}
                       {flagged}
                       label={t.sources.trendChart(t.sources.trendFiles, tr.source, tr.runs.length)}
-                      tip={(i) => `${fmtTime(tr.runs[i].time)}: ${files[i] ?? t.sources.trendNoFiles}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
+                      tip={(i) =>
+                        `${fmtTime(tr.runs[i].time)}: ${files[i] ?? t.sources.trendNoFiles}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
                     />
                     <span class="muted small">{t.sources.trendLast(lastFiles === null ? '—' : String(lastFiles))}</span>
                   {:else}
@@ -110,7 +117,8 @@
                       values={secs}
                       {flagged}
                       label={t.sources.trendChart(t.sources.trendDuration, tr.source, tr.runs.length)}
-                      tip={(i) => `${fmtTime(tr.runs[i].time)}: ${fmtDuration(secs[i])}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
+                      tip={(i) =>
+                        `${fmtTime(tr.runs[i].time)}: ${fmtDuration(secs[i])}${flagged[i] ? ` · ${t.snap.anomalous}` : ''}`}
                     />
                     <span class="muted small">{t.sources.trendLast(fmtDuration(lastRun.secs))}</span>
                   {:else}

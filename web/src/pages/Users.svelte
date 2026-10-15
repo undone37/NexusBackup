@@ -50,9 +50,20 @@
 
   let open = $state(false);
   let editing: User | null = $state(null);
-  let f = $state({ name: '', password: '', role: 'operator' as Role, tenant: '', disabled: false, canDownload: true, expires: '', eligible: '' });
+  let f = $state({
+    name: '',
+    password: '',
+    role: 'operator' as Role,
+    tenant: '',
+    disabled: false,
+    canDownload: true,
+    expires: '',
+    eligible: '',
+  });
   // Phase 30: an eligible role for appliance-wide local operators and viewers (just-in-time elevation)
-  const canBeEligible = $derived((f.role === 'operator' || f.role === 'viewer') && !f.tenant && !isSso(editing) && !tenantAdmin);
+  const canBeEligible = $derived(
+    (f.role === 'operator' || f.role === 'viewer') && !f.tenant && !isSso(editing) && !tenantAdmin,
+  );
   // Phase 14d: download privilege defaults by role; expiry as a date (end of that day, local time)
   const roleDownloads = (r: Role) => r === 'admin' || r === 'operator' || r === 'tenant_admin' || r === 'tenant_user';
   const dateOf = (ts: number | null | undefined) => {
@@ -121,20 +132,29 @@
     const tenant = f.tenant || null;
     if (!editing) {
       const r = await act(
-        post<UserResp>('/users', { name: f.name, role: f.role, tenant, can_download: f.canDownload, expires: tsOf(f.expires) }),
+        post<UserResp>('/users', {
+          name: f.name,
+          role: f.role,
+          tenant,
+          can_download: f.canDownload,
+          expires: tsOf(f.expires),
+        }),
         t.created,
       );
       if (!r) return;
       open = false;
       showActivation(f.name, r);
     } else {
-      const body: Record<string, unknown> = isSso(editing) ? { disabled: f.disabled } : { role: f.role, tenant, disabled: f.disabled };
+      const body: Record<string, unknown> = isSso(editing)
+        ? { disabled: f.disabled }
+        : { role: f.role, tenant, disabled: f.disabled };
       if (f.canDownload !== editing.can_download) body.can_download = f.canDownload;
       if (tsOf(f.expires) !== (editing.expires ?? null)) body.expires = tsOf(f.expires);
       const eligible = canBeEligible ? f.eligible || null : null;
       if (eligible !== (editing.eligible_role ?? null)) body.eligible_role = eligible;
       const id = editing.id;
-      const extra = f.password && isSelf(editing) ? reauth().then((a) => ({ password: f.password, ...a })) : Promise.resolve({});
+      const extra =
+        f.password && isSelf(editing) ? reauth().then((a) => ({ password: f.password, ...a })) : Promise.resolve({});
       const r = await act(
         extra.then((x) => put<UserResp>(`/users/${id}`, { ...body, ...x })),
         t.saved,
@@ -193,10 +213,15 @@
 
   function stateOf(x: User): { cls: string; text: string } {
     if (x.disabled) return { cls: 'bad', text: t.users.disabled };
-    if (x.expires && x.expires <= Date.now() / 1000) return { cls: 'bad', text: t.access.expiredOn(fmtTime(x.expires)) };
+    if (x.expires && x.expires <= Date.now() / 1000)
+      return { cls: 'bad', text: t.access.expiredOn(fmtTime(x.expires)) };
     if (x.pending_activation) {
       const exp = x.activation_expires;
-      const sub = !exp ? t.users.pendingApproval : exp < Date.now() / 1000 ? t.users.expired : t.users.pendingUntil(fmtTime(exp));
+      const sub = !exp
+        ? t.users.pendingApproval
+        : exp < Date.now() / 1000
+          ? t.users.expired
+          : t.users.pendingUntil(fmtTime(exp));
       return { cls: 'warn', text: `${t.users.pending} · ${sub}` };
     }
     return { cls: 'ok', text: t.users.active };
@@ -242,8 +267,11 @@
               <td><strong>{x.name}</strong></td>
               <td>
                 {t.roles[x.role] ?? x.role}
-                {#if x.eligible_role}<span class="chip accent" title={t.p30.elev.eligibleHint}>{t.p30.elev.eligibleChip(t.roles[x.eligible_role])}</span>{/if}
-                {#if x.elevated_until}<span class="chip warn">{t.p30.elev.elevatedChip(fmtTime(x.elevated_until))}</span>{/if}
+                {#if x.eligible_role}<span class="chip accent" title={t.p30.elev.eligibleHint}
+                    >{t.p30.elev.eligibleChip(t.roles[x.eligible_role])}</span
+                  >{/if}
+                {#if x.elevated_until}<span class="chip warn">{t.p30.elev.elevatedChip(fmtTime(x.elevated_until))}</span
+                  >{/if}
               </td>
               <td>{x.tenant ?? t.allTenants}</td>
               <td>
@@ -254,13 +282,18 @@
                   <span class="chip {st.cls}">{st.text}</span>
                 {/if}
                 {#if isSso(x)}<span class="chip accent sso-badge" title={t.users.ssoHint}>{t.users.sso}</span>{/if}
-                {#if x.expires && x.expires > Date.now() / 1000}<span class="chip warn">{t.access.expiresOn(fmtTime(x.expires))}</span>{/if}
-                {#if x.can_download === false && x.role !== 'viewer' && x.role !== 'security_officer'}<span class="chip" title={t.access.canDownloadHint}>{t.access.noDownloadChip}</span>{/if}
+                {#if x.expires && x.expires > Date.now() / 1000}<span class="chip warn"
+                    >{t.access.expiresOn(fmtTime(x.expires))}</span
+                  >{/if}
+                {#if x.can_download === false && x.role !== 'viewer' && x.role !== 'security_officer'}<span
+                    class="chip"
+                    title={t.access.canDownloadHint}>{t.access.noDownloadChip}</span
+                  >{/if}
               </td>
               <td class="nowrap">{x.last_login ? fmtAgo(x.last_login) : t.ago.never}</td>
               <td class="actions">
                 {#if !tenantAdmin || TENANT_ROLES.includes(x.role)}
-                <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
+                  <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 {/if}
                 {#if isSso(x) || (tenantAdmin && !TENANT_ROLES.includes(x.role))}
                   <!-- password and authenticator are managed by the identity provider -->
@@ -344,7 +377,12 @@
     <div class="form-grid">
       <div class="field">
         <label class="inline-check" title={t.access.canDownloadHint}>
-          <input type="checkbox" bind:checked={f.canDownload} onchange={() => (downloadTouched = true)} disabled={f.role === 'viewer' || f.role === 'security_officer'} />{t.access.canDownload}
+          <input
+            type="checkbox"
+            bind:checked={f.canDownload}
+            onchange={() => (downloadTouched = true)}
+            disabled={f.role === 'viewer' || f.role === 'security_officer'}
+          />{t.access.canDownload}
         </label>
         <div class="hint">{t.access.canDownloadHint}</div>
       </div>

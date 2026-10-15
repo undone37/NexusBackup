@@ -265,7 +265,15 @@ const db = {
     uid?: string;
   }[],
   /** kind: pve | linux | nfs | smb | plugin:<kind>; `sizing_entries`: Phase 22b demo entry count of the newest share/TrueNAS run */
-  sources: [] as { id: number; tenant: string; kind: string; name: string; config: Json; maintenance_until?: number | null; sizing_entries?: number }[],
+  sources: [] as {
+    id: number;
+    tenant: string;
+    kind: string;
+    name: string;
+    config: Json;
+    maintenance_until?: number | null;
+    sizing_entries?: number;
+  }[],
   /** Phase 22b: the restore-priority switch (null = off) */
   priority: null as { until: number; since: number; by: string; reason: string } | null,
   agents: [] as Agent[],
@@ -301,7 +309,21 @@ const db = {
   cases: [] as Json[],
   audit: [] as Json[],
   alerts: [] as Json[],
-  sessions: new Map<string, { id: number; userId: number; csrf: string; created: number; last: number; ip: string; ua: string; imp?: { tenant: string; role: 'viewer' | 'tenant_admin' }; step_up_at?: number; elev?: { role: Role; until: number } }>(),
+  sessions: new Map<
+    string,
+    {
+      id: number;
+      userId: number;
+      csrf: string;
+      created: number;
+      last: number;
+      ip: string;
+      ua: string;
+      imp?: { tenant: string; role: 'viewer' | 'tenant_admin' };
+      step_up_at?: number;
+      elev?: { role: Role; until: number };
+    }
+  >(),
   /** Phase 19b: policies assigned to tenants (tenant admins use only these), deleted tenant names */
   tenantPolicies: {} as Record<string, number[]>,
   tombstones: [] as { name: string; uid: string | null; deleted_at: number; deleted_by: string }[],
@@ -337,7 +359,15 @@ const db = {
   scans: [] as Json[],
   /** Phase 14a setting `forwarding` (header values: plaintext here, null in responses) */
   forwarding: {
-    syslog: { enabled: true, host: 'siem.example.com', port: 6514, ca_pem: null, pin_sha256: '3f'.repeat(32), app_name: 'nexus', facility: 13 },
+    syslog: {
+      enabled: true,
+      host: 'siem.example.com',
+      port: 6514,
+      ca_pem: null,
+      pin_sha256: '3f'.repeat(32),
+      app_name: 'nexus',
+      facility: 13,
+    },
     https: null,
   } as Json,
   /** last delivery error per sink (none = the forwarder keeps up) */
@@ -398,7 +428,19 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
     result: null,
     plan: planFor(kind, params),
     duration:
-      { files_list: 3, files_get: 5, backup: 12, restore: 16, restore_ct: 12, instant_recover: 10, instant_disk: 8, restore_files: 8, agent_enroll: 5, agent_update: 6, agent_renew: 4 }[kind] ?? 8,
+      {
+        files_list: 3,
+        files_get: 5,
+        backup: 12,
+        restore: 16,
+        restore_ct: 12,
+        instant_recover: 10,
+        instant_disk: 8,
+        restore_files: 8,
+        agent_enroll: 5,
+        agent_update: 6,
+        agent_renew: 4,
+      }[kind] ?? 8,
     ...opts,
   };
   db.jobs.push(j);
@@ -408,7 +450,8 @@ function addJob(kind: string, tenant: string, params: Json, by: string, opts: Pa
 function planFor(kind: string, p: Json): string[] {
   const ag = db.agents.find((a) => a.id === p.agent_id);
   const agName = ag ? `${ag.name} (${ag.host}:${ag.port})` : String(p.agent_id ?? '');
-  const src = p.source ?? (p.vmid ? `vm-${p.vmid}` : p.agent_id ? `host-${p.agent_id}` : p.group_id ? `group ${p.group_id}` : '');
+  const src =
+    p.source ?? (p.vmid ? `vm-${p.vmid}` : p.agent_id ? `host-${p.agent_id}` : p.group_id ? `group ${p.group_id}` : '');
   const group = db.groups.find((g) => g.id === p.group_id);
   const hostAgent = ag ?? db.agents.find((a) => a.id === group?.guests[0]);
   if (kind === 'backup' && hostAgent)
@@ -430,25 +473,53 @@ function planFor(kind: string, p: Json): string[] {
         'health: 0 bad chunks, 0 damaged snapshots',
       ];
     case 'plugin_validate':
-      return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'sandbox: landlock + seccomp active', 'Validate: connecting to the endpoint', 'done'];
+      return [
+        `starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`,
+        'sandbox: landlock + seccomp active',
+        'Validate: connecting to the endpoint',
+        'done',
+      ];
     case 'plugin_guests':
       return [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'done'];
     case 'inventory':
       return psrc?.kind === 'pve'
-        ? [`nexus-pve inventory: GET /cluster/resources?type=vm on ${psrc.config.host}`, `${db.inventory.get(psrc.id)?.length ?? 0} guests`, 'inventory updated']
+        ? [
+            `nexus-pve inventory: GET /cluster/resources?type=vm on ${psrc.config.host}`,
+            `${db.inventory.get(psrc.id)?.length ?? 0} guests`,
+            'inventory updated',
+          ]
         : psrc?.kind === 'truenas'
           ? [`datasets of source ${psrc.name} (catalog)`, 'inventory updated']
           : [`starting nexus-pluginhost for ${psrc?.kind} (source ${psrc?.name})`, 'ListGuests', 'inventory updated'];
     case 'plugin_restore':
-      return [`starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`, 'plugin requested 3 streams', 'streaming data to the plugin', `restore ${p.restore} finished`];
+      return [
+        `starting nexus-pluginhost: restore ${p.restore} of ${p.source} @ ${p.time}`,
+        'plugin requested 3 streams',
+        'streaming data to the plugin',
+        `restore ${p.restore} finished`,
+      ];
     case 'plugin_mount':
-      return [`starting nexus-pluginhost: mount ${p.source} @ ${p.time} for ${p.minutes} min`, 'plugin answered MountReady', 'mounted'];
+      return [
+        `starting nexus-pluginhost: mount ${p.source} @ ${p.time} for ${p.minutes} min`,
+        'plugin answered MountReady',
+        'mounted',
+      ];
     case 'replica_sync': {
       const rs = db.replSources.find((x) => x.id === p.replication_source_id);
-      return [`connecting to ${rs?.url} (pinned certificate, client certificate)`, `tenant ${p.tenant}: keys up to date`, 'fetching new snapshots, every chunk verified before import', 'replicated 1 snapshot'];
+      return [
+        `connecting to ${rs?.url} (pinned certificate, client certificate)`,
+        `tenant ${p.tenant}: keys up to date`,
+        'fetching new snapshots, every chunk verified before import',
+        'replicated 1 snapshot',
+      ];
     }
     case 'replica_enroll':
-      return ['creating client key + CSR', 'connecting with the enrollment ALPN, primary certificate pinned', 'proofs exchanged, client certificate received', 'enrolled'];
+      return [
+        'creating client key + CSR',
+        'connecting with the enrollment ALPN, primary certificate pinned',
+        'proofs exchanged, client certificate received',
+        'enrolled',
+      ];
     case 'synthetic_restore':
       return [
         `reading the file name indexes of ${src} (${p.time} and up to ${p.depth ?? 30} older snapshots)`,
@@ -456,7 +527,12 @@ function planFor(kind: string, p: Json): string[] {
         'mass rename in snapshot ' + p.time + ': 412 files deleted, 412 added with new extensions (.lockbit)',
         'decided: 1,284 files, 3 substituted, 412 brought back, 413 left out',
         p.mode === 'download' ? `writing <downloads>/<token>.${p.format}` : `connecting to agent ${agName} over mTLS`,
-        ...(p.mode === 'host' ? [`RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`, 'restored 1,283 files (48.1 MiB)'] : ['1,699 entries written']),
+        ...(p.mode === 'host'
+          ? [
+              `RestoreBegin target=${p.target} overwrite=${p.overwrite} confirm="${p.confirm}"`,
+              'restored 1,283 files (48.1 MiB)',
+            ]
+          : ['1,699 entries written']),
       ];
     case 'restore_files':
       return [
@@ -472,7 +548,9 @@ function planFor(kind: string, p: Json): string[] {
         'restored 1,284 files (48.2 MiB), skipped 3 existing files',
         ...(src === `host-${p.agent_id}`
           ? []
-          : ['restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take']),
+          : [
+              'restore to another host: skipped 0 entries (devices, sockets, alternate data streams) and 12 xattrs the target cannot take',
+            ]),
         `restore to ${p.target} finished`,
       ];
     case 'fleet_scan':
@@ -483,7 +561,9 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'agent_enroll':
       return [
-        p.fleet_id ? `connecting to ${agName} with the fleet secret of fleet ${p.fleet_id}` : `connecting to ${agName} with the one-time token`,
+        p.fleet_id
+          ? `connecting to ${agName} with the fleet secret of fleet ${p.fleet_id}`
+          : `connecting to ${agName} with the one-time token`,
         'token proof verified (bound to the TLS session)',
         'issued client certificate, pinned agent certificate',
         'agent enrolled',
@@ -515,7 +595,11 @@ function planFor(kind: string, p: Json): string[] {
     case 'files_list':
       return [`mounting ${src} @ ${p.time} read-only in restore micro-VM`, `listing ${p.path}`, 'done'];
     case 'offsite_list':
-      return ['$ nexus-offsite offsite.json list --json', 'reading the offsite inventory and the target listing', 'done'];
+      return [
+        '$ nexus-offsite offsite.json list --json',
+        'reading the offsite inventory and the target listing',
+        'done',
+      ];
     case 'offsite_restore':
       return [
         `$ nexus-offsite offsite.json restore ${src} ${p.time} 604800`,
@@ -538,7 +622,11 @@ function planFor(kind: string, p: Json): string[] {
           `exported {"files": 4, "summary": "exported 5 messages as ${p.params.mail_format === 'pst' ? 'PST (u.0c9d1c7a-1111-4222-8333-444455556666.pst)' : 'mbox (4 folders)'}, 4 other items as stored"}`,
           '4 entries written',
         ];
-      return [`mounting ${src} @ ${p.time}`, `packing ${(p.paths ?? []).length} path(s) as ${p.format}`, 'archive ready'];
+      return [
+        `mounting ${src} @ ${p.time}`,
+        `packing ${(p.paths ?? []).length} path(s) as ${p.format}`,
+        'archive ready',
+      ];
     case 'restore':
     case 'restore_ct': {
       const ct = kind === 'restore_ct';
@@ -584,8 +672,14 @@ function planFor(kind: string, p: Json): string[] {
         `exporting ${p.device} of ${src} @ ${p.time} via NBD over SSH to ${p.node}`,
         `${p.device} attached to VM ${p.target} as ${p.key ?? 'scsi2'} (hot-plugged)`,
         ...(p.move_to
-          ? [`live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 40%`, `live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 100%`, 'disk moved; serving stopped']
-          : [`serving ${p.key ?? 'scsi2'} until it is moved (qm disk move ${p.target} ${p.key ?? 'scsi2'} <storage> --delete 1) or detached`]),
+          ? [
+              `live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 40%`,
+              `live disk move of ${p.key ?? 'scsi2'} to ${p.move_to}: 100%`,
+              'disk moved; serving stopped',
+            ]
+          : [
+              `serving ${p.key ?? 'scsi2'} until it is moved (qm disk move ${p.target} ${p.key ?? 'scsi2'} <storage> --delete 1) or detached`,
+            ]),
       ];
     case 'bmr':
       return [
@@ -597,7 +691,12 @@ function planFor(kind: string, p: Json): string[] {
         'recovery complete',
       ];
     case 'p2v':
-      return ['creating the VM with disks sized like the snapshot layout', 'uploading the rescue config ISO', 'VM started from the rescue ISO', 'waiting for the rescue console to check in'];
+      return [
+        'creating the VM with disks sized like the snapshot layout',
+        'uploading the rescue config ISO',
+        'VM started from the rescue ISO',
+        'waiting for the rescue console to check in',
+      ];
     default:
       return [`${kind} started ${src}`, 'working…', 'working…', `${kind} finished`];
   }
@@ -621,7 +720,9 @@ function tick() {
     const n = Math.ceil(frac * j.plan.length);
     j.log = j.plan
       .slice(0, n)
-      .map((l, i) => `${new Date((j.started! + Math.round((i / j.plan.length) * j.duration)) * 1000).toISOString()} ${l}`)
+      .map(
+        (l, i) => `${new Date((j.started! + Math.round((i / j.plan.length) * j.duration)) * 1000).toISOString()} ${l}`,
+      )
       .join('\n');
     if (frac >= 1) {
       j.finished = t;
@@ -632,7 +733,8 @@ function tick() {
       }
       j.state = 'ok';
       // Like the scheduler: structured results in `job.result`.
-      if (j.kind === 'files_list') j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
+      if (j.kind === 'files_list')
+        j.result = { entries: listDir(String(j.params.path ?? '/'), String(j.params.source ?? '')) };
       if (j.kind.startsWith('plugin_')) pluginResult(j, t);
       if (j.kind === 'inventory' || j.kind === 'plugin_guests') inventoryResult(j, t);
       if (j.kind === 'report_send') reportSent(j);
@@ -642,22 +744,44 @@ function tick() {
       if (j.kind === 'chunk_repair') repairDone(j, t);
       const ag = db.agents.find((a) => a.id === j.params.agent_id);
       if (j.kind === 'agent_enroll' && ag) {
-        Object.assign(ag, { enrolled_at: t, cert_sha256: rand(32), token_expires: null, token_hash: null, last_seen: t });
+        Object.assign(ag, {
+          enrolled_at: t,
+          cert_sha256: rand(32),
+          token_expires: null,
+          token_hash: null,
+          last_seen: t,
+        });
         Object.assign(ag, { version: '0.9.0', os: 'Debian GNU/Linux 13 (trixie)' });
       }
-      const rs = j.kind.startsWith('replica_') ? db.replSources.find((x) => x.id === j.params.replication_source_id) : undefined;
-      if (rs && j.kind === 'replica_enroll') Object.assign(rs, { state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp() });
+      const rs = j.kind.startsWith('replica_')
+        ? db.replSources.find((x) => x.id === j.params.replication_source_id)
+        : undefined;
+      if (rs && j.kind === 'replica_enroll')
+        Object.assign(rs, { state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp() });
       if (rs && j.kind === 'replica_sync') {
         rs.last_sync = t;
-        rs.status = { ...rs.status, [j.params.tenant]: { ...(rs.status?.[j.params.tenant] ?? {}), last_ok: t, last_error: null } };
+        rs.status = {
+          ...rs.status,
+          [j.params.tenant]: { ...(rs.status?.[j.params.tenant] ?? {}), last_ok: t, last_error: null },
+        };
       }
       if (j.kind === 'agent_update' && ag) Object.assign(ag, { version: '0.9.1', last_seen: t });
       if (j.kind === 'agent_renew' && ag)
-        Object.assign(ag, { cert_sha256: rand(32), cert_issued: t, cert_expires: t + 3650 * 86400, cert_renewal_pending: false, last_seen: t });
+        Object.assign(ag, {
+          cert_sha256: rand(32),
+          cert_issued: t,
+          cert_expires: t + 3650 * 86400,
+          cert_renewal_pending: false,
+          last_seen: t,
+        });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
       if (j.kind === 'synthetic_restore') syntheticDone(j, t);
       if (j.kind === 'files_get') {
-        j.result = { download_token: j.params.download_token, format: j.params.format, entries: (j.params.paths ?? []).length };
+        j.result = {
+          download_token: j.params.download_token,
+          format: j.params.format,
+          entries: (j.params.paths ?? []).length,
+        };
         db.downloads.set(String(j.params.download_token), {
           owner: j.requested_by,
           filename: `${j.params.source}-${j.params.time}.${j.params.format}`,
@@ -670,7 +794,11 @@ function tick() {
       if (psrc && pgroup) {
         const pid = pluginKind(psrc.kind)?.plugin.id ?? 'unknown';
         const guests = resolveGuests(pgroup);
-        const names = guests.length ? guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`) : pgroup.mode === 'explicit' ? [`plugin-${pid}-${psrc.id}`] : [];
+        const names = guests.length
+          ? guests.map((g) => `plugin-${pid}-${psrc.id}-${g}`)
+          : pgroup.mode === 'explicit'
+            ? [`plugin-${pid}-${psrc.id}`]
+            : [];
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 300 << 20, true, false, null));
         continue;
       }
@@ -683,7 +811,14 @@ function tick() {
             ? [`share-${gsrc.id}`]
             : gsrc?.kind === 'truenas'
               ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
-              : (j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : []).map(guestName);
+              : (j.params.vmid
+                  ? [j.params.vmid]
+                  : j.params.agent_id
+                    ? [j.params.agent_id]
+                    : g
+                      ? resolveGuests(g)
+                      : []
+                ).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
         // Phase 23a: "keep until" extends the store lock of the new snapshots
         if (j.params.keep_until)
@@ -692,8 +827,17 @@ function tick() {
         // Phase 15g: groups with index_files list the guests' file systems after the backup
         if (g?.index_files && gsrc?.kind === 'pve')
           for (const n of names) {
-            const x = addJob('file_index', j.tenant, { source: n, time: t, source_id: gsrc.id, after_job: j.id }, 'scheduler');
-            x.plan = [`listing the guest file systems of ${n} @ ${t} (sandboxed parser)`, 'file index sealed and written', 'search index updated'];
+            const x = addJob(
+              'file_index',
+              j.tenant,
+              { source: n, time: t, source_id: gsrc.id, after_job: j.id },
+              'scheduler',
+            );
+            x.plan = [
+              `listing the guest file systems of ${n} @ ${t} (sandboxed parser)`,
+              'file index sealed and written',
+              'search index updated',
+            ];
           }
         for (const a of db.agents) if (names.includes(`host-${a.id}`)) a.last_seen = t;
       }
@@ -707,7 +851,11 @@ function repairDone(j: Job, t: number) {
   for (const x of healed) Object.assign(x, { damaged: null, damaged_at: null });
   for (const a of db.alerts.filter((x) => x.key === `snapshot_damaged:${j.tenant}` && !x.resolved_at))
     Object.assign(a, { resolved_at: t, resolved_by: 'scheduler', auto: true });
-  if (healed.length) void audit('scheduler', 'snapshot.repaired', `tenant/${j.tenant}`, { job: j.id, snapshots: healed.map((x) => `${x.source}/${x.time}`) });
+  if (healed.length)
+    void audit('scheduler', 'snapshot.repaired', `tenant/${j.tenant}`, {
+      job: j.id,
+      snapshots: healed.map((x) => `${x.source}/${x.time}`),
+    });
 }
 
 /** Phase 17d: what the scheduler does after the offsite jobs (crates/scheduler/src/offsite_ui.rs). */
@@ -733,7 +881,9 @@ function offsiteResult(j: Job, t: number) {
     };
   }
   if (j.kind === 'offsite_restore') {
-    const s = db.snapshots.find((x) => x.tenant === j.tenant && x.source === j.params.source && x.time === j.params.time);
+    const s = db.snapshots.find(
+      (x) => x.tenant === j.tenant && x.source === j.params.source && x.time === j.params.time,
+    );
     if (s) Object.assign(s, { local: true, lock_until: t + 7 * DAY });
   }
   if (j.kind === 'offsite_attach') {
@@ -741,7 +891,8 @@ function offsiteResult(j: Job, t: number) {
     if (!q || db.tenants.some((x) => x.name === j.tenant)) return;
     q.state = 'executed';
     db.tenants.push({ name: j.tenant, offsite: q.params.offsite });
-    for (const d of [1, 2, 8, 35, 66]) db.snapshots.push(snap(j.tenant, 'vm-100', t - d * DAY, 32 << 30, false, true, null));
+    for (const d of [1, 2, 8, 35, 66])
+      db.snapshots.push(snap(j.tenant, 'vm-100', t - d * DAY, 32 << 30, false, true, null));
   }
 }
 
@@ -751,7 +902,9 @@ function pluginResult(j: Job, t: number) {
   const src = db.sources.find((s) => s.id === Number(p.source_id));
   if (j.kind === 'plugin_validate') {
     const host = String(src?.config.host ?? '');
-    j.result = /bad|invalid/.test(host) ? { valid: false, field: 'host', message: `connection to ${host}:${src?.config.port} refused` } : { valid: true };
+    j.result = /bad|invalid/.test(host)
+      ? { valid: false, field: 'host', message: `connection to ${host}:${src?.config.port} refused` }
+      : { valid: true };
     j.log += j.result.valid ? '\nValid' : `\nInvalid: ${j.result.field}: ${j.result.message}`;
   } else if (j.kind === 'plugin_guests' && src?.kind === 'plugin:truenas') {
     j.result = {
@@ -770,10 +923,16 @@ function pluginResult(j: Job, t: number) {
       ],
     };
   } else if (j.kind === 'plugin_restore') {
-    j.result = { restore: p.restore, summary: `restored ${p.source} @ ${new Date(p.time * 1000).toISOString()} (${p.restore}): 3 streams, 1.4 GiB` };
+    j.result = {
+      restore: p.restore,
+      summary: `restored ${p.source} @ ${new Date(p.time * 1000).toISOString()} (${p.restore}): 3 streams, 1.4 GiB`,
+    };
   } else if (j.kind === 'plugin_mount') {
     const until = new Date((t + p.minutes * 60) * 1000).toISOString();
-    j.result = { info: `postgresql://nexus_ro@appliance.example.com:15432/${p.params?.database || 'postgres'} (read-only)`, summary: `mounted until ${until}` };
+    j.result = {
+      info: `postgresql://nexus_ro@appliance.example.com:15432/${p.params?.database || 'postgres'} (read-only)`,
+      summary: `mounted until ${until}`,
+    };
   }
 }
 
@@ -808,7 +967,16 @@ function listDir(path: string, source: string): Json[] {
     if (!win) return hostDir(path, t);
     // Windows agent: volumes as top-level directories (/C, /D), docs/agent-windows.md
     const wd = (name: string) => ({ name, kind: 'dir', size: 0, mode: 0o40755, mtime: t, uid: 0, gid: 0, link: null });
-    const wf = (name: string, size: number) => ({ name, kind: 'file', size, mode: 0o100644, mtime: t, uid: 0, gid: 0, link: null });
+    const wf = (name: string, size: number) => ({
+      name,
+      kind: 'file',
+      size,
+      mode: 0o100644,
+      mtime: t,
+      uid: 0,
+      gid: 0,
+      link: null,
+    });
     const tree: Record<string, Json[]> = {
       '/': [wd('C'), wd('D')],
       '/C': [wd('Users')],
@@ -828,11 +996,25 @@ function listDir(path: string, source: string): Json[] {
     // plugins/postgresql: a database snapshot holds the stream `<db>.sql`; the cluster snapshot data/ + wal/
     const db_ = /^plugin-postgresql-\d+-(.+)$/.exec(source)?.[1];
     const tree: Record<string, Json[]> = db_
-      ? { '/': [d('.nexus-streams')], '/.nexus-streams': [f(`${db_}.sql`, db_ === 'shop' ? 1_503_238_553 : 398_458_880)] }
+      ? {
+          '/': [d('.nexus-streams')],
+          '/.nexus-streams': [f(`${db_}.sql`, db_ === 'shop' ? 1_503_238_553 : 398_458_880)],
+        }
       : {
           '/': [d('data'), d('wal')],
-          '/data': [d('base'), d('global'), d('pg_wal'), f('PG_VERSION', 3), f('backup_manifest', 412_771), f('postgresql.auto.conf', 88)],
-          '/wal': [f('00000001000000A200000041', 16 << 20), f('00000001000000A200000042', 16 << 20), f('00000001000000A200000043', 16 << 20)],
+          '/data': [
+            d('base'),
+            d('global'),
+            d('pg_wal'),
+            f('PG_VERSION', 3),
+            f('backup_manifest', 412_771),
+            f('postgresql.auto.conf', 88),
+          ],
+          '/wal': [
+            f('00000001000000A200000041', 16 << 20),
+            f('00000001000000A200000042', 16 << 20),
+            f('00000001000000A200000043', 16 << 20),
+          ],
         };
     return tree[path] ?? [];
   }
@@ -855,7 +1037,11 @@ function listDir(path: string, source: string): Json[] {
     const tree: Record<string, Json[]> = {
       '/': [d('calendar'), d('contacts'), d('mail'), d('onedrive'), d('recoverable')],
       '/mail': [d('Inbox'), d('Sent Items')],
-      '/mail/Inbox': [d('Projects'), f('Quarterly report ~3f9a0c1d2e4b.eml', 412_771), f('Lunch on Friday ~9c1e22a0b7d4.eml', 6_211)],
+      '/mail/Inbox': [
+        d('Projects'),
+        f('Quarterly report ~3f9a0c1d2e4b.eml', 412_771),
+        f('Lunch on Friday ~9c1e22a0b7d4.eml', 6_211),
+      ],
       '/mail/Inbox/Projects': [f('Kickoff agenda ~1b0e9d7c33a2.eml', 88_412)],
       '/mail/Sent Items': [f('Re: Quarterly report ~77ad01c4e9b0.eml', 9_870)],
       '/recoverable': [d('Deletions')],
@@ -905,9 +1091,36 @@ function listDir(path: string, source: string): Json[] {
 
 // Host snapshot tree (agent entry format: name, kind, size, mode, mtime, uid, gid, link).
 function hostDir(path: string, t: number): Json[] {
-  const d = (name: string, uid = 0, gid = 0) => ({ name, kind: 'dir', size: 0, mode: 0o40755, mtime: t, uid, gid, link: null });
-  const f = (name: string, size: number, mode = 0o100644, uid = 0, gid = 0) => ({ name, kind: 'file', size, mode, mtime: t, uid, gid, link: null });
-  const l = (name: string, link: string) => ({ name, kind: 'symlink', size: 0, mode: 0o120777, mtime: t, uid: 0, gid: 0, link });
+  const d = (name: string, uid = 0, gid = 0) => ({
+    name,
+    kind: 'dir',
+    size: 0,
+    mode: 0o40755,
+    mtime: t,
+    uid,
+    gid,
+    link: null,
+  });
+  const f = (name: string, size: number, mode = 0o100644, uid = 0, gid = 0) => ({
+    name,
+    kind: 'file',
+    size,
+    mode,
+    mtime: t,
+    uid,
+    gid,
+    link: null,
+  });
+  const l = (name: string, link: string) => ({
+    name,
+    kind: 'symlink',
+    size: 0,
+    mode: 0o120777,
+    mtime: t,
+    uid: 0,
+    gid: 0,
+    link,
+  });
   const tree: Record<string, Json[]> = {
     '/': [d('etc'), d('home'), d('var')],
     '/etc': [f('hostname', 6), f('fstab', 640), d('nginx'), d('ssl'), f('shadow', 1_204, 0o100640, 0, 42)],
@@ -920,7 +1133,10 @@ function hostDir(path: string, t: number): Json[] {
     '/var': [d('www', 33, 33)],
     '/var/www': [d('shop', 33, 33)],
     '/var/www/shop': [f('index.php', 4_812, 0o100644, 33, 33), d('uploads', 33, 33)],
-    '/var/www/shop/uploads': [f('logo.png', 48_211, 0o100644, 33, 33), f('catalog-2026.pdf', 2_418_022, 0o100644, 33, 33)],
+    '/var/www/shop/uploads': [
+      f('logo.png', 48_211, 0o100644, 33, 33),
+      f('catalog-2026.pdf', 2_418_022, 0o100644, 33, 33),
+    ],
   };
   return tree[path] ?? [];
 }
@@ -930,8 +1146,20 @@ const guestName = (g: number | string) =>
 /** Phase 15d demo levels: VMs quiesced by the guest agent (vm-101: agent not running), containers and
  * NAS snapshots crash-consistent, agents and plugins application-consistent (hooks / VSS / dumps). */
 const levelOf = (source: string) =>
-  source === 'vm-101' || /^(ct|nas|share)-/.test(source) ? 'crash' : /^(vm|host|plugin)-/.test(source) ? 'application' : 'unknown';
-const snap = (tenant: string, source: string, time: number, size: number, local: boolean, offsite: boolean, verified: number | null) => ({
+  source === 'vm-101' || /^(ct|nas|share)-/.test(source)
+    ? 'crash'
+    : /^(vm|host|plugin)-/.test(source)
+      ? 'application'
+      : 'unknown';
+const snap = (
+  tenant: string,
+  source: string,
+  time: number,
+  size: number,
+  local: boolean,
+  offsite: boolean,
+  verified: number | null,
+) => ({
   tenant,
   source,
   time,
@@ -952,8 +1180,20 @@ const FILES_KIND = {
     type: 'object',
     required: ['path'],
     properties: {
-      path: { type: 'string', title: 'Directory', description: 'Absolute path the plugin backs up.', pattern: '^/', minLength: 1, maxLength: 4096 },
-      excludes: { type: 'array', title: 'Exclude patterns', description: 'Glob patterns, e.g. *.tmp.', items: { type: 'string', minLength: 1, maxLength: 256 } },
+      path: {
+        type: 'string',
+        title: 'Directory',
+        description: 'Absolute path the plugin backs up.',
+        pattern: '^/',
+        minLength: 1,
+        maxLength: 4096,
+      },
+      excludes: {
+        type: 'array',
+        title: 'Exclude patterns',
+        description: 'Glob patterns, e.g. *.tmp.',
+        items: { type: 'string', minLength: 1, maxLength: 256 },
+      },
     },
   },
   secret_fields: [],
@@ -968,7 +1208,14 @@ const FILES_KIND = {
       params_schema: {
         type: 'object',
         required: ['target'],
-        properties: { target: { type: 'string', title: 'Target directory', description: 'Absolute path; must not exist yet.', pattern: '^/' } },
+        properties: {
+          target: {
+            type: 'string',
+            title: 'Target directory',
+            description: 'Absolute path; must not exist yet.',
+            pattern: '^/',
+          },
+        },
       },
     },
   ],
@@ -985,7 +1232,8 @@ const manifestOf = (id: string, name: string, version: string, kinds: Json[], sa
 const BUILTIN_KEY = {
   fingerprint: 'sha256:6f1c0a8e2b4d93f7c5a1e0b29d8c47f3a6e5d4c3b2a1908f7e6d5c4b3a291807',
   publisher: 'nexusbackup',
-  public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmockmockmockmockmockmockmockmo\nckmockmockmockmockmockmockmockmockmockmockmockmockmockmockmockmo==\n-----END PUBLIC KEY-----\n',
+  public_key:
+    '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEmockmockmockmockmockmockmockmo\nckmockmockmockmockmockmockmockmockmockmockmockmockmockmockmockmo==\n-----END PUBLIC KEY-----\n',
   name: 'TEST-KEY-DO-NOT-SHIP.pub',
   builtin: true,
 };
@@ -1022,7 +1270,13 @@ function pluginKind(kind: string): { plugin: Json; kind: Json } | null {
   }
   return null;
 }
-const pointerGet = (o: Json, ptr: string) => (ptr ? ptr.replace(/^\//, '').split('/').reduce((a: any, k) => a?.[k], o) : undefined);
+const pointerGet = (o: Json, ptr: string) =>
+  ptr
+    ? ptr
+        .replace(/^\//, '')
+        .split('/')
+        .reduce((a: any, k) => a?.[k], o)
+    : undefined;
 
 /** Validates a value against the JSON-Schema subset (like the web-api; throws 400 "<path>: …"). */
 function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
@@ -1069,7 +1323,9 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
   if (!pk) throw new HttpError(400, `kind: no installed plugin provides ${kind}`);
   const out = { ...(cfg ?? {}) };
   const moved = (pk.kind.endpoints ?? []).some((ep: Json) =>
-    [ep.host, ep.port].some((ptr) => ptr && old && JSON.stringify(pointerGet(old, ptr)) !== JSON.stringify(pointerGet(out, ptr))),
+    [ep.host, ep.port].some(
+      (ptr) => ptr && old && JSON.stringify(pointerGet(old, ptr)) !== JSON.stringify(pointerGet(out, ptr)),
+    ),
   );
   for (const f of pk.kind.secret_fields ?? []) {
     if ((out[f] === undefined || out[f] === '') && old?.[f] !== undefined) {
@@ -1086,10 +1342,11 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
       const prev = old?.[k]?.[i];
       const it = Object.fromEntries(Object.entries(item).filter(([, x]) => x !== '' && x !== null && x !== undefined));
       if (!prev || plain(it) !== plain(prev)) return it;
-      for (const f of secrets) if (it[f] === undefined && prev[f] !== undefined) {
-        if (moved) throw new HttpError(400, `config.${k}[${i}].${f}: required (the endpoint changed)`);
-        it[f] = prev[f];
-      }
+      for (const f of secrets)
+        if (it[f] === undefined && prev[f] !== undefined) {
+          if (moved) throw new HttpError(400, `config.${k}[${i}].${f}: required (the endpoint changed)`);
+          it[f] = prev[f];
+        }
       return it;
     });
   }
@@ -1101,7 +1358,7 @@ function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
 function tarManifest(b: Uint8Array): Json | null {
   const dec = new TextDecoder();
   const str = (x: Uint8Array) => dec.decode(x).replace(/\0[\s\S]*$/, '');
-  for (let off = 0; off + 512 <= b.length; ) {
+  for (let off = 0; off + 512 <= b.length;) {
     const hdr = b.subarray(off, off + 512);
     if (hdr.every((x) => x === 0)) break;
     const name = str(hdr.subarray(0, 100)).replace(/^\.\//, '');
@@ -1122,13 +1379,15 @@ function tarManifest(b: Uint8Array): Json | null {
 /** Manifest v1.4 `applies_to` (docs/phase12-contract.md §6), added when the shipped manifest lacks it. */
 function withAppliesTo(m: Json): Json {
   const def: Record<string, string> = { to_target: 'guest', pitr: 'source' };
-  for (const k of m.kinds ?? []) for (const r of k.restores ?? []) if (!r.applies_to && def[r.id]) r.applies_to = def[r.id];
+  for (const k of m.kinds ?? [])
+    for (const r of k.restores ?? []) if (!r.applies_to && def[r.id]) r.applies_to = def[r.id];
   return m;
 }
 
 /** keyd replication key fingerprint format (crates/replication key_fingerprint): 8 groups of 4 hex */
 const keydFp = () => rand(16).replace(/(.{4})(?=.)/g, '$1:');
-const DEMO_HOST_KEY = (n: string) => `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${n}DemoKeyForTheManual${'0'.repeat(Math.max(0, 20 - n.length))}`;
+const DEMO_HOST_KEY = (n: string) =>
+  `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${n}DemoKeyForTheManual${'0'.repeat(Math.max(0, 20 - n.length))}`;
 
 function seed() {
   const t = now();
@@ -1164,10 +1423,31 @@ function seed() {
   db.users.push(lead);
   // the admin's other sessions (Account → Sessions)
   const admin0 = db.users[0];
-  db.sessions.set('a1'.repeat(32), { id: 1, userId: admin0.id, csrf: 'x', created: t - 3 * 3600, last: t - 1200, ip: '198.51.100.23', ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0' });
-  db.sessions.set('b2'.repeat(32), { id: 2, userId: admin0.id, csrf: 'x', created: t - 7 * 3600, last: t - 5400, ip: '192.0.2.40', ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15' });
+  db.sessions.set('a1'.repeat(32), {
+    id: 1,
+    userId: admin0.id,
+    csrf: 'x',
+    created: t - 3 * 3600,
+    last: t - 1200,
+    ip: '198.51.100.23',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0',
+  });
+  db.sessions.set('b2'.repeat(32), {
+    id: 2,
+    userId: admin0.id,
+    csrf: 'x',
+    created: t - 7 * 3600,
+    last: t - 5400,
+    ip: '192.0.2.40',
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15',
+  });
   const newop = mk('newop', 'operator');
-  Object.assign(newop, { created: t - 3600, password: '', totp_secret: '', act: { parts: [normCode('DEMO-ACTIVATE-NEWOP-2026')], expires: t + 71 * 3600, failures: 0 } });
+  Object.assign(newop, {
+    created: t - 3600,
+    password: '',
+    totp_secret: '',
+    act: { parts: [normCode('DEMO-ACTIVATE-NEWOP-2026')], expires: t + 71 * 3600, failures: 0 },
+  });
   const former = mk('former-op', 'operator', null, t - 86400 * 200);
   former.disabled = true;
   db.users.push(newop, former);
@@ -1178,8 +1458,16 @@ function seed() {
       name: 'acme',
       offsite: {
         remote: {
-          type: 's3', endpoint: 'https://s3.eu-central.example.net', region: 'eu-central-1', bucket: 'nexus-acme', prefix: 'appliance1',
-          access_key: 'NXDEMOACCESSKEY0ACME', secret_key: 'sealed:demo', storage_class_packs: 'STANDARD_IA', path_style: false, lock: true,
+          type: 's3',
+          endpoint: 'https://s3.eu-central.example.net',
+          region: 'eu-central-1',
+          bucket: 'nexus-acme',
+          prefix: 'appliance1',
+          access_key: 'NXDEMOACCESSKEY0ACME',
+          secret_key: 'sealed:demo',
+          storage_class_packs: 'STANDARD_IA',
+          path_style: false,
+          lock: true,
         },
         bwlimit: null,
         uploaders: 4,
@@ -1188,7 +1476,15 @@ function seed() {
     {
       name: 'initech',
       offsite: {
-        remote: { type: 'sftp', host: 'u123456.storagebox.example.net', port: 23, user: 'u123456', host_key: DEMO_HOST_KEY('box'), base_dir: 'nexus', key_file: '/etc/nexus/offsite/initech.key' },
+        remote: {
+          type: 'sftp',
+          host: 'u123456.storagebox.example.net',
+          port: 23,
+          user: 'u123456',
+          host_key: DEMO_HOST_KEY('box'),
+          base_dir: 'nexus',
+          key_file: '/etc/nexus/offsite/initech.key',
+        },
         bwlimit: 20480 * 1024,
         uploaders: 4,
         // Phase 17a: no uploads during office hours
@@ -1206,9 +1502,19 @@ function seed() {
     kind: 'pve' as const,
     name,
     config: {
-      host, port: 8006, ca_pem: '-----BEGIN CERTIFICATE-----\n(PVE cluster CA, demo)\n-----END CERTIFICATE-----\n', token_id: 'nexus@pve!backup', token_secret: 'SECRET',
-      nodes: Object.fromEntries(Object.entries(nodes).map(([n, h]) => [n, { host: h, port: 22, key: '/etc/nexus/ssh/pve.key', known_hosts: '/etc/nexus/ssh/known_hosts' }])),
-      storage, fleecing_storage: 'local-lvm',
+      host,
+      port: 8006,
+      ca_pem: '-----BEGIN CERTIFICATE-----\n(PVE cluster CA, demo)\n-----END CERTIFICATE-----\n',
+      token_id: 'nexus@pve!backup',
+      token_secret: 'SECRET',
+      nodes: Object.fromEntries(
+        Object.entries(nodes).map(([n, h]) => [
+          n,
+          { host: h, port: 22, key: '/etc/nexus/ssh/pve.key', known_hosts: '/etc/nexus/ssh/known_hosts' },
+        ]),
+      ),
+      storage,
+      fleecing_storage: 'local-lvm',
     } as Json,
   });
   // `storage` = ID of the NexusBackup storage on the cluster (pvesm add nexusbackup nexus …)
@@ -1219,7 +1525,15 @@ function seed() {
     storage_caps: { 'ceph-ssd': 1 },
     read_limit: {
       bwlimit: 200_000_000,
-      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', action: 'limit', rate_bytes: 50_000_000 }],
+      windows: [
+        {
+          days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+          from: '07:00',
+          to: '19:00',
+          action: 'limit',
+          rate_bytes: 50_000_000,
+        },
+      ],
       timezone: 'Europe/Berlin',
     },
   });
@@ -1228,16 +1542,52 @@ function seed() {
   const sGlobex = pve('globex', 'globex-dr-pve', '203.0.113.20', { 'dr-pve1': '203.0.113.21' }, 'nexus');
   db.sources.push(sInitech, sAcme, sGlobex);
 
-  const gold = { id: nextId(), name: 'gold', schedule: 'daily 01:00', gfs: { daily: 14, weekly: 8, monthly: 12, yearly: 3 }, offsite: true };
-  const silver = { id: nextId(), name: 'silver', schedule: 'daily 22:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, offsite: true };
-  const bronze = { id: nextId(), name: 'bronze', schedule: 'daily 03:30', gfs: { daily: 7, weekly: 4, monthly: 0, yearly: 0 }, offsite: false };
-  const hourly = { id: nextId(), name: 'databases-hourly', schedule: 'hourly 15', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 1 }, offsite: true };
+  const gold = {
+    id: nextId(),
+    name: 'gold',
+    schedule: 'daily 01:00',
+    gfs: { daily: 14, weekly: 8, monthly: 12, yearly: 3 },
+    offsite: true,
+  };
+  const silver = {
+    id: nextId(),
+    name: 'silver',
+    schedule: 'daily 22:00',
+    gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 },
+    offsite: true,
+  };
+  const bronze = {
+    id: nextId(),
+    name: 'bronze',
+    schedule: 'daily 03:30',
+    gfs: { daily: 7, weekly: 4, monthly: 0, yearly: 0 },
+    offsite: false,
+  };
+  const hourly = {
+    id: nextId(),
+    name: 'databases-hourly',
+    schedule: 'hourly 15',
+    gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 1 },
+    offsite: true,
+  };
   // Phase 18b: WAL-only runs every 15 minutes, all of them kept for a day
-  const walFrequent = { id: nextId(), name: 'pg-wal-15min', schedule: 'every 15m', gfs: { recent: 24, daily: 14, weekly: 4, monthly: 6, yearly: 1 }, offsite: true };
+  const walFrequent = {
+    id: nextId(),
+    name: 'pg-wal-15min',
+    schedule: 'every 15m',
+    gfs: { recent: 24, daily: 14, weekly: 4, monthly: 6, yearly: 1 },
+    offsite: true,
+  };
   db.policies.push(gold, silver, bronze, hourly, walFrequent);
 
   // Agents: web01 (Linux) and fs02 (Windows) enrolled in acme; db01 waits for enrollment, build01's token expired.
-  const agent = (tenant: string, name: string, host: string, state: 'enrolled' | 'pending' | 'expired', os: string | null = null): Agent => ({
+  const agent = (
+    tenant: string,
+    name: string,
+    host: string,
+    state: 'enrolled' | 'pending' | 'expired',
+    os: string | null = null,
+  ): Agent => ({
     id: rand(8),
     tenant,
     name,
@@ -1256,7 +1606,8 @@ function seed() {
     cert_renewal_pending: false,
     reachable: state === 'enrolled' ? true : null,
     last_poll: state === 'enrolled' ? t - 70 : null,
-    power: state === 'enrolled' ? { on_battery: false, battery_percent: null, metered: false, network_name: null } : null,
+    power:
+      state === 'enrolled' ? { on_battery: false, battery_percent: null, metered: false, network_name: null } : null,
     ui_policy: {},
     ui_policy_version: 0,
     ui_policy_seen: null,
@@ -1279,17 +1630,30 @@ function seed() {
   nb07.ui_policy_seen = 2;
   fs02.reachable = false;
   fs02.last_poll = t - 50;
-  db.agents.push(web01, fs02, nb07, agent('initech', 'db01', 'db01.initech.example.com', 'pending'), agent('initech', 'build01', '192.0.2.40', 'expired'));
+  db.agents.push(
+    web01,
+    fs02,
+    nb07,
+    agent('initech', 'db01', 'db01.initech.example.com', 'pending'),
+    agent('initech', 'build01', '192.0.2.40', 'expired'),
+  );
   for (const a of [web01, fs02, nb07]) {
     db.agentSessions[a.id] = Array.from({ length: 8 }, (_, i) => {
       const ended = t - 86400 * i - 3600 * 2;
       const failed = a === nb07 && i === 1;
       return {
-        job: 9000 - i * 10 - db.agents.indexOf(a), kind: 'Backup', started: ended - 600, ended,
+        job: 9000 - i * 10 - db.agents.indexOf(a),
+        kind: 'Backup',
+        started: ended - 600,
+        ended,
         result: failed ? 'Failed' : i === 3 ? 'Warning' : 'Success',
-        read_bytes: 4.2e9, transferred_bytes: failed ? 0 : 3.1e8 + i * 1e7, new_bytes: failed ? 0 : 9e7,
-        warnings: i === 3 ? 2 : 0, first_error: failed ? 'connect nb07.acme.example.com:7444: connection timed out' : '',
-        snapshot_time: failed ? null : ended - 60, delivered: i === 0 && a === fs02 ? null : ended + 120,
+        read_bytes: 4.2e9,
+        transferred_bytes: failed ? 0 : 3.1e8 + i * 1e7,
+        new_bytes: failed ? 0 : 9e7,
+        warnings: i === 3 ? 2 : 0,
+        first_error: failed ? 'connect nb07.acme.example.com:7444: connection timed out' : '',
+        snapshot_time: failed ? null : ended - 60,
+        delivered: i === 0 && a === fs02 ? null : ended + 120,
       };
     });
   }
@@ -1298,14 +1662,24 @@ function seed() {
     tenant: 'acme',
     kind: 'linux' as const,
     name: 'web01-files',
-    config: { agent_id: web01.id, paths: ['/etc', '/home', '/var/www'], excludes: ['*.tmp', '/var/www/shop/cache/**'], hooks: true } as Json,
+    config: {
+      agent_id: web01.id,
+      paths: ['/etc', '/home', '/var/www'],
+      excludes: ['*.tmp', '/var/www/shop/cache/**'],
+      hooks: true,
+    } as Json,
   };
   const sFs02 = {
     id: nextId(),
     tenant: 'acme',
     kind: 'linux' as const,
     name: 'fs02-files',
-    config: { agent_id: fs02.id, paths: ['/C/Users', '/D/Shares'], excludes: ['C:\\Users\\*\\AppData\\Local\\Temp', '*.tmp'], hooks: false } as Json,
+    config: {
+      agent_id: fs02.id,
+      paths: ['/C/Users', '/D/Shares'],
+      excludes: ['C:\\Users\\*\\AppData\\Local\\Temp', '*.tmp'],
+      hooks: false,
+    } as Json,
   };
   // TrueNAS (built-in connector, docs/truenas-connector.md)
   const sNas01 = {
@@ -1314,9 +1688,24 @@ function seed() {
     kind: 'truenas' as const,
     name: 'nas01',
     config: {
-      host: 'nas01.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', token_secret: 'SECRET',
-      ssh: { host: 'nas01.acme.example.com', port: 22, user: 'nexusbackup', host_key: DEMO_HOST_KEY('nas01'), key_pem: 'SECRET', public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceDemoPublicKey000000000000 nexus-appliance', from: '198.51.100.5' },
-      datasets: ['tank/projects', 'tank/home'], recursive: false, sudo: true, zfs_sudo: true,
+      host: 'nas01.acme.example.com',
+      port: 443,
+      ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n',
+      user: 'nexusbackup',
+      token_secret: 'SECRET',
+      ssh: {
+        host: 'nas01.acme.example.com',
+        port: 22,
+        user: 'nexusbackup',
+        host_key: DEMO_HOST_KEY('nas01'),
+        key_pem: 'SECRET',
+        public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIApplianceDemoPublicKey000000000000 nexus-appliance',
+        from: '198.51.100.5',
+      },
+      datasets: ['tank/projects', 'tank/home'],
+      recursive: false,
+      sudo: true,
+      zfs_sudo: true,
       // Phase 22b: back up the periodic snapshots TrueNAS takes anyway
       existing_snapshots: 'auto-',
     } as Json,
@@ -1328,7 +1717,19 @@ function seed() {
     tenant: 'acme',
     kind: 'nfs' as const,
     name: 'filer-projects',
-    config: { host: 'filer.acme.example.com', port: 2049, version: '4.2', export: '/export/projects', snapshot_dir: '.snapshot', snapshot_prefix: 'nightly.', snapshot_order: 'name', excludes: ['*.tmp'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: {
+      host: 'filer.acme.example.com',
+      port: 2049,
+      version: '4.2',
+      export: '/export/projects',
+      snapshot_dir: '.snapshot',
+      snapshot_prefix: 'nightly.',
+      snapshot_order: 'name',
+      excludes: ['*.tmp'],
+      threads: 16,
+      xattrs: true,
+      timeout_secs: 60,
+    } as Json,
     sizing_entries: 184_000,
   };
   const sSmb = {
@@ -1336,7 +1737,23 @@ function seed() {
     tenant: 'acme',
     kind: 'smb' as const,
     name: 'fs01-data',
-    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'Data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], threads: 16, xattrs: true, timeout_secs: 60, read_limit: { bwlimit: 80_000_000, timezone: 'Europe/Berlin' } } as Json,
+    config: {
+      host: 'fs01.acme.example.com',
+      port: 445,
+      version: '3.1.1',
+      share: 'Data',
+      user: 'svc-backup',
+      domain: 'ACME',
+      sec: 'ntlmssp',
+      sign: true,
+      seal: true,
+      password: 'SECRET',
+      excludes: [],
+      threads: 16,
+      xattrs: true,
+      timeout_secs: 60,
+      read_limit: { bwlimit: 80_000_000, timezone: 'Europe/Berlin' },
+    } as Json,
     sizing_entries: 6_400_000,
   };
   // Phase 22b: a second source on the same share overlaps fs01-data (the overlap warning)
@@ -1345,7 +1762,23 @@ function seed() {
     tenant: 'acme',
     kind: 'smb' as const,
     name: 'fs01-projects',
-    config: { host: 'fs01.acme.example.com', port: 445, version: '3.1.1', share: 'data', user: 'svc-backup', domain: 'ACME', sec: 'ntlmssp', sign: true, seal: true, password: 'SECRET', excludes: [], include: ['/Projects'], threads: 16, xattrs: true, timeout_secs: 60 } as Json,
+    config: {
+      host: 'fs01.acme.example.com',
+      port: 445,
+      version: '3.1.1',
+      share: 'data',
+      user: 'svc-backup',
+      domain: 'ACME',
+      sec: 'ntlmssp',
+      sign: true,
+      seal: true,
+      password: 'SECRET',
+      excludes: [],
+      include: ['/Projects'],
+      threads: 16,
+      xattrs: true,
+      timeout_secs: 60,
+    } as Json,
   };
   db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb, sSmbProj);
 
@@ -1354,24 +1787,48 @@ function seed() {
   db.pluginKeys.push(BUILTIN_KEY, {
     fingerprint: 'sha256:0b7e5f1d93a2c4e8f6a1b3d5c7e9f0a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e2',
     publisher: 'example-labs',
-    public_key: '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleexam\npleexampleexampleexampleexampleexampleexampleexampleexampleexample==\n-----END PUBLIC KEY-----\n',
+    public_key:
+      '-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEexampleexampleexampleexampleexam\npleexampleexampleexampleexampleexampleexampleexampleexampleexample==\n-----END PUBLIC KEY-----\n',
     added_by: 'admin',
     approved_by: 'so',
     added_at: t - 86400 * 40,
     builtin: false,
   });
   const pgM = (v: string): Json => withAppliesTo({ ...structuredClone(pgManifest), version: v });
-  const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, { state: 'pending', current: false, enabled: false, installed_at: null });
-  db.plugins.push(pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25), pg110, pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12));
+  const pg110 = pluginEntry(pgM('1.1.0'), 'admin', t - 1500, {
+    state: 'pending',
+    current: false,
+    enabled: false,
+    installed_at: null,
+  });
+  db.plugins.push(
+    pluginEntry(pgM('1.0.0'), 'admin', t - 86400 * 25),
+    pg110,
+    pluginEntry(structuredClone(truenasManifest) as Json, 'admin', t - 86400 * 12),
+  );
   const sPg = {
     id: nextId(),
     tenant: 'acme',
     kind: 'plugin:postgresql',
     name: 'pg-shop',
     config: {
-      host: 'db1.acme.example.com', port: 5432, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
-      slot: 'nexusbackup', full_every_days: 7, restore_host: 'db2.acme.example.com', restore_port: 5432, restore_user: 'nexus_restore', restore_password: 'SECRET',
-      ssh_host: 'db2.acme.example.com', ssh_port: 22, ssh_user: 'postgres', ssh_key: 'SECRET', ssh_host_key: DEMO_HOST_KEY('db2'),
+      host: 'db1.acme.example.com',
+      port: 5432,
+      user: 'nexus_backup',
+      password: 'SECRET',
+      sslmode: 'verify-full',
+      ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
+      slot: 'nexusbackup',
+      full_every_days: 7,
+      restore_host: 'db2.acme.example.com',
+      restore_port: 5432,
+      restore_user: 'nexus_restore',
+      restore_password: 'SECRET',
+      ssh_host: 'db2.acme.example.com',
+      ssh_port: 22,
+      ssh_user: 'postgres',
+      ssh_key: 'SECRET',
+      ssh_host_key: DEMO_HOST_KEY('db2'),
     } as Json,
   };
   const sNas02 = {
@@ -1380,8 +1837,20 @@ function seed() {
     kind: 'plugin:truenas',
     name: 'nas02',
     config: {
-      host: 'nas02.acme.example.com', port: 443, ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n', user: 'nexusbackup', api_key: 'SECRET',
-      ssh_host: 'nas02.acme.example.com', ssh_port: 22, ssh_user: 'nexusbackup', ssh_host_key: DEMO_HOST_KEY('nas02'), ssh_private_key: 'SECRET', datasets: ['tank/media'], recursive: false, sudo: true, zfs_sudo: true,
+      host: 'nas02.acme.example.com',
+      port: 443,
+      ca_pem: '-----BEGIN CERTIFICATE-----\n(TrueNAS certificate, demo)\n-----END CERTIFICATE-----\n',
+      user: 'nexusbackup',
+      api_key: 'SECRET',
+      ssh_host: 'nas02.acme.example.com',
+      ssh_port: 22,
+      ssh_user: 'nexusbackup',
+      ssh_host_key: DEMO_HOST_KEY('nas02'),
+      ssh_private_key: 'SECRET',
+      datasets: ['tank/media'],
+      recursive: false,
+      sudo: true,
+      zfs_sudo: true,
     } as Json,
   };
   // Phase 23b: MySQL / MariaDB plugin 1.0.0, an ERP MariaDB (dumps over SSH + server backups with binlog)
@@ -1392,15 +1861,44 @@ function seed() {
     kind: 'plugin:mysql',
     name: 'erp-mariadb',
     config: {
-      host: 'erp-db.acme.example.com', port: 3306, user: 'nexus_backup', password: 'SECRET', sslmode: 'verify-full', ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
-      dump_via: 'auto', full_every_days: 7, ssh_host: 'erp-db.acme.example.com', ssh_port: 22, ssh_user: 'mysql', ssh_key: 'SECRET', ssh_host_key: DEMO_HOST_KEY('erp-db'),
+      host: 'erp-db.acme.example.com',
+      port: 3306,
+      user: 'nexus_backup',
+      password: 'SECRET',
+      sslmode: 'verify-full',
+      ca_cert: '-----BEGIN CERTIFICATE-----\n(demo CA)\n-----END CERTIFICATE-----\n',
+      dump_via: 'auto',
+      full_every_days: 7,
+      ssh_host: 'erp-db.acme.example.com',
+      ssh_port: 22,
+      ssh_user: 'mysql',
+      ssh_key: 'SECRET',
+      ssh_host_key: DEMO_HOST_KEY('erp-db'),
     } as Json,
   };
   db.sources.push(sPg, sNas02, sMy);
 
-  const grp = (tenant: string, source_id: number, policy_id: number, name: string, guests: (number | string)[], auto: Partial<MockGroup> = {}): MockGroup => ({
-    id: nextId(), tenant, source_id, policy_id, name, guests, mode: 'explicit', selector: [], exclude: [],
-    exclude_disks: {}, exclude_disks_mode: 'placeholder', parallel_guests: 1, ...auto,
+  const grp = (
+    tenant: string,
+    source_id: number,
+    policy_id: number,
+    name: string,
+    guests: (number | string)[],
+    auto: Partial<MockGroup> = {},
+  ): MockGroup => ({
+    id: nextId(),
+    tenant,
+    source_id,
+    policy_id,
+    name,
+    guests,
+    mode: 'explicit',
+    selector: [],
+    exclude: [],
+    exclude_disks: {},
+    exclude_disks_mode: 'placeholder',
+    parallel_guests: 1,
+    ...auto,
   });
   // Phase 15e/f: the scratch disk of the ERP database is not backed up, two guests at once
   const gProd = grp('initech', sInitech.id, gold.id, 'production', [100, 101, 200], {
@@ -1409,7 +1907,11 @@ function seed() {
     parallel_guests: 2,
   });
   // auto-protect (Phase 13c): every guest of the PVE pool "dev" except the build runner
-  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], { mode: 'tags', selector: ['pool:dev'], exclude: ['105'] });
+  const gDev = grp('initech', sInitech.id, bronze.id, 'development', [], {
+    mode: 'tags',
+    selector: ['pool:dev'],
+    exclude: ['105'],
+  });
   const gAcmeVms = grp('acme', sAcme.id, silver.id, 'acme-vms', [300, 301], {
     index_files: true,
     // Phase 31b: a custom search scope (the shop's upload cache stays out, its logs stay in)
@@ -1434,7 +1936,10 @@ function seed() {
   );
   // guest inventory (scheduler `inventory` jobs, 20 minutes ago)
   const inv = (sid: number, rows: [string, string, string, string[]][]) =>
-    db.inventory.set(sid, rows.map(([guest, name, kind, tags]) => ({ guest, name, kind, tags, seen: t - 1200, gone: null })));
+    db.inventory.set(
+      sid,
+      rows.map(([guest, name, kind, tags]) => ({ guest, name, kind, tags, seen: t - 1200, gone: null })),
+    );
   const vm = (node: string, ...more: string[]) => ['type:qemu', `node:${node}`, ...more];
   inv(sInitech.id, [
     ['100', 'erp-app', 'qemu', vm('pve1', 'pool:prod', 'tag:erp')],
@@ -1469,12 +1974,25 @@ function seed() {
   ]);
 
   // Snapshots: up to 10 days of history; vm-101 has failed for two days.
-  const series = (tenant: string, source: string, gib: number, opts: { skip?: number; offsite?: boolean; hh?: number; origin?: string; days?: number } = {}) => {
+  const series = (
+    tenant: string,
+    source: string,
+    gib: number,
+    opts: { skip?: number; offsite?: boolean; hh?: number; origin?: string; days?: number } = {},
+  ) => {
     const { skip = 0, offsite = true, hh = 1, origin, days = 9 } = opts;
     for (let d = days; d >= skip; d--) {
       const time = day(d, hh);
       if (time > t) continue;
-      const s = snap(tenant, source, time, Math.round(gib * 2 ** 30 * (1 + (d % 3) * 0.01)), true, offsite && d > 0, d > 1 ? time + 7200 : null);
+      const s = snap(
+        tenant,
+        source,
+        time,
+        Math.round(gib * 2 ** 30 * (1 + (d % 3) * 0.01)),
+        true,
+        offsite && d > 0,
+        d > 1 ? time + 7200 : null,
+      );
       db.snapshots.push(origin ? { ...s, origin } : s);
     }
   };
@@ -1482,16 +2000,33 @@ function seed() {
   series('initech', 'vm-101', 120, { skip: 2 });
   series('initech', 'ct-200', 8);
   // Phase 17d: older monthlies of vm-100 only offsite (local retention pruned them)
-  for (const d of [35, 66, 97]) db.snapshots.push(snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null));
+  for (const d of [35, 66, 97])
+    db.snapshots.push(
+      snap('initech', 'vm-100', day(d, 1), Math.round(39.6 * 2 ** 30), false, true, d === 35 ? day(d, 1) + 7200 : null),
+    );
   series('initech', 'vm-102', 30, { offsite: false, hh: 3 });
   // Phase 22b: VM identity per snapshot; VMID 102 was deleted and re-created two days ago
   {
-    const v = db.snapshots.filter((s) => s.tenant === 'initech' && s.source === 'vm-102').sort((a, b) => a.time - b.time);
-    const oldId = { vmgenid: '5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e', smbios_uuid: '13e1fd94-5545-4e60-8309-3e50cb85a8c0' };
-    const newId = { vmgenid: 'c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90', smbios_uuid: '8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34' };
+    const v = db.snapshots
+      .filter((s) => s.tenant === 'initech' && s.source === 'vm-102')
+      .sort((a, b) => a.time - b.time);
+    const oldId = {
+      vmgenid: '5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e',
+      smbios_uuid: '13e1fd94-5545-4e60-8309-3e50cb85a8c0',
+    };
+    const newId = {
+      vmgenid: 'c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90',
+      smbios_uuid: '8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34',
+    };
     v.forEach((s, i) => {
       const fresh = i >= v.length - 2;
-      (s as Json).meta = { identity: { ...(fresh ? newId : oldId), changed: i === v.length - 2, previous: i === v.length - 2 ? oldId : null } };
+      (s as Json).meta = {
+        identity: {
+          ...(fresh ? newId : oldId),
+          changed: i === v.length - 2,
+          previous: i === v.length - 2 ? oldId : null,
+        },
+      };
     });
   }
   series('acme', 'vm-300', 60, { hh: 22, skip: 1 });
@@ -1502,7 +2037,9 @@ function seed() {
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
   // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
   for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
-    (s as Json).meta = { zfs_snapshot: `auto-${new Date((s.time - 1800) * 1000).toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}` };
+    (s as Json).meta = {
+      zfs_snapshot: `auto-${new Date((s.time - 1800) * 1000).toISOString().slice(0, 16).replace('T', '_').replace(':', '-')}`,
+    };
   series('acme', `share-${sNfs.id}`, 3, { hh: 22, skip: 1, days: 5 });
   series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
   series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
@@ -1513,7 +2050,9 @@ function seed() {
     const lsn = (n: number) => `0/${(0x2000158 + n * 0x1a3e_f20).toString(16).toUpperCase()}`;
     cl.forEach((s, i) => {
       const from = cl[0].time + 140;
-      (s as Json).meta = { recoverable: { from_time: from, from_lsn: lsn(0), to_time: i ? s.time - 3 : from, to_lsn: lsn(i), timeline: 1 } };
+      (s as Json).meta = {
+        recoverable: { from_time: from, from_lsn: lsn(0), to_time: i ? s.time - 3 : from, to_lsn: lsn(i), timeline: 1 },
+      };
     });
   }
   // Phase 23b: MariaDB server snapshots (base backup of the oldest + binlog up to each) and hourly dumps
@@ -1523,7 +2062,13 @@ function seed() {
     cl.forEach((s, i) => {
       const from = cl[0].time + 95;
       (s as Json).meta = {
-        recoverable: { from_time: from, from_lsn: 'mysql-bin.000412:1077', to_time: i ? s.time - 2 : from, to_lsn: i ? `mysql-bin.000413:${4_120_775 + i * 88_120}` : 'mysql-bin.000412:1077', unit: 'binlog' },
+        recoverable: {
+          from_time: from,
+          from_lsn: 'mysql-bin.000412:1077',
+          to_time: i ? s.time - 2 : from,
+          to_lsn: i ? `mysql-bin.000413:${4_120_775 + i * 88_120}` : 'mysql-bin.000412:1077',
+          unit: 'binlog',
+        },
       };
     });
   }
@@ -1535,75 +2080,206 @@ function seed() {
     for (let h = 0; h < 4; h++) {
       const time = Math.floor(t / 3600 - h) * 3600 + 15 * 60;
       if (time > t) continue;
-      db.snapshots.push(snap('acme', `plugin-postgresql-${sPg.id}-${dbName}`, time, (dbName === 'shop' ? 1_400 : 380) << 20, true, h > 1, h > 2 ? time + 1800 : null));
+      db.snapshots.push(
+        snap(
+          'acme',
+          `plugin-postgresql-${sPg.id}-${dbName}`,
+          time,
+          (dbName === 'shop' ? 1_400 : 380) << 20,
+          true,
+          h > 1,
+          h > 2 ? time + 1800 : null,
+        ),
+      );
     }
   }
   // replicated from hq-primary (origin = replication source name), own retention on this appliance
-  for (const [g, gib] of [['vm-500', 80], ['vm-501', 35], ['ct-250', 6]] as [string, number][])
+  for (const [g, gib] of [
+    ['vm-500', 80],
+    ['vm-501', 35],
+    ['ct-250', 6],
+  ] as [string, number][])
     series('globex', g, gib, { hh: 4, origin: 'hq-primary', offsite: false });
 
   // Jobs: finished history + one running offsite upload. `L` stamps log lines like the scheduler does.
   const old = (j: Job, start: number, state: string, lines: string[], secs = 600, result: Json | null = null) => {
-    const log = lines.map((l, i) => `${new Date((start + 2 + Math.round((i * secs) / lines.length)) * 1000).toISOString()} ${l}`).join('\n');
+    const log = lines
+      .map((l, i) => `${new Date((start + 2 + Math.round((i * secs) / lines.length)) * 1000).toISOString()} ${l}`)
+      .join('\n');
     Object.assign(j, { created: start, started: start + 2, finished: start + secs, state, log, plan: [], result });
     return j;
   };
-  const fleecing = 'backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped';
-  const nightly = old(addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler'), day(0, 1), 'failed', [
-    'starting backup of vm-100 via node pve1',
-    'dirty bitmap valid: incremental',
-    'reading 2.1 GiB dirty of 64 GiB',
-    'chunks: 512 new, 15,820 deduplicated',
-    'index written, snapshot committed',
-    'starting backup of vm-101 via node pve2',
-    `ERROR: ${fleecing}`,
-    'starting backup of ct-200 via node pve1',
-    'tar stream: 679 MB, 0 new chunks',
-    'index written, snapshot committed',
-    'backup finished: 2 of 3 guests ok',
-  ], 1460);
-  const devJob = old(addJob('backup', 'initech', { group_id: gDev.id }, 'scheduler'), day(0, 3), 'ok', ['starting backup of vm-102', 'dirty bitmap valid: incremental', 'index written, snapshot committed', 'backup finished: 1 guest'], 300);
+  const fleecing =
+    'backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped';
+  const nightly = old(
+    addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler'),
+    day(0, 1),
+    'failed',
+    [
+      'starting backup of vm-100 via node pve1',
+      'dirty bitmap valid: incremental',
+      'reading 2.1 GiB dirty of 64 GiB',
+      'chunks: 512 new, 15,820 deduplicated',
+      'index written, snapshot committed',
+      'starting backup of vm-101 via node pve2',
+      `ERROR: ${fleecing}`,
+      'starting backup of ct-200 via node pve1',
+      'tar stream: 679 MB, 0 new chunks',
+      'index written, snapshot committed',
+      'backup finished: 2 of 3 guests ok',
+    ],
+    1460,
+  );
+  const devJob = old(
+    addJob('backup', 'initech', { group_id: gDev.id }, 'scheduler'),
+    day(0, 3),
+    'ok',
+    [
+      'starting backup of vm-102',
+      'dirty bitmap valid: incremental',
+      'index written, snapshot committed',
+      'backup finished: 1 guest',
+    ],
+    300,
+  );
   // follow-up jobs carry the job that queued them (params.after_job, like the scheduler)
-  const devRet = old(addJob('retention', 'initech', { chain: true, group_id: gDev.id, after_job: devJob.id }, 'scheduler'), day(0, 3) + 300, 'ok', ['GFS retention per group policy', 'kept 31 snapshots, locks extended', 'deleted 3 unlocked snapshots'], 20);
-  old(addJob('offsite', 'initech', { chain: true, after_job: devRet.id }, 'scheduler'), day(0, 3) + 320, 'ok', ['uploading to sftp u123456.storagebox.example.net:23', 'uploaded 412 chunks in 3 packs (1.2 GiB)', 'manifests uploaded', 'inventory check: 0 missing, 0 unknown'], 900);
-  old(addJob('verify', 'initech', {}, 'scheduler'), day(0, 5), 'ok', ['verifying chunk store part 3 of 7 (rolling)', 'verified 15,912 chunks: 0 missing, 0 corrupt', 'offsite: 3 sampled packs verified'], 1200);
-  old(addJob('backup', 'acme', { group_id: gAcmeVms.id }, 'scheduler'), day(1, 22), 'ok', ['starting backup of vm-300', 'index written, snapshot committed', 'starting backup of vm-301', 'index written, snapshot committed', 'backup finished: 2 guests'], 900);
-  const smbJob = old(addJob('backup', 'acme', { group_id: gSmb.id }, 'scheduler'), day(0, 3), 'ok', [
-    'mounting //fs01.acme.example.com/Data read-only (SMB 3.1.1, signed + encrypted)',
-    'no NAS snapshot directory configured: reading the live share',
-    'scan: 48,211 files, 921 MiB, 12 changed',
-    // Phase 22b: entries the scan could not read (Skipped files CSV on the job page)
-    'error Finance/2026/payroll.xlsx: open: Permission denied (os error 13)',
-    'error Finance/2026/~$payroll.xlsx: open: The process cannot access the file (sharing violation)',
-    'error note: Archive/old-dfs: nested mount, not descended',
-    `committed share-${sSmb.id}/${day(0, 3)} in 640.0s: 48211 entries, 12 files read (1048576 bytes), 48199 unchanged files reused, 3 new chunks, 1048576 bytes transferred, 1 inconsistent, 2 errors, 75 entries/s, live share (no NAS snapshot)`,
-    `inconsistent share-${sSmb.id}`,
-    'snapshot committed',
-  ], 640, { snapshots: [{ source: `share-${sSmb.id}`, time: day(0, 3), consistent: false }] });
-  old(addJob('replica_sync', 'globex', { replication_source_id: 1, tenant: 'globex' }, 'scheduler'), day(0, 4), 'ok', [
-    'connecting to backup-hq.example.com:8443 (pinned certificate, client certificate)',
-    'keys: up to date (version 1)',
-    '3 new snapshots on the primary, 3 kept by the local GFS',
-    'fetched 1,214 chunks (734 MB), every chunk verified before import',
-    'replicated 3 snapshots',
-  ], 480);
-  old(addJob('files_get', 'acme', { source: `host-${web01.id}`, time: day(2, 22), paths: ['/etc/nginx'], format: 'zip' }, 'acme'), t - 86400 - 7200, 'ok', ['reading the host snapshot', 'packing 1 path(s) as zip', 'archive ready'], 8);
+  const devRet = old(
+    addJob('retention', 'initech', { chain: true, group_id: gDev.id, after_job: devJob.id }, 'scheduler'),
+    day(0, 3) + 300,
+    'ok',
+    ['GFS retention per group policy', 'kept 31 snapshots, locks extended', 'deleted 3 unlocked snapshots'],
+    20,
+  );
+  old(
+    addJob('offsite', 'initech', { chain: true, after_job: devRet.id }, 'scheduler'),
+    day(0, 3) + 320,
+    'ok',
+    [
+      'uploading to sftp u123456.storagebox.example.net:23',
+      'uploaded 412 chunks in 3 packs (1.2 GiB)',
+      'manifests uploaded',
+      'inventory check: 0 missing, 0 unknown',
+    ],
+    900,
+  );
+  old(
+    addJob('verify', 'initech', {}, 'scheduler'),
+    day(0, 5),
+    'ok',
+    [
+      'verifying chunk store part 3 of 7 (rolling)',
+      'verified 15,912 chunks: 0 missing, 0 corrupt',
+      'offsite: 3 sampled packs verified',
+    ],
+    1200,
+  );
+  old(
+    addJob('backup', 'acme', { group_id: gAcmeVms.id }, 'scheduler'),
+    day(1, 22),
+    'ok',
+    [
+      'starting backup of vm-300',
+      'index written, snapshot committed',
+      'starting backup of vm-301',
+      'index written, snapshot committed',
+      'backup finished: 2 guests',
+    ],
+    900,
+  );
+  const smbJob = old(
+    addJob('backup', 'acme', { group_id: gSmb.id }, 'scheduler'),
+    day(0, 3),
+    'ok',
+    [
+      'mounting //fs01.acme.example.com/Data read-only (SMB 3.1.1, signed + encrypted)',
+      'no NAS snapshot directory configured: reading the live share',
+      'scan: 48,211 files, 921 MiB, 12 changed',
+      // Phase 22b: entries the scan could not read (Skipped files CSV on the job page)
+      'error Finance/2026/payroll.xlsx: open: Permission denied (os error 13)',
+      'error Finance/2026/~$payroll.xlsx: open: The process cannot access the file (sharing violation)',
+      'error note: Archive/old-dfs: nested mount, not descended',
+      `committed share-${sSmb.id}/${day(0, 3)} in 640.0s: 48211 entries, 12 files read (1048576 bytes), 48199 unchanged files reused, 3 new chunks, 1048576 bytes transferred, 1 inconsistent, 2 errors, 75 entries/s, live share (no NAS snapshot)`,
+      `inconsistent share-${sSmb.id}`,
+      'snapshot committed',
+    ],
+    640,
+    { snapshots: [{ source: `share-${sSmb.id}`, time: day(0, 3), consistent: false }] },
+  );
+  old(
+    addJob('replica_sync', 'globex', { replication_source_id: 1, tenant: 'globex' }, 'scheduler'),
+    day(0, 4),
+    'ok',
+    [
+      'connecting to backup-hq.example.com:8443 (pinned certificate, client certificate)',
+      'keys: up to date (version 1)',
+      '3 new snapshots on the primary, 3 kept by the local GFS',
+      'fetched 1,214 chunks (734 MB), every chunk verified before import',
+      'replicated 3 snapshots',
+    ],
+    480,
+  );
+  old(
+    addJob(
+      'files_get',
+      'acme',
+      { source: `host-${web01.id}`, time: day(2, 22), paths: ['/etc/nginx'], format: 'zip' },
+      'acme',
+    ),
+    t - 86400 - 7200,
+    'ok',
+    ['reading the host snapshot', 'packing 1 path(s) as zip', 'archive ready'],
+    8,
+  );
   const pitrTime = new Date((day(2, 22) + 3 * 3600) * 1000).toISOString().slice(0, 19).replace('T', ' ') + '+00';
-  old(addJob('plugin_restore', 'acme', { source: `plugin-postgresql-${sPg.id}`, time: day(2, 22), restore: 'pitr', params: { directory: '/var/lib/postgresql/restore-demo', target_time: pitrTime } }, 'admin'), t - 86400 - 3600, 'ok', [
-    'starting nexus-pluginhost: restore pitr (sandbox: landlock + seccomp)',
-    'streaming base backup data/ and 42 WAL segments to the plugin',
-    'restore host db2.acme.example.com: SSH host key matches the pinned key',
-    `recovery_target_time ${pitrTime} reached, server promoted`,
-    'restore pitr finished',
-  ], 260, { restore: 'pitr', summary: `new data directory /var/lib/postgresql/restore-demo on db2.acme.example.com, recovered to ${pitrTime}` });
-  const retry = old(addJob('backup', 'initech', { vmid: 101 }, 'admin'), t - 5400, 'failed', ['starting backup of vm-101 via node pve2', `ERROR: ${fleecing}`], 40);
-  old(addJob('backup', 'acme', { group_id: gDbs.id }, 'scheduler'), Math.floor(t / 3600) * 3600 + 15 * 60 > t ? Math.floor(t / 3600 - 1) * 3600 + 15 * 60 : Math.floor(t / 3600) * 3600 + 15 * 60, 'ok', [
-    'starting nexus-pluginhost: postgresql 1.0.0 (sandbox: landlock + seccomp)',
-    'database shop: consistent logical dump, 1.4 GiB',
-    'database crm: consistent logical dump, 380 MiB',
-    `snapshot committed: plugin-postgresql-${sPg.id}-shop`,
-    `snapshot committed: plugin-postgresql-${sPg.id}-crm`,
-  ], 120);
+  old(
+    addJob(
+      'plugin_restore',
+      'acme',
+      {
+        source: `plugin-postgresql-${sPg.id}`,
+        time: day(2, 22),
+        restore: 'pitr',
+        params: { directory: '/var/lib/postgresql/restore-demo', target_time: pitrTime },
+      },
+      'admin',
+    ),
+    t - 86400 - 3600,
+    'ok',
+    [
+      'starting nexus-pluginhost: restore pitr (sandbox: landlock + seccomp)',
+      'streaming base backup data/ and 42 WAL segments to the plugin',
+      'restore host db2.acme.example.com: SSH host key matches the pinned key',
+      `recovery_target_time ${pitrTime} reached, server promoted`,
+      'restore pitr finished',
+    ],
+    260,
+    {
+      restore: 'pitr',
+      summary: `new data directory /var/lib/postgresql/restore-demo on db2.acme.example.com, recovered to ${pitrTime}`,
+    },
+  );
+  const retry = old(
+    addJob('backup', 'initech', { vmid: 101 }, 'admin'),
+    t - 5400,
+    'failed',
+    ['starting backup of vm-101 via node pve2', `ERROR: ${fleecing}`],
+    40,
+  );
+  old(
+    addJob('backup', 'acme', { group_id: gDbs.id }, 'scheduler'),
+    Math.floor(t / 3600) * 3600 + 15 * 60 > t
+      ? Math.floor(t / 3600 - 1) * 3600 + 15 * 60
+      : Math.floor(t / 3600) * 3600 + 15 * 60,
+    'ok',
+    [
+      'starting nexus-pluginhost: postgresql 1.0.0 (sandbox: landlock + seccomp)',
+      'database shop: consistent logical dump, 1.4 GiB',
+      'database crm: consistent logical dump, 380 MiB',
+      `snapshot committed: plugin-postgresql-${sPg.id}-shop`,
+      `snapshot committed: plugin-postgresql-${sPg.id}-crm`,
+    ],
+    120,
+  );
   const running = addJob('offsite', 'acme', {}, 'scheduler', { duration: 240 });
   running.plan = [
     'uploading to s3 nexus-acme/appliance1 (Object Lock, compliance mode)',
@@ -1617,8 +2293,22 @@ function seed() {
   // a nightly backup that is still running: live progress on the job pages (item 2 of 3, first disk)
   const live = addJob('backup', 'initech', { group_id: gProd.id }, 'scheduler', { duration: 2400 });
   live.items = [
-    { item: 'vm-100', label: 'erp-app', parts: [{ part: 'scsi0', total: 18.4 * GiB }, { part: 'efidisk0', total: 528 << 10 }] },
-    { item: 'vm-101', label: 'erp-db', parts: [{ part: 'scsi0', total: 41.2 * GiB }, { part: 'scsi1', total: 6.8 * GiB }] },
+    {
+      item: 'vm-100',
+      label: 'erp-app',
+      parts: [
+        { part: 'scsi0', total: 18.4 * GiB },
+        { part: 'efidisk0', total: 528 << 10 },
+      ],
+    },
+    {
+      item: 'vm-101',
+      label: 'erp-db',
+      parts: [
+        { part: 'scsi0', total: 41.2 * GiB },
+        { part: 'scsi1', total: 6.8 * GiB },
+      ],
+    },
     { item: 'ct-200', label: 'proxy', parts: [{ part: 'tar stream', total: null }] },
   ];
   live.plan = [
@@ -1641,116 +2331,316 @@ function seed() {
   // (13f lifecycle: repeats counted on the open alert, success paths resolve them)
   db.alerts.push(
     mkAlert({
-      ts: nightly.finished! - 2 * 86400, last_ts: nightly.finished, count: 3, severity: 'critical', kind: 'job_failed',
-      key: `job_failed:initech/backup/group/${gProd.id}`, tenant: 'initech', message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
+      ts: nightly.finished! - 2 * 86400,
+      last_ts: nightly.finished,
+      count: 3,
+      severity: 'critical',
+      kind: 'job_failed',
+      key: `job_failed:initech/backup/group/${gProd.id}`,
+      tenant: 'initech',
+      message: `backup job ${nightly.id} (initech) failed: ${fleecing}`,
       // Phase 33: the rule msp-halo opened a ticket in HaloPSA
       tickets: [{ rule: 'msp-halo', vendor: 'halopsa', ticket: '48213', closed: null }],
     }),
     mkAlert({
-      ts: retry.finished, severity: 'critical', kind: 'job_failed', key: 'job_failed:initech/backup/vmid/101', tenant: 'initech',
+      ts: retry.finished,
+      severity: 'critical',
+      kind: 'job_failed',
+      key: 'job_failed:initech/backup/vmid/101',
+      tenant: 'initech',
       message: `backup job ${retry.id} (initech) failed: ${fleecing}`,
     }),
     mkAlert({
-      ts: t - 86400 * 2 + 3 * 3600, severity: 'warning', kind: 'vmid_reused', key: 'vmid_reused:initech/vm-102', tenant: 'initech',
+      ts: t - 86400 * 2 + 3 * 3600,
+      severity: 'warning',
+      kind: 'vmid_reused',
+      key: 'vmid_reused:initech/vm-102',
+      tenant: 'initech',
       message:
-        'vm-102: the VM identity changed in snapshot ' + String(day(1, 3)) + ' (vmgenid 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e → c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90, SMBIOS UUID 13e1fd94-5545-4e60-8309-3e50cb85a8c0 → 8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34): the VMID was reused or the VM replaced; older snapshots of vm-102 belong to the previous VM',
+        'vm-102: the VM identity changed in snapshot ' +
+        String(day(1, 3)) +
+        ' (vmgenid 5b65ecd1-44f5-4b88-8b6c-96cd092a9d2e → c0a8f3e2-71d4-4b2a-9e55-0f3d2b7c1a90, SMBIOS UUID 13e1fd94-5545-4e60-8309-3e50cb85a8c0 → 8f2e4c61-0b9d-4f7a-a3c2-5e1d9b6a7c34): the VMID was reused or the VM replaced; older snapshots of vm-102 belong to the previous VM',
     }),
     mkAlert({
-      ts: retry.finished, severity: 'critical', kind: 'fleecing_space', key: 'fleecing_space:initech/pve2/local-lvm', tenant: 'initech',
+      ts: retry.finished,
+      severity: 'critical',
+      kind: 'fleecing_space',
+      key: 'fleecing_space:initech/pve2/local-lvm',
+      tenant: 'initech',
       message: `fleecing storage local-lvm on node pve2 has 3.1 GiB (3.1 %) free, below the critical level: running backups on this node are cancelled (backup job ${retry.id}, tenant initech)`,
     }),
     mkAlert({
-      ts: t - 86400 * 9, severity: 'warning', kind: 'index_backlog', key: 'index_backlog:initech', tenant: 'initech',
-      message: 'tenant initech: 3 snapshots wait more than 48 h for file indexing (oldest vm-101, 52 h): file index jobs failed (see Jobs)',
-      resolved_at: t - 86400 * 8, resolved_by: 'scheduler', auto: true,
+      ts: t - 86400 * 9,
+      severity: 'warning',
+      kind: 'index_backlog',
+      key: 'index_backlog:initech',
+      tenant: 'initech',
+      message:
+        'tenant initech: 3 snapshots wait more than 48 h for file indexing (oldest vm-101, 52 h): file index jobs failed (see Jobs)',
+      resolved_at: t - 86400 * 8,
+      resolved_by: 'scheduler',
+      auto: true,
     }),
     mkAlert({
-      ts: t - 86400 * 12, severity: 'warning', kind: 'index_space', key: 'index_space',
-      message: 'file indexing paused: the index volume has 18.2 GiB free, below the floor of 20 GiB; new snapshots wait for indexing',
-      resolved_at: t - 86400 * 11, resolved_by: 'scheduler', auto: true,
+      ts: t - 86400 * 12,
+      severity: 'warning',
+      kind: 'index_space',
+      key: 'index_space',
+      message:
+        'file indexing paused: the index volume has 18.2 GiB free, below the floor of 20 GiB; new snapshots wait for indexing',
+      resolved_at: t - 86400 * 11,
+      resolved_by: 'scheduler',
+      auto: true,
     }),
     mkAlert({
-      ts: t - 86400 * 4, last_ts: t - 86400 * 2, severity: 'info', kind: 'clock_skew', key: 'clock_skew',
-      message: 'the compliance clock of tenant acme is 14 min 0 s behind system time since the last restart (the appliance was off, or system time was changed while it was off); it catches up at 0.1 % of elapsed time, retention locks last longer meanwhile',
-      resolved_at: t - 86400 * 2, resolved_by: 'scheduler', auto: true,
+      ts: t - 86400 * 4,
+      last_ts: t - 86400 * 2,
+      severity: 'info',
+      kind: 'clock_skew',
+      key: 'clock_skew',
+      message:
+        'the compliance clock of tenant acme is 14 min 0 s behind system time since the last restart (the appliance was off, or system time was changed while it was off); it catches up at 0.1 % of elapsed time, retention locks last longer meanwhile',
+      resolved_at: t - 86400 * 2,
+      resolved_by: 'scheduler',
+      auto: true,
     }),
-    mkAlert({ ts: t - 3 * 86400, last_ts: t - 1800, count: 147, severity: 'warning', kind: 'capacity', key: 'capacity', message: 'store capacity above 75 % (now 78 %)' }),
     mkAlert({
-      ts: smbJob.finished, severity: 'warning', kind: 'backup_inconsistent', key: `backup_inconsistent:share-${sSmb.id}: no snapshot`,
+      ts: t - 3 * 86400,
+      last_ts: t - 1800,
+      count: 147,
+      severity: 'warning',
+      kind: 'capacity',
+      key: 'capacity',
+      message: 'store capacity above 75 % (now 78 %)',
+    }),
+    mkAlert({
+      ts: smbJob.finished,
+      severity: 'warning',
+      kind: 'backup_inconsistent',
+      key: `backup_inconsistent:share-${sSmb.id}: no snapshot`,
       message: `share-${sSmb.id} — read without a NAS snapshot: not point-in-time consistent (backup job ${smbJob.id}, tenant acme, snapshot share-${sSmb.id})`,
-      acked_by: 'op', note: 'Storage team enables NAS snapshots on fs01 next week.',
+      acked_by: 'op',
+      note: 'Storage team enables NAS snapshots on fs01 next week.',
     }),
     mkAlert({
-      ts: t - 86400 * 3, last_ts: t - 86400 * 2, count: 96, severity: 'warning', kind: 'offsite_lag', key: 'offsite_lag:acme', tenant: 'acme',
-      message: 'offsite copy of tenant acme lags by 73 h (oldest snapshot not offsite: 1759500000)', resolved_at: t - 86400 * 2 + 300, resolved_by: 'scheduler', auto: true,
+      ts: t - 86400 * 3,
+      last_ts: t - 86400 * 2,
+      count: 96,
+      severity: 'warning',
+      kind: 'offsite_lag',
+      key: 'offsite_lag:acme',
+      tenant: 'acme',
+      message: 'offsite copy of tenant acme lags by 73 h (oldest snapshot not offsite: 1759500000)',
+      resolved_at: t - 86400 * 2 + 300,
+      resolved_by: 'scheduler',
+      auto: true,
     }),
     mkAlert({
-      ts: t - 86400 * 6, last_ts: t - 86400 * 5, count: 40, severity: 'warning', kind: 'replication_lag', key: 'replication_lag:hq-primary:globex', tenant: 'globex',
-      message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h', acked_by: 'admin',
-      resolved_at: t - 86400 * 5, resolved_by: 'admin', note: 'Primary was in a maintenance window; the next sync caught up.',
+      ts: t - 86400 * 6,
+      last_ts: t - 86400 * 5,
+      count: 40,
+      severity: 'warning',
+      kind: 'replication_lag',
+      key: 'replication_lag:hq-primary:globex',
+      tenant: 'globex',
+      message: 'replication of tenant globex from hq-primary lags: no successful sync for 50 h',
+      acked_by: 'admin',
+      resolved_at: t - 86400 * 5,
+      resolved_by: 'admin',
+      note: 'Primary was in a maintenance window; the next sync caught up.',
     }),
   );
 
   // Approvals are enabled. Pending: a large GC, deleting a group, weakening a policy, a plugin upgrade.
   db.approvals = true;
-  const q = (action: string, params: Json, by: string, created: number, state = 'pending', decider: string | null = null) => {
-    const x = { id: nextId(), action, params, requested_by: by, created, decided_by: decider, decided_at: decider ? created + 900 : null, state };
+  const q = (
+    action: string,
+    params: Json,
+    by: string,
+    created: number,
+    state = 'pending',
+    decider: string | null = null,
+  ) => {
+    const x = {
+      id: nextId(),
+      action,
+      params,
+      requested_by: by,
+      created,
+      decided_by: decider,
+      decided_at: decider ? created + 900 : null,
+      state,
+    };
     db.quorum.push(x);
     return x;
   };
   const peerId = 'a1b2c3d4e5f60718';
   const peerKeyd = '8576:219c:4e1a:0b7d:9f32:c5e8:61aa:d403';
-  q('plugin_key.add', { publisher: 'example-labs', fingerprint: db.pluginKeys[1].fingerprint }, 'admin', t - 86400 * 41, 'executed', 'so');
-  q('replication_peer.create', { id: peerId, name: 'dr-site', tenants: ['acme'] }, 'admin', t - 86400 * 21, 'executed', 'so');
-  q('replication.key_export', { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] }, 'admin', t - 86400 * 20, 'executed', 'so2');
+  q(
+    'plugin_key.add',
+    { publisher: 'example-labs', fingerprint: db.pluginKeys[1].fingerprint },
+    'admin',
+    t - 86400 * 41,
+    'executed',
+    'so',
+  );
+  q(
+    'replication_peer.create',
+    { id: peerId, name: 'dr-site', tenants: ['acme'] },
+    'admin',
+    t - 86400 * 21,
+    'executed',
+    'so',
+  );
+  q(
+    'replication.key_export',
+    { peer: peerId, keyd_fingerprint: peerKeyd, tenants: ['acme'] },
+    'admin',
+    t - 86400 * 20,
+    'executed',
+    'so2',
+  );
   q('source.delete', { id: 42, name: 'old-esx-import' }, 'admin', t - 86400 * 9, 'rejected', 'so');
   // Phase 33: acme requires its own approval (tara); a snapshot delete the provider approved waits for it
   db.tenantApprovals.acme = { enabled_at: t - 86400 * 10, enabled_by: 'tara' };
   {
-    const s = (db.snapshots as any[]).filter((x) => x.tenant === 'acme' && x.local && !x.origin).sort((a, b) => a.time - b.time)[0];
+    const s = (db.snapshots as any[])
+      .filter((x) => x.tenant === 'acme' && x.local && !x.origin)
+      .sort((a, b) => a.time - b.time)[0];
     if (s) {
       const x = q('snapshot.delete', { tenant: 'acme', source: s.source, time: s.time }, 'admin', t - 3 * 3600);
       Object.assign(x, {
-        approved_by: 'so', approved_at: t - 2 * 3600,
+        approved_by: 'so',
+        approved_at: t - 2 * 3600,
         tenant_approvals: [{ tenant: 'acme', decided_by: null, decided_at: null, decision: null }],
       });
     }
   }
   // Phase 17d: an approved "attach offsite copy" waiting for the requester's recovery key
-  q('tenant.attach_offsite', {
-    name: 'umbrella',
-    offsite: { remote: { type: 'sftp', host: 'u654321.storagebox.example.net', port: 23, user: 'u654321', host_key: DEMO_HOST_KEY('umb'), base_dir: 'nexus', key_file: '/etc/nexus/ssh/offsite' } },
-  }, 'admin', t - 2 * 3600, 'approved', 'so');
-  const gcq = q('gc_large', { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' }, 'scheduler', t - 2 * 3600);
+  q(
+    'tenant.attach_offsite',
+    {
+      name: 'umbrella',
+      offsite: {
+        remote: {
+          type: 'sftp',
+          host: 'u654321.storagebox.example.net',
+          port: 23,
+          user: 'u654321',
+          host_key: DEMO_HOST_KEY('umb'),
+          base_dir: 'nexus',
+          key_file: '/etc/nexus/ssh/offsite',
+        },
+      },
+    },
+    'admin',
+    t - 2 * 3600,
+    'approved',
+    'so',
+  );
+  const gcq = q(
+    'gc_large',
+    { tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)' },
+    'scheduler',
+    t - 2 * 3600,
+  );
   db.alerts.push(
     mkAlert({
-      ts: gcq.created, severity: 'warning', kind: 'gc_quorum', key: 'gc_quorum:initech', tenant: 'initech',
+      ts: gcq.created,
+      severity: 'warning',
+      kind: 'gc_quorum',
+      key: 'gc_quorum:initech',
+      tenant: 'initech',
       message: `GC for tenant initech needs approval by an admin or security officer (quorum request ${gcq.id}): GC would delete 34 % of the stored chunks (limit 20 %)`,
     }),
   );
   q('group.delete', { id: gDev.id, name: 'development' }, 'admin', t - 1800);
-  q('policy.update', { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } }, 'admin', t - 600);
-  const pq = q('plugin.install', { id: 'postgresql', version: '1.1.0', publisher: 'nexusbackup', sha256: pg110.sha256, signer: pg110.signer, upgrade_from: '1.0.0' }, 'admin', t - 1500);
+  q(
+    'policy.update',
+    { ...gold, gfs: { ...gold.gfs, daily: 7, yearly: 1 }, offsite: false, old: { ...gold, gfs: { ...gold.gfs } } },
+    'admin',
+    t - 600,
+  );
+  const pq = q(
+    'plugin.install',
+    {
+      id: 'postgresql',
+      version: '1.1.0',
+      publisher: 'nexusbackup',
+      sha256: pg110.sha256,
+      signer: pg110.signer,
+      upgrade_from: '1.0.0',
+    },
+    'admin',
+    t - 1500,
+  );
   pg110.quorum_id = pq.id;
   // With approvals disabled, the scheduler would instead hold the large GC for an admin's confirmation.
-  db.gcPending.push({ tenant: 'initech', job: 4711, reason: 'GC would delete 34 % of the stored chunks (limit 20 %)', created: t - 2 * 3600 });
+  db.gcPending.push({
+    tenant: 'initech',
+    job: 4711,
+    reason: 'GC would delete 34 % of the stored chunks (limit 20 %)',
+    created: t - 2 * 3600,
+  });
 
   // Replication: this appliance is the primary for acme (peer dr-site) and the secondary for globex.
   db.replPeers.push({
-    id: peerId, name: 'dr-site', tenants: ['acme'], state: 'enrolled', cert_sha256: rand(32),
-    keyd_fingerprint: peerKeyd, token_expires: null, enrolled_at: t - 86400 * 20, last_seen: t - 1800,
-    revoked: null, created: t - 86400 * 21, created_by: 'admin', keys: { acme: { versions: [1], created: t - 86400 * 20, post_quantum: true } },
-    enroll_failures: 0, post_quantum: true,
+    id: peerId,
+    name: 'dr-site',
+    tenants: ['acme'],
+    state: 'enrolled',
+    cert_sha256: rand(32),
+    keyd_fingerprint: peerKeyd,
+    token_expires: null,
+    enrolled_at: t - 86400 * 20,
+    last_seen: t - 1800,
+    revoked: null,
+    created: t - 86400 * 21,
+    created_by: 'admin',
+    keys: { acme: { versions: [1], created: t - 86400 * 20, post_quantum: true } },
+    enroll_failures: 0,
+    post_quantum: true,
   });
   db.replSources.push({
-    id: 1, name: 'hq-primary', url: 'backup-hq.example.com:8443', peer_id: '0f1e2d3c4b5a6978', cert_pin: rand(32),
-    tenants: ['globex'], schedule: 'daily 04:00', gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit: 50_000_000,
-    state: 'enrolled', cert_sha256: rand(32), keyd_fingerprint: keydFp(), created: t - 86400 * 30, last_sync: day(0, 4) + 480,
-    status: { globex: { last_ok: day(0, 4) + 480, last_error: null, imported: 3, bytes: 734003200, remote: 41, key_versions: [1] } },
+    id: 1,
+    name: 'hq-primary',
+    url: 'backup-hq.example.com:8443',
+    peer_id: '0f1e2d3c4b5a6978',
+    cert_pin: rand(32),
+    tenants: ['globex'],
+    schedule: 'daily 04:00',
+    gfs: { daily: 14, weekly: 4, monthly: 6, yearly: 2 },
+    bwlimit: 50_000_000,
+    state: 'enrolled',
+    cert_sha256: rand(32),
+    keyd_fingerprint: keydFp(),
+    created: t - 86400 * 30,
+    last_sync: day(0, 4) + 480,
+    status: {
+      globex: {
+        last_ok: day(0, 4) + 480,
+        last_error: null,
+        imported: 3,
+        bytes: 734003200,
+        remote: 41,
+        key_versions: [1],
+      },
+    },
     // Phase 17a/b: syncs only at night, 10 MB/s while the office is open
-    windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '07:00', to: '19:00', action: 'limit', rate_bytes: 10_000_000 }],
+    windows: [
+      {
+        days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+        from: '07:00',
+        to: '19:00',
+        action: 'limit',
+        rate_bytes: 10_000_000,
+      },
+    ],
     sync_window: [{ days: [], from: '22:00', to: '06:00' }],
-    timezone: 'Europe/Berlin', closed_until: null, closed_by: null, closed_at: null,
+    timezone: 'Europe/Berlin',
+    closed_until: null,
+    closed_by: null,
+    closed_at: null,
   });
   seedPhase12(t);
   seedPhase13a(t);
@@ -1787,7 +2677,14 @@ function seedPhase30() {
     acme.offsite = {
       ...acme.offsite,
       second: {
-        remote: { type: 'sftp', host: 'u-acme2.your-storagebox.de', port: 23, user: 'u-acme2', key_file: '/etc/nexus/ssh/offsite-acme2', host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoSecondBoxKey' },
+        remote: {
+          type: 'sftp',
+          host: 'u-acme2.your-storagebox.de',
+          port: 23,
+          user: 'u-acme2',
+          key_file: '/etc/nexus/ssh/offsite-acme2',
+          host_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoSecondBoxKey',
+        },
         gfs: { monthly: 84, yearly: 7 },
         uploaders: 2,
         bwlimit: null,
@@ -1800,7 +2697,11 @@ function seedPhase30() {
 /** Phase 19b: policy tiers, acme's assigned policies, its tenant admin "tara", a deleted tenant name.
  *  Fixed ids (not nextId()) so the ids of the earlier seed stay as they were. */
 function seedTenantAdmin(t: number) {
-  for (const [name, tier] of [['gold', 'gold'], ['silver', 'silver'], ['bronze', 'bronze']]) {
+  for (const [name, tier] of [
+    ['gold', 'gold'],
+    ['silver', 'silver'],
+    ['bronze', 'bronze'],
+  ]) {
     const p = db.policies.find((x) => x.name === name);
     if (p) p.tier = tier;
   }
@@ -1808,14 +2709,33 @@ function seedTenantAdmin(t: number) {
   db.tenantPolicies.acme = ids(['gold', 'silver', 'databases-hourly']);
   db.tenantPolicies.initech = ids(['silver', 'bronze']);
   db.users.push({
-    id: 90_001, name: 'tara', role: 'tenant_admin', tenant: 'acme', disabled: false, created: t - 86400 * 12,
-    password: 'nexus', totp_secret: b32(), last_login: t - 86400,
+    id: 90_001,
+    name: 'tara',
+    role: 'tenant_admin',
+    tenant: 'acme',
+    disabled: false,
+    created: t - 86400 * 12,
+    password: 'nexus',
+    totp_secret: b32(),
+    last_login: t - 86400,
   });
   db.users.push({
-    id: 90_002, name: 'acme-ops', role: 'tenant_user', tenant: 'acme', disabled: false, created: t - 86400 * 4,
-    password: 'nexus', totp_secret: b32(), last_login: t - 3 * 86400,
+    id: 90_002,
+    name: 'acme-ops',
+    role: 'tenant_user',
+    tenant: 'acme',
+    disabled: false,
+    created: t - 86400 * 4,
+    password: 'nexus',
+    totp_secret: b32(),
+    last_login: t - 3 * 86400,
   });
-  db.tombstones.push({ name: 'hooli', uid: '5d1f0c2e9a7b4c3d8e6f1a2b3c4d5e6f', deleted_at: t - 86400 * 33, deleted_by: 'admin' });
+  db.tombstones.push({
+    name: 'hooli',
+    uid: '5d1f0c2e9a7b4c3d8e6f1a2b3c4d5e6f',
+    deleted_at: t - 86400 * 33,
+    deleted_by: 'admin',
+  });
 }
 
 /** Phase 18a: Microsoft 365 plugin with two apps, a second M365 tenant as restore target (tenant migration). */
@@ -1827,19 +2747,47 @@ function seedM365(t: number) {
     kind: 'plugin:m365',
     name,
     config: {
-      tenant_id: domain, client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3', certificate: 'SECRET', private_key: 'SECRET',
-      apps: Array.from({ length: apps }, (_, i) => ({ client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`, certificate: 'SECRET' })),
-      exchange: true, onedrive: true, sharepoint: true, teams: true, teams_messages: false, chats: false, groups: true, teams_export_model: 'B',
-      sharepoint_host: `${sp}.sharepoint.com`, onedrive_host: `${sp}-my.sharepoint.com`,
+      tenant_id: domain,
+      client_id: '6f1c0a8e-2b4d-43f7-a5a1-e0b29d8c47f3',
+      certificate: 'SECRET',
+      private_key: 'SECRET',
+      apps: Array.from({ length: apps }, (_, i) => ({
+        client_id: `${i + 2}a3b4c5d-6e7f-4081-92a3-b4c5d6e7f801`,
+        certificate: 'SECRET',
+      })),
+      exchange: true,
+      onedrive: true,
+      sharepoint: true,
+      teams: true,
+      teams_messages: false,
+      chats: false,
+      groups: true,
+      teams_export_model: 'B',
+      sharepoint_host: `${sp}.sharepoint.com`,
+      onedrive_host: `${sp}-my.sharepoint.com`,
     } as Json,
   });
   const a = m365('m365-acme', 'acme.onmicrosoft.com', 'acme', 2);
   const b = m365('m365-acme-new', 'acmegroup.onmicrosoft.com', 'acmegroup', 0);
   db.sources.push(a, b);
-  for (const [g, gib, hh] of [['u.0c9d1c7a-1111-4222-8333-444455556666', 6.2, 2], ['u.5b2e4f10-aaaa-4bbb-8ccc-ddddeeeeffff', 3.4, 2]] as [string, number, number][])
+  for (const [g, gib, hh] of [
+    ['u.0c9d1c7a-1111-4222-8333-444455556666', 6.2, 2],
+    ['u.5b2e4f10-aaaa-4bbb-8ccc-ddddeeeeffff', 3.4, 2],
+  ] as [string, number, number][])
     for (let d = 4; d >= 0; d--) {
       const time = Math.floor(t / 86400 - d) * 86400 + hh * 3600;
-      if (time <= t) db.snapshots.push(snap('acme', `plugin-m365-${a.id}-${g}`, time, Math.round(gib * 2 ** 30), true, d > 0, d > 1 ? time + 7200 : null));
+      if (time <= t)
+        db.snapshots.push(
+          snap(
+            'acme',
+            `plugin-m365-${a.id}-${g}`,
+            time,
+            Math.round(gib * 2 ** 30),
+            true,
+            d > 0,
+            d > 1 ? time + 7200 : null,
+          ),
+        );
     }
   // today's backup: two items kept failing after Graph's retries — skipped, the job ends ok with warnings (contract v1.7)
   const user = `plugin-m365-${a.id}-u.0c9d1c7a-1111-4222-8333-444455556666`;
@@ -1855,20 +2803,43 @@ function seedM365(t: number) {
       `warnings ${user}/${start}: 2 items could not be read and are missing from the snapshot: mail/Inbox/Quarterly report ~3f9a0c1d2e4b.eml: 500 ErrorInternalServerError; onedrive/Projects/model.xlsx: 503 serviceNotAvailable`,
     ];
     Object.assign(addJob('plugin_backup', 'acme', { source_id: a.id }, 'scheduler'), {
-      created: start, started: start + 2, finished: start + 540, state: 'ok', plan: [],
+      created: start,
+      started: start + 2,
+      finished: start + 540,
+      state: 'ok',
+      plan: [],
       log: lines.map((l, i) => `${stamp(i)} ${l}`).join('\n'),
-      result: { snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }], source: user, time: start, consistent: true, warnings: 2 },
+      result: {
+        snapshots: [{ source: user, time: start, consistent: true, warnings: 2 }],
+        source: user,
+        time: start,
+        consistent: true,
+        warnings: 2,
+      },
     });
   }
   // Phase 33: a compliance case over acme's Microsoft 365 snapshots (its search finished)
   const cs: Json = {
-    id: nextId(), tenant: 'acme', name: 'matter-2026-17', description: 'Contract dispute with Initrode (counsel: K. Weber)',
-    criteria: { query: 'Invoice 4711', case_sensitive: false, source_prefix: 'plugin-m365-' }, state: 'open',
-    created_by: 'so', created_at: t - 3 * 3600, closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+    id: nextId(),
+    tenant: 'acme',
+    name: 'matter-2026-17',
+    description: 'Contract dispute with Initrode (counsel: K. Weber)',
+    criteria: { query: 'Invoice 4711', case_sensitive: false, source_prefix: 'plugin-m365-' },
+    state: 'open',
+    created_by: 'so',
+    created_at: t - 3 * 3600,
+    closed_by: null,
+    closed_at: null,
+    last_job: null,
+    searched_at: null,
+    truncated: false,
   };
   db.cases.push(cs);
   caseSearch(cs, 'so');
-  Object.assign(db.jobs.find((j) => j.id === cs.last_job)!, { state: 'ok', created: t - 3 * 3600, started: t - 3 * 3600 + 1, finished: t - 3 * 3600 + 4 });
+  Object.assign(
+    db.jobs.find((j) => j.id === cs.last_job)!,
+    { state: 'ok', created: t - 3 * 3600, started: t - 3 * 3600 + 1, finished: t - 3 * 3600 + 4 },
+  );
   cs.searched_at = t - 3 * 3600 + 4;
 }
 
@@ -1882,12 +2853,19 @@ function runControl(b: Json): {
   require_consistency: { mode: string; level: string };
   file_filters: { exclude: string[]; exclude_regex: string[] };
 } {
-  if (!parseSchedule(String(b.schedule ?? ''))) throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
+  if (!parseSchedule(String(b.schedule ?? '')))
+    throw new HttpError(400, `schedule: bad schedule ${JSON.stringify(b.schedule)}`);
   const retry = b.retry ?? { count: 3, delay_min: 5 };
   if (!(retry.count >= 0 && retry.count <= 10 && retry.delay_min >= 1 && retry.delay_min <= 1440))
     throw new HttpError(400, 'retry: count 0..=10, delay_min 1..=1440');
-  const blackout: BlackoutWindow[] = (b.blackout ?? []).map((w: Json) => ({ days: w.days ?? [], from: w.from, to: w.to, abort: !!w.abort }));
-  if (blackout.length > 20 || !blackout.every(validWindow)) throw new HttpError(400, 'blackout: from/to must be different HH:MM times');
+  const blackout: BlackoutWindow[] = (b.blackout ?? []).map((w: Json) => ({
+    days: w.days ?? [],
+    from: w.from,
+    to: w.to,
+    abort: !!w.abort,
+  }));
+  if (blackout.length > 20 || !blackout.every(validWindow))
+    throw new HttpError(400, 'blackout: from/to must be different HH:MM times');
   const sla = b.sla_minutes ?? null;
   if (sla !== null && !(sla >= 1 && sla <= 10080)) throw new HttpError(400, 'sla_minutes: 1..=10080');
   // Phase 15d
@@ -1896,12 +2874,17 @@ function runControl(b: Json): {
     throw new HttpError(400, 'require_consistency: mode off|warn|fail, level application|crash');
   // Phase 15e: global file excludes
   const ff = b.file_filters ?? {};
-  for (const k of Object.keys(ff)) if (!['exclude', 'exclude_regex'].includes(k)) throw new HttpError(400, `file_filters: unknown field "${k}"`);
+  for (const k of Object.keys(ff))
+    if (!['exclude', 'exclude_regex'].includes(k)) throw new HttpError(400, `file_filters: unknown field "${k}"`);
   const list = (v: unknown, what: string) => {
-    if (!Array.isArray(v ?? []) || ((v ?? []) as unknown[]).some((x) => typeof x !== 'string' || !x.trim())) throw new HttpError(400, `${what}: non-empty patterns`);
+    if (!Array.isArray(v ?? []) || ((v ?? []) as unknown[]).some((x) => typeof x !== 'string' || !x.trim()))
+      throw new HttpError(400, `${what}: non-empty patterns`);
     return (v ?? []) as string[];
   };
-  const file_filters = { exclude: list(ff.exclude, 'file_filters.exclude'), exclude_regex: list(ff.exclude_regex, 'file_filters.exclude_regex') };
+  const file_filters = {
+    exclude: list(ff.exclude, 'file_filters.exclude'),
+    exclude_regex: list(ff.exclude_regex, 'file_filters.exclude_regex'),
+  };
   return { retry, blackout, sla_minutes: sla, require_consistency: { mode: rc.mode, level: rc.level }, file_filters };
 }
 
@@ -1936,7 +2919,9 @@ function groupState(g: (typeof db.groups)[number]) {
     .sort((a, b) => b.id - a.id)[0];
   return {
     ...g,
-    last_backup: lastJob ? { id: lastJob.id, state: lastJob.state, started: lastJob.started, finished: lastJob.finished } : null,
+    last_backup: lastJob
+      ? { id: lastJob.id, state: lastJob.state, started: lastJob.started, finished: lastJob.finished }
+      : null,
     next_backup: nextStart(pol?.schedule),
     timezone: g.timezone ?? 'UTC',
     paused_until: g.paused_until ?? null,
@@ -1955,7 +2940,8 @@ function groupState(g: (typeof db.groups)[number]) {
 /** "Back up now" params: `guests` (a subset of the group's) or `failed_only` (from the last failed run). */
 function backupGuests(p: Json) {
   if (p.group_id === undefined) {
-    if (p.guests !== undefined || p.failed_only) throw new HttpError(400, 'params: guests and failed_only need group_id');
+    if (p.guests !== undefined || p.failed_only)
+      throw new HttpError(400, 'params: guests and failed_only need group_id');
     return;
   }
   const g = find(db.groups, (x) => x.id === p.group_id, 'group');
@@ -1969,14 +2955,25 @@ function backupGuests(p: Json) {
     if (Array.isArray(last.result?.failed_guests)) p.guests = last.result.failed_guests;
     return;
   }
-  if (p.guests !== undefined && (!Array.isArray(p.guests) || !p.guests.length || p.guests.some((x: unknown) => !resolveGuests(g).includes(x as never))))
+  if (
+    p.guests !== undefined &&
+    (!Array.isArray(p.guests) ||
+      !p.guests.length ||
+      p.guests.some((x: unknown) => !resolveGuests(g).includes(x as never)))
+  )
     throw new HttpError(400, "guests: a non-empty subset of the group's guests");
 }
 
 /** Demo state: retries, blackout window, SLA, a paused group, a source in maintenance, a retry chain. */
 function seedRunControl(t: number) {
   for (const p of db.policies)
-    Object.assign(p, { retry: { count: 3, delay_min: 5 }, blackout: [], sla_minutes: null, require_consistency: { mode: 'off', level: 'crash' }, ...p });
+    Object.assign(p, {
+      retry: { count: 3, delay_min: 5 },
+      blackout: [],
+      sla_minutes: null,
+      require_consistency: { mode: 'off', level: 'crash' },
+      ...p,
+    });
   const pol = (n: string) => db.policies.find((p) => p.name === n)!;
   pol('gold').retry = { count: 2, delay_min: 10 };
   pol('gold').sla_minutes = 240;
@@ -1985,7 +2982,8 @@ function seedRunControl(t: number) {
   pol('databases-hourly').schedule = 'every 2h at 15';
   pol('databases-hourly').sla_minutes = 20;
   pol('silver').schedule = 'Mon-Sat 22:00';
-  for (const g of db.groups) Object.assign(g, { timezone: g.tenant === 'initech' ? 'Europe/Berlin' : 'UTC', paused_until: null, ...g });
+  for (const g of db.groups)
+    Object.assign(g, { timezone: g.tenant === 'initech' ? 'Europe/Berlin' : 'UTC', paused_until: null, ...g });
   const grp = (n: string) => db.groups.find((g) => g.name === n)!;
   const nas02 = grp('acme-nas02');
   nas02.paused_until = -1;
@@ -1997,19 +2995,46 @@ function seedRunControl(t: number) {
   if (first) {
     first.result = { failed_guests: [101] };
     first.log += `\n[scheduler] attempt 1 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`;
-    const second = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', { attempt: 2, retry_of: first.id });
-    Object.assign(second, {
-      created: (first.finished ?? t) + 1, started: (first.finished ?? t) + 600, finished: (first.finished ?? t) + 640, state: 'failed', plan: [],
-      result: { failed_guests: [101] },
-      log: ['starting backup of vm-101 via node pve2', 'ERROR: backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped', `[scheduler] attempt 2 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`].join('\n'),
+    const second = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', {
+      attempt: 2,
+      retry_of: first.id,
     });
-    const third = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', { attempt: 3, retry_of: first.id });
+    Object.assign(second, {
+      created: (first.finished ?? t) + 1,
+      started: (first.finished ?? t) + 600,
+      finished: (first.finished ?? t) + 640,
+      state: 'failed',
+      plan: [],
+      result: { failed_guests: [101] },
+      log: [
+        'starting backup of vm-101 via node pve2',
+        'ERROR: backup of guest 101 failed: fleecing storage local-lvm on node pve2 has 3.1 GiB (3 %) free, below the guard (15 % or 20 GiB free, whichever is smaller): guest skipped',
+        `[scheduler] attempt 2 of 3 failed; retry as job ${db.seq + 1} in 10 min for [101]`,
+      ].join('\n'),
+    });
+    const third = addJob('backup', 'initech', { group_id: prod.id, guests: [101] }, 'scheduler', {
+      attempt: 3,
+      retry_of: first.id,
+    });
     Object.assign(third, { created: (second.finished ?? t) + 1, not_before: t + 8 * 60 });
   }
   db.alerts.push(
-    mkAlert({ ts: t - 7 * 3600, severity: 'warning', kind: 'paused', key: `paused:group:${nas02.id}:-1`, tenant: 'acme', message: `group ${nas02.id} acme-nas02 (acme) paused until further notice: no scheduled backups meanwhile` }),
     mkAlert({
-      ts: t - 26 * 3600, severity: 'warning', kind: 'sla_missed', key: 'sla_missed:4690', tenant: 'acme', resolved_at: t - 25 * 3600, resolved_by: 'op',
+      ts: t - 7 * 3600,
+      severity: 'warning',
+      kind: 'paused',
+      key: `paused:group:${nas02.id}:-1`,
+      tenant: 'acme',
+      message: `group ${nas02.id} acme-nas02 (acme) paused until further notice: no scheduled backups meanwhile`,
+    }),
+    mkAlert({
+      ts: t - 26 * 3600,
+      severity: 'warning',
+      kind: 'sla_missed',
+      key: 'sla_missed:4690',
+      tenant: 'acme',
+      resolved_at: t - 25 * 3600,
+      resolved_by: 'op',
       message: `backup job 4690 of group acme-databases (acme) still running after 21 min (SLA 20 min)`,
     }),
   );
@@ -2032,20 +3057,26 @@ const pub = (u: User) => ({
   last_login: u.last_login ?? null,
   eligible_role: u.eligible_role ?? null,
 });
-const canDownload = (u: User) => u.can_download ?? ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role);
+const canDownload = (u: User) =>
+  u.can_download ?? ['admin', 'operator', 'tenant_admin', 'tenant_user'].includes(u.role);
 const PRIV: Role[] = ['admin', 'security_officer'];
 const ACT_SECS = 72 * 3600;
 const normCode = (s: string) => s.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 const newCode = () => b32(26).replace(/(.{4})(?=.)/g, '$1-');
 /** Admins and security officers that are enabled and activated: they can approve requests. */
-const approvers = (except?: (u: User) => boolean) => db.users.filter((u) => PRIV.includes(u.role) && !u.disabled && !u.act && !except?.(u));
+const approvers = (except?: (u: User) => boolean) =>
+  db.users.filter((u) => PRIV.includes(u.role) && !u.disabled && !u.act && !except?.(u));
 const activationPath = (name: string) => `/#/activate?name=${encodeURIComponent(name)}`;
 /** Starts (or restarts) the activation of `x`: old credentials stop working. Returns the code to show. */
 function startActivation(x: User, split: boolean): Json {
   const code = newCode();
   x.password = '';
   x.totp_secret = '';
-  x.act = { parts: split ? [normCode(code), null] : [normCode(code)], expires: split ? null : now() + ACT_SECS, failures: 0 };
+  x.act = {
+    parts: split ? [normCode(code), null] : [normCode(code)],
+    expires: split ? null : now() + ACT_SECS,
+    failures: 0,
+  };
   for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
   pkSeed();
   pk.keys = pk.keys.filter((k) => k.user_id !== x.id); // lost passkeys: recovered by a new activation
@@ -2072,9 +3103,27 @@ function assignedPolicy(u: User, tenant: string, policyId: number) {
 }
 /** Policy tier templates (web-api `tenancy::TEMPLATES`). */
 const TEMPLATES = [
-  { tier: 'bronze', name: 'Bronze', schedule: 'daily 02:00', gfs: { recent: 0, daily: 7, weekly: 4, monthly: 3, yearly: 0 }, offsite: false },
-  { tier: 'silver', name: 'Silver', schedule: 'daily 01:00', gfs: { recent: 0, daily: 14, weekly: 8, monthly: 12, yearly: 0 }, offsite: true },
-  { tier: 'gold', name: 'Gold', schedule: 'every 6h at 15', gfs: { recent: 0, daily: 30, weekly: 12, monthly: 24, yearly: 7 }, offsite: true },
+  {
+    tier: 'bronze',
+    name: 'Bronze',
+    schedule: 'daily 02:00',
+    gfs: { recent: 0, daily: 7, weekly: 4, monthly: 3, yearly: 0 },
+    offsite: false,
+  },
+  {
+    tier: 'silver',
+    name: 'Silver',
+    schedule: 'daily 01:00',
+    gfs: { recent: 0, daily: 14, weekly: 8, monthly: 12, yearly: 0 },
+    offsite: true,
+  },
+  {
+    tier: 'gold',
+    name: 'Gold',
+    schedule: 'every 6h at 15',
+    gfs: { recent: 0, daily: 30, weekly: 12, monthly: 24, yearly: 7 },
+    offsite: true,
+  },
 ];
 /** Tenant of an audit entry (web-api: `audit_tenants`, derived from actor, details and target). */
 function auditTenant(e: Json): string | null {
@@ -2085,7 +3134,8 @@ function auditTenant(e: Json): string | null {
   const [kind, id] = String(e.target).split('/');
   if (kind === 'tenant' || kind === 'snapshot') return id ?? null;
   const n = Number(id);
-  const pick = (xs: { id: unknown; tenant: string | null }[]) => xs.find((x) => x.id === n || x.id === id)?.tenant ?? null;
+  const pick = (xs: { id: unknown; tenant: string | null }[]) =>
+    xs.find((x) => x.id === n || x.id === id)?.tenant ?? null;
   if (kind === 'source') return pick(db.sources);
   if (kind === 'group') return pick(db.groups);
   if (kind === 'agent') return pick(db.agents);
@@ -2093,7 +3143,8 @@ function auditTenant(e: Json): string | null {
   if (kind === 'user') return pick(db.users);
   return null;
 }
-const byTenant = <T extends { tenant: string }>(u: User, xs: T[]) => (u.tenant ? xs.filter((x) => x.tenant === u.tenant) : xs);
+const byTenant = <T extends { tenant: string }>(u: User, xs: T[]) =>
+  u.tenant ? xs.filter((x) => x.tenant === u.tenant) : xs;
 function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
   const x = xs.find(pred);
   if (!x) throw new HttpError(404, `${what} not found`);
@@ -2104,7 +3155,15 @@ function find<T>(xs: T[], pred: (x: T) => boolean, what: string): T {
 // (console.unlock: nobody executes it; the requester then fetches the code once, 14c)
 // (tenant.attach_offsite: the requester then submits the recovery key, the scheduler runs the attach, 17d)
 // (vault.disable: completed at the console with the recovery key, 17c)
-const SCHEDULER_ACTIONS = ['recovery_plan.execute', 'replication.key_export', 'gc_large', 'console.unlock', 'tenant.recovery_key', 'tenant.attach_offsite', 'vault.disable'];
+const SCHEDULER_ACTIONS = [
+  'recovery_plan.execute',
+  'replication.key_export',
+  'gc_large',
+  'console.unlock',
+  'tenant.recovery_key',
+  'tenant.attach_offsite',
+  'vault.disable',
+];
 // 202 {quorum_id, ...extra} like web-api's `accepted()`; with approvals disabled the
 // action runs at once (200 {approvals: "disabled", executed}).
 // Phase 33 (catalog::approvers): the opted-in tenants an action destroys or weakens
@@ -2113,7 +3172,8 @@ function gatedTenants(action: string, p: Json): string[] {
   let ts: string[] = [];
   if (['snapshot.delete', 'snapshot.hold_release', 'tenant.approvers.disable'].includes(action)) ts = [p.tenant];
   else if (['tenant.disable', 'tenant.delete', 'tenant.update'].includes(action)) ts = [p.name];
-  else if (['group.update', 'group.delete'].includes(action)) ts = db.groups.filter((g) => g.id === Number(p.id)).map((g) => g.tenant);
+  else if (['group.update', 'group.delete'].includes(action))
+    ts = db.groups.filter((g) => g.id === Number(p.id)).map((g) => g.tenant);
   else if (action === 'policy.update') ts = db.groups.filter((g) => g.policy_id === Number(p.id)).map((g) => g.tenant);
   else if (action === 'replication.key_export') ts = p.tenants ?? [];
   return [...new Set(ts.filter((t) => t && db.tenantApprovals[t]))].sort();
@@ -2122,7 +3182,8 @@ const tenantApprovers = (tenant: string) =>
   db.users
     .filter((x) => x.role === 'tenant_admin' && x.tenant === tenant && !x.disabled && !x.act)
     .map((x) => ({ name: x.name, eligible_from: (x.approver_since ?? x.created ?? 0) + APPROVER_WAIT }));
-const ownConsent = (tenant: string, by: string) => tenantApprovers(tenant).some((a) => a.name === by && a.eligible_from <= now());
+const ownConsent = (tenant: string, by: string) =>
+  tenantApprovers(tenant).some((a) => a.name === by && a.eligible_from <= now());
 const tenantRows = (action: string, p: Json, by: string) =>
   gatedTenants(action, p).map((tenant) =>
     ownConsent(tenant, by)
@@ -2132,15 +3193,39 @@ const tenantRows = (action: string, p: Json, by: string) =>
 async function quorum(u: User, action: string, params: Json, extra: Json = {}): Promise<[number, Json]> {
   const tenant_approvals = tenantRows(action, params, u.name);
   if (!db.approvals && tenant_approvals.some((x) => !x.decision)) {
-    const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
-                approved_by: u.name, approved_at: now(), tenant_approvals };
+    const q = {
+      id: nextId(),
+      action,
+      params,
+      requested_by: u.name,
+      created: now(),
+      decided_by: null,
+      decided_at: null,
+      state: 'pending',
+      approved_by: u.name,
+      approved_at: now(),
+      tenant_approvals,
+    };
     db.quorum.push(q);
-    await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params, tenant_approvers: tenant_approvals.map((x) => x.tenant) });
+    await audit(u.name, 'quorum.request', `quorum/${q.id}`, {
+      action,
+      params,
+      tenant_approvers: tenant_approvals.map((x) => x.tenant),
+    });
     return [202, { quorum_id: q.id, ...extra }];
   }
   if (!db.approvals) {
     if (SCHEDULER_ACTIONS.includes(action)) {
-      const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
+      const q = {
+        id: nextId(),
+        action,
+        params,
+        requested_by: u.name,
+        created: now(),
+        decided_by: u.name,
+        decided_at: now(),
+        state: 'approved',
+      };
       db.quorum.push(q);
       await audit(u.name, action, `quorum/${q.id}`, { approvals: 'disabled', params });
       return [200, { approvals: 'disabled', executed: false, quorum_id: q.id, state: 'approved', ...extra }];
@@ -2149,8 +3234,19 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
     await audit(u.name, action, action, { approvals: 'disabled', params });
     return [200, { approvals: 'disabled', executed: true, ...extra }];
   }
-  const q = { id: nextId(), action, params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending',
-              approved_by: null, approved_at: null, tenant_approvals };
+  const q = {
+    id: nextId(),
+    action,
+    params,
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+    approved_by: null,
+    approved_at: null,
+    tenant_approvals,
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params });
   return [202, { quorum_id: q.id, ...extra }];
@@ -2159,7 +3255,8 @@ async function quorum(u: User, action: string, params: Json, extra: Json = {}): 
 function stripSource(s: (typeof db.sources)[number]) {
   if (s.kind === 'linux') return s;
   if (s.kind.startsWith('plugin:')) {
-    const secrets: string[] = pluginKind(s.kind)?.kind.secret_fields ?? Object.keys(s.config).filter((k) => /password|secret|key/.test(k));
+    const secrets: string[] =
+      pluginKind(s.kind)?.kind.secret_fields ?? Object.keys(s.config).filter((k) => /password|secret|key/.test(k));
     const config: Json = {};
     for (const [k, v] of Object.entries(s.config)) {
       if (secrets.includes(k)) config[`${k}_set`] = v !== undefined && v !== '';
@@ -2170,18 +3267,32 @@ function stripSource(s: (typeof db.sources)[number]) {
     for (const [k, v] of Object.entries(config))
       if (Array.isArray(v) && v.some((x) => x && typeof x === 'object'))
         config[k] = v.map((item: Json) =>
-          Object.fromEntries(Object.entries(item).map(([f, x]) => (secrets.includes(f) ? [`${f}_set`, x !== undefined && x !== ''] : [f, x]))),
+          Object.fromEntries(
+            Object.entries(item).map(([f, x]) =>
+              secrets.includes(f) ? [`${f}_set`, x !== undefined && x !== ''] : [f, x],
+            ),
+          ),
         );
     return { ...s, config };
   }
   if (s.kind === 'nfs' || s.kind === 'smb') {
     const { password, keytab, ...config } = s.config;
-    return s.kind === 'nfs' ? { ...s, config } : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
+    return s.kind === 'nfs'
+      ? { ...s, config }
+      : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
   }
   if (s.kind === 'truenas') {
     const { token_secret, ssh, ...rest } = s.config;
     const { key_pem, ...sshPub } = ssh ?? {};
-    return { ...s, config: { ...rest, token_secret_set: !!token_secret, ssh: { ...sshPub, key_pem_set: !!key_pem }, authorized_keys: truenasKeyLine(s.config) } };
+    return {
+      ...s,
+      config: {
+        ...rest,
+        token_secret_set: !!token_secret,
+        ssh: { ...sshPub, key_pem_set: !!key_pem },
+        authorized_keys: truenasKeyLine(s.config),
+      },
+    };
   }
   const { token_secret, ...config } = s.config;
   return { ...s, config: { ...config, token_secret_set: !!token_secret } };
@@ -2199,10 +3310,15 @@ function truenasKeyLine(c: Json): string | undefined {
 function truenasConfig(cfg: Json, old?: Json): Json {
   const c = structuredClone(cfg ?? {});
   if (!c.host) throw new HttpError(400, 'host: required');
-  if (!Array.isArray(c.datasets) || !c.datasets.length || c.datasets.length > 64) throw new HttpError(400, 'datasets: 1 to 64 dataset names required');
-  if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE')) throw new HttpError(400, 'ca_pem: PEM certificate required');
+  if (!Array.isArray(c.datasets) || !c.datasets.length || c.datasets.length > 64)
+    throw new HttpError(400, 'datasets: 1 to 64 dataset names required');
+  if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE'))
+    throw new HttpError(400, 'ca_pem: PEM certificate required');
   if (c.existing_snapshots !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(c.existing_snapshots))
-    throw new HttpError(400, 'existing_snapshots: the snapshot name prefix, [A-Za-z0-9][A-Za-z0-9_-]{0,31} (e.g. auto-)');
+    throw new HttpError(
+      400,
+      'existing_snapshots: the snapshot name prefix, [A-Za-z0-9][A-Za-z0-9_-]{0,31} (e.g. auto-)',
+    );
   checkReadLimit(c.read_limit);
   if (!c.token_secret) {
     if (!old?.token_secret) throw new HttpError(400, 'token_secret (API key): required');
@@ -2224,16 +3340,22 @@ const weakens = (a: Json, b: Json) =>
   ) ||
   (a.offsite && !b.offsite) ||
   // Phase 13b: a new blackout window means fewer runs
-  (b.blackout ?? []).some((w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w))) ||
+  (b.blackout ?? []).some(
+    (w: Json) => !(a.blackout ?? []).some((x: Json) => JSON.stringify(x) === JSON.stringify(w)),
+  ) ||
   // Phase 15d: a relaxed consistency requirement
   (b.require_consistency &&
-    (['off', 'warn', 'fail'].indexOf(b.require_consistency.mode) < ['off', 'warn', 'fail'].indexOf(a.require_consistency?.mode ?? 'off') ||
-      (b.require_consistency.mode !== 'off' && a.require_consistency?.level === 'application' && b.require_consistency.level === 'crash')));
+    (['off', 'warn', 'fail'].indexOf(b.require_consistency.mode) <
+      ['off', 'warn', 'fail'].indexOf(a.require_consistency?.mode ?? 'off') ||
+      (b.require_consistency.mode !== 'off' &&
+        a.require_consistency?.level === 'application' &&
+        b.require_consistency.level === 'crash')));
 // web-api refuses inline secrets in opaque JSON blobs (secrets live in files).
 function noInlineSecrets(v: unknown) {
   if (v && typeof v === 'object')
     for (const [k, x] of Object.entries(v)) {
-      if (/secret|password|passphrase|private/i.test(k)) throw new HttpError(400, `inline secret "${k}" not allowed; reference a file`);
+      if (/secret|password|passphrase|private/i.test(k))
+        throw new HttpError(400, `inline secret "${k}" not allowed; reference a file`);
       noInlineSecrets(x);
     }
 }
@@ -2241,7 +3363,8 @@ function noInlineSecrets(v: unknown) {
 // tenants.offsite: an S3 remote may carry its secret_key (write-only, "sealed" here); omitted on PUT = keep
 /** Bandwidth windows (Phase 17a) as the web-api validates them. */
 function checkWindows(w: RateWindow[]) {
-  if (!Array.isArray(w) || w.length > 32 || !w.every(validRateWindow)) throw new HttpError(400, 'windows: from/to different HH:MM, limit needs rate_bytes > 0');
+  if (!Array.isArray(w) || w.length > 32 || !w.every(validRateWindow))
+    throw new HttpError(400, 'windows: from/to different HH:MM, limit needs rate_bytes > 0');
 }
 
 function tenantOffsite(body: Json, old?: Json): Json {
@@ -2253,8 +3376,10 @@ function tenantOffsite(body: Json, old?: Json): Json {
   }
   const { secret_key, secret_key_set: _set, ...rest } = r;
   noInlineSecrets({ ...o, remote: rest });
-  if (!/^https:\/\/[^/?#@ ]+\/?$/.test(String(r.endpoint ?? ''))) throw new HttpError(400, 'offsite.remote.endpoint: expected https://host[:port]');
-  const keep = old?.remote?.type === 's3' && ['endpoint', 'region', 'bucket', 'access_key'].every((k) => old.remote[k] === r[k]);
+  if (!/^https:\/\/[^/?#@ ]+\/?$/.test(String(r.endpoint ?? '')))
+    throw new HttpError(400, 'offsite.remote.endpoint: expected https://host[:port]');
+  const keep =
+    old?.remote?.type === 's3' && ['endpoint', 'region', 'bucket', 'access_key'].every((k) => old.remote[k] === r[k]);
   if (!secret_key && !keep) throw new HttpError(400, 'offsite.remote.secret_key: required');
   o.remote = { ...rest, secret_key: secret_key ? `sealed:${secret_key.length}` : old!.remote.secret_key };
   return o;
@@ -2277,24 +3402,43 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       const e = find(db.plugins, (x) => x.id === p.id && x.version === p.version, 'plugin version');
       const prev = versions(p.id).find((x) => x.current);
       for (const x of versions(p.id)) x.current = false;
-      Object.assign(e, { state: 'installed', current: true, enabled: prev ? prev.enabled : true, installed_at: now(), quorum_id: null });
+      Object.assign(e, {
+        state: 'installed',
+        current: true,
+        enabled: prev ? prev.enabled : true,
+        installed_at: now(),
+        quorum_id: null,
+      });
       break;
     }
     case 'plugin.disable':
       for (const x of versions(p.id)) x.enabled = false;
       break;
     case 'plugin.activate': {
-      const e = find(db.plugins, (x) => x.id === p.id && x.version === p.version && x.state === 'installed', 'installed plugin version');
+      const e = find(
+        db.plugins,
+        (x) => x.id === p.id && x.version === p.version && x.state === 'installed',
+        'installed plugin version',
+      );
       const prev = versions(p.id).find((x) => x.current);
       for (const x of versions(p.id)) x.current = false;
       Object.assign(e, { current: true, enabled: prev ? prev.enabled : true });
       break;
     }
     case 'plugin.remove':
-      for (const x of versions(p.id)) Object.assign(x, { state: 'removed', current: false, enabled: false, quorum_id: null });
+      for (const x of versions(p.id))
+        Object.assign(x, { state: 'removed', current: false, enabled: false, quorum_id: null });
       break;
     case 'plugin_key.add':
-      db.pluginKeys.push({ fingerprint: p.fingerprint, publisher: p.publisher, public_key: p.public_key, added_by: by, approved_by: decider, added_at: now(), builtin: false });
+      db.pluginKeys.push({
+        fingerprint: p.fingerprint,
+        publisher: p.publisher,
+        public_key: p.public_key,
+        added_by: by,
+        approved_by: decider,
+        added_at: now(),
+        builtin: false,
+      });
       break;
     case 'plugin_key.remove':
       db.pluginKeys = db.pluginKeys.filter((k) => k.builtin || k.fingerprint !== p.fingerprint);
@@ -2322,13 +3466,17 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'replication_source.update': {
       const { id: _id, name: _n, ...fields } = next;
-      Object.assign(find(db.replSources, (x) => x.id === p.id, 'replication source'), structuredClone(fields));
+      Object.assign(
+        find(db.replSources, (x) => x.id === p.id, 'replication source'),
+        structuredClone(fields),
+      );
       break;
     }
     case 'replication.reopen': {
       const r = find(db.replSources, (x) => x.id === p.id, 'replication source');
       Object.assign(r, { closed_until: null, closed_by: null, closed_at: null });
-      for (const a of db.alerts.filter((x) => x.key === `vault_closed:${r.id}` && !x.resolved_at)) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler' });
+      for (const a of db.alerts.filter((x) => x.key === `vault_closed:${r.id}` && !x.resolved_at))
+        Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler' });
       break;
     }
     case 'tenant.delete':
@@ -2355,7 +3503,10 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'anomaly.sensitivity': {
       const k = `${p.tenant}/${p.source}`;
       if ((db.sensitivity[k] ?? 'medium') !== p.old)
-        throw new HttpError(409, 'the object changed since this request was made; reject it and request the change again');
+        throw new HttpError(
+          409,
+          'the object changed since this request was made; reject it and request the change again',
+        );
       if (p.level === 'medium') delete db.sensitivity[k];
       else db.sensitivity[k] = p.level;
       break;
@@ -2371,17 +3522,26 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'firewall.inbound':
       if (JSON.stringify(db.firewall[p.service]) !== JSON.stringify(p.old))
-        throw new HttpError(409, 'the rule changed since this request was made; reject it and request the change again');
+        throw new HttpError(
+          409,
+          'the rule changed since this request was made; reject it and request the change again',
+        );
       db.firewall[p.service] = structuredClone(p.rule);
       break;
     case 'settings.forwarding':
       db.forwarding = structuredClone(p.forwarding);
       break;
     case 'policy.update':
-      Object.assign(find(db.policies, (x) => x.id === p.id, 'policy'), next);
+      Object.assign(
+        find(db.policies, (x) => x.id === p.id, 'policy'),
+        next,
+      );
       break;
     case 'group.update':
-      Object.assign(find(db.groups, (x) => x.id === p.id, 'group'), next);
+      Object.assign(
+        find(db.groups, (x) => x.id === p.id, 'group'),
+        next,
+      );
       break;
     case 'approvals.disable':
       if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: approvals cannot be disabled');
@@ -2398,17 +3558,26 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     case 'tenant.disable': {
       const x = find(db.tenants, (y) => y.name === p.name, 'tenant');
       Object.assign(x, { disabled: true, disabled_at: now(), disabled_by: by, disabled_reason: p.reason });
-      for (const [sid, s] of db.sessions) if (db.users.find((y) => y.id === s.userId)?.tenant === p.name) db.sessions.delete(sid);
+      for (const [sid, s] of db.sessions)
+        if (db.users.find((y) => y.id === s.userId)?.tenant === p.name) db.sessions.delete(sid);
       break;
     }
     case 'oidc.update':
-      db.oidc = { ...db.oidc, ...next, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret };
+      db.oidc = {
+        ...db.oidc,
+        ...next,
+        client_secret: db.quorumSecrets.get(qid)?.client_secret ?? db.oidc.client_secret,
+      };
       db.quorumSecrets.delete(qid);
       break;
     // Phase 23a
     case 'tenant_oidc.update': {
       const cur = db.tenantIdps[p.tenant] ?? {};
-      db.tenantIdps[p.tenant] = { ...p.settings, domains: p.domains, client_secret: db.quorumSecrets.get(qid)?.client_secret ?? cur.client_secret };
+      db.tenantIdps[p.tenant] = {
+        ...p.settings,
+        domains: p.domains,
+        client_secret: db.quorumSecrets.get(qid)?.client_secret ?? cur.client_secret,
+      };
       db.quorumSecrets.delete(qid);
       break;
     }
@@ -2445,9 +3614,12 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       let resumed = 0;
       for (const g of v.paused) {
         const x = db.groups.find((y) => y.id === g.id);
-        if (x && x.paused_until === -1) (x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null, resumed++);
+        if (x && x.paused_until === -1)
+          ((x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null), resumed++);
       }
-      for (const a of db.alerts) if (a.key === 'incident' && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
+      for (const a of db.alerts)
+        if (a.key === 'incident' && !a.resolved_at)
+          Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
       Object.assign(v, { active: false, ended_at: now(), ended_by: by, approved_by: decider || by, resumed });
       break;
     }
@@ -2458,7 +3630,11 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
     }
     case 'snapshot.delete': {
       // the scheduler's `snapshot_delete` job; an offsite copy stays (offsite retention)
-      const x = find(db.snapshots, (y) => y.tenant === p.tenant && y.source === p.source && y.time === p.time, 'snapshot');
+      const x = find(
+        db.snapshots,
+        (y) => y.tenant === p.tenant && y.source === p.source && y.time === p.time,
+        'snapshot',
+      );
       if (x.offsite) x.local = false;
       else db.snapshots = db.snapshots.filter((y) => y !== x);
       break;
@@ -2473,7 +3649,8 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       netExecute(p, by, qid);
       break;
     case 'update.apply':
-      if (db.updates.available) Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
+      if (db.updates.available)
+        Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
       break;
     case 'user.update': {
       const { name: _n, id: _i, activation, ...fields } = next;
@@ -2486,17 +3663,29 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
           x.act.expires = now() + ACT_SECS;
         } else {
           Object.assign(x, { password: '', totp_secret: '' });
-          x.act = { parts: [db.quorumSecrets.get(qid)?.part1 ?? '', normCode(code)], expires: now() + ACT_SECS, failures: 0 };
+          x.act = {
+            parts: [db.quorumSecrets.get(qid)?.part1 ?? '', normCode(code)],
+            expires: now() + ACT_SECS,
+            failures: 0,
+          };
           for (const [sid, s] of db.sessions) if (s.userId === x.id) db.sessions.delete(sid);
           pkSeed();
           pk.keys = pk.keys.filter((k) => k.user_id !== x.id);
         }
         db.quorumSecrets.delete(qid);
         Object.assign(x, fields);
-        return { activation: { name: x.name, code, parts: 2, part: 2, expires: x.act.expires, path: activationPath(x.name) } };
+        return {
+          activation: { name: x.name, code, parts: 2, part: 2, expires: x.act.expires, path: activationPath(x.name) },
+        };
       }
-      const secrets = Object.fromEntries(Object.entries(db.quorumSecrets.get(qid) ?? {}).filter(([, v]) => v !== undefined));
-      Object.assign(find(db.users, (x) => x.id === p.id, 'user'), fields, secrets);
+      const secrets = Object.fromEntries(
+        Object.entries(db.quorumSecrets.get(qid) ?? {}).filter(([, v]) => v !== undefined),
+      );
+      Object.assign(
+        find(db.users, (x) => x.id === p.id, 'user'),
+        fields,
+        secrets,
+      );
       db.quorumSecrets.delete(qid);
       break;
     }
@@ -2532,7 +3721,17 @@ on('POST', '/auth/login', async (c) => {
   if (f && f.until > now()) throw new HttpError(429, 'too many failed sign-ins; try again in 15 minutes');
   const u = db.users.find((x) => x.name === name);
   const expired = !!u?.expires && u.expires <= now();
-  if (!u || u.disabled || tenantOff(u.tenant) || lockedDown(u.tenant) || expired || u.act || !u.password || u.password !== password || !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))) {
+  if (
+    !u ||
+    u.disabled ||
+    tenantOff(u.tenant) ||
+    lockedDown(u.tenant) ||
+    expired ||
+    u.act ||
+    !u.password ||
+    u.password !== password ||
+    !(passkey ? pkAssertionOk(u, passkey) : /^\d{6}$/.test(String(totp)) && !pkRequired(u))
+  ) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
     if (g.count >= 5) g.until = now() + 900;
@@ -2548,10 +3747,16 @@ on('POST', '/auth/login', async (c) => {
   u.last_login = now();
   deviceSeen(u, ua, '198.51.100.17'); // Phase 28
   // Phase 21b: beyond `max_sessions` the account's oldest sessions end
-  const mine = [...db.sessions.entries()].filter(([, x]) => x.userId === u.id).sort((a, b) => b[1].created - a[1].created || b[1].id - a[1].id);
+  const mine = [...db.sessions.entries()]
+    .filter(([, x]) => x.userId === u.id)
+    .sort((a, b) => b[1].created - a[1].created || b[1].id - a[1].id);
   const over = mine.slice(db.security.max_sessions);
   for (const [k] of over) db.sessions.delete(k);
-  if (over.length) await audit(u.name, 'session.limit', `user/${u.name}`, { ended: over.length, max_sessions: db.security.max_sessions });
+  if (over.length)
+    await audit(u.name, 'session.limit', `user/${u.name}`, {
+      ended: over.length,
+      max_sessions: db.security.max_sessions,
+    });
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Strict; Path=/`);
   await audit(u.name, 'auth.login', 'session', { method: passkey ? 'passkey' : 'totp' });
   return [200, { csrf, user: pub(u) }];
@@ -2595,13 +3800,21 @@ function resolveElevation(userId: number, sessionId: number) {
 function startElevation(p: Json): Json {
   const s = [...db.sessions.values()].find((x) => x.id === p.session && x.userId === p.user_id);
   const x = db.users.find((y) => y.id === p.user_id && y.eligible_role === p.role && !y.disabled);
-  if (!s || !x) throw new HttpError(409, 'the requesting session has ended or the account is no longer eligible: reject this request and ask again');
+  if (!s || !x)
+    throw new HttpError(
+      409,
+      'the requesting session has ended or the account is no longer eligible: reject this request and ask again',
+    );
   const until = now() + p.minutes * 60;
   s.elev = { role: p.role, until };
   const hm = new Date(until * 1000).toISOString().slice(11, 16);
   db.alerts.push(
     mkAlert({
-      ts: now(), severity: 'info', kind: 'role_elevation', key: `role_elevation:${x.id}:${s.id}`, tenant: null,
+      ts: now(),
+      severity: 'info',
+      kind: 'role_elevation',
+      key: `role_elevation:${x.id}:${s.id}`,
+      tenant: null,
       message: `account ${x.name} (${x.role}) elevated to ${p.role} for ${p.minutes} min (until ${hm} UTC): ${p.reason}`,
     }),
   );
@@ -2661,7 +3874,12 @@ on('POST', '/tenants/:name/impersonate', async (c, [name]) => {
     await audit(u.name, 'tenant.impersonate', `tenant/${tenant}`, { tenant, role: 'viewer' });
     return [200, { impersonating: sess.imp }];
   }
-  const [st, out] = await quorum(u, 'tenant.impersonate', { tenant, user: u.name, session: sess.id, role: 'tenant_admin' });
+  const [st, out] = await quorum(u, 'tenant.impersonate', {
+    tenant,
+    user: u.name,
+    session: sess.id,
+    role: 'tenant_admin',
+  });
   return [st, st === 200 ? { ...out, impersonating: sess.imp } : out];
 });
 on('POST', '/auth/impersonation/end', async (c) => {
@@ -2676,14 +3894,24 @@ on('POST', '/auth/impersonation/end', async (c) => {
 
 // tenants
 const NAME_RE = /^(?!\.)[A-Za-z0-9._-]{1,64}$/;
-const tenantUid = (name: string) => [...name.padEnd(16, '0')].map((ch, i) => ((ch.charCodeAt(0) * 31 + i * 7) & 0xff).toString(16).padStart(2, '0')).join('').slice(0, 32);
-const tiersOf = (name: string) => [...new Set((db.tenantPolicies[name] ?? []).map((id) => db.policies.find((p) => p.id === id)?.tier).filter(Boolean))];
+const tenantUid = (name: string) =>
+  [...name.padEnd(16, '0')]
+    .map((ch, i) => ((ch.charCodeAt(0) * 31 + i * 7) & 0xff).toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 32);
+const tiersOf = (name: string) => [
+  ...new Set((db.tenantPolicies[name] ?? []).map((id) => db.policies.find((p) => p.id === id)?.tier).filter(Boolean)),
+];
 on('GET', '/tenants', (c) => [
   200,
   db.tenants
     .filter((t) => !need(c.user).tenant || t.name === c.user!.tenant)
     .map((t) => ({
-      ...t, offsite: publicOffsite(t.offsite), uid: t.uid ?? tenantUid(t.name), policies: db.tenantPolicies[t.name] ?? [], tiers: tiersOf(t.name),
+      ...t,
+      offsite: publicOffsite(t.offsite),
+      uid: t.uid ?? tenantUid(t.name),
+      policies: db.tenantPolicies[t.name] ?? [],
+      tiers: tiersOf(t.name),
       tenant_approvals: !!db.tenantApprovals[t.name],
     })),
 ]);
@@ -2691,9 +3919,16 @@ on('GET', '/tenants', (c) => [
 const approversView = (tenant: string) => {
   const on = db.tenantApprovals[tenant];
   return {
-    tenant, enabled: !!on, enabled_at: on?.enabled_at ?? null, enabled_by: on?.enabled_by ?? null, wait_hours: 24,
+    tenant,
+    enabled: !!on,
+    enabled_at: on?.enabled_at ?? null,
+    enabled_by: on?.enabled_by ?? null,
+    wait_hours: 24,
     approvers: tenantApprovers(tenant).map((a) => ({ ...a, eligible: a.eligible_from <= now() })),
-    disable_request: db.quorum.find((q) => q.action === 'tenant.approvers.disable' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null,
+    disable_request:
+      db.quorum.find(
+        (q) => q.action === 'tenant.approvers.disable' && q.state === 'pending' && q.params.tenant === tenant,
+      )?.id ?? null,
   };
 };
 on('GET', '/tenants/:name/approvers', (c, [name]) => {
@@ -2708,7 +3943,8 @@ on('PUT', '/tenants/:name/approvers', async (c, [name]) => {
   if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
   if (c.body?.enabled === true) {
     if (db.tenantApprovals[tn]) throw new HttpError(409, 'tenant-side approvers are already required');
-    if (!tenantApprovers(tn).length) throw new HttpError(409, 'the tenant has no activated tenant admin who could approve');
+    if (!tenantApprovers(tn).length)
+      throw new HttpError(409, 'the tenant has no activated tenant admin who could approve');
     db.tenantApprovals[tn] = { enabled_at: now(), enabled_by: u.name };
     await audit(u.name, 'tenant.approvers', `tenant/${tn}`, { tenant: tn, enabled: true });
     return [200, approversView(tn)];
@@ -2722,7 +3958,8 @@ on('PUT', '/tenants/:name/policies', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
   const ids: number[] = c.body.policy_ids;
-  if (!Array.isArray(ids) || ids.some((id) => !db.policies.some((p) => p.id === id))) throw new HttpError(400, 'policy_ids: ids of existing policies');
+  if (!Array.isArray(ids) || ids.some((id) => !db.policies.some((p) => p.id === id)))
+    throw new HttpError(400, 'policy_ids: ids of existing policies');
   const old = db.tenantPolicies[tn] ?? [];
   db.tenantPolicies[tn] = [...new Set(ids)].sort((a, b) => a - b);
   await audit(u.name, 'tenant.policies', `tenant/${tn}`, { tenant: tn, policy_ids: db.tenantPolicies[tn], old });
@@ -2735,7 +3972,10 @@ on('POST', '/tenants', async (c) => {
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'tenant exists');
   if (db.tombstones.some((t) => t.name === name))
-    throw new HttpError(409, 'tenant name was used before by a deleted tenant: choose another name (keys and offsite paths are bound to names)');
+    throw new HttpError(
+      409,
+      'tenant name was used before by a deleted tenant: choose another name (keys and offsite paths are bound to names)',
+    );
   const offsite = tenantOffsite(c.body.offsite);
   db.tenants.push({ name, offsite });
   await audit(u.name, 'tenant.create', `tenant/${name}`, {});
@@ -2744,7 +3984,8 @@ on('POST', '/tenants', async (c) => {
 on('PUT', '/tenants/:name', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
-  if (c.body.offsite?.second !== undefined) throw new HttpError(400, 'offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2');
+  if (c.body.offsite?.second !== undefined)
+    throw new HttpError(400, 'offsite.second: set the second offsite target with PUT /tenants/{name}/offsite2');
   const next = tenantOffsite(c.body.offsite, t.offsite);
   checkWindows(next.windows ?? []);
   checkOffsiteGfs(next.gfs);
@@ -2758,7 +3999,11 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
   const bw = (o: Json) => ({ windows: o.windows ?? [], base: o.bwlimit, tz: o.timezone ?? 'UTC' });
   const tightened = rest(next) === rest(t.offsite ?? {}) && !bandwidthWeaker(bw(t.offsite ?? {}), bw(next));
   if (Object.keys(t.offsite ?? {}).length && JSON.stringify(next) !== JSON.stringify(t.offsite) && !tightened)
-    return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
+    return quorum(u, 'tenant.update', {
+      name: t.name,
+      offsite: publicOffsite(next),
+      old: { name: t.name, offsite: publicOffsite(t.offsite) },
+    });
   t.offsite = next;
   await audit(u.name, 'tenant.update', `tenant/${t.name}`, {});
   return [200, { ...t, offsite: publicOffsite(t.offsite) }];
@@ -2767,8 +4012,10 @@ on('PUT', '/tenants/:name', async (c, [name]) => {
 function checkOffsiteGfs(g: Json | undefined) {
   if (g == null) return;
   for (const [k, v] of Object.entries(g)) {
-    if (!['daily', 'weekly', 'monthly', 'yearly'].includes(k)) throw new HttpError(400, `offsite.gfs.${k}: unknown class (daily, weekly, monthly, yearly)`);
-    if (v != null && !(Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 10000)) throw new HttpError(400, `offsite.gfs.${k}: 0..=10000 or null`);
+    if (!['daily', 'weekly', 'monthly', 'yearly'].includes(k))
+      throw new HttpError(400, `offsite.gfs.${k}: unknown class (daily, weekly, monthly, yearly)`);
+    if (v != null && !(Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 10000))
+      throw new HttpError(400, `offsite.gfs.${k}: 0..=10000 or null`);
   }
 }
 on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
@@ -2778,7 +4025,8 @@ on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
   const before = t.offsite?.second ?? null;
   let second: Json | null = null;
   if (target != null) {
-    if (!t.offsite?.remote) throw new HttpError(400, 'target: the tenant has no offsite target yet: set up the first one');
+    if (!t.offsite?.remote)
+      throw new HttpError(400, 'target: the tenant has no offsite target yet: set up the first one');
     if (!target.remote) throw new HttpError(400, 'target.remote: required (sftp or s3)');
     second = tenantOffsite(target, before ?? undefined);
     checkOffsiteGfs(second.gfs);
@@ -2787,21 +4035,29 @@ on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
   if (second) next.second = second;
   else delete next.second;
   if (before && JSON.stringify(before) !== JSON.stringify(second))
-    return quorum(u, 'tenant.update', { name: t.name, offsite: publicOffsite(next), old: { name: t.name, offsite: publicOffsite(t.offsite) } });
+    return quorum(u, 'tenant.update', {
+      name: t.name,
+      offsite: publicOffsite(next),
+      old: { name: t.name, offsite: publicOffsite(t.offsite) },
+    });
   t.offsite = next;
   await audit(u.name, 'tenant.offsite2', `tenant/${t.name}`, { second: second ? publicOffsite(second) : null });
   return [200, { name: t.name, offsite: publicOffsite(t.offsite) }];
 });
-on('DELETE', '/tenants/:name', (c, [name]) => quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }));
+on('DELETE', '/tenants/:name', (c, [name]) =>
+  quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }),
+);
 // Phase 17d: attach an existing offsite copy (web-api offsite.rs): request → approval → recovery key once
 const ATTACH = 'tenant.attach_offsite';
-const attachOpen = (q: Json) => q.action === ATTACH && (q.state === 'pending' || (q.state === 'approved' && q.decided_at >= now() - 72 * 3600));
+const attachOpen = (q: Json) =>
+  q.action === ATTACH && (q.state === 'pending' || (q.state === 'approved' && q.decided_at >= now() - 72 * 3600));
 on('POST', '/tenants/attach', async (c) => {
   const u = need(c.user, 'admin', 'security_officer');
   const name = String(c.body.name ?? '').trim();
   if (!NAME_RE.test(name)) throw new HttpError(400, 'invalid tenant name');
   const r = c.body.offsite?.remote;
-  if (r?.type !== 'sftp' && r?.type !== 's3') throw new HttpError(400, 'offsite.remote: an SFTP (host, user, key_file, host_key) or S3 target');
+  if (r?.type !== 'sftp' && r?.type !== 's3')
+    throw new HttpError(400, 'offsite.remote: an SFTP (host, user, key_file, host_key) or S3 target');
   if (r.type === 's3' && !r.secret_key) throw new HttpError(400, 'offsite.remote.secret_key: required');
   if (db.tenants.some((t) => t.name === name)) throw new HttpError(409, 'a tenant with this name exists');
   const open = db.quorum.find((q) => attachOpen(q) && q.params.name === name);
@@ -2814,7 +4070,14 @@ on('POST', '/tenants/attach/:id/run', async (c, [id]) => {
   if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester of the attach submits the recovery key');
   if (q.state !== 'approved') throw new HttpError(409, `request is ${q.state}`);
   if (!attachOpen(q)) throw new HttpError(409, 'the approval is older than 72 h: request the attach again');
-  if (db.jobs.some((j) => j.kind === 'offsite_attach' && j.params.attach_quorum === q.id && (j.state === 'queued' || j.state === 'running')))
+  if (
+    db.jobs.some(
+      (j) =>
+        j.kind === 'offsite_attach' &&
+        j.params.attach_quorum === q.id &&
+        (j.state === 'queued' || j.state === 'running'),
+    )
+  )
     throw new HttpError(409, 'this attach is already running');
   const hex = String(c.body.recovery_key ?? '').replace(/[^0-9a-zA-Z]/g, '');
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new HttpError(400, 'recovery_key: 64 hex digits (16 groups of 4)');
@@ -2834,7 +4097,8 @@ on('POST', '/tenants/:name/deactivate', async (c, [name]) => {
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
   const reason = String(c.body.reason ?? '').trim();
-  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason))
+    throw new HttpError(400, 'reason: 1 to 500 characters, one line');
   if (x.disabled) throw new HttpError(409, 'tenant is already deactivated');
   if (db.quorum.some((q) => q.action === 'tenant.disable' && q.state === 'pending' && q.params.name === x.name))
     throw new HttpError(409, 'a request to deactivate this tenant is already pending');
@@ -2852,9 +4116,21 @@ on('POST', '/tenants/:name/reactivate', async (c, [name]) => {
 });
 
 // Phase 17c: vault mode (web-api `vault.rs`)
-const VAULT_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_restore'];
+const VAULT_KINDS = [
+  'restore',
+  'restore_ct',
+  'instant_recover',
+  'instant_disk',
+  'files_get',
+  'restore_files',
+  'synthetic_restore',
+  'plugin_restore',
+  'plugin_mount',
+  'offsite_restore',
+];
 function vaultRefuse(what: string) {
-  if (db.vault.enabled) throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
+  if (db.vault.enabled)
+    throw new HttpError(409, `vault mode is on: ${what} are not allowed on this appliance (Settings → Vault)`);
 }
 function vaultChecks() {
   const replicated = new Set(db.replSources.flatMap((s) => s.tenants as string[]));
@@ -2868,7 +4144,8 @@ function vaultChecks() {
     web_restricted: { ok: web.length > 0, allow: web },
   };
 }
-const vaultPending = (action: string) => db.quorum.filter((q) => q.action === action && q.state === 'pending').pop()?.id ?? null;
+const vaultPending = (action: string) =>
+  db.quorum.filter((q) => q.action === action && q.state === 'pending').pop()?.id ?? null;
 on('GET', '/vault', (c) => {
   const u = need(c.user);
   const out: Json = { ...db.vault };
@@ -2880,7 +4157,11 @@ on('GET', '/vault', (c) => {
       pending_enable: vaultPending('vault.enable'),
       pending_disable: vaultPending('vault.disable'),
       approved_disable:
-        db.quorum.filter((q) => q.action === 'vault.disable' && q.state === 'approved' && (q.decided_at ?? 0) > now() - 72 * 3600).pop()?.id ?? null,
+        db.quorum
+          .filter(
+            (q) => q.action === 'vault.disable' && q.state === 'approved' && (q.decided_at ?? 0) > now() - 72 * 3600,
+          )
+          .pop()?.id ?? null,
     });
   }
   return [200, out];
@@ -2892,8 +4173,18 @@ on('PUT', '/vault', async (c) => {
   if (want === db.vault.enabled) return [200, { enabled: want }];
   const action = want ? 'vault.enable' : 'vault.disable';
   if (vaultPending(action)) throw new HttpError(409, `a ${action} request is already pending`);
-  if (want && !Object.values(vaultChecks()).every((x) => x.ok)) throw new HttpError(409, 'vault mode cannot be enabled: a precondition is not met');
-  const q = { id: nextId(), action, params: { enabled: want }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  if (want && !Object.values(vaultChecks()).every((x) => x.ok))
+    throw new HttpError(409, 'vault mode cannot be enabled: a precondition is not met');
+  const q = {
+    id: nextId(),
+    action,
+    params: { enabled: want },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action, params: q.params });
   return [202, { quorum_id: q.id }];
@@ -2901,7 +4192,16 @@ on('PUT', '/vault', async (c) => {
 /** Vault mode: restores and downloads become one `vault.restore` request. */
 async function vaultGate(u: User, tenant: string, jobs: { kind: string; params: Json }[]): Promise<Reply | null> {
   if (!db.vault.enabled || !jobs.some((j) => VAULT_KINDS.includes(j.kind))) return null;
-  const q = { id: nextId(), action: 'vault.restore', params: { tenant, jobs }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'vault.restore',
+    params: { tenant, jobs },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
   return [202, { quorum_id: q.id, vault: true }];
@@ -2920,22 +4220,45 @@ on('PUT', '/restore-priority', async (c) => {
   const u = need(c.user, 'admin', 'operator');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const h = Number(c.body.hours);
-  if (!(Number.isInteger(h) && h >= 1 && h <= 24)) throw new HttpError(400, 'hours: 1..=24 (renew it if the recovery takes longer)');
+  if (!(Number.isInteger(h) && h >= 1 && h <= 24))
+    throw new HttpError(400, 'hours: 1..=24 (renew it if the recovery takes longer)');
   const old = db.priority && db.priority.until > now() ? db.priority : null;
-  db.priority = { until: now() + h * 3600, since: old?.since ?? now(), by: u.name, reason: String(c.body.reason ?? '').trim() };
-  await audit(u.name, 'restore_priority.on', 'restore_priority', { until: db.priority.until, hours: h, reason: db.priority.reason, renewed: !!old });
+  db.priority = {
+    until: now() + h * 3600,
+    since: old?.since ?? now(),
+    by: u.name,
+    reason: String(c.body.reason ?? '').trim(),
+  };
+  await audit(u.name, 'restore_priority.on', 'restore_priority', {
+    until: db.priority.until,
+    hours: h,
+    reason: db.priority.reason,
+    renewed: !!old,
+  });
   db.alerts = db.alerts.filter((a) => a.key !== 'restore_priority' || a.resolved_at);
-  db.alerts.push(mkAlert({ ts: now(), severity: 'warning', kind: 'restore_priority', key: 'restore_priority',
-    message: `restore priority is on (by ${u.name}${db.priority.reason ? `: ${db.priority.reason}` : ''}) until ${new Date(db.priority.until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC: scheduled backups, GC, verify, offsite uploads and replication are held` }));
+  db.alerts.push(
+    mkAlert({
+      ts: now(),
+      severity: 'warning',
+      kind: 'restore_priority',
+      key: 'restore_priority',
+      message: `restore priority is on (by ${u.name}${db.priority.reason ? `: ${db.priority.reason}` : ''}) until ${new Date(db.priority.until * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC: scheduled backups, GC, verify, offsite uploads and replication are held`,
+    }),
+  );
   return [200, prioValue()];
 });
 on('DELETE', '/restore-priority', async (c) => {
   const u = need(c.user, 'admin', 'operator');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   if (db.priority) {
-    await audit(u.name, 'restore_priority.off', 'restore_priority', { since: db.priority.since, until: db.priority.until });
+    await audit(u.name, 'restore_priority.off', 'restore_priority', {
+      since: db.priority.since,
+      until: db.priority.until,
+    });
     db.priority = null;
-    for (const a of db.alerts) if (a.key === 'restore_priority' && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+    for (const a of db.alerts)
+      if (a.key === 'restore_priority' && !a.resolved_at)
+        Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
   }
   return [200, prioValue()];
 });
@@ -2945,7 +4268,8 @@ on('GET', '/sources', (c) => [200, annotateSources(byTenant(need(c.user), db.sou
 /** Phase 22b (web-api nasops.rs): sizing note and overlap warning of share / TrueNAS sources. */
 const MEM_TOTAL = 32 * 2 ** 30;
 function annotateSources(rows: Json[]): Json[] {
-  const roots = (c: Json) => ((c.include ?? []).length ? c.include.map((r: string) => '/' + r.replace(/^\/+|\/+$/g, '')) : ['/']);
+  const roots = (c: Json) =>
+    (c.include ?? []).length ? c.include.map((r: string) => '/' + r.replace(/^\/+|\/+$/g, '')) : ['/'];
   const cov = (s: Json): [string, string[]] | null => {
     const c = s.config ?? {};
     const host = String(c.host ?? '').toLowerCase();
@@ -2960,26 +4284,42 @@ function annotateSources(rows: Json[]): Json[] {
     const mine = cs[i];
     if (!mine) return s;
     const overlaps = rows
-      .filter((_, j) => j !== i && cs[j]?.[0] === mine[0] && mine[1].some((a) => cs[j]![1].some((b) => under(a, b) || under(b, a))))
+      .filter(
+        (_, j) =>
+          j !== i && cs[j]?.[0] === mine[0] && mine[1].some((a) => cs[j]![1].some((b) => under(a, b) || under(b, a))),
+      )
       .map((o) => ({ id: o.id, name: o.name }));
     const n = db.sources.find((x) => x.id === s.id)?.sizing_entries;
     const est = n ? n * 800 : 0;
     const { sizing_entries: _n, ...rest } = s;
-    return { ...rest, overlaps, sizing: n ? { entries: n, est_ram_bytes: est, mem_total: MEM_TOTAL, warn: n >= 5_000_000 || est * 4 > MEM_TOTAL } : null };
+    return {
+      ...rest,
+      overlaps,
+      sizing: n
+        ? { entries: n, est_ram_bytes: est, mem_total: MEM_TOTAL, warn: n >= 5_000_000 || est * 4 > MEM_TOTAL }
+        : null,
+    };
   });
 }
 /** Phase 22b read limit (catalog::schedule::ReadLimit): bytes/s + limit windows, no pause. */
 function checkReadLimit(r: Json) {
   if (r === undefined) return;
-  for (const k of Object.keys(r ?? {})) if (!['bwlimit', 'windows', 'timezone'].includes(k)) throw new HttpError(400, `read_limit: unknown field "${k}"`);
-  if (r.bwlimit !== undefined && !(r.bwlimit > 0)) throw new HttpError(400, 'read_limit.bwlimit: bytes per second > 0 (omit for unlimited)');
+  for (const k of Object.keys(r ?? {}))
+    if (!['bwlimit', 'windows', 'timezone'].includes(k)) throw new HttpError(400, `read_limit: unknown field "${k}"`);
+  if (r.bwlimit !== undefined && !(r.bwlimit > 0))
+    throw new HttpError(400, 'read_limit.bwlimit: bytes per second > 0 (omit for unlimited)');
   if ((r.windows ?? []).some((w: Json) => w.action !== 'limit' || !(w.rate_bytes > 0)))
-    throw new HttpError(400, 'read_limit.windows: only `limit` windows with rate_bytes > 0 (a paused read would stall a running backup; use a blackout window)');
+    throw new HttpError(
+      400,
+      'read_limit.windows: only `limit` windows with rate_bytes > 0 (a paused read would stall a running backup; use a blackout window)',
+    );
 }
 function checkCaps(c: Json) {
-  if (c.max_parallel !== undefined && !(Number.isInteger(c.max_parallel) && c.max_parallel >= 1 && c.max_parallel <= 8)) throw new HttpError(400, 'max_parallel: 1..=8');
+  if (c.max_parallel !== undefined && !(Number.isInteger(c.max_parallel) && c.max_parallel >= 1 && c.max_parallel <= 8))
+    throw new HttpError(400, 'max_parallel: 1..=8');
   for (const [s, n] of Object.entries(c.storage_caps ?? {}))
-    if (!NAME_RE.test(s) || !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 8)) throw new HttpError(400, 'storage_caps: 1..=8 guests per storage');
+    if (!NAME_RE.test(s) || !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 8))
+      throw new HttpError(400, 'storage_caps: 1..=8 guests per storage');
   checkReadLimit(c.read_limit);
 }
 on('POST', '/sources/:id/split', async (c, [id]) => {
@@ -2993,16 +4333,31 @@ on('POST', '/sources/:id/split', async (c, [id]) => {
   const under = (x: string, r: string) => r === '/' || x === r || x.startsWith(r + '/');
   roots.forEach((a, i) => {
     if (!within.some((w) => under(a, w))) throw new HttpError(400, `roots: ${a} is outside the source's include roots`);
-    if (roots.slice(0, i).some((b) => under(a, b) || under(b, a))) throw new HttpError(400, `roots: ${a} overlaps another root`);
+    if (roots.slice(0, i).some((b) => under(a, b) || under(b, a)))
+      throw new HttpError(400, `roots: ${a} overlaps another root`);
   });
-  if (s.kind === 'smb' && !c.body.password) throw new HttpError(400, 'password: required (the stored one is sealed to the original source)');
+  if (s.kind === 'smb' && !c.body.password)
+    throw new HttpError(400, 'password: required (the stored one is sealed to the original source)');
   const ids: number[] = [];
   roots.forEach((r, i) => {
-    const n = { id: nextId(), tenant: s.tenant, kind: s.kind, name: `${s.name.slice(0, 56)}-${i + 1}`, config: { ...structuredClone(s.config), include: [r], ...(c.body.password ? { password: c.body.password } : {}) } };
+    const n = {
+      id: nextId(),
+      tenant: s.tenant,
+      kind: s.kind,
+      name: `${s.name.slice(0, 56)}-${i + 1}`,
+      config: { ...structuredClone(s.config), include: [r], ...(c.body.password ? { password: c.body.password } : {}) },
+    };
     db.sources.push(n);
     ids.push(n.id);
     if (c.body.copy_groups !== false)
-      for (const g of db.groups.filter((x) => x.source_id === s.id)) db.groups.push({ ...structuredClone(g), id: nextId(), source_id: n.id, name: `${g.name.slice(0, 56)}-${i + 1}`, paused_until: null });
+      for (const g of db.groups.filter((x) => x.source_id === s.id))
+        db.groups.push({
+          ...structuredClone(g),
+          id: nextId(),
+          source_id: n.id,
+          name: `${g.name.slice(0, 56)}-${i + 1}`,
+          paused_until: null,
+        });
   });
   await audit(u.name, 'source.split', `source/${s.id}`, { tenant: s.tenant, roots, sources: ids });
   return [201, { sources: ids }];
@@ -3010,11 +4365,20 @@ on('POST', '/sources/:id/split', async (c, [id]) => {
 // linux source config: {agent_id, paths (absolute, 1..=64), excludes (0..=256), hooks}; unknown fields refused.
 function linuxConfig(tenant: string, cfg: Json): Json {
   for (const k of Object.keys(cfg ?? {}))
-    if (!['agent_id', 'paths', 'excludes', 'hooks', 'include', 'exclude_regex', 'cross_mounts', 'skip_fstypes'].includes(k))
+    if (
+      !['agent_id', 'paths', 'excludes', 'hooks', 'include', 'exclude_regex', 'cross_mounts', 'skip_fstypes'].includes(
+        k,
+      )
+    )
       throw new HttpError(400, `config: unknown field "${k}"`);
   find(db.agents, (a) => a.id === cfg.agent_id && a.tenant === tenant, 'agent in tenant');
   const paths = cfg.paths;
-  if (!Array.isArray(paths) || paths.length < 1 || paths.length > 64 || paths.some((p) => typeof p !== 'string' || !p.startsWith('/')))
+  if (
+    !Array.isArray(paths) ||
+    paths.length < 1 ||
+    paths.length > 64 ||
+    paths.some((p) => typeof p !== 'string' || !p.startsWith('/'))
+  )
     throw new HttpError(400, 'config.paths: 1 to 64 absolute paths required');
   const excludes = cfg.excludes ?? [];
   if (!Array.isArray(excludes) || excludes.length > 256 || excludes.some((p) => typeof p !== 'string' || !p))
@@ -3026,16 +4390,22 @@ function linuxConfig(tenant: string, cfg: Json): Json {
 function selection(cfg: Json, agent: boolean): Json {
   const out: Json = {};
   const include = cfg.include ?? [];
-  if (!Array.isArray(include) || include.length > 256 || include.some((p) => typeof p !== 'string' || !(p.startsWith('/') || (agent && /^[A-Za-z]:[\\/]/.test(p)))))
+  if (
+    !Array.isArray(include) ||
+    include.length > 256 ||
+    include.some((p) => typeof p !== 'string' || !(p.startsWith('/') || (agent && /^[A-Za-z]:[\\/]/.test(p))))
+  )
     throw new HttpError(400, 'config.include: absolute paths');
   if (include.length) out.include = include;
   const rx = cfg.exclude_regex ?? [];
-  if (!Array.isArray(rx) || rx.some((p) => typeof p !== 'string' || !p.trim())) throw new HttpError(400, 'config.exclude_regex: non-empty patterns');
+  if (!Array.isArray(rx) || rx.some((p) => typeof p !== 'string' || !p.trim()))
+    throw new HttpError(400, 'config.exclude_regex: non-empty patterns');
   if (rx.length) out.exclude_regex = rx;
   if (agent && cfg.cross_mounts) out.cross_mounts = true;
   const fst = cfg.skip_fstypes ?? [];
   if (agent && fst.length) {
-    if (fst.some((x: unknown) => typeof x !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(x))) throw new HttpError(400, 'config.skip_fstypes: file system type names');
+    if (fst.some((x: unknown) => typeof x !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(x)))
+      throw new HttpError(400, 'config.skip_fstypes: file system type names');
     out.skip_fstypes = fst;
   }
   return out;
@@ -3043,11 +4413,30 @@ function selection(cfg: Json, agent: boolean): Json {
 
 // nfs/smb source config: NFS and SMB fields must not be mixed (deny_unknown_fields in the web-api).
 function shareConfig(kind: string, cfg: Json): Json {
-  const common = ['host', 'port', 'version', 'snapshot_dir', 'snapshot_prefix', 'snapshot_order', 'excludes', 'include', 'exclude_regex', 'threads', 'xattrs', 'timeout_secs', 'read_limit'];
-  const own = kind === 'nfs' ? ['export', 'mount_port'] : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
-  for (const k of Object.keys(cfg ?? {})) if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
+  const common = [
+    'host',
+    'port',
+    'version',
+    'snapshot_dir',
+    'snapshot_prefix',
+    'snapshot_order',
+    'excludes',
+    'include',
+    'exclude_regex',
+    'threads',
+    'xattrs',
+    'timeout_secs',
+    'read_limit',
+  ];
+  const own =
+    kind === 'nfs'
+      ? ['export', 'mount_port']
+      : ['share', 'user', 'domain', 'sec', 'sign', 'seal', 'password', 'keytab', 'principal'];
+  for (const k of Object.keys(cfg ?? {}))
+    if (![...common, ...own].includes(k)) throw new HttpError(400, `config: unknown field "${k}"`);
   if (!cfg?.host) throw new HttpError(400, 'host: required');
-  if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/')) throw new HttpError(400, 'export: absolute path required');
+  if (kind === 'nfs' && !String(cfg.export ?? '').startsWith('/'))
+    throw new HttpError(400, 'export: absolute path required');
   if (kind === 'smb' && !cfg.share) throw new HttpError(400, 'share: required');
   checkReadLimit(cfg.read_limit);
   const { include: _i, exclude_regex: _r, ...rest } = cfg;
@@ -3068,7 +4457,8 @@ on('POST', '/sources', async (c) => {
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
     return [201, stripSource(s)];
   }
-  if (!['pve', 'linux', 'truenas', 'nfs', 'smb'].includes(kind)) throw new HttpError(400, 'kind: must be pve, linux, truenas, nfs, smb or plugin:<kind>');
+  if (!['pve', 'linux', 'truenas', 'nfs', 'smb'].includes(kind))
+    throw new HttpError(400, 'kind: must be pve, linux, truenas, nfs, smb or plugin:<kind>');
   if (kind === 'truenas') {
     const s = { id: nextId(), tenant, kind: 'truenas' as const, name, config: truenasConfig(config) };
     db.sources.push(s);
@@ -3077,7 +4467,8 @@ on('POST', '/sources', async (c) => {
   }
   if (kind === 'nfs' || kind === 'smb') {
     const cfg = shareConfig(kind, config);
-    if (kind === 'smb' && !cfg.password && !cfg.keytab) throw new HttpError(400, 'config.password (or keytab): required');
+    if (kind === 'smb' && !cfg.password && !cfg.keytab)
+      throw new HttpError(400, 'config.password (or keytab): required');
     const s = { id: nextId(), tenant, kind: kind as 'nfs' | 'smb', name, config: cfg };
     db.sources.push(s);
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
@@ -3142,14 +4533,22 @@ on('DELETE', '/sources/:id', (c, [id]) => {
 // policies
 // Phase 19b: tenant-scoped users see the policies assigned to their tenant or used by its groups
 const visiblePolicy = (u: User, id: number) =>
-  !u.tenant || (db.tenantPolicies[u.tenant] ?? []).includes(id) || db.groups.some((g) => g.tenant === u.tenant && g.policy_id === id);
+  !u.tenant ||
+  (db.tenantPolicies[u.tenant] ?? []).includes(id) ||
+  db.groups.some((g) => g.tenant === u.tenant && g.policy_id === id);
 on('GET', '/policies', (c) => {
   const u = need(c.user);
-  return [200, db.policies.filter((p) => visiblePolicy(u, p.id)).map((p) => ({ file_filters: { exclude: [], exclude_regex: [] }, tier: null, ...p }))];
+  return [
+    200,
+    db.policies
+      .filter((p) => visiblePolicy(u, p.id))
+      .map((p) => ({ file_filters: { exclude: [], exclude_regex: [] }, tier: null, ...p })),
+  ];
 });
 const TIERS = ['bronze', 'silver', 'gold'];
 const checkTier = (x: unknown) => {
-  if (x !== undefined && x !== null && !TIERS.includes(String(x))) throw new HttpError(400, 'tier: bronze, silver, gold or null');
+  if (x !== undefined && x !== null && !TIERS.includes(String(x)))
+    throw new HttpError(400, 'tier: bronze, silver, gold or null');
   return (x as string | null | undefined) ?? null;
 };
 on('GET', '/policies/templates', (c) => (need(c.user), [200, TEMPLATES]));
@@ -3159,14 +4558,30 @@ on('POST', '/policies/templates', async (c) => {
   if (!tpl) throw new HttpError(400, 'tier: bronze, silver or gold');
   const name = String(c.body.name ?? tpl.name);
   if (db.policies.some((x) => x.name === name)) throw new HttpError(409, 'a policy with this name exists');
-  const p = { id: nextId(), name, schedule: tpl.schedule, gfs: { ...tpl.gfs }, offsite: tpl.offsite, tier: tpl.tier, ...runControl({ schedule: tpl.schedule }) };
+  const p = {
+    id: nextId(),
+    name,
+    schedule: tpl.schedule,
+    gfs: { ...tpl.gfs },
+    offsite: tpl.offsite,
+    tier: tpl.tier,
+    ...runControl({ schedule: tpl.schedule }),
+  };
   db.policies.push(p);
   await audit(u.name, 'policy.create', `policy/${p.id}`, { ...p, template: tpl.tier });
   return [201, p];
 });
 on('POST', '/policies', async (c) => {
   const u = need(c.user, 'admin');
-  const p = { id: nextId(), name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, tier: checkTier(c.body.tier), ...runControl(c.body) };
+  const p = {
+    id: nextId(),
+    name: c.body.name,
+    schedule: c.body.schedule,
+    gfs: c.body.gfs,
+    offsite: !!c.body.offsite,
+    tier: checkTier(c.body.tier),
+    ...runControl(c.body),
+  };
   db.policies.push(p);
   await audit(u.name, 'policy.create', `policy/${p.id}`, p);
   return [201, p];
@@ -3174,7 +4589,14 @@ on('POST', '/policies', async (c) => {
 on('PUT', '/policies/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
-  const after = { name: c.body.name, schedule: c.body.schedule, gfs: c.body.gfs, offsite: !!c.body.offsite, tier: checkTier(c.body.tier), ...runControl(c.body) };
+  const after = {
+    name: c.body.name,
+    schedule: c.body.schedule,
+    gfs: c.body.gfs,
+    offsite: !!c.body.offsite,
+    tier: checkTier(c.body.tier),
+    ...runControl(c.body),
+  };
   if (weakens(p, after)) return quorum(u, 'policy.update', { id: p.id, ...after, old: structuredClone(p) });
   Object.assign(p, after);
   await audit(u.name, 'policy.update', `policy/${p.id}`, after);
@@ -3182,7 +4604,8 @@ on('PUT', '/policies/:id', async (c, [id]) => {
 });
 on('DELETE', '/policies/:id', (c, [id]) => {
   const p = find(db.policies, (x) => x.id === Number(id), 'policy');
-  if (Object.values(db.tenantPolicies).some((ids) => ids.includes(p.id))) throw new HttpError(409, 'policy is assigned to tenants');
+  if (Object.values(db.tenantPolicies).some((ids) => ids.includes(p.id)))
+    throw new HttpError(409, 'policy is assigned to tenants');
   return quorum(need(c.user, 'admin'), 'policy.delete', { id: p.id, name: p.name });
 });
 
@@ -3191,7 +4614,11 @@ on('GET', '/groups', (c) => [200, byTenant(need(c.user), db.groups).map(groupSta
 
 // ---- Phase 13c: guest inventory and auto-protect groups (crates/web-api/src/inventory.rs)
 function hasInventory(src: (typeof db.sources)[number]): boolean {
-  return src.kind === 'pve' || src.kind === 'truenas' || (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list);
+  return (
+    src.kind === 'pve' ||
+    src.kind === 'truenas' ||
+    (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list)
+  );
 }
 const DEFAULT_OFF = ['license:none', 'site:team'];
 /** Guests of a group as the scheduler resolves them: explicit list, or the inventory (all / tags); exclude wins. */
@@ -3199,17 +4626,27 @@ function resolveGuests(g: MockGroup): (number | string)[] {
   const ex = new Set((g.exclude ?? []).map(String));
   if (!g.mode || g.mode === 'explicit') return g.guests.filter((x) => !ex.has(String(x)));
   const pve = db.sources.find((s) => s.id === g.source_id)?.kind === 'pve';
-  return (db.inventory.get(g.source_id) ?? [])
-    .filter((r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))))
-    // catalog::inventory::DEFAULT_OFF: unlicensed M365 users and team sites only when the selector names the tag
-    .filter((r) => !r.tags.some((x) => DEFAULT_OFF.includes(x) && !g.selector.includes(x)))
-    .map((r) => (pve ? Number(r.guest) : r.guest));
+  return (
+    (db.inventory.get(g.source_id) ?? [])
+      .filter(
+        (r) => r.gone === null && !ex.has(r.guest) && (g.mode === 'all' || r.tags.some((x) => g.selector.includes(x))),
+      )
+      // catalog::inventory::DEFAULT_OFF: unlicensed M365 users and team sites only when the selector names the tag
+      .filter((r) => !r.tags.some((x) => DEFAULT_OFF.includes(x) && !g.selector.includes(x)))
+      .map((r) => (pve ? Number(r.guest) : r.guest))
+  );
 }
 /** Names of the groups protecting `guest` of a source (a plugin group without guests: the whole source). */
 function coveringGroups(sid: number, guest: string): string[] {
   return db.groups
     .filter((g) => g.source_id === sid)
-    .filter((g) => resolveGuests(g).map(String).includes(guest) || (g.mode === 'explicit' && !g.guests.length && !!db.sources.find((s) => s.id === sid)?.kind.startsWith('plugin:')))
+    .filter(
+      (g) =>
+        resolveGuests(g).map(String).includes(guest) ||
+        (g.mode === 'explicit' &&
+          !g.guests.length &&
+          !!db.sources.find((s) => s.id === sid)?.kind.startsWith('plugin:')),
+    )
     .map((g) => g.name)
     .sort();
 }
@@ -3221,24 +4658,36 @@ function checkMode(src: (typeof db.sources)[number], b: Json): Pick<MockGroup, '
   if (!['explicit', 'all', 'tags'].includes(mode)) throw new HttpError(400, 'mode: explicit, all or tags');
   if (src.kind === 'truenas' && mode === 'explicit' && !(b.guests ?? []).length) mode = 'all';
   if (mode === 'explicit') {
-    if (selector.length || exclude.length) throw new HttpError(400, 'selector, exclude: only for groups of mode all or tags');
+    if (selector.length || exclude.length)
+      throw new HttpError(400, 'selector, exclude: only for groups of mode all or tags');
     return { mode, selector: [], exclude: [] };
   }
-  if (!hasInventory(src)) throw new HttpError(400, 'mode: this source has no guest inventory (linux, nfs, smb and plugin kinds without a guest list: explicit only)');
-  if ((b.guests ?? []).length) throw new HttpError(400, 'guests: a group of mode all or tags lists no guests (they come from the inventory)');
+  if (!hasInventory(src))
+    throw new HttpError(
+      400,
+      'mode: this source has no guest inventory (linux, nfs, smb and plugin kinds without a guest list: explicit only)',
+    );
+  if ((b.guests ?? []).length)
+    throw new HttpError(400, 'guests: a group of mode all or tags lists no guests (they come from the inventory)');
   if (mode === 'all' && selector.length) throw new HttpError(400, 'selector: only for mode tags');
   if (mode === 'tags' && (!selector.length || selector.length > 50)) throw new HttpError(400, 'selector: 1..=50 tags');
   const bad = selector.find((x) => typeof x !== 'string' || !TAG_RE.test(x));
   if (bad !== undefined) throw new HttpError(400, `selector: invalid tag ${JSON.stringify(bad)}`);
   const ids = exclude.map(String);
-  if (src.kind === 'pve' && ids.some((x) => !/^[1-9]\d{2,8}$/.test(x))) throw new HttpError(400, 'exclude: VM/CT IDs of this source');
+  if (src.kind === 'pve' && ids.some((x) => !/^[1-9]\d{2,8}$/.test(x)))
+    throw new HttpError(400, 'exclude: VM/CT IDs of this source');
   return { mode, selector: [...new Set(selector)].sort(), exclude: [...new Set(ids)].sort() };
 }
 on('GET', '/sources/:id/inventory', (c, [id]) => {
   const u = need(c.user);
   const src = db.sources.find((s) => s.id === Number(id) && (!u.tenant || s.tenant === u.tenant));
   if (!src) throw new HttpError(404, 'not found');
-  const refreshed = db.jobs.filter((j) => ['inventory', 'plugin_guests'].includes(j.kind) && j.state === 'ok' && Number(j.params.source_id) === src.id).reduce((m, j) => Math.max(m, j.finished ?? 0), 0);
+  const refreshed = db.jobs
+    .filter(
+      (j) =>
+        ['inventory', 'plugin_guests'].includes(j.kind) && j.state === 'ok' && Number(j.params.source_id) === src.id,
+    )
+    .reduce((m, j) => Math.max(m, j.finished ?? 0), 0);
   const rows = db.inventory.get(src.id) ?? [];
   return [
     200,
@@ -3249,7 +4698,12 @@ on('GET', '/sources/:id/inventory', (c, [id]) => {
       refreshed: refreshed || (rows.length ? Math.max(...rows.map((r) => r.seen)) : null),
       guests: rows
         .slice()
-        .sort((a, b) => Number(a.gone !== null) - Number(b.gone !== null) || a.guest.length - b.guest.length || a.guest.localeCompare(b.guest))
+        .sort(
+          (a, b) =>
+            Number(a.gone !== null) - Number(b.gone !== null) ||
+            a.guest.length - b.guest.length ||
+            a.guest.localeCompare(b.guest),
+        )
         .map((r) => ({ ...r, groups: r.gone === null ? coveringGroups(src.id, r.guest) : [] })),
     },
   ];
@@ -3270,7 +4724,11 @@ function inventoryResult(j: Job, t: number) {
   } else for (const r of rows) if (r.gone === null) r.seen = t;
   db.inventory.set(sid, rows);
   if (j.kind === 'inventory')
-    j.result = { guests: rows.filter((r) => r.gone === null).map((r) => ({ id: r.guest, title: r.name, kind: r.kind, tags: r.tags })) };
+    j.result = {
+      guests: rows
+        .filter((r) => r.gone === null)
+        .map((r) => ({ id: r.guest, title: r.name, kind: r.kind, tags: r.tags })),
+    };
 }
 // pve: guests are VM/CT IDs; linux: exactly [source.config.agent_id].
 function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
@@ -3284,13 +4742,18 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
     } else if (guests.some((g) => typeof g !== 'string' || !/^[A-Za-z0-9._-]{1,64}$/.test(g)))
       throw new HttpError(400, 'guests: guest ids [A-Za-z0-9._-]{1,64} required');
   } else if (src.kind === 'truenas') {
-    if (guests.some((g) => !src.config.datasets.includes(g))) throw new HttpError(400, 'guests: datasets of the source required');
+    if (guests.some((g) => !src.config.datasets.includes(g)))
+      throw new HttpError(400, 'guests: datasets of the source required');
   } else if (src.kind === 'nfs' || src.kind === 'smb') {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
-  } else if (guests.some((g) => !Number.isInteger(g) || g < 100)) throw new HttpError(400, 'guests: VM/CT IDs required');
+  } else if (guests.some((g) => !Number.isInteger(g) || g < 100))
+    throw new HttpError(400, 'guests: VM/CT IDs required');
 }
 /** Phase 15e/f group fields: disk keys (PVE only), restore mode, parallel guests. */
-function groupSelection(src: (typeof db.sources)[number], b: Json): Pick<MockGroup, 'exclude_disks' | 'exclude_disks_mode' | 'parallel_guests'> {
+function groupSelection(
+  src: (typeof db.sources)[number],
+  b: Json,
+): Pick<MockGroup, 'exclude_disks' | 'exclude_disks_mode' | 'parallel_guests'> {
   const ex: Record<string, string[]> = {};
   for (const [k, v] of Object.entries((b.exclude_disks ?? {}) as Json)) {
     if (k !== '*' && !/^[1-9]\d{2,8}$/.test(k)) throw new HttpError(400, 'exclude_disks: keys are "*" or vmids');
@@ -3298,7 +4761,8 @@ function groupSelection(src: (typeof db.sources)[number], b: Json): Pick<MockGro
       throw new HttpError(400, 'exclude_disks: up to 32 disk keys like scsi1, virtio2, sata0, efidisk0');
     if (v.length) ex[k] = [...new Set(v as string[])].sort();
   }
-  if (Object.keys(ex).length && src.kind !== 'pve') throw new HttpError(400, 'exclude_disks: only for groups of a pve source');
+  if (Object.keys(ex).length && src.kind !== 'pve')
+    throw new HttpError(400, 'exclude_disks: only for groups of a pve source');
   const mode = b.exclude_disks_mode ?? 'placeholder';
   if (!['placeholder', 'omit'].includes(mode)) throw new HttpError(400, 'exclude_disks_mode: placeholder or omit');
   const par = b.parallel_guests ?? 4;
@@ -3311,7 +4775,19 @@ on('POST', '/groups', async (c) => {
   const u = needOwner(c.user, c.body.tenant);
   assignedPolicy(u, c.body.tenant, Number(c.body.policy_id));
   vaultRefuse('new protection groups');
-  const g: MockGroup = { id: nextId(), tenant: c.body.tenant, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), name: c.body.name, guests: c.body.guests ?? [], mode: 'explicit', selector: [], exclude: [], timezone: checkTz(c.body.timezone), paused_until: null };
+  const g: MockGroup = {
+    id: nextId(),
+    tenant: c.body.tenant,
+    source_id: Number(c.body.source_id),
+    policy_id: Number(c.body.policy_id),
+    name: c.body.name,
+    guests: c.body.guests ?? [],
+    mode: 'explicit',
+    selector: [],
+    exclude: [],
+    timezone: checkTz(c.body.timezone),
+    paused_until: null,
+  };
   const src = find(db.sources, (s) => s.id === g.source_id && s.tenant === g.tenant, 'source in tenant');
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
@@ -3327,7 +4803,15 @@ on('PUT', '/groups/:id', async (c, [id]) => {
   if (Number(c.body.policy_id) !== g.policy_id) assignedPolicy(u, g.tenant, Number(c.body.policy_id));
   if ('tenant' in c.body) throw new HttpError(400, 'unknown field `tenant`');
   const src = find(db.sources, (s) => s.id === Number(c.body.source_id) && s.tenant === g.tenant, 'source in tenant');
-  const next = { name: c.body.name, source_id: Number(c.body.source_id), policy_id: Number(c.body.policy_id), guests: c.body.guests ?? [], ...checkMode(src, c.body), timezone: checkTz(c.body.timezone), ...groupSelection(src, c.body) };
+  const next = {
+    name: c.body.name,
+    source_id: Number(c.body.source_id),
+    policy_id: Number(c.body.policy_id),
+    guests: c.body.guests ?? [],
+    ...checkMode(src, c.body),
+    timezone: checkTz(c.body.timezone),
+    ...groupSelection(src, c.body),
+  };
   if (next.mode === 'explicit') checkGuests(src, next.guests);
   const from = find(db.policies, (p) => p.id === g.policy_id, 'policy');
   const to = find(db.policies, (p) => p.id === next.policy_id, 'policy');
@@ -3341,7 +4825,11 @@ on('PUT', '/groups/:id/index-files', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   const src = db.sources.find((s) => s.id === g.source_id);
-  if (src?.kind !== 'pve') throw new HttpError(400, 'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed');
+  if (src?.kind !== 'pve')
+    throw new HttpError(
+      400,
+      'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed',
+    );
   if (typeof c.body?.enabled !== 'boolean') throw new HttpError(400, 'enabled: true or false');
   g.index_files = c.body.enabled;
   await audit(u.name, 'group.index_files', `group/${g.id}`, { tenant: g.tenant, index_files: g.index_files });
@@ -3356,7 +4844,8 @@ on('DELETE', '/groups/:id', (c, [id]) => {
 // run control (Phase 13b): pause / resume groups, source maintenance
 const pauseUntil = (b: Json) => {
   if (b.until === undefined || b.until === null) return -1;
-  if (!(b.until > now() && b.until <= now() + 366 * DAY)) throw new HttpError(400, 'until: a time in the next 366 days (or none = indefinitely)');
+  if (!(b.until > now() && b.until <= now() + 366 * DAY))
+    throw new HttpError(400, 'until: a time in the next 366 days (or none = indefinitely)');
   return Number(b.until);
 };
 on('POST', '/groups/:id/pause', async (c, [id]) => {
@@ -3367,7 +4856,11 @@ on('POST', '/groups/:id/pause', async (c, [id]) => {
   if (g.paused_until === -1 || g.paused_until > now() + 7 * DAY)
     db.alerts.push(
       mkAlert({
-        ts: now(), severity: 'warning', kind: 'paused', key: `paused:group:${g.id}:${g.paused_until}`, tenant: g.tenant,
+        ts: now(),
+        severity: 'warning',
+        kind: 'paused',
+        key: `paused:group:${g.id}:${g.paused_until}`,
+        tenant: g.tenant,
         message: `group ${g.id} ${g.name} (${g.tenant}) paused until ${g.paused_until === -1 ? 'further notice' : isoDay(g.paused_until)}: no scheduled backups meanwhile`,
       }),
     );
@@ -3375,11 +4868,14 @@ on('POST', '/groups/:id/pause', async (c, [id]) => {
 });
 on('POST', '/groups/:id/resume', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin');
-  if (db.incident?.active) throw new HttpError(409, 'incident mode is active: groups stay paused until it is left (approval)');
+  if (db.incident?.active)
+    throw new HttpError(409, 'incident mode is active: groups stay paused until it is left (approval)');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   g.paused_until = null;
   // like the scheduler's next tick: the group's `paused` warning resolves itself
-  for (const a of db.alerts) if (a.kind === 'paused' && !a.resolved_at && String(a.key).startsWith(`paused:group:${g.id}:`)) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+  for (const a of db.alerts)
+    if (a.kind === 'paused' && !a.resolved_at && String(a.key).startsWith(`paused:group:${g.id}:`))
+      Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
   await audit(u.name, 'group.resume', `group/${g.id}`, { tenant: g.tenant, paused_until: null });
   return [200, { id: g.id, paused_until: null }];
 });
@@ -3387,7 +4883,10 @@ on('POST', '/sources/:id/maintenance', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin');
   const s = find(byTenant(u, db.sources), (x) => x.id === Number(id), 'source');
   s.maintenance_until = pauseUntil(c.body ?? {});
-  await audit(u.name, 'source.maintenance', `source/${s.id}`, { tenant: s.tenant, maintenance_until: s.maintenance_until });
+  await audit(u.name, 'source.maintenance', `source/${s.id}`, {
+    tenant: s.tenant,
+    maintenance_until: s.maintenance_until,
+  });
   return [200, { id: s.id, maintenance_until: s.maintenance_until }];
 });
 on('POST', '/sources/:id/maintenance/end', async (c, [id]) => {
@@ -3402,7 +4901,11 @@ on('POST', '/sources/:id/maintenance/end', async (c, [id]) => {
 const findPeer = (id: string) => find(db.replPeers, (p) => p.id === id, 'peer');
 const findRs = (id: string) => find(db.replSources, (r) => String(r.id) === id, 'replication source');
 on('GET', '/replication/peers', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replPeers]));
-on('GET', '/replication/sources', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replSources]));
+on(
+  'GET',
+  '/replication/sources',
+  (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.replSources]),
+);
 on('POST', '/replication/peers', async (c) => {
   const u = need(c.user, 'admin');
   vaultRefuse('replication peers (serving as a primary)');
@@ -3410,12 +4913,32 @@ on('POST', '/replication/peers', async (c) => {
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
   const peer = {
-    id: rand(8), name, tenants, state: 'pending', cert_sha256: null, keyd_fingerprint: null, token_expires: now() + 86400,
-    enrolled_at: null, last_seen: null, revoked: null, created: now(), created_by: u.name, keys: {}, enroll_failures: 0,
+    id: rand(8),
+    name,
+    tenants,
+    state: 'pending',
+    cert_sha256: null,
+    keyd_fingerprint: null,
+    token_expires: now() + 86400,
+    enrolled_at: null,
+    last_seen: null,
+    revoked: null,
+    created: now(),
+    created_by: u.name,
+    keys: {},
+    enroll_failures: 0,
   };
   db.replPeers.push(peer);
   const [st, q] = await quorum(u, 'replication_peer.create', { id: peer.id, name, tenants });
-  return [st, { ...q, peer, code: `${peer.id}.${b32(26)}`, primary_cert_sha256: '9c4f1e2d7a0b3c5d6e8f9a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5' }];
+  return [
+    st,
+    {
+      ...q,
+      peer,
+      code: `${peer.id}.${b32(26)}`,
+      primary_cert_sha256: '9c4f1e2d7a0b3c5d6e8f9a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5',
+    },
+  ];
 });
 on('POST', '/replication/peers/:id/export-keys', async (c, [id]) => {
   const u = need(c.user, 'admin');
@@ -3437,11 +4960,23 @@ on('DELETE', '/replication/peers/:id', async (c, [id]) => {
 // like web-api: {name, url, code, fingerprint, tenants, schedule, gfs?, bwlimit?} → 201 + replica_enroll job
 on('POST', '/replication/sources', async (c) => {
   const u = need(c.user, 'admin');
-  const { name, url, code, fingerprint, tenants = [], schedule = 'daily 04:00', gfs = { daily: 14, weekly: 4, monthly: 6, yearly: 2 }, bwlimit = null } = c.body;
+  const {
+    name,
+    url,
+    code,
+    fingerprint,
+    tenants = [],
+    schedule = 'daily 04:00',
+    gfs = { daily: 14, weekly: 4, monthly: 6, yearly: 2 },
+    bwlimit = null,
+  } = c.body;
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!/^[A-Za-z0-9.-]+:\d{1,5}$/.test(url ?? '')) throw new HttpError(400, 'url: host:port');
-  const pin = String(fingerprint ?? '').replace(/:/g, '').toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(pin)) throw new HttpError(400, "fingerprint: SHA-256 of the primary's certificate (64 hex characters)");
+  const pin = String(fingerprint ?? '')
+    .replace(/:/g, '')
+    .toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(pin))
+    throw new HttpError(400, "fingerprint: SHA-256 of the primary's certificate (64 hex characters)");
   if (!/^[0-9a-f]{16}\.[A-Z2-7]{26}$/.test(code ?? '')) throw new HttpError(400, 'code: expected <peer-id>.<token>');
   if (!Array.isArray(tenants) || !tenants.length) throw new HttpError(400, 'tenants: at least one');
   for (const tn of tenants) {
@@ -3450,9 +4985,27 @@ on('POST', '/replication/sources', async (c) => {
     if (!db.tenants.some((x) => x.name === tn)) db.tenants.push({ name: tn, offsite: {} });
   }
   const r = {
-    id: nextId(), name, url, peer_id: code.split('.')[0], cert_pin: pin, tenants, schedule, gfs, bwlimit, state: 'enrolling',
-    cert_sha256: null, keyd_fingerprint: null, created: now(), last_sync: null, status: {},
-    windows: c.body.windows ?? [], sync_window: c.body.sync_window ?? [], timezone: c.body.timezone ?? 'UTC', closed_until: null, closed_by: null, closed_at: null,
+    id: nextId(),
+    name,
+    url,
+    peer_id: code.split('.')[0],
+    cert_pin: pin,
+    tenants,
+    schedule,
+    gfs,
+    bwlimit,
+    state: 'enrolling',
+    cert_sha256: null,
+    keyd_fingerprint: null,
+    created: now(),
+    last_sync: null,
+    status: {},
+    windows: c.body.windows ?? [],
+    sync_window: c.body.sync_window ?? [],
+    timezone: c.body.timezone ?? 'UTC',
+    closed_until: null,
+    closed_by: null,
+    closed_at: null,
   };
   db.replSources.push(r);
   const j = addJob('replica_enroll', tenants[0], { replication_source_id: r.id }, u.name);
@@ -3463,9 +5016,13 @@ on('POST', '/replication/sources/:id/sync', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const r = findRs(id);
   if (r.state !== 'enrolled') throw new HttpError(409, 'replication source is not enrolled');
-  if (isPaused(r.closed_until)) throw new HttpError(409, 'the replication source is closed (pulling paused): request reopening first');
-  if (!syncOpen(r.sync_window ?? [], r.timezone ?? 'UTC')) throw new HttpError(409, 'outside the sync window: the primary is not reachable now');
-  const jobs = (r.tenants as string[]).map((tn) => addJob('replica_sync', tn, { replication_source_id: r.id, tenant: tn }, u.name).id);
+  if (isPaused(r.closed_until))
+    throw new HttpError(409, 'the replication source is closed (pulling paused): request reopening first');
+  if (!syncOpen(r.sync_window ?? [], r.timezone ?? 'UTC'))
+    throw new HttpError(409, 'outside the sync window: the primary is not reachable now');
+  const jobs = (r.tenants as string[]).map(
+    (tn) => addJob('replica_sync', tn, { replication_source_id: r.id, tenant: tn }, u.name).id,
+  );
   await audit(u.name, 'job.create', `replication_source/${r.id}`, { kind: 'replica_sync', jobs });
   return [202, { jobs }];
 });
@@ -3491,11 +5048,16 @@ on('PUT', '/replication/sources/:id', async (c, [id]) => {
     timezone: b.timezone ?? r.timezone ?? 'UTC',
   };
   checkWindows(next.windows);
-  if (!next.sync_window.every(validWindow)) throw new HttpError(400, 'sync_window: from/to must be different HH:MM times');
-  const lowered = (['daily', 'weekly', 'monthly', 'yearly'] as const).some((k) => (next.gfs[k] ?? 0) < (r.gfs?.[k] ?? 0));
+  if (!next.sync_window.every(validWindow))
+    throw new HttpError(400, 'sync_window: from/to must be different HH:MM times');
+  const lowered = (['daily', 'weekly', 'monthly', 'yearly'] as const).some(
+    (k) => (next.gfs[k] ?? 0) < (r.gfs?.[k] ?? 0),
+  );
   const weaker =
-    bandwidthWeaker({ windows: r.windows ?? [], base: r.bwlimit, tz: r.timezone ?? 'UTC' }, { windows: next.windows, base: next.bwlimit, tz: next.timezone }) ||
-    syncWidened(r.sync_window ?? [], r.timezone ?? 'UTC', next.sync_window, next.timezone);
+    bandwidthWeaker(
+      { windows: r.windows ?? [], base: r.bwlimit, tz: r.timezone ?? 'UTC' },
+      { windows: next.windows, base: next.bwlimit, tz: next.timezone },
+    ) || syncWidened(r.sync_window ?? [], r.timezone ?? 'UTC', next.sync_window, next.timezone);
   if (lowered || weaker) return quorum(u, 'replication_source.update', { id: r.id, name: r.name, ...next });
   Object.assign(r, next);
   await audit(u.name, 'replication_source.update', `replication_source/${r.id}`, c.body);
@@ -3509,10 +5071,17 @@ on('POST', '/replication/sources/:id/close', async (c, [id]) => {
   if (isPaused(r.closed_until) && (r.closed_until === -1 || (until !== -1 && until <= r.closed_until)))
     throw new HttpError(409, 'the vault is already closed at least that long; reopening needs approval');
   Object.assign(r, { closed_until: until, closed_by: u.name, closed_at: now() });
-  for (const j of db.jobs.filter((x) => x.kind === 'replica_sync' && x.params.replication_source_id === r.id && x.state === 'queued'))
+  for (const j of db.jobs.filter(
+    (x) => x.kind === 'replica_sync' && x.params.replication_source_id === r.id && x.state === 'queued',
+  ))
     Object.assign(j, { state: 'cancelled', finished: now() });
   db.alerts.push({
-    id: nextId(), ts: now(), severity: 'info', kind: 'vault_closed', key: `vault_closed:${r.id}`, acked_by: null,
+    id: nextId(),
+    ts: now(),
+    severity: 'info',
+    kind: 'vault_closed',
+    key: `vault_closed:${r.id}`,
+    acked_by: null,
     message: `replication source ${r.name} is closed (by ${u.name}) until it is reopened: no syncs, the primary is not reachable`,
   });
   await audit(u.name, 'replication_source.close', `replication-source/${r.id}`, { name: r.name, closed_until: until });
@@ -3522,7 +5091,13 @@ on('POST', '/replication/sources/:id/reopen', async (c, [id]) => {
   const u = need(c.user, 'admin', 'security_officer');
   const r = findRs(id);
   if (r.closed_until === null) throw new HttpError(409, 'the replication source is not closed');
-  return quorum(u, 'replication.reopen', { id: r.id, name: r.name, url: r.url, closed_until: r.closed_until, closed_by: r.closed_by });
+  return quorum(u, 'replication.reopen', {
+    id: r.id,
+    name: r.name,
+    url: r.url,
+    closed_until: r.closed_until,
+    closed_by: r.closed_by,
+  });
 });
 on('DELETE', '/replication/sources/:id', async (c, [id]) => {
   const u = need(c.user, 'admin');
@@ -3546,7 +5121,8 @@ const pubAgent = ({ token_hash: _h, caps, ...a }: Agent) => ({
   update_at: a.update_at ?? null,
 });
 const AGENT_ID_RE = /^[0-9a-f]{16}$/;
-const findAgent = (u: User, id: string) => find(byTenant(u, db.agents), (a) => AGENT_ID_RE.test(id) && a.id === id, 'agent');
+const findAgent = (u: User, id: string) =>
+  find(byTenant(u, db.agents), (a) => AGENT_ID_RE.test(id) && a.id === id, 'agent');
 // 128-bit one-time token, base32 (26 chars), valid 24 h; only its hash is stored.
 async function issueToken(a: Agent) {
   const token = b32(26);
@@ -3563,7 +5139,8 @@ on('POST', '/agents', async (c) => {
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(host ?? '')) throw new HttpError(400, 'invalid host');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'invalid port');
-  if (db.agents.some((a) => a.tenant === tenant && a.name === name)) throw new HttpError(409, 'agent name exists in this tenant');
+  if (db.agents.some((a) => a.tenant === tenant && a.name === name))
+    throw new HttpError(409, 'agent name exists in this tenant');
   const a: Agent = {
     id: rand(8),
     tenant,
@@ -3606,11 +5183,13 @@ on('POST', '/agents/:id/token', async (c, [id]) => {
 on('PUT', '/agents/:id/limits', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const a = findAgent(u, id);
-  for (const k of Object.keys(c.body ?? {})) if (!['bwlimit', 'nice'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  for (const k of Object.keys(c.body ?? {}))
+    if (!['bwlimit', 'nice'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
   const bwlimit = c.body.bwlimit ?? 0;
   const nice = c.body.nice ?? 0;
   if (!(Number.isInteger(nice) && nice >= 0 && nice <= 19)) throw new HttpError(400, 'nice: 0..=19');
-  if (!(Number.isInteger(bwlimit) && (bwlimit === 0 || bwlimit >= 65536))) throw new HttpError(400, 'bwlimit: 0 (unlimited) or at least 65536 bytes/s');
+  if (!(Number.isInteger(bwlimit) && (bwlimit === 0 || bwlimit >= 65536)))
+    throw new HttpError(400, 'bwlimit: 0 (unlimited) or at least 65536 bytes/s');
   const old = a.limits;
   a.limits = { bwlimit, nice };
   await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
@@ -3621,11 +5200,14 @@ on('PUT', '/agents/:id/ui-policy', async (c, [id]) => {
   const u = need(c.user, 'admin');
   const a = findAgent(u, id);
   const b = c.body ?? {};
-  for (const k of Object.keys(b)) if (!['accent', 'header', 'hide_backup_now', 'hide_tray'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  for (const k of Object.keys(b))
+    if (!['accent', 'header', 'hide_backup_now', 'hide_tray'].includes(k))
+      throw new HttpError(400, `unknown field ${k}`);
   const accent = b.accent ?? '';
   const header = b.header ?? '';
   if (accent && !/^#[0-9a-fA-F]{6}$/.test(accent)) throw new HttpError(400, 'accent: #rrggbb or empty');
-  if (header.length > 64 || /[\u0000-\u001f]/.test(header)) throw new HttpError(400, 'header: at most 64 characters, no control characters');
+  if (header.length > 64 || /[\u0000-\u001f]/.test(header))
+    throw new HttpError(400, 'header: at most 64 characters, no control characters');
   const old = a.ui_policy;
   a.ui_policy = { accent, header, hide_backup_now: !!b.hide_backup_now, hide_tray: !!b.hide_tray };
   a.ui_policy_version = (a.ui_policy_version ?? 0) + 1;
@@ -3636,11 +5218,15 @@ on('PUT', '/agents/:id/laptop', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
   const b = c.body ?? {};
-  for (const k of Object.keys(b)) if (!['min_battery', 'skip_metered', 'run_missed', 'retry_hours'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  for (const k of Object.keys(b))
+    if (!['min_battery', 'skip_metered', 'run_missed', 'retry_hours'].includes(k))
+      throw new HttpError(400, `unknown field ${k}`);
   const min_battery = b.min_battery ?? 0;
   const retry_hours = b.retry_hours ?? 0;
-  if (!(Number.isInteger(min_battery) && min_battery >= 0 && min_battery <= 100)) throw new HttpError(400, 'min_battery: 0..=100');
-  if (!(Number.isInteger(retry_hours) && retry_hours >= 0 && retry_hours <= 336)) throw new HttpError(400, 'retry_hours: 0..=336');
+  if (!(Number.isInteger(min_battery) && min_battery >= 0 && min_battery <= 100))
+    throw new HttpError(400, 'min_battery: 0..=100');
+  if (!(Number.isInteger(retry_hours) && retry_hours >= 0 && retry_hours <= 336))
+    throw new HttpError(400, 'retry_hours: 0..=336');
   const old = a.laptop;
   a.laptop = { min_battery, skip_metered: !!b.skip_metered, run_missed: !!b.run_missed, retry_hours };
   if (!a.laptop.run_missed) a.missed_at = null;
@@ -3655,8 +5241,13 @@ on('GET', '/agents/:id/sessions', (c, [id]) => {
 on('POST', '/agents/:id/enroll', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
-  if (!a.token_hash || !a.token_expires || a.token_expires <= now()) throw new HttpError(409, 'no valid enrollment token; issue a new token first');
-  if (db.jobs.some((j) => j.kind === 'agent_enroll' && j.params.agent_id === a.id && (j.state === 'queued' || j.state === 'running')))
+  if (!a.token_hash || !a.token_expires || a.token_expires <= now())
+    throw new HttpError(409, 'no valid enrollment token; issue a new token first');
+  if (
+    db.jobs.some(
+      (j) => j.kind === 'agent_enroll' && j.params.agent_id === a.id && (j.state === 'queued' || j.state === 'running'),
+    )
+  )
     throw new HttpError(409, 'an enrollment job for this agent is already running');
   const j = addJob('agent_enroll', a.tenant, { agent_id: a.id }, u.name);
   await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'agent_enroll', tenant: a.tenant, params: j.params });
@@ -3674,11 +5265,28 @@ on('DELETE', '/agents/:id', (c, [id]) => {
 const RESCUE_TTL = 4 * 3600;
 const RESCUE_DISKS = [{ path: '/dev/sda', size: 21474836480 }];
 function newRescue(a: Agent, by: string, reboot: boolean, extra: Json = {}): Json {
-  for (const s of db.rescue) if (s.agent_id === a.id && (s.state === 'issued' || s.state === 'waiting')) s.state = 'cancelled';
+  for (const s of db.rescue)
+    if (s.agent_id === a.id && (s.state === 'issued' || s.state === 'waiting')) s.state = 'cancelled';
   const s: Json = {
-    id: rand(8), tenant: a.tenant, agent_id: a.id, token_expires: now() + RESCUE_TTL, state: 'issued', host: null, port: null, disks: [],
-    checked_in: null, snapshot_time: null, reboot, step: null, job_id: null, p2v: null, message: null, created: now(), created_by: by,
-    token_valid: true, ...extra,
+    id: rand(8),
+    tenant: a.tenant,
+    agent_id: a.id,
+    token_expires: now() + RESCUE_TTL,
+    state: 'issued',
+    host: null,
+    port: null,
+    disks: [],
+    checked_in: null,
+    snapshot_time: null,
+    reboot,
+    step: null,
+    job_id: null,
+    p2v: null,
+    message: null,
+    created: now(),
+    created_by: by,
+    token_valid: true,
+    ...extra,
   };
   db.rescue.unshift(s);
   return s;
@@ -3689,67 +5297,143 @@ function seedRescue(t: number) {
   if (!web01) return;
   const snaps = db.snapshots.filter((x) => x.source === `host-${web01.id}`).sort((x, y) => y.time - x.time);
   const done = newRescue(web01, 'admin', true);
-  const j = addJob('bmr', web01.tenant, { session: done.id, source_agent: web01.id, time: snaps[2]?.time ?? t }, 'admin');
-  Object.assign(j, { created: t - 6 * 86400, started: t - 6 * 86400 + 2, finished: t - 6 * 86400 + 900, state: 'ok', plan: [],
-    log: ['recreating partitions and file systems on /dev/sda (layout of the snapshot)', 'restoring 18,422 files (2.1 GiB)', 'boot loader installed (grub, EFI)', 'rebooting into the restored system'].join('\n') });
-  Object.assign(done, { state: 'done', host: '192.0.2.50', port: 7444, disks: RESCUE_DISKS, checked_in: t - 6 * 86400 - 300, snapshot_time: j.params.time,
-    step: 'finish', job_id: j.id, created: t - 6 * 86400 - 900, token_expires: t - 6 * 86400 - 900 + RESCUE_TTL, token_valid: false });
+  const j = addJob(
+    'bmr',
+    web01.tenant,
+    { session: done.id, source_agent: web01.id, time: snaps[2]?.time ?? t },
+    'admin',
+  );
+  Object.assign(j, {
+    created: t - 6 * 86400,
+    started: t - 6 * 86400 + 2,
+    finished: t - 6 * 86400 + 900,
+    state: 'ok',
+    plan: [],
+    log: [
+      'recreating partitions and file systems on /dev/sda (layout of the snapshot)',
+      'restoring 18,422 files (2.1 GiB)',
+      'boot loader installed (grub, EFI)',
+      'rebooting into the restored system',
+    ].join('\n'),
+  });
+  Object.assign(done, {
+    state: 'done',
+    host: '192.0.2.50',
+    port: 7444,
+    disks: RESCUE_DISKS,
+    checked_in: t - 6 * 86400 - 300,
+    snapshot_time: j.params.time,
+    step: 'finish',
+    job_id: j.id,
+    created: t - 6 * 86400 - 900,
+    token_expires: t - 6 * 86400 - 900 + RESCUE_TTL,
+    token_valid: false,
+  });
   const w = newRescue(web01, 'admin', true);
-  Object.assign(w, { state: 'waiting', host: '192.0.2.50', port: 7444, disks: RESCUE_DISKS, checked_in: t - 120, created: t - 900, token_expires: t - 900 + RESCUE_TTL });
+  Object.assign(w, {
+    state: 'waiting',
+    host: '192.0.2.50',
+    port: 7444,
+    disks: RESCUE_DISKS,
+    checked_in: t - 120,
+    created: t - 900,
+    token_expires: t - 900 + RESCUE_TTL,
+  });
 }
 /** Session as the API shows it: expiry, job progress (step) and outcome follow the mock jobs. */
 function rescueView(s: Json): Json {
   const t = now();
-  if ((s.state === 'issued' || s.state === 'waiting') && s.token_expires <= t) Object.assign(s, { state: 'expired', token_valid: false });
+  if ((s.state === 'issued' || s.state === 'waiting') && s.token_expires <= t)
+    Object.assign(s, { state: 'expired', token_valid: false });
   const pj = s.p2v_job ? db.jobs.find((j) => j.id === s.p2v_job) : undefined;
   if (pj?.state === 'ok' && s.state === 'issued') {
     // the VM booted the rescue ISO and checked in: the recovery starts unattended
-    Object.assign(s, { host: '192.0.2.51', port: 7444, disks: RESCUE_DISKS, checked_in: t, p2v: { ...s.p2v, vm: { vmid: s.p2v.vmid || 9001, node: s.p2v.node, config_volid: `${s.p2v.iso_storage}:iso/nexus-rescue-config-${s.id}.iso` } } });
-    const j = addJob('bmr', s.tenant, { session: s.id, source_agent: s.agent_id, time: s.snapshot_time }, 'rescue', { duration: 20 });
+    Object.assign(s, {
+      host: '192.0.2.51',
+      port: 7444,
+      disks: RESCUE_DISKS,
+      checked_in: t,
+      p2v: {
+        ...s.p2v,
+        vm: {
+          vmid: s.p2v.vmid || 9001,
+          node: s.p2v.node,
+          config_volid: `${s.p2v.iso_storage}:iso/nexus-rescue-config-${s.id}.iso`,
+        },
+      },
+    });
+    const j = addJob('bmr', s.tenant, { session: s.id, source_agent: s.agent_id, time: s.snapshot_time }, 'rescue', {
+      duration: 20,
+    });
     Object.assign(s, { state: 'running', job_id: j.id, step: null });
   }
-  if (pj?.state === 'failed' && s.state === 'issued') Object.assign(s, { state: 'failed', message: 'creating the VM failed' });
+  if (pj?.state === 'failed' && s.state === 'issued')
+    Object.assign(s, { state: 'failed', message: 'creating the VM failed' });
   const j = s.state === 'running' ? db.jobs.find((x) => x.id === s.job_id) : undefined;
   if (j) {
     const frac = j.started ? (t - j.started) / j.duration : 0;
     s.step = frac < 0.3 ? 'apply' : frac < 0.85 ? 'restore' : 'finish';
     if (j.state === 'ok') Object.assign(s, { state: 'done', step: 'finish', token_valid: false });
-    if (j.state === 'failed' || j.state === 'cancelled') Object.assign(s, { state: 'failed', token_valid: false, message: `job ${j.state}` });
+    if (j.state === 'failed' || j.state === 'cancelled')
+      Object.assign(s, { state: 'failed', token_valid: false, message: `job ${j.state}` });
   }
   const { p2v_job: _j, ...out } = s;
   return { ...out, agent_name: db.agents.find((a) => a.id === s.agent_id)?.name ?? null };
 }
-const findRescue = (u: User, id: string) => find(byTenant(u, db.rescue as (Json & { tenant: string })[]), (s) => s.id === id, 'rescue session');
+const findRescue = (u: User, id: string) =>
+  find(byTenant(u, db.rescue as (Json & { tenant: string })[]), (s) => s.id === id, 'rescue session');
 const RESCUE_IDENT = /^[A-Za-z0-9._-]{1,128}$/;
-on('GET', '/rescue', (c) => [200, byTenant(need(c.user, 'admin', 'operator', 'viewer', 'security_officer'), db.rescue as (Json & { tenant: string })[]).map(rescueView)]);
-on('GET', '/rescue/:id', (c, [id]) => [200, rescueView(findRescue(need(c.user, 'admin', 'operator', 'viewer', 'security_officer'), id))]);
+on('GET', '/rescue', (c) => [
+  200,
+  byTenant(
+    need(c.user, 'admin', 'operator', 'viewer', 'security_officer'),
+    db.rescue as (Json & { tenant: string })[],
+  ).map(rescueView),
+]);
+on('GET', '/rescue/:id', (c, [id]) => [
+  200,
+  rescueView(findRescue(need(c.user, 'admin', 'operator', 'viewer', 'security_officer'), id)),
+]);
 on('POST', '/agents/:id/rescue', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const a = findAgent(u, id);
   vaultRefuse('bare-metal recoveries');
   for (const k of Object.keys(c.body ?? {})) if (k !== 'reboot') throw new HttpError(400, `unknown field ${k}`);
   const s = newRescue(a, u.name, c.body?.reboot ?? true);
-  await audit(u.name, 'rescue.create', `rescue/${s.id}`, { agent_id: a.id, tenant: a.tenant, token_expires: s.token_expires });
+  await audit(u.name, 'rescue.create', `rescue/${s.id}`, {
+    agent_id: a.id,
+    tenant: a.tenant,
+    token_expires: s.token_expires,
+  });
   return [201, { ...rescueView(s), token: b32(26) }];
 });
 on('POST', '/rescue/:id/start', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const s = findRescue(u, id);
   rescueView(s);
-  if (s.state !== 'waiting') throw new HttpError(409, `the session is ${s.state}: the rescue console must have checked in (state waiting)`);
+  if (s.state !== 'waiting')
+    throw new HttpError(409, `the session is ${s.state}: the rescue console must have checked in (state waiting)`);
   const time = Number(c.body?.time);
-  if (!db.snapshots.some((x) => x.tenant === s.tenant && x.source === `host-${s.agent_id}` && x.time === time)) throw new HttpError(400, 'time: no such snapshot of this host');
+  if (!db.snapshots.some((x) => x.tenant === s.tenant && x.source === `host-${s.agent_id}` && x.time === time))
+    throw new HttpError(400, 'time: no such snapshot of this host');
   if (typeof c.body?.reboot === 'boolean') s.reboot = c.body.reboot;
   const j = addJob('bmr', s.tenant, { session: s.id, source_agent: s.agent_id, time }, u.name, { duration: 30 });
   Object.assign(s, { state: 'running', snapshot_time: time, job_id: j.id, step: 'restore', message: null });
-  await audit(u.name, 'rescue.start', `rescue/${s.id}`, { agent_id: s.agent_id, time, job: j.id, target: s.host, disks: s.disks });
+  await audit(u.name, 'rescue.start', `rescue/${s.id}`, {
+    agent_id: s.agent_id,
+    time,
+    job: j.id,
+    target: s.host,
+    disks: s.disks,
+  });
   return [202, { id: j.id }];
 });
 on('POST', '/rescue/:id/cancel', async (c, [id]) => {
   const u = need(c.user, 'admin', 'operator');
   const s = findRescue(u, id);
   rescueView(s);
-  if (s.state !== 'issued' && s.state !== 'waiting') throw new HttpError(409, 'only sessions that have not started can be cancelled (cancel the running job instead)');
+  if (s.state !== 'issued' && s.state !== 'waiting')
+    throw new HttpError(409, 'only sessions that have not started can be cancelled (cancel the running job instead)');
   Object.assign(s, { state: 'cancelled', token_valid: false });
   await audit(u.name, 'rescue.cancel', `rescue/${s.id}`, { agent_id: s.agent_id });
   return [200, rescueView(s)];
@@ -3759,26 +5443,47 @@ on('POST', '/agents/:id/p2v', async (c, [id]) => {
   const a = findAgent(u, id);
   vaultRefuse('bare-metal recoveries');
   const b = c.body ?? {};
-  for (const [k, v] of [['node', b.node], ['storage', b.storage]]) if (!RESCUE_IDENT.test(String(v ?? ''))) throw new HttpError(400, `${k}: invalid`);
+  for (const [k, v] of [
+    ['node', b.node],
+    ['storage', b.storage],
+  ])
+    if (!RESCUE_IDENT.test(String(v ?? ''))) throw new HttpError(400, `${k}: invalid`);
   const m = /^([A-Za-z0-9._-]+):iso\/([A-Za-z0-9._-]+)$/.exec(String(b.iso ?? ''));
   if (!m) throw new HttpError(400, 'iso: expected <storage>:iso/<file>.iso');
   const isoStorage = b.iso_storage || m[1];
   const bridge = b.bridge || 'vmbr0';
-  for (const [k, v] of [['iso_storage', isoStorage], ['bridge', bridge]]) if (!RESCUE_IDENT.test(v)) throw new HttpError(400, `${k}: invalid`);
+  for (const [k, v] of [
+    ['iso_storage', isoStorage],
+    ['bridge', bridge],
+  ])
+    if (!RESCUE_IDENT.test(v)) throw new HttpError(400, `${k}: invalid`);
   if (b.name && !RESCUE_IDENT.test(b.name)) throw new HttpError(400, 'name: invalid');
   const vmid = Number(b.vmid ?? 0);
   if (vmid !== 0 && !(vmid >= 100 && vmid <= 999999999)) throw new HttpError(400, 'vmid: 100..999999999');
   const memory = Number(b.memory || 2048);
   const cores = Number(b.cores || 2);
-  if (!(memory >= 512 && memory <= 1048576) || cores > 256) throw new HttpError(400, 'memory (MiB) or cores out of range');
-  if (b.appliance_sha256 && !/^[0-9a-fA-F]{64}$/.test(b.appliance_sha256)) throw new HttpError(400, 'appliance_sha256: 64 hex characters');
+  if (!(memory >= 512 && memory <= 1048576) || cores > 256)
+    throw new HttpError(400, 'memory (MiB) or cores out of range');
+  if (b.appliance_sha256 && !/^[0-9a-fA-F]{64}$/.test(b.appliance_sha256))
+    throw new HttpError(400, 'appliance_sha256: 64 hex characters');
   const src = db.sources.find((x) => x.id === Number(b.source_id) && x.tenant === a.tenant);
   if (src?.kind !== 'pve') throw new HttpError(400, "source_id: not a PVE source of the agent's tenant");
   const time = Number(b.time);
-  if (!db.snapshots.some((x) => x.tenant === a.tenant && x.source === `host-${a.id}` && x.time === time)) throw new HttpError(400, 'time: no such snapshot of this host');
+  if (!db.snapshots.some((x) => x.tenant === a.tenant && x.source === `host-${a.id}` && x.time === time))
+    throw new HttpError(400, 'time: no such snapshot of this host');
   const p2v = {
-    source_id: src.id, node: b.node, vmid, name: b.name ?? '', storage: b.storage, iso: b.iso, iso_storage: isoStorage, bridge, memory, cores,
-    appliance: b.appliance || String(c.headers.host ?? 'backup.example.com'), appliance_sha256: b.appliance_sha256 ?? '',
+    source_id: src.id,
+    node: b.node,
+    vmid,
+    name: b.name ?? '',
+    storage: b.storage,
+    iso: b.iso,
+    iso_storage: isoStorage,
+    bridge,
+    memory,
+    cores,
+    appliance: b.appliance || String(c.headers.host ?? 'backup.example.com'),
+    appliance_sha256: b.appliance_sha256 ?? '',
   };
   const s = newRescue(a, u.name, true, { snapshot_time: time, p2v });
   const j = addJob('p2v', a.tenant, { session: s.id, source_agent: a.id, time }, u.name, { duration: 10 });
@@ -3791,8 +5496,18 @@ on('POST', '/agents/:id/p2v', async (c, [id]) => {
 on('GET', '/users', (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const elevated = (id: number) =>
-    Math.max(0, ...[...db.sessions.values()].filter((s) => s.userId === id && s.elev && s.elev.until > now()).map((s) => s.elev!.until)) || null;
-  return [200, db.users.filter((x) => !u.tenant || x.tenant === u.tenant).map((x) => ({ ...pub(x), elevated_until: elevated(x.id) }))];
+    Math.max(
+      0,
+      ...[...db.sessions.values()]
+        .filter((s) => s.userId === id && s.elev && s.elev.until > now())
+        .map((s) => s.elev!.until),
+    ) || null;
+  return [
+    200,
+    db.users
+      .filter((x) => !u.tenant || x.tenant === u.tenant)
+      .map((x) => ({ ...pub(x), elevated_until: elevated(x.id) })),
+  ];
 });
 on('POST', '/users', async (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -3800,12 +5515,14 @@ on('POST', '/users', async (c) => {
   let { tenant } = c.body;
   // Phase 19b: a tenant admin creates tenant admins, tenant users and viewers of its own tenant only
   if (u.role === 'tenant_admin') {
-    if (!TENANT_ROLES.includes(role)) throw new HttpError(403, 'tenant admins create tenant_admin, tenant_user and viewer accounts only');
+    if (!TENANT_ROLES.includes(role))
+      throw new HttpError(403, 'tenant admins create tenant_admin, tenant_user and viewer accounts only');
     tenant ??= u.tenant;
     if (tenant !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
   }
   if (role === 'tenant_admin' && !tenant) throw new HttpError(400, 'tenant: required for tenant_admin');
-  if ('password' in c.body) throw new HttpError(400, 'unknown field `password`: users set their own password at activation');
+  if ('password' in c.body)
+    throw new HttpError(400, 'unknown field `password`: users set their own password at activation');
   if (!NAME_RE.test(String(name ?? ''))) throw new HttpError(400, 'invalid user name');
   if (db.users.some((x) => x.name === name)) throw new HttpError(409, 'user exists');
   if (role === 'tenant_user' && !tenant) throw new HttpError(400, 'tenant users need a tenant');
@@ -3813,11 +5530,28 @@ on('POST', '/users', async (c) => {
   // enables them. The requester gets only the first half of the activation code.
   const priv = PRIV.includes(role);
   const gated = priv && db.approvals;
-  const n: User = { id: nextId(), name, password: '', role, tenant: tenant || null, disabled: gated, created: now(), totp_secret: '', can_download: can_download ?? null, expires: expires ?? null };
+  const n: User = {
+    id: nextId(),
+    name,
+    password: '',
+    role,
+    tenant: tenant || null,
+    disabled: gated,
+    created: now(),
+    totp_secret: '',
+    can_download: can_download ?? null,
+    expires: expires ?? null,
+  };
   db.users.push(n);
   const activation = startActivation(n, gated);
   await audit(u.name, 'user.create', `user/${n.id}`, { name, role });
-  if (gated) return quorum(u, 'user.update', { id: n.id, name, role, disabled: false, activation: 'split' }, { user: pub(n), activation });
+  if (gated)
+    return quorum(
+      u,
+      'user.update',
+      { id: n.id, name, role, disabled: false, activation: 'split' },
+      { user: pub(n), activation },
+    );
   return [201, { user: pub(n), activation }];
 });
 on('PUT', '/users/:id', async (c, [id]) => {
@@ -3830,10 +5564,23 @@ on('PUT', '/users/:id', async (c, [id]) => {
     if (b.tenant !== undefined && b.tenant !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
   }
   const own = x.id === u.id;
-  if (x.auth === 'oidc' && (b.password || b.reset_totp || b.new_activation || (b.role !== undefined && b.role !== x.role) || (b.tenant !== undefined && (b.tenant || null) !== x.tenant)))
-    throw new HttpError(409, 'single sign-on account: role and tenants come from the group mapping, credentials from the identity provider');
+  if (
+    x.auth === 'oidc' &&
+    (b.password ||
+      b.reset_totp ||
+      b.new_activation ||
+      (b.role !== undefined && b.role !== x.role) ||
+      (b.tenant !== undefined && (b.tenant || null) !== x.tenant))
+  )
+    throw new HttpError(
+      409,
+      'single sign-on account: role and tenants come from the group mapping, credentials from the identity provider',
+    );
   if ((b.password || b.reset_totp) && !own)
-    throw new HttpError(400, "password / reset_totp only for your own account; issue a new activation code (new_activation) for other users");
+    throw new HttpError(
+      400,
+      'password / reset_totp only for your own account; issue a new activation code (new_activation) for other users',
+    );
   if (b.new_activation && own) throw new HttpError(400, 'new_activation: not for your own account');
   // re-authentication of the acting user for credential changes
   if (b.password || b.reset_totp || b.new_activation) {
@@ -3851,7 +5598,8 @@ on('PUT', '/users/:id', async (c, [id]) => {
   if (b.can_download !== undefined && !!b.can_download !== canDownload(x)) p.can_download = !!b.can_download;
   if (b.expires !== undefined && (b.expires ?? null) !== (x.expires ?? null)) {
     const others = db.users.filter((y) => y.role === 'admin' && !y.disabled && !y.expires && y.id !== x.id);
-    if (b.expires && (p.role ?? x.role) === 'admin' && !others.length) throw new HttpError(409, 'expires: the last admin without an expiry date cannot get one');
+    if (b.expires && (p.role ?? x.role) === 'admin' && !others.length)
+      throw new HttpError(409, 'expires: the last admin without an expiry date cannot get one');
     p.expires = b.expires ?? null;
   }
   // Phase 30: an eligible role for appliance-wide local operators and viewers
@@ -3860,7 +5608,11 @@ on('PUT', '/users/:id', async (c, [id]) => {
   const holds = ['operator', 'viewer'].includes(role1) && !tenant1 && x.auth !== 'oidc';
   if (b.eligible_role !== undefined && b.eligible_role !== null) {
     if (!PRIV.includes(b.eligible_role)) throw new HttpError(400, 'eligible_role: admin, security_officer or null');
-    if (!holds) throw new HttpError(400, 'eligible_role: only appliance-wide local operators and viewers can be eligible for a role');
+    if (!holds)
+      throw new HttpError(
+        400,
+        'eligible_role: only appliance-wide local operators and viewers can be eligible for a role',
+      );
     if (u.role === 'tenant_admin') throw new HttpError(403, 'forbidden');
   }
   const eligible = holds ? (b.eligible_role !== undefined ? b.eligible_role : (x.eligible_role ?? null)) : null;
@@ -3872,10 +5624,18 @@ on('PUT', '/users/:id', async (c, [id]) => {
     extra.totp_uri = totpUri(x.name, p.totp_secret);
   }
   const isPriv = PRIV.includes(x.role);
-  const removesApprover = isPriv && !x.disabled && !x.act && (p.disabled === true || (p.role && !PRIV.includes(p.role)) || (b.new_activation && db.approvals));
+  const removesApprover =
+    isPriv &&
+    !x.disabled &&
+    !x.act &&
+    (p.disabled === true || (p.role && !PRIV.includes(p.role)) || (b.new_activation && db.approvals));
   if (db.approvals && removesApprover && approvers((y) => y.id === x.id).length < 2)
-    throw new HttpError(409, 'approvals are enabled: this change would leave fewer than two people who can approve requests');
-  if (p.role && PRIV.includes(p.role) && x.act) throw new HttpError(409, 'the account must be activated before it can get a privileged role');
+    throw new HttpError(
+      409,
+      'approvals are enabled: this change would leave fewer than two people who can approve requests',
+    );
+  if (p.role && PRIV.includes(p.role) && x.act)
+    throw new HttpError(409, 'the account must be activated before it can get a privileged role');
   const gated =
     db.approvals &&
     ((p.role && PRIV.includes(p.role)) || // granting
@@ -3900,15 +5660,29 @@ on('PUT', '/users/:id', async (c, [id]) => {
   const { id: _i, name: _n, ...fields } = p;
   Object.assign(x, fields);
   if (b.new_activation) extra.activation = startActivation(x, false);
-  await audit(u.name, 'user.update', `user/${x.id}`, { ...fields, password: fields.password ? '***' : undefined, totp_secret: undefined, new_activation: b.new_activation || undefined, approvals: db.approvals ? undefined : 'disabled' });
+  await audit(u.name, 'user.update', `user/${x.id}`, {
+    ...fields,
+    password: fields.password ? '***' : undefined,
+    totp_secret: undefined,
+    new_activation: b.new_activation || undefined,
+    approvals: db.approvals ? undefined : 'disabled',
+  });
   return [200, { user: pub(x), ...extra }];
 });
 
 // plugins
 const PLUGIN_ID_RE = /^[a-z0-9-]{2,32}$/;
 const pluginVersions = (id: string) => db.plugins.filter((x) => x.id === id);
-const currentPlugin = (id: string) => find(pluginVersions(id), (x) => x.current && x.state === 'installed', 'installed plugin');
-on('GET', '/plugins', (c) => (need(c.user), [200, [...db.plugins].sort((a, b) => a.id.localeCompare(b.id) || cmpVersion(b.version, a.version))]));
+const currentPlugin = (id: string) =>
+  find(pluginVersions(id), (x) => x.current && x.state === 'installed', 'installed plugin');
+on(
+  'GET',
+  '/plugins',
+  (c) => (
+    need(c.user),
+    [200, [...db.plugins].sort((a, b) => a.id.localeCompare(b.id) || cmpVersion(b.version, a.version))]
+  ),
+);
 on('POST', '/plugins', async (c) => {
   const u = need(c.user, 'admin');
   if (!String(c.headers['content-type'] ?? '').startsWith('application/octet-stream'))
@@ -3918,11 +5692,16 @@ on('POST', '/plugins', async (c) => {
   if (raw.length > 128 << 20) throw new HttpError(413, 'bundle larger than 128 MiB');
   const sig = String(c.headers['x-plugin-signature'] ?? '').trim();
   if (!sig) throw new HttpError(400, 'X-Plugin-Signature: required');
-  if (!/^[A-Za-z0-9+/]+=*$/.test(sig) || sig.length < 16) throw new HttpError(400, 'X-Plugin-Signature: base64 signature expected');
+  if (!/^[A-Za-z0-9+/]+=*$/.test(sig) || sig.length < 16)
+    throw new HttpError(400, 'X-Plugin-Signature: base64 signature expected');
   // Mock: a real manifest.json in the tar is used; anything else becomes a newer example-files version.
   const bumpExample = (): Json => {
     const ex = pluginVersions('example-files');
-    const top = ex.map((x) => x.version).sort(cmpVersion).pop() ?? '0.9.0';
+    const top =
+      ex
+        .map((x) => x.version)
+        .sort(cmpVersion)
+        .pop() ?? '0.9.0';
     const [a, b, p] = top.split('.').map(Number);
     const base = ex[0]?.manifest ?? manifestOf('example-files', 'Example files', '1.0.0', [FILES_KIND], SANDBOX);
     return { ...structuredClone(base), version: `${a}.${b}.${(p || 0) + 1}` };
@@ -3930,18 +5709,25 @@ on('POST', '/plugins', async (c) => {
   const m: Json = tarManifest(raw) ?? bumpExample();
   if (!PLUGIN_ID_RE.test(String(m.id ?? ''))) throw new HttpError(400, 'manifest.id: [a-z0-9-]{2,32} required');
   if (m.api !== 1) throw new HttpError(400, `manifest.api: unsupported protocol version ${m.api}`);
-  if (!Array.isArray(m.kinds) || !m.kinds.length) throw new HttpError(400, 'manifest.kinds: at least one kind required');
+  if (!Array.isArray(m.kinds) || !m.kinds.length)
+    throw new HttpError(400, 'manifest.kinds: at least one kind required');
   // "verification": the publisher needs a trusted key; signatures starting with "bad" fail.
   const key = db.pluginKeys.find((k) => k.publisher === m.publisher);
   if (!key || /^bad/i.test(sig)) throw new HttpError(400, 'signature verification failed: no trusted key matches');
   const live = pluginVersions(m.id).filter((x) => !['removed', 'rejected', 'failed'].includes(x.state));
-  if (live.some((x) => x.publisher !== m.publisher)) throw new HttpError(409, `plugin id ${m.id} belongs to another publisher`);
-  if (live.some((x) => x.state === 'pending' || x.state === 'approved')) throw new HttpError(409, 'another version of this plugin is waiting for approval');
-  const top = live.map((x) => x.version).sort(cmpVersion).pop();
+  if (live.some((x) => x.publisher !== m.publisher))
+    throw new HttpError(409, `plugin id ${m.id} belongs to another publisher`);
+  if (live.some((x) => x.state === 'pending' || x.state === 'approved'))
+    throw new HttpError(409, 'another version of this plugin is waiting for approval');
+  const top = live
+    .map((x) => x.version)
+    .sort(cmpVersion)
+    .pop();
   if (top && cmpVersion(m.version, top) <= 0) throw new HttpError(409, `version ${m.version} is not newer than ${top}`);
   for (const k of m.kinds) {
     const other = pluginKind(k.kind);
-    if (other && other.plugin.id !== m.id) throw new HttpError(409, `kind ${k.kind} is provided by plugin ${other.plugin.id}`);
+    if (other && other.plugin.id !== m.id)
+      throw new HttpError(409, `kind ${k.kind} is provided by plugin ${other.plugin.id}`);
   }
   const upgrade_from = live.find((x) => x.current)?.version ?? null;
   const e = pluginEntry(m, u.name, now(), {
@@ -3954,7 +5740,12 @@ on('POST', '/plugins', async (c) => {
     installed_at: null,
   });
   db.plugins.push(e);
-  const [status, body] = await quorum(u, 'plugin.install', { id: m.id, version: m.version, publisher: m.publisher, sha256: e.sha256, signer: e.signer, upgrade_from }, { plugin: e, upgrade_from });
+  const [status, body] = await quorum(
+    u,
+    'plugin.install',
+    { id: m.id, version: m.version, publisher: m.publisher, sha256: e.sha256, signer: e.signer, upgrade_from },
+    { plugin: e, upgrade_from },
+  );
   e.quorum_id = body.quorum_id;
   return [status, body];
 });
@@ -3973,9 +5764,17 @@ on('POST', '/plugins/:id/disable', (c, [id]) => {
 });
 on('POST', '/plugins/:id/activate', (c, [id]) => {
   const u = need(c.user, 'admin');
-  const e = find(pluginVersions(id), (x) => x.version === c.body.version && x.state === 'installed', 'installed plugin version');
+  const e = find(
+    pluginVersions(id),
+    (x) => x.version === c.body.version && x.state === 'installed',
+    'installed plugin version',
+  );
   if (e.current) throw new HttpError(409, 'version is already current');
-  return quorum(u, 'plugin.activate', { id, version: e.version, from: pluginVersions(id).find((x) => x.current)?.version ?? null });
+  return quorum(u, 'plugin.activate', {
+    id,
+    version: e.version,
+    from: pluginVersions(id).find((x) => x.current)?.version ?? null,
+  });
 });
 on('DELETE', '/plugins/:id', (c, [id]) => {
   const u = need(c.user, 'admin');
@@ -4010,7 +5809,10 @@ async function checkActivation(name: string, code: string): Promise<User> {
   const f = db.failures.get(key);
   if (f && f.until > now()) throw new HttpError(429, 'too many failed activation attempts; try again in 15 minutes');
   const x = db.users.find((y) => y.name === name);
-  const want = x?.act && !x.disabled && x.act.expires && x.act.expires > now() && !x.act.parts.includes(null) ? x.act.parts.join('') : null;
+  const want =
+    x?.act && !x.disabled && x.act.expires && x.act.expires > now() && !x.act.parts.includes(null)
+      ? x.act.parts.join('')
+      : null;
   if (!want || normCode(code) !== want) {
     const g = f && f.until === 0 ? f : { count: 0, until: 0 };
     g.count++;
@@ -4027,12 +5829,19 @@ on('POST', '/auth/activate/begin', async (c) => {
   const secret = b32();
   pendingTotp.set(x.name, secret);
   await audit(x.name, 'user.activate_begin', `user/${x.id}`, {});
-  return [200, { name: x.name, totp_uri: totpUri(x.name, secret), totp_secret: secret, passkey_required: pkRequired(x) }];
+  return [
+    200,
+    { name: x.name, totp_uri: totpUri(x.name, secret), totp_secret: secret, passkey_required: pkRequired(x) },
+  ];
 });
 on('POST', '/auth/activate/complete', async (c) => {
   const { name = '', code = '', password = '', totp = '', passkey, passkey_name = '' } = c.body;
   const x = await checkActivation(String(name), String(code));
-  if (pkRequired(x) && !passkey) throw new HttpError(400, 'a passkey is required for this role: register one in this step (TOTP alone is not accepted)');
+  if (pkRequired(x) && !passkey)
+    throw new HttpError(
+      400,
+      'a passkey is required for this role: register one in this step (TOTP alone is not accepted)',
+    );
   if (String(password).length < 12) throw new HttpError(400, 'password must have at least 12 characters');
   const secret = pendingTotp.get(x.name);
   if (!secret) throw new HttpError(409, 'start the activation first');
@@ -4050,7 +5859,16 @@ const CLIENT_IP = '198.51.100.17';
 const sessionList = (filter: (s: { userId: number }) => boolean, current: string | null) =>
   [...db.sessions.entries()]
     .filter(([, s]) => filter(s))
-    .map(([sid, s]) => ({ id: s.id, user_id: s.userId, user: db.users.find((u) => u.id === s.userId)?.name ?? '?', ip: s.ip, user_agent: s.ua, created: s.created, last_seen: s.last, current: sid === current }))
+    .map(([sid, s]) => ({
+      id: s.id,
+      user_id: s.userId,
+      user: db.users.find((u) => u.id === s.userId)?.name ?? '?',
+      ip: s.ip,
+      user_agent: s.ua,
+      created: s.created,
+      last_seen: s.last,
+      current: sid === current,
+    }))
     .sort((a, b) => b.last_seen - a.last_seen);
 function endSession(u: User, id: number, own: boolean) {
   const e = [...db.sessions.entries()].find(([, s]) => s.id === id && (!own || s.userId === u.id));
@@ -4069,13 +5887,18 @@ function cidr(s: string): string | null {
     return `${[24, 16, 8, 0].map((sh) => Math.floor(net / 2 ** sh) % 256).join('.')}/${p}`;
   }
   const v6 = /^([0-9a-fA-F:]+)(?:\/(\d{1,3}))?$/.exec(s.trim());
-  if (v6 && v6[1].includes(':') && (v6[2] === undefined || Number(v6[2]) <= 128)) return `${v6[1].toLowerCase()}/${v6[2] ?? 128}`;
+  if (v6 && v6[1].includes(':') && (v6[2] === undefined || Number(v6[2]) <= 128))
+    return `${v6[1].toLowerCase()}/${v6[2] ?? 128}`;
   return null;
 }
 const inCidr = (ip: string, c: string) => {
   const [net, p] = c.split('/');
   if (net.includes(':') || ip.includes(':')) return false;
-  const n = (s: string) => s.split('.').map(Number).reduce((a, x) => a * 256 + x, 0);
+  const n = (s: string) =>
+    s
+      .split('.')
+      .map(Number)
+      .reduce((a, x) => a * 256 + x, 0);
   const size = 2 ** (32 - Number(p));
   return Math.floor(n(ip) / size) === Math.floor(n(net) / size);
 };
@@ -4088,7 +5911,12 @@ const securityState = () => {
     client_ip: CLIENT_IP,
     client_allowed: !allow.length || allow.some((c) => inCidr(CLIENT_IP, c)),
     pending: { session: pend('security.session'), mgmt_allow: fwPending('web') },
-    elevation: { settings: structuredClone(db.elevation), pending: pend('security.elevation'), min_minutes: 15, max_minutes: 480 },
+    elevation: {
+      settings: structuredClone(db.elevation),
+      pending: pend('security.elevation'),
+      min_minutes: 15,
+      max_minutes: 480,
+    },
   };
 };
 on('GET', '/auth/banner', () => [200, { banner: db.security.login_banner }]);
@@ -4123,8 +5951,10 @@ on('POST', '/users/:id/sessions/revoke', async (c, [id]) => {
 });
 on('POST', '/sessions/revoke-all', async (c) => {
   const u = need(c.user, 'admin');
-  if (!c.body.current_password || !c.body.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
-  if (c.body.current_password !== u.password || !secondOk(u, c.body.current_totp)) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (!c.body.current_password || !c.body.current_totp)
+    throw new HttpError(400, 'current_password and current_totp are required');
+  if (c.body.current_password !== u.password || !secondOk(u, c.body.current_totp))
+    throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
   let n = 0;
   for (const sid of [...db.sessions.keys()]) if (sid !== c.sid) (db.sessions.delete(sid), n++);
   await audit(u.name, 'session.revoke_all', 'appliance', { revoked: n });
@@ -4134,11 +5964,14 @@ on('GET', '/settings/security', (c) => (need(c.user, 'admin', 'security_officer'
 on('PUT', '/settings/session', async (c) => {
   const u = need(c.user, 'admin');
   const { idle_min, absolute_h } = c.body;
-  if (!Number.isInteger(idle_min) || idle_min < 5 || idle_min > 120) throw new HttpError(400, 'idle_min: 5..=120 minutes');
-  if (!Number.isInteger(absolute_h) || absolute_h < 1 || absolute_h > 24) throw new HttpError(400, 'absolute_h: 1..=24 hours');
+  if (!Number.isInteger(idle_min) || idle_min < 5 || idle_min > 120)
+    throw new HttpError(400, 'idle_min: 5..=120 minutes');
+  if (!Number.isInteger(absolute_h) || absolute_h < 1 || absolute_h > 24)
+    throw new HttpError(400, 'absolute_h: 1..=24 hours');
   const old = db.security.session;
   const next = { idle_min, absolute_h };
-  if (idle_min > old.idle_min || absolute_h > old.absolute_h) return quorum(u, 'security.session', { session: next, old });
+  if (idle_min > old.idle_min || absolute_h > old.absolute_h)
+    return quorum(u, 'security.session', { session: next, old });
   db.security.session = next;
   await audit(u.name, 'security.session', 'settings/session', { session: next, old });
   return [200, next];
@@ -4148,7 +5981,16 @@ on('PUT', '/settings/session', async (c) => {
 const MOCK_RP = 'backup.example.com';
 const pk = {
   policy: { require_privileged: false, rp_id: '' },
-  keys: [] as { id: number; user_id: number; cred: string; name: string; alg: 'ES256' | 'EdDSA'; rp_id: string; created: number; last_used: number | null }[],
+  keys: [] as {
+    id: number;
+    user_id: number;
+    cred: string;
+    name: string;
+    alg: 'ES256' | 'EdDSA';
+    rp_id: string;
+    created: number;
+    last_used: number | null;
+  }[],
   seeded: false,
 };
 const pkRp = () => pk.policy.rp_id || MOCK_RP;
@@ -4159,12 +6001,33 @@ function pkSeed() {
   if (!admin) return;
   const t = now();
   pk.keys.push(
-    { id: nextId(), user_id: admin.id, cred: rand(16), name: 'YubiKey 5C NFC', alg: 'ES256', rp_id: MOCK_RP, created: t - 86400 * 40, last_used: t - 3600 * 5 },
-    { id: nextId(), user_id: admin.id, cred: rand(16), name: 'Laptop (Touch ID)', alg: 'ES256', rp_id: MOCK_RP, created: t - 86400 * 12, last_used: t - 86400 * 2 },
+    {
+      id: nextId(),
+      user_id: admin.id,
+      cred: rand(16),
+      name: 'YubiKey 5C NFC',
+      alg: 'ES256',
+      rp_id: MOCK_RP,
+      created: t - 86400 * 40,
+      last_used: t - 3600 * 5,
+    },
+    {
+      id: nextId(),
+      user_id: admin.id,
+      cred: rand(16),
+      name: 'Laptop (Touch ID)',
+      alg: 'ES256',
+      rp_id: MOCK_RP,
+      created: t - 86400 * 12,
+      last_used: t - 86400 * 2,
+    },
   );
 }
 const pkOf = (u: User) => (pkSeed(), pk.keys.filter((k) => k.user_id === u.id));
-const pkRequired = (u: User) => pk.policy.require_privileged && (u.auth ?? 'local') === 'local' && (u.role === 'admin' || u.role === 'security_officer');
+const pkRequired = (u: User) =>
+  pk.policy.require_privileged &&
+  (u.auth ?? 'local') === 'local' &&
+  (u.role === 'admin' || u.role === 'security_officer');
 /** A passkey assertion (object or its JSON in `current_totp`) of one of `u`'s passkeys. */
 function pkAssertionOk(u: User, v: unknown): boolean {
   let a: Json | null = null;
@@ -4178,22 +6041,48 @@ function pkAssertionOk(u: User, v: unknown): boolean {
   return !!k;
 }
 /** Second factor of a re-authentication: TOTP (unless the policy requires a passkey) or a passkey. */
-const secondOk = (u: User, v: unknown) => (/^\d{6}$/.test(String(v ?? '')) && !pkRequired(u)) || (String(v ?? '').startsWith('{') && pkAssertionOk(u, v));
-const pkPub = (k: (typeof pk.keys)[number]) => ({ id: k.id, name: k.name, alg: k.alg, rp_id: k.rp_id, created: k.created, last_used: k.last_used });
+const secondOk = (u: User, v: unknown) =>
+  (/^\d{6}$/.test(String(v ?? '')) && !pkRequired(u)) || (String(v ?? '').startsWith('{') && pkAssertionOk(u, v));
+const pkPub = (k: (typeof pk.keys)[number]) => ({
+  id: k.id,
+  name: k.name,
+  alg: k.alg,
+  rp_id: k.rp_id,
+  created: k.created,
+  last_used: k.last_used,
+});
 const pkCreateOptions = (u: User) => ({
   mock: true,
   challenge: rand(32),
   rp: { id: pkRp(), name: 'NexusBackup' },
   user: { id: rand(8), name: u.name, displayName: u.name },
-  pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }],
+  pubKeyCredParams: [
+    { type: 'public-key', alg: -7 },
+    { type: 'public-key', alg: -8 },
+  ],
   attestation: 'none',
   excludeCredentials: pkOf(u).map((k) => ({ type: 'public-key', id: k.cred })),
 });
-const pkGetOptions = (creds: string[]) => ({ mock: true, challenge: rand(32), rpId: pkRp(), allowCredentials: creds.map((id) => ({ type: 'public-key', id })), userVerification: 'preferred' });
+const pkGetOptions = (creds: string[]) => ({
+  mock: true,
+  challenge: rand(32),
+  rpId: pkRp(),
+  allowCredentials: creds.map((id) => ({ type: 'public-key', id })),
+  userVerification: 'preferred',
+});
 async function pkStore(u: User, name: string, cred: Json | undefined) {
   if (!cred?.id) throw new HttpError(400, 'passkey not accepted: credential');
   if (pkOf(u).length >= 10) throw new HttpError(409, 'at most 10 passkeys per account');
-  const k = { id: nextId(), user_id: u.id, cred: String(cred.id), name: name.trim() || 'Passkey', alg: 'ES256' as const, rp_id: pkRp(), created: now(), last_used: null };
+  const k = {
+    id: nextId(),
+    user_id: u.id,
+    cred: String(cred.id),
+    name: name.trim() || 'Passkey',
+    alg: 'ES256' as const,
+    rp_id: pkRp(),
+    created: now(),
+    last_used: null,
+  };
   pk.keys.push(k);
   await audit(u.name, 'passkey.register', `user/${u.name}`, { passkey: k.id, name: k.name, rp_id: k.rp_id });
   return k;
@@ -4241,14 +6130,21 @@ on('DELETE', '/auth/passkeys/:id', async (c, [id]) => {
   const k = pkOf(u).find((x) => String(x.id) === id);
   if (!k) throw new HttpError(404, 'not found');
   if (pkOf(u).length === 1 && pkRequired(u))
-    throw new HttpError(409, 'passkeys are required for your role: register another passkey before removing the last one');
+    throw new HttpError(
+      409,
+      'passkeys are required for your role: register another passkey before removing the last one',
+    );
   pk.keys = pk.keys.filter((x) => x !== k);
   await audit(u.name, 'passkey.remove', `user/${u.name}`, { passkey: k.id, name: k.name });
   return [200, { ok: true }];
 });
 on('POST', '/auth/login/passkey', (c) => {
   const u = db.users.find((x) => x.name === c.body.name && !x.act && (x.auth ?? 'local') === 'local');
-  const creds = u ? pkOf(u).filter((k) => k.rp_id === pkRp()).map((k) => k.cred) : [];
+  const creds = u
+    ? pkOf(u)
+        .filter((k) => k.rp_id === pkRp())
+        .map((k) => k.cred)
+    : [];
   return [200, pkGetOptions(creds.length ? creds : [`decoy-${c.body.name}`])];
 });
 on('POST', '/auth/activate/passkey', async (c) => {
@@ -4257,7 +6153,13 @@ on('POST', '/auth/activate/passkey', async (c) => {
 });
 const pkWithout = () =>
   db.users
-    .filter((x) => (x.role === 'admin' || x.role === 'security_officer') && (x.auth ?? 'local') === 'local' && !x.disabled && !x.act)
+    .filter(
+      (x) =>
+        (x.role === 'admin' || x.role === 'security_officer') &&
+        (x.auth ?? 'local') === 'local' &&
+        !x.disabled &&
+        !x.act,
+    )
     .filter((x) => !pkOf(x).some((k) => k.rp_id === pkRp()))
     .map((x) => x.name)
     .sort();
@@ -4268,17 +6170,33 @@ on('GET', '/settings/passkeys', (c) => {
 });
 on('PUT', '/settings/passkeys', async (c) => {
   const u = need(c.user, 'admin');
-  const next = { require_privileged: !!c.body.require_privileged, rp_id: String(c.body.rp_id ?? '').trim().toLowerCase() };
-  if (next.rp_id && !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(next.rp_id)) throw new HttpError(400, 'rp_id: a host name (lowercase, no IP address, no port), or empty');
+  const next = {
+    require_privileged: !!c.body.require_privileged,
+    rp_id: String(c.body.rp_id ?? '')
+      .trim()
+      .toLowerCase(),
+  };
+  if (next.rp_id && !/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(next.rp_id))
+    throw new HttpError(400, 'rp_id: a host name (lowercase, no IP address, no port), or empty');
   const old = { ...pk.policy };
   if (next.require_privileged === old.require_privileged && next.rp_id === old.rp_id) return [200, { policy: old }];
   if (old.require_privileged && next.require_privileged && next.rp_id !== old.rp_id)
-    throw new HttpError(409, 'turn the passkey requirement off before changing the relying party ID (existing passkeys stop working)');
+    throw new HttpError(
+      409,
+      'turn the passkey requirement off before changing the relying party ID (existing passkeys stop working)',
+    );
   if (next.require_privileged && !pkOf(u).some((k) => k.rp_id === (next.rp_id || MOCK_RP)))
-    throw new HttpError(409, `register a passkey for your own account (host name ${next.rp_id || MOCK_RP}) first: the requirement would lock you out`);
+    throw new HttpError(
+      409,
+      `register a passkey for your own account (host name ${next.rp_id || MOCK_RP}) first: the requirement would lock you out`,
+    );
   if (next.require_privileged && !old.require_privileged && next.rp_id === old.rp_id) {
     pk.policy = next;
-    await audit(u.name, 'security.passkeys', 'settings/passkeys', { passkeys: next, old, without_passkey: pkWithout() });
+    await audit(u.name, 'security.passkeys', 'settings/passkeys', {
+      passkeys: next,
+      old,
+      without_passkey: pkWithout(),
+    });
     return [200, { policy: next, without_passkey: pkWithout() }];
   }
   return quorum(u, 'security.passkeys', { passkeys: next, old });
@@ -4286,7 +6204,8 @@ on('PUT', '/settings/passkeys', async (c) => {
 on('PUT', '/settings/dormant', async (c) => {
   const u = need(c.user, 'admin');
   const days = c.body.days;
-  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650))) throw new HttpError(400, 'days: 0 (off) or 30..=3650');
+  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650)))
+    throw new HttpError(400, 'days: 0 (off) or 30..=3650');
   await audit(u.name, 'security.dormant', 'settings/dormant_days', { days, old: db.security.dormant_days });
   db.security.dormant_days = days;
   return [200, { dormant_days: days }];
@@ -4302,15 +6221,20 @@ on('PUT', '/settings/max-sessions', async (c) => {
 on('PUT', '/settings/dek-rotation', async (c) => {
   const u = need(c.user, 'admin');
   const days = c.body.days;
-  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650))) throw new HttpError(400, 'days: 0 (off) or 30..=3650');
-  await audit(u.name, 'security.dek_rotation', 'settings/dek_rotation_days', { days, old: db.security.dek_rotation_days });
+  if (!Number.isInteger(days) || (days !== 0 && (days < 30 || days > 3650)))
+    throw new HttpError(400, 'days: 0 (off) or 30..=3650');
+  await audit(u.name, 'security.dek_rotation', 'settings/dek_rotation_days', {
+    days,
+    old: db.security.dek_rotation_days,
+  });
   db.security.dek_rotation_days = days;
   return [200, { dek_rotation_days: days }];
 });
 on('PUT', '/settings/banner', async (c) => {
   const u = need(c.user, 'admin');
   const text = String(c.body.banner ?? '').replace(/\s+$/, '');
-  if (text.length > 2000 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) throw new HttpError(400, 'banner: up to 2000 characters, no control characters');
+  if (text.length > 2000 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(text))
+    throw new HttpError(400, 'banner: up to 2000 characters, no control characters');
   db.security.login_banner = text;
   await audit(u.name, 'security.login_banner', 'settings/login_banner', { banner: text });
   return [200, { banner: text }];
@@ -4322,18 +6246,31 @@ const FW_SERVICES = [
   { id: 'ssh', ports: '22/tcp', lockout: true, available: false, can_disable: true },
 ];
 const fwPending = (id: string) =>
-  db.quorum.filter((q) => q.action === 'firewall.inbound' && q.state === 'pending' && q.params.service === id).pop()?.id ?? null;
+  db.quorum.filter((q) => q.action === 'firewall.inbound' && q.state === 'pending' && q.params.service === id).pop()
+    ?.id ?? null;
 const fwSets = (id: string) => {
   const r = db.firewall[id];
   if (!r.enabled) return { v4: [], v6: [] };
   if (!r.allow.length) return { v4: ['0.0.0.0/0'], v6: ['::/0'] };
   return { v4: r.allow.filter((c) => !c.includes(':')), v6: r.allow.filter((c) => c.includes(':')) };
 };
-async function fwRequest(u: User, id: string, raw: unknown, enabled: unknown, force: unknown, confirm: unknown): Promise<[number, Json]> {
+async function fwRequest(
+  u: User,
+  id: string,
+  raw: unknown,
+  enabled: unknown,
+  force: unknown,
+  confirm: unknown,
+): Promise<[number, Json]> {
   const svc = FW_SERVICES.find((s) => s.id === id);
   if (!svc) throw new HttpError(404, 'not found');
-  if (!svc.available) throw new HttpError(409, `${id}: nothing listens on ${svc.ports} on this appliance, so there is nothing to restrict`);
-  if (enabled === false && !svc.can_disable) throw new HttpError(400, `${id} cannot be switched off, only restricted to source addresses`);
+  if (!svc.available)
+    throw new HttpError(
+      409,
+      `${id}: nothing listens on ${svc.ports} on this appliance, so there is nothing to restrict`,
+    );
+  if (enabled === false && !svc.can_disable)
+    throw new HttpError(400, `${id} cannot be switched off, only restricted to source addresses`);
   const entries: unknown[] = Array.isArray(raw) ? raw : [];
   if (entries.length > 64) throw new HttpError(400, 'allow: at most 64 entries');
   const list: string[] = [];
@@ -4348,11 +6285,18 @@ async function fwRequest(u: User, id: string, raw: unknown, enabled: unknown, fo
   if (id === 'web' && !list.length) vaultRefuse('an unrestricted web inbound rule');
   const ok = !list.length || list.some((x) => inCidr(CLIENT_IP, x));
   if (svc.lockout && !ok && !(force && String(confirm ?? '').trim() === CLIENT_IP))
-    throw new HttpError(409, `the list for ${id} does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`);
+    throw new HttpError(
+      409,
+      `the list for ${id} does not contain your address ${CLIENT_IP}: you would lose access to the web UI; add it, or confirm with force and confirm = "${CLIENT_IP}"`,
+    );
   return quorum(u, 'firewall.inbound', { service: id, rule, old, requested_from: CLIENT_IP });
 }
-on('PUT', '/settings/mgmt-allow', async (c) => fwRequest(need(c.user, 'admin'), 'web', c.body.mgmt_allow, undefined, c.body.force, c.body.confirm));
-on('PUT', '/firewall/inbound/:id', async (c, [id]) => fwRequest(need(c.user, 'admin'), id, c.body.allow, c.body.enabled, c.body.force, c.body.confirm));
+on('PUT', '/settings/mgmt-allow', async (c) =>
+  fwRequest(need(c.user, 'admin'), 'web', c.body.mgmt_allow, undefined, c.body.force, c.body.confirm),
+);
+on('PUT', '/firewall/inbound/:id', async (c, [id]) =>
+  fwRequest(need(c.user, 'admin'), id, c.body.allow, c.body.enabled, c.body.force, c.body.confirm),
+);
 on('GET', '/firewall', (c) => {
   need(c.user, 'admin', 'security_officer');
   const t = now();
@@ -4361,14 +6305,26 @@ on('GET', '/firewall', (c) => {
     {
       services: FW_SERVICES.map((s) => {
         const r = db.firewall[s.id] ?? { allow: [], enabled: false };
-        return { ...s, enabled: r.enabled, allow: [...r.allow], effective: s.available ? fwSets(s.id) : null, pending: s.available ? fwPending(s.id) : null };
+        return {
+          ...s,
+          enabled: r.enabled,
+          allow: [...r.allow],
+          effective: s.available ? fwSets(s.id) : null,
+          pending: s.available ? fwPending(s.id) : null,
+        };
       }),
       client_ip: CLIENT_IP,
       client_allowed: !db.firewall.web.allow.length || db.firewall.web.allow.some((x) => inCidr(CLIENT_IP, x)),
       status_ts: t - 20,
       status_stale: false,
       outbound: {
-        endpoints: ['192.0.2.20 . tcp . 8006', '192.0.2.20 . tcp . 22', '192.0.2.21 . tcp . 22', '198.51.100.40 . tcp . 23', '203.0.113.9 . tcp . 6514'],
+        endpoints: [
+          '192.0.2.20 . tcp . 8006',
+          '192.0.2.20 . tcp . 22',
+          '192.0.2.21 . tcp . 22',
+          '198.51.100.40 . tcp . 23',
+          '203.0.113.9 . tcp . 6514',
+        ],
         dns: ['192.0.2.53'],
         nts: ['162.159.200.1', '192.53.103.108'],
       },
@@ -4386,16 +6342,29 @@ on('GET', '/firewall', (c) => {
 const approvalsState = () => {
   const n = approvers().length;
   const pend = db.quorum.find((q) => q.action === 'approvals.disable' && q.state === 'pending');
-  return { enabled: db.approvals, possible_approvers: n, recommend: !db.approvals && n >= 2, few_approvers: db.approvals && n < 3, pending_disable: pend?.id ?? null };
+  return {
+    enabled: db.approvals,
+    possible_approvers: n,
+    recommend: !db.approvals && n >= 2,
+    few_approvers: db.approvals && n < 3,
+    pending_disable: pend?.id ?? null,
+  };
 };
-on('GET', '/settings/approvals', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, approvalsState()]));
+on(
+  'GET',
+  '/settings/approvals',
+  (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, approvalsState()]),
+);
 on('PUT', '/settings/approvals', async (c) => {
   const u = need(c.user, 'admin');
   const want = !!c.body.enabled;
   if (want === db.approvals) return [200, approvalsState()];
   if (want) {
     if (approvers((y) => y.id === u.id).length < 1)
-      throw new HttpError(409, 'nobody besides you could approve requests: add a second administrator or security officer first');
+      throw new HttpError(
+        409,
+        'nobody besides you could approve requests: add a second administrator or security officer first',
+      );
     db.approvals = true;
     await audit(u.name, 'settings.approvals', 'settings/approvals', { enabled: true });
     return [200, approvalsState()];
@@ -4406,7 +6375,11 @@ on('PUT', '/settings/approvals', async (c) => {
 });
 
 // large GC confirmation (approvals disabled)
-on('GET', '/gc/pending', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.approvals ? [] : db.gcPending]));
+on(
+  'GET',
+  '/gc/pending',
+  (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, db.approvals ? [] : db.gcPending]),
+);
 on('POST', '/gc/approve-large', async (c) => {
   const u = need(c.user, 'admin');
   if (db.approvals) throw new HttpError(409, 'approvals are enabled: a large GC needs a quorum approval');
@@ -4427,7 +6400,8 @@ on('DELETE', '/snapshots/:tenant/:source/:time', (c, [tenant, source, time]) => 
   if (!x.local) throw new HttpError(409, 'only the offsite copy is left: it follows the offsite retention');
   if (x.origin) throw new HttpError(409, "replicated snapshot: it follows the replication source's retention");
   if (x.lock_until > now()) throw new HttpError(409, `snapshot is locked until ${x.lock_until} (unix time)`);
-  if (activeHold(tn, src, tm)) throw new HttpError(409, 'snapshot is under a legal hold: release it first (needs approval)');
+  if (activeHold(tn, src, tm))
+    throw new HttpError(409, 'snapshot is under a legal hold: release it first (needs approval)');
   lockdownRefuse(tn, 'deletes');
   return quorum(u, 'snapshot.delete', { tenant: tn, source: src, time: tm });
 });
@@ -4438,7 +6412,21 @@ on('GET', '/snapshots', (c) => {
   const held = c.query.get('held') === 'true';
   const xs = byTenant(u, db.snapshots as any[])
     .filter((s) => (!tq || s.tenant === tq) && (!sq || s.source === sq))
-    .map((s) => ({ ...s, label: GUEST_NAMES[`${s.tenant}/${s.source.replace(/^(vm|ct)-/, '')}`] ?? db.agents.find((a) => `host-${a.id}` === s.source)?.name ?? null, hold: holdView(openHold(s.tenant, s.source, s.time)), anomaly: s.anomaly ?? null, anomalous: anomalous(s), scan: scanSummary(s), scan_state: scanState(s), flagged: flaggedSnap(s), clean_point: s.clean_point ?? null, ...snapIndex(s) }))
+    .map((s) => ({
+      ...s,
+      label:
+        GUEST_NAMES[`${s.tenant}/${s.source.replace(/^(vm|ct)-/, '')}`] ??
+        db.agents.find((a) => `host-${a.id}` === s.source)?.name ??
+        null,
+      hold: holdView(openHold(s.tenant, s.source, s.time)),
+      anomaly: s.anomaly ?? null,
+      anomalous: anomalous(s),
+      scan: scanSummary(s),
+      scan_state: scanState(s),
+      flagged: flaggedSnap(s),
+      clean_point: s.clean_point ?? null,
+      ...snapIndex(s),
+    }))
     .filter((s) => !held || s.hold);
   return [200, xs.sort((a, b) => b.time - a.time)];
 });
@@ -4447,21 +6435,37 @@ function progressItems(j: Job): ProgressItem[] {
   if (j.kind !== 'backup') return [];
   const g = db.groups.find((x) => x.id === j.params.group_id);
   const src = db.sources.find((x) => x.id === g?.source_id);
-  if (src && src.kind !== 'pve' && src.kind !== 'linux') return [{ item: String(src.name ?? src.kind), parts: [{ part: 'data', total: null }] }];
+  if (src && src.kind !== 'pve' && src.kind !== 'linux')
+    return [{ item: String(src.name ?? src.kind), parts: [{ part: 'data', total: null }] }];
   const guests = j.params.vmid ? [j.params.vmid] : j.params.agent_id ? [j.params.agent_id] : g ? resolveGuests(g) : [];
   return guests.map((v, i) => {
     const item = guestName(v);
     if (item.startsWith('host-'))
-      return { item, label: db.agents.find((a) => a.id === v)?.name ?? null, parts: [{ part: 'scan', total: null }, { part: 'transfer', total: 2 * GiB }] };
-    if (item.startsWith('ct-')) return { item, label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null, parts: [{ part: 'tar stream', total: null }] };
-    return { item, label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null, parts: [{ part: 'scsi0', total: (6 + 4 * i) * GiB }] };
+      return {
+        item,
+        label: db.agents.find((a) => a.id === v)?.name ?? null,
+        parts: [
+          { part: 'scan', total: null },
+          { part: 'transfer', total: 2 * GiB },
+        ],
+      };
+    if (item.startsWith('ct-'))
+      return { item, label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null, parts: [{ part: 'tar stream', total: null }] };
+    return {
+      item,
+      label: GUEST_NAMES[`${j.tenant}/${v}`] ?? null,
+      parts: [{ part: 'scsi0', total: (6 + 4 * i) * GiB }],
+    };
   });
 }
 /** Like the scheduler's aggregate of the connectors' `progress {json}` lines (crates/scheduler/src/progress.rs). */
 function mockProgress(j: Job): Json | null {
   // like the scheduler: a queued job says why it waits
   if (j.state === 'queued') {
-    const same = db.jobs.find((x) => x.state === 'running' && x.tenant === j.tenant && x.kind === j.kind && x.params.group_id === j.params.group_id);
+    const same = db.jobs.find(
+      (x) =>
+        x.state === 'running' && x.tenant === j.tenant && x.kind === j.kind && x.params.group_id === j.params.group_id,
+    );
     return same ? { waiting: 'busy', job: same.id } : { waiting: 'slots', slots: 8 };
   }
   if (j.state !== 'running' || j.started === null) return null;
@@ -4471,12 +6475,28 @@ function mockProgress(j: Job): Json | null {
     const f = Math.min(0.99, elapsed / j.duration);
     const total = 391_000;
     return {
-      item: j.params.source, label: null, item_index: null, items: null, items_done: 0,
-      part: 'vdb3 (ntfs)', part_index: 2, parts: null, done: null, total: null,
-      entries: Math.round(f * total), entries_total: total, item_percent: Math.round(f * 1000) / 10,
-      percent: null, bytes: 0, rate: null, entries_done: Math.round(f * total),
-      entries_rate: Math.round(total / j.duration), eta: null,
-      item_eta: Math.max(0, Math.round(j.duration - elapsed)), elapsed, updated: now(),
+      item: j.params.source,
+      label: null,
+      item_index: null,
+      items: null,
+      items_done: 0,
+      part: 'vdb3 (ntfs)',
+      part_index: 2,
+      parts: null,
+      done: null,
+      total: null,
+      entries: Math.round(f * total),
+      entries_total: total,
+      item_percent: Math.round(f * 1000) / 10,
+      percent: null,
+      bytes: 0,
+      rate: null,
+      entries_done: Math.round(f * total),
+      entries_rate: Math.round(total / j.duration),
+      eta: null,
+      item_eta: Math.max(0, Math.round(j.duration - elapsed)),
+      elapsed,
+      updated: now(),
     };
   }
   const items = j.items ?? progressItems(j);
@@ -4496,21 +6516,32 @@ function mockProgress(j: Job): Json | null {
   const size = part.total ?? 3.2 * GiB;
   const rate = Math.round((size / secs) * (0.93 + 0.07 * Math.sin(t / 7)));
   const done = Math.round(pf * size);
-  const before = items.slice(0, idx).reduce((a, x) => a + x.parts.reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0), 0)
-    + it.parts.slice(0, pidx).reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0);
+  const before =
+    items.slice(0, idx).reduce((a, x) => a + x.parts.reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0), 0) +
+    it.parts.slice(0, pidx).reduce((b, p) => b + (p.total ?? 3.2 * GiB), 0);
   const r1 = (x: number) => Math.round(x * 1000) / 10;
   const known = part.total !== null;
   const itemFrac = known ? (pidx + pf) / parts : null;
   return {
-    item: it.item, label: it.label ?? null, item_index: idx + 1, items: n, items_done: idx,
-    part: part.part, part_index: pidx + 1, parts, done: known ? done : null, total: part.total,
+    item: it.item,
+    label: it.label ?? null,
+    item_index: idx + 1,
+    items: n,
+    items_done: idx,
+    part: part.part,
+    part_index: pidx + 1,
+    parts,
+    done: known ? done : null,
+    total: part.total,
     entries: part.part === 'scan' ? Math.round(pf * 412_000) : null,
     item_percent: itemFrac === null ? null : r1(itemFrac),
     percent: r1((idx + (itemFrac ?? 0)) / n),
-    bytes: before + done, rate,
+    bytes: before + done,
+    rate,
     eta: Math.max(0, Math.round(j.duration - elapsed)),
     item_eta: known ? Math.round((size - done) / rate) : null,
-    elapsed, updated: t,
+    elapsed,
+    updated: t,
   };
 }
 const pubJob = (j: Job, withLog: boolean) => {
@@ -4543,16 +6574,35 @@ on('GET', '/jobs', (c) => {
   const s = c.query.get('state');
   const k = c.query.get('kind');
   const xs = byTenant(u, db.jobs).filter((j) => (!s || j.state === s) && (!k || j.kind === k));
-  return [200, xs.sort((a, b) => b.id - a.id).slice(0, 100).map((j) => pubJob(j, false))];
+  return [
+    200,
+    xs
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 100)
+      .map((j) => pubJob(j, false)),
+  ];
 });
 // Phase 22b (web-api nasops.rs): the `error …` lines of a backup log as CSV
 // Phase 33: what a synthetic restore substituted, brought back or left out (web-api jobs::synthetic_report)
 function syntheticDone(j: Job, t: number) {
   j.result = {
-    files: 1284, substituted: 3, restored: 412, left_out: 413, snapshots_examined: Math.min(31, Number(j.params.depth ?? 30) + 1),
-    from_unscanned: 410, missing: 0, dangling: 0, report_token: j.params.report_token,
+    files: 1284,
+    substituted: 3,
+    restored: 412,
+    left_out: 413,
+    snapshots_examined: Math.min(31, Number(j.params.depth ?? 30) + 1),
+    from_unscanned: 410,
+    missing: 0,
+    dangling: 0,
+    report_token: j.params.report_token,
     ...(j.params.mode === 'download'
-      ? { download_token: j.params.download_token, format: j.params.format, entries: 1699, size: 50_398_208, expires: t + 86400 }
+      ? {
+          download_token: j.params.download_token,
+          format: j.params.format,
+          entries: 1699,
+          size: 50_398_208,
+          expires: t + 86400,
+        }
       : { written: { target: j.params.target, files: 1283, dirs: 211, bytes: 50_398_208, errors: 0 } }),
   };
   if (j.params.mode === 'download')
@@ -4568,14 +6618,38 @@ on('GET', '/jobs/:id/synthetic.csv', (c, [id]) => {
   const j = find(byTenant(u, db.jobs), (x) => x.id === Number(id) && x.kind === 'synthetic_restore', 'job');
   if (!j.result) throw new HttpError(404, 'no report (the job has not decided yet, or it expired)');
   const rows = [
-    ['/srv/data/finance/budget-2026.xlsx', 'substituted', String(Number(j.params.time) - 86400), 'YARA rule Ransom_Lockbit_Note matched in snapshot ' + j.params.time],
-    ['/srv/data/finance/budget-2026.xlsx.lockbit', 'left_out', '', 'output of a mass rename in snapshot ' + j.params.time + '; no clean version in the 31 snapshots examined'],
-    ['/srv/data/finance/report-q3.docx', 'restored', String(Number(j.params.time) - 86400), 'deleted by a mass rename in snapshot ' + j.params.time],
-    ['/srv/data/README-RESTORE.txt', 'left_out', '', 'ransom-note file name; no clean version in the 31 snapshots examined'],
+    [
+      '/srv/data/finance/budget-2026.xlsx',
+      'substituted',
+      String(Number(j.params.time) - 86400),
+      'YARA rule Ransom_Lockbit_Note matched in snapshot ' + j.params.time,
+    ],
+    [
+      '/srv/data/finance/budget-2026.xlsx.lockbit',
+      'left_out',
+      '',
+      'output of a mass rename in snapshot ' + j.params.time + '; no clean version in the 31 snapshots examined',
+    ],
+    [
+      '/srv/data/finance/report-q3.docx',
+      'restored',
+      String(Number(j.params.time) - 86400),
+      'deleted by a mass rename in snapshot ' + j.params.time,
+    ],
+    [
+      '/srv/data/README-RESTORE.txt',
+      'left_out',
+      '',
+      'ransom-note file name; no clean version in the 31 snapshots examined',
+    ],
   ];
   const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s);
   c.res.setHeader('Content-Disposition', `attachment; filename="synthetic-restore-${j.id}.csv"`);
-  return [200, 'path,action,version,reason\r\n' + rows.map((r) => r.map(f).join(',')).join('\r\n') + '\r\n', 'text/csv; charset=utf-8'];
+  return [
+    200,
+    'path,action,version,reason\r\n' + rows.map((r) => r.map(f).join(',')).join('\r\n') + '\r\n',
+    'text/csv; charset=utf-8',
+  ];
 });
 on('GET', '/jobs/:id/skipped.csv', (c, [id]) => {
   const j = find(byTenant(need(c.user), db.jobs), (x) => x.id === Number(id), 'job');
@@ -4605,15 +6679,39 @@ on('GET', '/jobs/:id', (c, [id]) => {
   const followups = byTenant(u, db.jobs)
     .filter((x) => x.params.after_job === j.id)
     .sort((a, b) => a.id - b.id)
-    .map((x) => ({ id: x.id, kind: x.kind, state: x.state, created: x.created, started: x.started, finished: x.finished }));
+    .map((x) => ({
+      id: x.id,
+      kind: x.kind,
+      state: x.state,
+      created: x.created,
+      started: x.started,
+      finished: x.finished,
+    }));
   return [200, { ...pubJob(j, true), followups }];
 });
-const RESTORE_KINDS = ['restore', 'restore_ct', 'instant_recover', 'instant_disk', 'files_list', 'files_get', 'restore_files', 'synthetic_restore', 'plugin_restore', 'plugin_mount', 'offsite_list', 'offsite_restore'];
+const RESTORE_KINDS = [
+  'restore',
+  'restore_ct',
+  'instant_recover',
+  'instant_disk',
+  'files_list',
+  'files_get',
+  'restore_files',
+  'synthetic_restore',
+  'plugin_restore',
+  'plugin_mount',
+  'offsite_list',
+  'offsite_restore',
+];
 /** Source + kind of a plugin snapshot name (plugin-<id>-<source id>[-<guest>]). */
 function pluginSnapshotKind(tenant: string, name: string) {
   const parts = name.replace(/^plugin-/, '').split('-');
   const i = parts.findIndex((x) => /^\d+$/.test(x));
-  const src = find(db.sources, (s) => s.id === Number(parts[i]) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source');
+  const src = find(
+    db.sources,
+    (s) => s.id === Number(parts[i]) && s.tenant === tenant && s.kind.startsWith('plugin:'),
+    'plugin source',
+  );
   const pk = pluginKind(src.kind);
   if (!pk?.plugin.enabled) throw new HttpError(409, `plugin for ${src.kind} is not installed or disabled`);
   return pk.kind;
@@ -4623,25 +6721,41 @@ const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
 /** Phase 15a restore options, as web-api `jobs.rs` checks them. */
 function checkRestore(kind: string, tenant: string, p: Json) {
   const want = kind === 'restore_ct' ? 'ct-' : 'vm-';
-  if (!String(p.source ?? '').startsWith(want)) throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
+  if (!String(p.source ?? '').startsWith(want))
+    throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
   if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
-  if (p.name !== undefined && p.name_prefix !== undefined) throw new HttpError(400, 'name, name_prefix: give at most one');
+  if (p.name !== undefined && p.name_prefix !== undefined)
+    throw new HttpError(400, 'name, name_prefix: give at most one');
   for (const k of ['name', 'name_prefix', 'pool'])
-    if (p[k] !== undefined && !PVE_NAME.test(String(p[k]))) throw new HttpError(400, `${k}: must match [A-Za-z0-9._-]{1,63} without a leading dot or dash`);
-  if (p.replace && kind === 'instant_recover') throw new HttpError(400, 'replace: only a full restore can replace the original');
-  if (p.replace && String(p.source).slice(3) === String(p.target)) throw new HttpError(400, 'target: replace restores to a new VMID');
-  if (!p.replace && p.keep_original_links !== undefined) throw new HttpError(400, 'keep_original_links: only with replace');
-  if (p.rollback && (!p.replace || kind !== 'restore')) throw new HttpError(400, 'rollback: only a VM restore that replaces the original');
-  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+    if (p[k] !== undefined && !PVE_NAME.test(String(p[k])))
+      throw new HttpError(400, `${k}: must match [A-Za-z0-9._-]{1,63} without a leading dot or dash`);
+  if (p.replace && kind === 'instant_recover')
+    throw new HttpError(400, 'replace: only a full restore can replace the original');
+  if (p.replace && String(p.source).slice(3) === String(p.target))
+    throw new HttpError(400, 'target: replace restores to a new VMID');
+  if (!p.replace && p.keep_original_links !== undefined)
+    throw new HttpError(400, 'keep_original_links: only with replace');
+  if (p.rollback && (!p.replace || kind !== 'restore'))
+    throw new HttpError(400, 'rollback: only a VM restore that replaces the original');
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
+    throw new HttpError(404, 'no such snapshot');
 }
 function checkJob(u: User, kind: string, tenant: string, p: Json) {
   // Phase 17d: browse the offsite copy, fetch an offsite-only snapshot back (web-api jobs.rs)
   if (kind === 'offsite_list' || kind === 'offsite_restore') {
-    if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote) throw new HttpError(400, 'tenant: has no offsite target');
+    if (!db.tenants.find((x) => x.name === tenant)?.offsite?.remote)
+      throw new HttpError(400, 'tenant: has no offsite target');
     // Phase 30: the second offsite target
-    if (p.target === 2 && !db.tenants.find((x) => x.name === tenant)?.offsite?.second?.remote) throw new HttpError(400, 'tenant: has no second offsite target');
+    if (p.target === 2 && !db.tenants.find((x) => x.name === tenant)?.offsite?.second?.remote)
+      throw new HttpError(400, 'tenant: has no second offsite target');
     if (kind === 'offsite_restore') {
-      const s = db.snapshots.find((x) => x.tenant === tenant && x.source === p.source && x.time === p.time && (p.target === 2 ? x.offsite2 : x.offsite));
+      const s = db.snapshots.find(
+        (x) =>
+          x.tenant === tenant &&
+          x.source === p.source &&
+          x.time === p.time &&
+          (p.target === 2 ? x.offsite2 : x.offsite),
+      );
       if (!s) throw new HttpError(404, 'no such offsite snapshot');
       if (s.local) throw new HttpError(409, 'the snapshot is in the local store already');
     }
@@ -4650,12 +6764,16 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
   if (kind === 'instant_disk') {
     // Phase 22b (web-api jobs.rs; the target check is the scheduler's)
     const slot = (k: unknown) => typeof k === 'string' && /^(scsi|virtio|sata|ide)\d{1,3}$/.test(k);
-    if (!String(p.source ?? '').startsWith('vm-')) throw new HttpError(400, 'source: instant_disk needs a vm-<vmid> snapshot');
-    if (!slot(String(p.device ?? '').replace(/^drive-/, '')) || !String(p.device).startsWith('drive-')) throw new HttpError(400, 'device: a data disk of the snapshot (drive-scsi1, …)');
-    if (p.key !== undefined && !slot(p.key)) throw new HttpError(400, 'key: a free disk slot of the target VM (scsi5, virtio2, …)');
+    if (!String(p.source ?? '').startsWith('vm-'))
+      throw new HttpError(400, 'source: instant_disk needs a vm-<vmid> snapshot');
+    if (!slot(String(p.device ?? '').replace(/^drive-/, '')) || !String(p.device).startsWith('drive-'))
+      throw new HttpError(400, 'device: a data disk of the snapshot (drive-scsi1, …)');
+    if (p.key !== undefined && !slot(p.key))
+      throw new HttpError(400, 'key: a free disk slot of the target VM (scsi5, virtio2, …)');
     if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
     if (p.move_to !== undefined && !NAME_RE.test(p.move_to)) throw new HttpError(400, 'move_to: invalid storage name');
-    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
+      throw new HttpError(404, 'no such snapshot');
   }
   if (kind === 'agent_enroll') throw new HttpError(400, 'use POST /agents/{id}/enroll');
   if (kind === 'restore_test') checkRestoreTest(tenant, p);
@@ -4664,14 +6782,20 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (!hasInventory(src)) throw new HttpError(400, 'source_id: this source has no guest inventory');
   }
   if (kind === 'plugin_validate' || kind === 'plugin_guests' || kind === 'plugin_backup') {
-    const src = find(db.sources, (s) => s.id === Number(p.source_id) && s.tenant === tenant && s.kind.startsWith('plugin:'), 'plugin source in tenant');
+    const src = find(
+      db.sources,
+      (s) => s.id === Number(p.source_id) && s.tenant === tenant && s.kind.startsWith('plugin:'),
+      'plugin source in tenant',
+    );
     const pk = pluginKind(src.kind);
     if (!pk?.plugin.enabled) throw new HttpError(409, `plugin for ${src.kind} is not installed or disabled`);
-    if (kind === 'plugin_guests' && !pk.kind.guests?.list) throw new HttpError(400, 'this plugin kind has no guest list');
+    if (kind === 'plugin_guests' && !pk.kind.guests?.list)
+      throw new HttpError(400, 'this plugin kind has no guest list');
   }
   if (kind === 'plugin_restore' || kind === 'plugin_mount') {
     if (!String(p.source ?? '').startsWith('plugin-')) throw new HttpError(400, 'source: must be a plugin snapshot');
-    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'snapshot not found');
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
+      throw new HttpError(404, 'snapshot not found');
     const k = pluginSnapshotKind(tenant, p.source);
     const rid = kind === 'plugin_mount' ? 'mount' : p.restore;
     if (rid === 'download') throw new HttpError(400, 'restore: use files_get for downloads');
@@ -4695,31 +6819,44 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     }
   }
   if (kind === 'agent_update' || kind === 'agent_renew') {
-    if (u.role !== 'admin' && u.role !== 'tenant_admin') throw new HttpError(403, 'requires role admin or tenant_admin');
+    if (u.role !== 'admin' && u.role !== 'tenant_admin')
+      throw new HttpError(403, 'requires role admin or tenant_admin');
     const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
     if (a.enrolled_at === null) throw new HttpError(409, 'agent is not enrolled');
   }
   if (kind === 'synthetic_restore') {
     // Phase 33 (web-api jobs.rs SyntheticP)
     const src = String(p.source ?? '');
-    if (!/^(host|nas|share)-/.test(src)) throw new HttpError(400, 'source: synthetic restores take file-tree snapshots of agents, NAS (TrueNAS) and shares');
-    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time)) throw new HttpError(404, 'no such snapshot');
+    if (!/^(host|nas|share)-/.test(src))
+      throw new HttpError(
+        400,
+        'source: synthetic restores take file-tree snapshots of agents, NAS (TrueNAS) and shares',
+      );
+    if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
+      throw new HttpError(404, 'no such snapshot');
     p.paths ??= ['/'];
-    if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))
+    if (
+      !Array.isArray(p.paths) ||
+      !p.paths.length ||
+      p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/'))
+    )
       throw new HttpError(400, 'paths: absolute paths required');
-    if (p.depth !== undefined && !(Number.isInteger(p.depth) && p.depth >= 1 && p.depth <= 100)) throw new HttpError(400, 'depth: 1..=100 older snapshots');
+    if (p.depth !== undefined && !(Number.isInteger(p.depth) && p.depth >= 1 && p.depth <= 100))
+      throw new HttpError(400, 'depth: 1..=100 older snapshots');
     if (p.mode === 'download') {
       if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
       p.format ??= 'tar';
       if (!['tar', 'zip'].includes(p.format)) throw new HttpError(400, 'format: tar or zip');
     } else if (p.mode === 'host') {
-      if (!src.startsWith('host-') && !p.agent_id) throw new HttpError(400, 'agent_id: choose the agent to restore to (snapshots of NAS and shares)');
+      if (!src.startsWith('host-') && !p.agent_id)
+        throw new HttpError(400, 'agent_id: choose the agent to restore to (snapshots of NAS and shares)');
       if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
       if (!String(p.target ?? '').startsWith('/')) throw new HttpError(400, 'target: must be absolute');
       p.overwrite ??= 'never';
       if (!OVERWRITE.includes(p.overwrite)) throw new HttpError(400, 'overwrite: never, if_older or always');
       const a = find(db.agents, (x) => x.id === p.agent_id && x.tenant === tenant, 'agent in tenant');
-      if (p.confirm !== a.name) throw new HttpError(400, `confirm: type the target agent's name (${a.name}) to confirm the restore`);
+      if (p.confirm !== a.name)
+        throw new HttpError(400, `confirm: type the target agent's name (${a.name}) to confirm the restore`);
     } else throw new HttpError(400, 'mode: download or host');
   }
   if (kind === 'restore_files') {
@@ -4730,7 +6867,11 @@ function checkJob(u: User, kind: string, tenant: string, p: Json) {
     if (src.startsWith('host-') && !p.agent_id) p.agent_id = src.slice(5);
     if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
       throw new HttpError(404, 'snapshot not found');
-    if (!Array.isArray(p.paths) || !p.paths.length || p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/')))
+    if (
+      !Array.isArray(p.paths) ||
+      !p.paths.length ||
+      p.paths.some((x: unknown) => typeof x !== 'string' || !x.startsWith('/'))
+    )
       throw new HttpError(400, 'paths: absolute paths required');
     if (!String(p.target ?? '').startsWith('/')) throw new HttpError(400, 'target: must be absolute');
     if (!OVERWRITE.includes(p.overwrite)) throw new HttpError(400, 'overwrite: never, if_older or always');
@@ -4743,16 +6884,26 @@ on('POST', '/jobs', async (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   const { kind, tenant, params = {} } = c.body;
   // Phase 19b: tenant admins run everything within their tenant except the provider's maintenance
-  if (u.role === 'tenant_admin' && (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify', 'chunk_repair'].includes(kind)))
+  if (
+    u.role === 'tenant_admin' &&
+    (tenant !== u.tenant || ['offsite', 'retention', 'gc', 'verify', 'chunk_repair'].includes(kind))
+  )
     throw new HttpError(403, 'tenant admins run backups, restores and agent jobs of their own tenant only');
-  if (typeof kind === 'string' && kind.startsWith('plugin_') && !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind))
+  if (
+    typeof kind === 'string' &&
+    kind.startsWith('plugin_') &&
+    !['plugin_validate', 'plugin_guests', 'plugin_backup', 'plugin_restore', 'plugin_mount'].includes(kind)
+  )
     throw new HttpError(400, `unknown job kind ${kind}`);
-  if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant)) throw new HttpError(403, 'tenant users may only restore within their tenant');
+  if (u.role === 'tenant_user' && (!RESTORE_KINDS.includes(kind) || tenant !== u.tenant))
+    throw new HttpError(403, 'tenant users may only restore within their tenant');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   // Phase 21d: admin only, no parameters
   if (kind === 'chunk_repair' && u.role !== 'admin') throw new HttpError(403, 'forbidden');
-  if (kind === 'chunk_repair' && Object.keys(params).length) throw new HttpError(400, 'params: chunk_repair takes no parameters');
-  if (kind === 'files_list' && !String(params.path ?? '').startsWith('/')) throw new HttpError(400, 'path: must be absolute');
+  if (kind === 'chunk_repair' && Object.keys(params).length)
+    throw new HttpError(400, 'params: chunk_repair takes no parameters');
+  if (kind === 'files_list' && !String(params.path ?? '').startsWith('/'))
+    throw new HttpError(400, 'path: must be absolute');
   const scanFirst = takeScanFirst(kind, params);
   checkJob(u, kind, tenant, params);
   lockdownRefuseJob(tenant, kind, params); // Phase 28
@@ -4771,7 +6922,8 @@ on('POST', '/jobs', async (c) => {
       if (prop.enum && !prop.enum.includes(v)) throw new HttpError(400, `params.${k}: one of ${prop.enum.join(', ')}`);
     }
   }
-  if (PAUSED_KINDS.includes(kind) && tenantOff(tenant)) throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
+  if (PAUSED_KINDS.includes(kind) && tenantOff(tenant))
+    throw new HttpError(409, `tenant ${tenant} is deactivated: no ${kind} jobs until it is reactivated`);
   if (kind === 'backup') backupGuests(params);
   if (params.replace) {
     // Phase 15a: an approval request (`restore.replace`), never a plain job; not for tenant users
@@ -4793,14 +6945,25 @@ on('POST', '/jobs', async (c) => {
     if (kind !== 'backup' && kind !== 'plugin_backup') throw new HttpError(400, 'keep_until: backups only');
     if (!(Number.isInteger(p.keep_until) && p.keep_until >= now() + 3600 && p.keep_until <= now() + 3650 * DAY))
       throw new HttpError(400, 'keep_until: a time between one hour and 3650 days from now');
-    if (p.keep_until > now() + db.keepMaxDays * DAY) return quorum(u, 'backup.keep', { tenant, kind, params: p, max_days: db.keepMaxDays });
+    if (p.keep_until > now() + db.keepMaxDays * DAY)
+      return quorum(u, 'backup.keep', { tenant, kind, params: p, max_days: db.keepMaxDays });
   }
-  const j = scanFirst ? scanFirstJob(u, kind, tenant, p, scanFirst) : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
-  if (kind.startsWith('plugin_')) j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
+  const j = scanFirst
+    ? scanFirstJob(u, kind, tenant, p, scanFirst)
+    : addJob(kind, tenant, p, u.name, params.vmid === 999 ? { fail: 'guest not found on any node' } : {});
+  if (kind.startsWith('plugin_'))
+    j.duration = { plugin_validate: 3, plugin_guests: 3, plugin_restore: 14, plugin_mount: 6 }[kind as string] ?? 10;
   if (kind === 'inventory') j.duration = 3;
   if (kind === 'offsite_list') j.duration = 3;
   await audit(u.name, 'job.create', `job/${j.id}`, { kind, tenant, params: p });
-  return [202, { id: j.id, ...(p.download_token ? { download_token: p.download_token } : {}), ...(p.report_token ? { report_token: p.report_token } : {}) }];
+  return [
+    202,
+    {
+      id: j.id,
+      ...(p.download_token ? { download_token: p.download_token } : {}),
+      ...(p.report_token ? { report_token: p.report_token } : {}),
+    },
+  ];
 });
 // Phase 15a: several guests in one request, one job each (web-api `restores.rs`)
 on('POST', '/restores', async (c) => {
@@ -4810,16 +6973,35 @@ on('POST', '/restores', async (c) => {
   find(db.tenants, (t) => t.name === b.tenant, 'tenant');
   const items: Json[] = b.items ?? [];
   if (!items.length || items.length > 100) throw new HttpError(400, 'items: 1..=100 guests');
-  if (new Set(items.map((i) => i.source)).size !== items.length) throw new HttpError(400, 'items: one snapshot per guest');
+  if (new Set(items.map((i) => i.source)).size !== items.length)
+    throw new HttpError(400, 'items: one snapshot per guest');
   const jobs = items.map((it, i) => {
     const kind = String(it.source).startsWith('ct-') ? 'restore_ct' : 'restore';
-    const p: Json = { source: it.source, time: it.time, node: b.node, target: Number(b.target_base) + i, storage: b.storage, start: !!b.start, link_down: !!b.link_down };
+    const p: Json = {
+      source: it.source,
+      time: it.time,
+      node: b.node,
+      target: Number(b.target_base) + i,
+      storage: b.storage,
+      start: !!b.start,
+      link_down: !!b.link_down,
+    };
     if (b.name_prefix) p.name_prefix = b.name_prefix;
     if (b.pool) p.pool = b.pool;
     // Phase 29: flagged snapshots and frozen restores only with the network disconnected
-    const sn = (db.snapshots as Json[]).find((x) => x.tenant === b.tenant && x.source === it.source && x.time === it.time);
-    if (!b.link_down && sn && flaggedSnap(sn)) throw new HttpError(409, `${it.source}: the snapshot is flagged (anomaly or malware); restore it with the network disconnected or one at a time (approval)`);
-    if (!b.link_down && restoresFrozen(b.tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen; restore with the network disconnected');
+    const sn = (db.snapshots as Json[]).find(
+      (x) => x.tenant === b.tenant && x.source === it.source && x.time === it.time,
+    );
+    if (!b.link_down && sn && flaggedSnap(sn))
+      throw new HttpError(
+        409,
+        `${it.source}: the snapshot is flagged (anomaly or malware); restore it with the network disconnected or one at a time (approval)`,
+      );
+    if (!b.link_down && restoresFrozen(b.tenant))
+      throw new HttpError(
+        409,
+        'incident mode: restores to production are frozen; restore with the network disconnected',
+      );
     try {
       checkRestore(kind, b.tenant, p);
     } catch (e) {
@@ -4828,7 +7010,11 @@ on('POST', '/restores', async (c) => {
     }
     return { kind, p };
   });
-  const gated = await vaultGate(u, b.tenant, jobs.map(({ kind, p }) => ({ kind, params: p })));
+  const gated = await vaultGate(
+    u,
+    b.tenant,
+    jobs.map(({ kind, p }) => ({ kind, params: p })),
+  );
   if (gated) return gated;
   const ids = jobs.map(({ kind, p }) => addJob(kind, b.tenant, p, u.name).id);
   await audit(u.name, 'job.create_many', `tenant/${b.tenant}`, { ids, jobs });
@@ -4854,7 +7040,12 @@ on('POST', '/jobs/:id/cancel', async (c, [id]) => {
 
 // ---- Phase 15g: file search across snapshots (crates/scheduler/src/search.rs, POST /search)
 /** Every entry of a snapshot's synthetic tree (listDir), paths relative without a leading slash. */
-function walkSnapshot(source: string, time: number, root = '/', week = 7 * DAY): { path: string; kind: string; size: number; mtime: number }[] {
+function walkSnapshot(
+  source: string,
+  time: number,
+  root = '/',
+  week = 7 * DAY,
+): { path: string; kind: string; size: number; mtime: number }[] {
   const out: { path: string; kind: string; size: number; mtime: number }[] = [];
   const rec = (dir: string) => {
     for (const e of listDir(dir, source)) {
@@ -4904,7 +7095,14 @@ function searchResult(p: Json, tenant: string) {
   const full = query.includes('/');
   const limit = Number(p.limit ?? 500);
   const snaps = (db.snapshots as any[])
-    .filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && (!p.from || s.time >= p.from) && (!p.to || s.time <= p.to))
+    .filter(
+      (s) =>
+        s.tenant === tenant &&
+        s.local &&
+        (!p.source || s.source === p.source) &&
+        (!p.from || s.time >= p.from) &&
+        (!p.to || s.time <= p.to),
+    )
     .sort((a, b) => b.time - a.time);
   const groups = new Map<string, Json>();
   let [scanned, unindexed, truncated] = [0, 0, false];
@@ -4924,7 +7122,9 @@ function searchResult(p: Json, tenant: string) {
       else truncated = true;
     }
   }
-  const matches = [...groups.values()].sort((a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source) || b.mtime - a.mtime);
+  const matches = [...groups.values()].sort(
+    (a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source) || b.mtime - a.mtime,
+  );
   return { matches, scanned, unindexed, truncated, elapsed_ms: Date.now() - t0 + 412 };
 }
 on('POST', '/search', async (c) => {
@@ -4935,7 +7135,8 @@ on('POST', '/search', async (c) => {
   find(db.tenants, (t) => t.name === tenant, 'tenant');
   const query = String(b.query ?? '').trim();
   if (!query || query.length > 256) throw new HttpError(400, 'query: 1..=256 characters');
-  if (b.limit !== undefined && !(Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 2000)) throw new HttpError(400, 'limit: 1..=2000');
+  if (b.limit !== undefined && !(Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 2000))
+    throw new HttpError(400, 'limit: 1..=2000');
   const p: Json = { query, case_sensitive: !!b.case_sensitive, limit: b.limit ?? 500 };
   for (const k of ['source', 'from', 'to']) if (b[k] !== undefined && b[k] !== null && b[k] !== '') p[k] = b[k];
   const j = addJob('file_search', tenant, p, u.name);
@@ -4950,9 +7151,27 @@ on('POST', '/search', async (c) => {
 // NEXUS_MOCK_INDEX_DOWN=1: the index service is down (503 / available false), the UI falls back to POST /search.
 const INDEX_DOWN = !!process.env.NEXUS_MOCK_INDEX_DOWN;
 const DEFAULT_INDEX_EXCLUDES = [
-  '/$Recycle.Bin', '/Windows', '/Program Files', '/Program Files (x86)', '/ProgramData', '/System Volume Information',
-  '/Users/*/AppData', '/Recovery', '/proc', '/sys', '/dev', '/run', '/tmp', '/usr', '/lib', '/lib64', '/boot',
-  '/var/cache', '/var/tmp', '/var/lib/docker', '/var/lib/containerd',
+  '/$Recycle.Bin',
+  '/Windows',
+  '/Program Files',
+  '/Program Files (x86)',
+  '/ProgramData',
+  '/System Volume Information',
+  '/Users/*/AppData',
+  '/Recovery',
+  '/proc',
+  '/sys',
+  '/dev',
+  '/run',
+  '/tmp',
+  '/usr',
+  '/lib',
+  '/lib64',
+  '/boot',
+  '/var/cache',
+  '/var/tmp',
+  '/var/lib/docker',
+  '/var/lib/containerd',
 ];
 const srcKindOf = (source: string) => /^(vm|ct|host|nas|share|plugin)-/.exec(source)?.[1] ?? 'plugin';
 /** Index state of one snapshot (the demo's partial / failed / pending cases are fixed). */
@@ -4960,12 +7179,16 @@ function snapIndex(s: Json): { index_state: string | null; index_reason: string 
   if (s.origin || !s.local) return { index_state: null, index_reason: null };
   if (/^(vm|ct)-/.test(s.source)) {
     if (!vmIndexed(s.tenant, s.source)) return { index_state: 'off', index_reason: null };
-    const all = (db.snapshots as Json[]).filter((x) => x.tenant === s.tenant && x.source === s.source && x.local).sort((a, b) => b.time - a.time);
+    const all = (db.snapshots as Json[])
+      .filter((x) => x.tenant === s.tenant && x.source === s.source && x.local)
+      .sort((a, b) => b.time - a.time);
     const i = all.indexOf(s);
     if (WIN_VMS.has(s.source)) return { index_state: 'partial', index_reason: 'vdb1: BitLocker-encrypted volume' };
     if (i === 0 && s.source === 'vm-300') return { index_state: 'pending', index_reason: null };
-    if (i === 3 && s.source === 'vm-301') return { index_state: 'partial', index_reason: 'vdb1: XFS, listed only by the restore micro-VM (not installed)' };
-    if (i === 5 && s.source === 'vm-100') return { index_state: 'failed', index_reason: 'vda: corrupted partition table (GPT header checksum)' };
+    if (i === 3 && s.source === 'vm-301')
+      return { index_state: 'partial', index_reason: 'vdb1: XFS, listed only by the restore micro-VM (not installed)' };
+    if (i === 5 && s.source === 'vm-100')
+      return { index_state: 'failed', index_reason: 'vda: corrupted partition table (GPT header checksum)' };
   }
   return { index_state: 'indexed', index_reason: null };
 }
@@ -4983,7 +7206,15 @@ function inScope(guest: string, rules: { defaults: boolean; include: string[]; e
     }
     if (rc.length > path.length) return -1;
     for (let i = 0; i < rc.length; i++) {
-      const re = new RegExp('^' + rc[i].split('*').map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*') + '$', 'i');
+      const re = new RegExp(
+        '^' +
+          rc[i]
+            .split('*')
+            .map((x) => x.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+            .join('[^/]*') +
+          '$',
+        'i',
+      );
       if (!re.test(path[i])) return -1;
     }
     return rc.length;
@@ -5002,7 +7233,13 @@ function inScope(guest: string, rules: { defaults: boolean; include: string[]; e
   return keep;
 }
 const rulesOf = (g: MockGroup | undefined) => g?.index_rules ?? { defaults: true, include: [], exclude: [] };
-interface Doc { source: string; path: string; browse: string; kind: string; versions: Json[] }
+interface Doc {
+  source: string;
+  path: string;
+  browse: string;
+  kind: string;
+  versions: Json[];
+}
 /** The tenant's search index: one document per path and source, versions by (size, mtime). */
 function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> } {
   const bySource = new Map<string, Json[]>();
@@ -5012,14 +7249,29 @@ function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> 
   const snaps = new Map<string, Json[]>();
   for (const [source, xs] of bySource) {
     xs.sort((a, b) => a.time - b.time);
-    snaps.set(source, xs.map((s) => ({ time: s.time, state: snapIndex(s).index_state ?? 'unindexed', reason: snapIndex(s).index_reason })).reverse());
+    snaps.set(
+      source,
+      xs
+        .map((s) => ({
+          time: s.time,
+          state: snapIndex(s).index_state ?? 'unindexed',
+          reason: snapIndex(s).index_reason,
+        }))
+        .reverse(),
+    );
     const indexed = xs.filter((s) => ['indexed', 'partial'].includes(snapIndex(s).index_state ?? ''));
     if (!indexed.length) continue;
     const rules = rulesOf(groupOfSource(tenant, source));
     const vm = source.startsWith('vm-');
     const win = WIN_VMS.has(source) || !!db.agents.find((a) => `host-${a.id}` === source)?.os?.startsWith('Windows');
     const guestPath = (rel: string) =>
-      vm ? (win ? 'C:/' + rel.slice(5) : '/' + rel.slice(5)) : win ? rel.replace(/^([A-Z])\//, '$1:/').replace(/^([A-Z])$/, '$1:/') : '/' + rel;
+      vm
+        ? win
+          ? 'C:/' + rel.slice(5)
+          : '/' + rel.slice(5)
+        : win
+          ? rel.replace(/^([A-Z])\//, '$1:/').replace(/^([A-Z])$/, '$1:/')
+          : '/' + rel;
     const map = new Map<string, Doc & { vmap: Map<string, Json> }>();
     const newest = indexed[indexed.length - 1].time;
     for (const s of indexed) {
@@ -5027,38 +7279,69 @@ function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> 
       const entries = walkSnapshot(source, s.time, vm ? '/vda2' : '/', 2 * DAY);
       // a deleted file: the draft was removed four days ago (older snapshots still hold it)
       if (/^(nas|share)-/.test(source) && s.time < newest - 3 * DAY)
-        entries.push({ path: '2026/Q4/budget-2026-q4-draft.xlsx', kind: 'file', size: 498_102, mtime: newest - 9 * DAY });
-      if (vm && !win && s.time < newest - 2 * DAY) entries.push({ path: 'vda2/home/alice/old-notes.txt', kind: 'file', size: 2_048, mtime: newest - 20 * DAY });
+        entries.push({
+          path: '2026/Q4/budget-2026-q4-draft.xlsx',
+          kind: 'file',
+          size: 498_102,
+          mtime: newest - 9 * DAY,
+        });
+      if (vm && !win && s.time < newest - 2 * DAY)
+        entries.push({ path: 'vda2/home/alice/old-notes.txt', kind: 'file', size: 2_048, mtime: newest - 20 * DAY });
       for (const e of entries) {
         const guest = guestPath(e.path);
         if (!inScope(guest, rules)) continue;
         let d = map.get(e.path);
-        if (!d) map.set(e.path, (d = { source, path: guest, browse: e.path, kind: e.kind, versions: [], vmap: new Map() }));
+        if (!d)
+          map.set(e.path, (d = { source, path: guest, browse: e.path, kind: e.kind, versions: [], vmap: new Map() }));
         const vk = `${e.size}\0${e.mtime}`;
         const v = d.vmap.get(vk);
         if (v) v.times.push(s.time);
-        else d.vmap.set(vk, { size: e.kind === 'dir' ? 0 : e.size, mtime: e.mtime, first: s.time, gone: null, times: [s.time] });
+        else
+          d.vmap.set(vk, {
+            size: e.kind === 'dir' ? 0 : e.size,
+            mtime: e.mtime,
+            first: s.time,
+            gone: null,
+            times: [s.time],
+          });
       }
     }
     for (const d of map.values()) {
       const vs = [...d.vmap.values()];
       for (const v of vs) {
         const last = Math.max(...v.times);
-        v.gone = indexed.find((s) => s.time > last && !vs.some((o) => o.times.includes(s.time)))?.time ?? (vs.some((o) => o.first > last) ? vs.filter((o) => o.first > last).sort((a, b) => a.first - b.first)[0].first : null);
+        v.gone =
+          indexed.find((s) => s.time > last && !vs.some((o) => o.times.includes(s.time)))?.time ??
+          (vs.some((o) => o.first > last)
+            ? vs.filter((o) => o.first > last).sort((a, b) => a.first - b.first)[0].first
+            : null);
         v.times.sort((a: number, b: number) => b - a);
       }
       vs.sort((a, b) => b.first - a.first);
       // the oldest draft version's snapshots were pruned by retention: "snapshot deleted"
       if (d.browse.endsWith('budget-2026-q4-draft.xlsx'))
-        vs.push({ size: 471_330, mtime: vs[vs.length - 1].first - 30 * DAY, first: vs[vs.length - 1].first - 28 * DAY, gone: vs[vs.length - 1].first, times: [] });
+        vs.push({
+          size: 471_330,
+          mtime: vs[vs.length - 1].first - 30 * DAY,
+          first: vs[vs.length - 1].first - 28 * DAY,
+          gone: vs[vs.length - 1].first,
+          times: [],
+        });
       docs.push({ source: d.source, path: d.path, browse: d.browse, kind: d.kind, versions: vs });
     }
   }
   return { docs, snaps };
 }
 function wordsMatch(q: string, path: string): boolean {
-  const toks = path.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
-  return q.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).every((w) => toks.some((x) => x.startsWith(w)));
+  const toks = path
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+  return q
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .every((w) => toks.some((x) => x.startsWith(w)));
 }
 const intParam = (q: URLSearchParams, k: string): number | undefined => {
   const v = q.get(k);
@@ -5068,11 +7351,13 @@ const intParam = (q: URLSearchParams, k: string): number | undefined => {
 };
 on('GET', '/files/search', async (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
-  if (INDEX_DOWN) throw new HttpError(503, 'the file search index is not available (nexus-index is not running); use POST /search');
+  if (INDEX_DOWN)
+    throw new HttpError(503, 'the file search index is not available (nexus-index is not running); use POST /search');
   const t0 = Date.now();
   const q = c.query;
   const tenant = u.tenant ?? q.get('tenant') ?? '';
-  if (u.tenant && q.get('tenant') && q.get('tenant') !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
+  if (u.tenant && q.get('tenant') && q.get('tenant') !== u.tenant)
+    throw new HttpError(403, 'forbidden: another tenant');
   if (!tenant) throw new HttpError(400, 'tenant: required');
   find(db.tenants, (x) => x.name === tenant, 'tenant');
   const text = (q.get('q') ?? '').trim();
@@ -5080,9 +7365,14 @@ on('GET', '/files/search', async (c) => {
   const mode = q.get('mode') ?? 'auto';
   if (!['auto', 'name', 'path', 'words'].includes(mode)) throw new HttpError(400, 'mode: auto, name, path or words');
   const kinds = (q.get('kind') ?? '').split(',').filter(Boolean);
-  if (kinds.some((k) => !['vm', 'ct', 'host', 'nas', 'share', 'plugin'].includes(k))) throw new HttpError(400, 'kind: vm, ct, host, nas, share, plugin');
-  const exts = (q.get('ext') ?? '').split(',').filter(Boolean).map((x) => x.toLowerCase());
-  if (exts.some((x) => !/^[a-z0-9_~-]{1,16}$/.test(x))) throw new HttpError(400, 'ext: extensions without dots, comma separated');
+  if (kinds.some((k) => !['vm', 'ct', 'host', 'nas', 'share', 'plugin'].includes(k)))
+    throw new HttpError(400, 'kind: vm, ct, host, nas, share, plugin');
+  const exts = (q.get('ext') ?? '')
+    .split(',')
+    .filter(Boolean)
+    .map((x) => x.toLowerCase());
+  if (exts.some((x) => !/^[a-z0-9_~-]{1,16}$/.test(x)))
+    throw new HttpError(400, 'ext: extensions without dots, comma separated');
   const [smin, smax, mfrom, mto] = ['size_min', 'size_max', 'mtime_from', 'mtime_to'].map((k) => intParam(q, k));
   const entry = q.get('entry') ?? '';
   if (entry && !['file', 'dir'].includes(entry)) throw new HttpError(400, 'entry: file or dir');
@@ -5092,15 +7382,25 @@ on('GET', '/files/search', async (c) => {
   if (limit < 1 || limit > 200) throw new HttpError(400, 'limit: 1..=200');
   const cursor = q.get('cursor');
   if (cursor !== null && !/^\d+$/.test(cursor)) throw new HttpError(400, 'cursor: as returned in next');
-  const filtered = exts.length || smin !== undefined || smax !== undefined || mfrom !== undefined || mto !== undefined || deleted === 'only';
-  if (!text && !filtered) throw new HttpError(400, 'q: required unless a filter (ext, size, mtime, deleted=only) is set');
+  const filtered =
+    exts.length ||
+    smin !== undefined ||
+    smax !== undefined ||
+    mfrom !== undefined ||
+    mto !== undefined ||
+    deleted === 'only';
+  if (!text && !filtered)
+    throw new HttpError(400, 'q: required unless a filter (ext, size, mtime, deleted=only) is set');
   const source = q.get('source');
   const group = q.get('group') ? Number(q.get('group')) : undefined;
   const how = mode !== 'auto' ? mode : text.includes('/') ? 'path' : /[*?]/.test(text) ? 'name' : 'words';
   const re = text ? globRe(how === 'path' ? text.replace(/^\/+/, '') : text, false) : null;
   const { docs, snaps } = tenantIndex(tenant);
   const verOk = (v: Json) =>
-    (smin === undefined || v.size >= smin) && (smax === undefined || v.size <= smax) && (mfrom === undefined || v.mtime >= mfrom) && (mto === undefined || v.mtime <= mto);
+    (smin === undefined || v.size >= smin) &&
+    (smax === undefined || v.size <= smax) &&
+    (mfrom === undefined || v.mtime >= mfrom) &&
+    (mto === undefined || v.mtime <= mto);
   const hits = docs
     .filter((d) => {
       if (source && d.source !== source) return false;
@@ -5108,52 +7408,84 @@ on('GET', '/files/search', async (c) => {
       if (group !== undefined && groupOfSource(tenant, d.source)?.id !== group) return false;
       if (entry === 'dir' ? d.kind !== 'dir' : entry === 'file' ? d.kind === 'dir' : false) return false;
       const name = d.path.split('/').pop() ?? '';
-      if (exts.length && (d.kind === 'dir' || !exts.includes(name.split('.').pop()!.toLowerCase()) || !name.includes('.'))) return false;
+      if (
+        exts.length &&
+        (d.kind === 'dir' || !exts.includes(name.split('.').pop()!.toLowerCase()) || !name.includes('.'))
+      )
+        return false;
       if (deleted === 'only' && !d.versions[0].gone) return false;
       if (deleted === 'exclude' && d.versions[0].gone) return false;
       if (!d.versions.some(verOk)) return false;
       if (!re) return true;
       if (how === 'words') return wordsMatch(text, d.path);
-      if (how === 'path') return re.test(d.path.replace(/^\/+/, '')) || re.test(d.path.replace(/^[A-Za-z]:\//, '')) || re.test(d.browse);
+      if (how === 'path')
+        return re.test(d.path.replace(/^\/+/, '')) || re.test(d.path.replace(/^[A-Za-z]:\//, '')) || re.test(d.browse);
       return re.test(name);
     })
     .sort((a, b) => a.path.localeCompare(b.path) || a.source.localeCompare(b.source));
   const from = Number(cursor ?? 0);
   const page = hits.slice(from, from + limit);
   const pending = [...snaps.values()].flat().filter((x) => x.state === 'pending').length;
-  await audit(u.name, 'file.search', `tenant/${tenant}`, { tenant, q: text, mode, source, group, kind: kinds, ext: exts, deleted });
-  return [200, {
-    hits: page,
-    next: from + limit < hits.length ? String(from + limit) : null,
-    elapsed_ms: Date.now() - t0 + 9,
-    pending,
-    snapshots: Object.fromEntries([...new Set(page.map((h) => h.source))].map((s) => [s, snaps.get(s) ?? []])),
-  }];
+  await audit(u.name, 'file.search', `tenant/${tenant}`, {
+    tenant,
+    q: text,
+    mode,
+    source,
+    group,
+    kind: kinds,
+    ext: exts,
+    deleted,
+  });
+  return [
+    200,
+    {
+      hits: page,
+      next: from + limit < hits.length ? String(from + limit) : null,
+      elapsed_ms: Date.now() - t0 + 9,
+      pending,
+      snapshots: Object.fromEntries([...new Set(page.map((h) => h.source))].map((s) => [s, snaps.get(s) ?? []])),
+    },
+  ];
 });
 on('GET', '/files/index-status', (c) => {
   const u = need(c.user, 'admin', 'operator', 'tenant_admin', 'tenant_user');
   if (INDEX_DOWN) return [200, { available: false }];
   const want = u.tenant ?? c.query.get('tenant');
-  if (u.tenant && c.query.get('tenant') && c.query.get('tenant') !== u.tenant) throw new HttpError(403, 'forbidden: another tenant');
-  const tenants = db.tenants.filter((x) => !want || x.name === want).map((tn) => {
-    const { docs, snaps } = tenantIndex(tn.name);
-    const all = [...snaps.values()].flat();
-    const pend = all.filter((x) => x.state === 'pending');
-    const versions = docs.reduce((n, d) => n + d.versions.length, 0) * 1873;
-    return {
-      tenant: tn.name,
-      docs: versions,
-      bytes: versions * 214,
-      sources: [...snaps.keys()].length,
-      snapshots_indexed: all.filter((x) => x.state === 'indexed' || x.state === 'partial').length,
-      snapshots_pending: pend.length,
-      oldest_pending: pend.length ? Math.min(...pend.map((x) => x.time)) : null,
-      snapshots_unindexed: all.filter((x) => x.state === 'off' || x.state === 'failed' || x.state === 'unindexed').length,
-      last_sync: now() - 140,
-      error: null,
-    };
-  });
-  return [200, { available: true, paused: false, free_bytes: Math.round(7.4 * 2 ** 40), floor_bytes: 20 * GiB, cache_bytes: 96 << 20, cache_limit: 256 << 20, tenants }];
+  if (u.tenant && c.query.get('tenant') && c.query.get('tenant') !== u.tenant)
+    throw new HttpError(403, 'forbidden: another tenant');
+  const tenants = db.tenants
+    .filter((x) => !want || x.name === want)
+    .map((tn) => {
+      const { docs, snaps } = tenantIndex(tn.name);
+      const all = [...snaps.values()].flat();
+      const pend = all.filter((x) => x.state === 'pending');
+      const versions = docs.reduce((n, d) => n + d.versions.length, 0) * 1873;
+      return {
+        tenant: tn.name,
+        docs: versions,
+        bytes: versions * 214,
+        sources: [...snaps.keys()].length,
+        snapshots_indexed: all.filter((x) => x.state === 'indexed' || x.state === 'partial').length,
+        snapshots_pending: pend.length,
+        oldest_pending: pend.length ? Math.min(...pend.map((x) => x.time)) : null,
+        snapshots_unindexed: all.filter((x) => x.state === 'off' || x.state === 'failed' || x.state === 'unindexed')
+          .length,
+        last_sync: now() - 140,
+        error: null,
+      };
+    });
+  return [
+    200,
+    {
+      available: true,
+      paused: false,
+      free_bytes: Math.round(7.4 * 2 ** 40),
+      floor_bytes: 20 * GiB,
+      cache_bytes: 96 << 20,
+      cache_limit: 256 << 20,
+      tenants,
+    },
+  ];
 });
 const rulesView = (g: MockGroup) => ({ id: g.id, ...rulesOf(g), default_excludes: DEFAULT_INDEX_EXCLUDES });
 on('GET', '/groups/:id/index-rules', (c, [id]) => {
@@ -5166,12 +7498,20 @@ on('PUT', '/groups/:id/index-rules', async (c, [id]) => {
   const b = c.body ?? {};
   if (typeof b.defaults !== 'boolean') throw new HttpError(400, 'defaults: true or false');
   for (const k of ['include', 'exclude']) {
-    if (!Array.isArray(b[k]) || b[k].some((r: unknown) => typeof r !== 'string')) throw new HttpError(400, `${k}: a list of paths`);
+    if (!Array.isArray(b[k]) || b[k].some((r: unknown) => typeof r !== 'string'))
+      throw new HttpError(400, `${k}: a list of paths`);
     if (b[k].length > 64) throw new HttpError(400, `${k}: at most 64 rules`);
-    const bad = b[k].find((r: string) => !/^(\/[^/\\\x00-\x1f]+)+$/.test(r) || r.length > 1024 || r.split('/').some((x) => x === '.' || x === '..'));
+    const bad = b[k].find(
+      (r: string) =>
+        !/^(\/[^/\\\x00-\x1f]+)+$/.test(r) || r.length > 1024 || r.split('/').some((x) => x === '.' || x === '..'),
+    );
     if (bad !== undefined) throw new HttpError(400, `${k}: invalid rule "${bad}" (absolute path with / separators)`);
   }
-  g.index_rules = { defaults: b.defaults, include: [...new Set<string>(b.include)], exclude: [...new Set<string>(b.exclude)] };
+  g.index_rules = {
+    defaults: b.defaults,
+    include: [...new Set<string>(b.include)],
+    exclude: [...new Set<string>(b.exclude)],
+  };
   await audit(u.name, 'group.index_rules', `group/${g.id}`, { tenant: g.tenant, ...g.index_rules });
   return [200, rulesView(g)];
 });
@@ -5182,8 +7522,22 @@ on('GET', '/quorum', (c) => {
   for (const q of db.quorum) if (q.state === 'pending' && now() - q.created > 72 * 3600) q.state = 'expired';
   // Phase 19b: tenant admins see the requests they made; Phase 33: and those their tenant co-approves
   const mine = (q: (typeof db.quorum)[number]) =>
-    u.role !== 'tenant_admin' || q.requested_by === u.name || (q.tenant_approvals ?? []).some((x: Json) => x.tenant === u.tenant);
-  return [200, db.quorum.filter(mine).sort((a, b) => b.id - a.id).map((q) => ({ approved_by: null, approved_at: null, tenant_approvals: [], ...q, expires: q.created + 72 * 3600 }))];
+    u.role !== 'tenant_admin' ||
+    q.requested_by === u.name ||
+    (q.tenant_approvals ?? []).some((x: Json) => x.tenant === u.tenant);
+  return [
+    200,
+    db.quorum
+      .filter(mine)
+      .sort((a, b) => b.id - a.id)
+      .map((q) => ({
+        approved_by: null,
+        approved_at: null,
+        tenant_approvals: [],
+        ...q,
+        expires: q.created + 72 * 3600,
+      })),
+  ];
 });
 for (const verb of ['approve', 'reject'] as const) {
   on('POST', `/quorum/:id/${verb}`, async (c, [id]) => {
@@ -5198,21 +7552,38 @@ for (const verb of ['approve', 'reject'] as const) {
       const row = rows.find((x) => x.tenant === u.tenant && !x.decision);
       if (!row) throw new HttpError(409, "this request does not wait for your tenant's decision");
       const from = tenantApprovers(u.tenant!).find((a) => a.name === u.name)?.eligible_from ?? Infinity;
-      if (from > now()) throw new HttpError(403, `a new tenant approver may decide 24 hours after becoming one, from ${from} (unix time)`);
-      Object.assign(row, { decided_by: u.name, decided_at: now(), decision: verb === 'approve' ? 'approved' : 'rejected' });
+      if (from > now())
+        throw new HttpError(
+          403,
+          `a new tenant approver may decide 24 hours after becoming one, from ${from} (unix time)`,
+        );
+      Object.assign(row, {
+        decided_by: u.name,
+        decided_at: now(),
+        decision: verb === 'approve' ? 'approved' : 'rejected',
+      });
       await audit(u.name, `quorum.${verb}`, `quorum/${q.id}`, { action: q.action, side: 'tenant', tenant: u.tenant });
       if (verb === 'reject') {
         Object.assign(q, { decided_by: u.name, decided_at: now(), state: 'rejected' });
         return [200, q];
       }
       const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
-      if (waiting.length || !q.approved_by) return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: !!q.approved_by }];
+      if (waiting.length || !q.approved_by)
+        return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: !!q.approved_by }];
     } else if (verb === 'approve') {
       const waiting = rows.filter((x) => !x.decision).map((x) => x.tenant);
       if (waiting.length) {
-        if (q.approved_by) throw new HttpError(409, `already approved by the provider; waiting for the approvers of ${waiting.join(', ')}`);
+        if (q.approved_by)
+          throw new HttpError(
+            409,
+            `already approved by the provider; waiting for the approvers of ${waiting.join(', ')}`,
+          );
         Object.assign(q, { approved_by: u.name, approved_at: now() });
-        await audit(u.name, 'quorum.approve', `quorum/${q.id}`, { action: q.action, state: 'pending', waiting_for: waiting });
+        await audit(u.name, 'quorum.approve', `quorum/${q.id}`, {
+          action: q.action,
+          state: 'pending',
+          waiting_for: waiting,
+        });
         return [200, { id: q.id, state: 'pending', waiting_for: waiting, provider_approved: true }];
       }
     }
@@ -5266,11 +7637,21 @@ on('GET', '/audit', (c) => {
 });
 async function auditCsv(u: User, q: URLSearchParams): Promise<string> {
   const shown: Json = {};
-  for (const k of ['actor', 'action', 'target', 'tenant', 'from', 'to', 'after', 'before']) if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
+  for (const k of ['actor', 'action', 'target', 'tenant', 'from', 'to', 'after', 'before'])
+    if (q.get(k)) shown[k] = /^(from|to|after|before)$/.test(k) ? Number(q.get(k)) : q.get(k);
   const rows = auditFiltered(q, u.role === 'tenant_admin' ? u.tenant : null);
   await audit(u.name, 'audit.export', 'audit', shown);
   const f = (s: string) => (/[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  return ['seq,ts,actor,action,target,details,prev_hash,hash', ...rows.map((e) => [e.seq, e.ts, f(e.actor), f(e.action), f(e.target), f(JSON.stringify(e.details)), e.prev_hash, e.hash].join(','))].join('\r\n') + '\r\n';
+  return (
+    [
+      'seq,ts,actor,action,target,details,prev_hash,hash',
+      ...rows.map((e) =>
+        [e.seq, e.ts, f(e.actor), f(e.action), f(e.target), f(JSON.stringify(e.details)), e.prev_hash, e.hash].join(
+          ',',
+        ),
+      ),
+    ].join('\r\n') + '\r\n'
+  );
 }
 on('GET', '/audit/forwarding', (c) => {
   need(c.user, 'admin', 'security_officer');
@@ -5282,10 +7663,15 @@ on('GET', '/audit/forwarding', (c) => {
       const err = db.forwardErr[k];
       const dest = k === 'syslog' ? `${f.syslog.host}:${f.syslog.port}` : f.https.url;
       return {
-        sink: k, dest, enabled: f[k].enabled,
+        sink: k,
+        dest,
+        enabled: f[k].enabled,
         audit_seq: !f[k].enabled ? Math.max(0, head - 12) : err ? Math.max(0, head - 3) : head,
         event_seq: err ? 40 : 42,
-        last_ok: now() - (err ? 1500 : 4), last_error: err ?? null, last_error_ts: err ? now() - 20 : null, failing_since: err ? now() - 1500 : null,
+        last_ok: now() - (err ? 1500 : 4),
+        last_error: err ?? null,
+        last_error_ts: err ? now() - 20 : null,
+        failing_since: err ? now() - 1500 : null,
       };
     });
   return [200, { head_seq: head, sinks }];
@@ -5305,33 +7691,82 @@ on('GET', '/audit/verify', async (c) => {
 // (a function declaration: the seed runs before the module's consts are initialised)
 function mkAlert(a: Json): Json {
   // the API's English hint; the UI shows its own i18n text per kind
-  const hint = a.kind === 'job_failed' ? 'Open the job log on the Jobs page, fix the cause and run the job again.' : 'See the alerts chapter of the user manual.';
+  const hint =
+    a.kind === 'job_failed'
+      ? 'Open the job log on the Jobs page, fix the cause and run the job again.'
+      : 'See the alerts chapter of the user manual.';
   return {
-    id: nextId(), first_ts: a.ts, last_ts: a.ts, count: 1, key: `${a.kind}:${a.message}`, tenant: null, hint,
-    acked_by: null, resolved_at: null, resolved_by: null, note: null, auto: false, tickets: [], ...a,
+    id: nextId(),
+    first_ts: a.ts,
+    last_ts: a.ts,
+    count: 1,
+    key: `${a.kind}:${a.message}`,
+    tenant: null,
+    hint,
+    acked_by: null,
+    resolved_at: null,
+    resolved_by: null,
+    note: null,
+    auto: false,
+    tickets: [],
+    ...a,
   };
 }
 /** Like catalog::alerting::category (Phase 18). */
 const ALERT_CATEGORIES = ['security', 'backup', 'replication', 'hardware', 'system', 'audit'];
 const ALERT_CATEGORY: Record<string, string> = {
-  anomaly: 'security', malware: 'security', console_unlock: 'security', console_root_shell: 'security', break_glass: 'security',
-  mgmt_allow_reset: 'security', firewall_reset: 'security', legal_hold_advisory: 'security', cert_expiry: 'security',
-  account_dormant: 'security', inventory: 'security', clock_skew: 'security', gc_quorum: 'security', gc_confirm: 'security',
-  vault_disabled: 'security', incident: 'security', dek_rotation: 'security',
-  scan_hit: 'security', hash_hunt_hit: 'security', tenant_lockdown: 'security', login_new_device: 'security', user_risk: 'security', role_elevation: 'security', change_tracking: 'backup',
-  job_failed: 'backup', sla_missed: 'backup', paused: 'backup', consistency: 'backup', backup_inconsistent: 'backup',
-  orphaned: 'backup', verify: 'backup', snapshot_damaged: 'backup', offsite_lag: 'backup', inventory_refresh: 'backup', config: 'backup',
-  vmid_reused: 'backup', restore_priority: 'backup', index_backlog: 'backup', index_space: 'system',
-  disk: 'hardware', fleecing_space: 'hardware',
+  anomaly: 'security',
+  malware: 'security',
+  console_unlock: 'security',
+  console_root_shell: 'security',
+  break_glass: 'security',
+  mgmt_allow_reset: 'security',
+  firewall_reset: 'security',
+  legal_hold_advisory: 'security',
+  cert_expiry: 'security',
+  account_dormant: 'security',
+  inventory: 'security',
+  clock_skew: 'security',
+  gc_quorum: 'security',
+  gc_confirm: 'security',
+  vault_disabled: 'security',
+  incident: 'security',
+  dek_rotation: 'security',
+  scan_hit: 'security',
+  hash_hunt_hit: 'security',
+  tenant_lockdown: 'security',
+  login_new_device: 'security',
+  user_risk: 'security',
+  role_elevation: 'security',
+  change_tracking: 'backup',
+  job_failed: 'backup',
+  sla_missed: 'backup',
+  paused: 'backup',
+  consistency: 'backup',
+  backup_inconsistent: 'backup',
+  orphaned: 'backup',
+  verify: 'backup',
+  snapshot_damaged: 'backup',
+  offsite_lag: 'backup',
+  inventory_refresh: 'backup',
+  config: 'backup',
+  vmid_reused: 'backup',
+  restore_priority: 'backup',
+  index_backlog: 'backup',
+  index_space: 'system',
+  disk: 'hardware',
+  fleecing_space: 'hardware',
 };
-const alertCategory = (kind: string) => (kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system'));
+const alertCategory = (kind: string) =>
+  kind.startsWith('replication_') ? 'replication' : (ALERT_CATEGORY[kind] ?? 'system');
 on('GET', '/alerts', (c) => {
   if (need(c.user).tenant) return [200, []];
   const s = c.query.get('state') ?? 'all';
   if (!['open', 'resolved', 'all'].includes(s)) throw new HttpError(400, 'state: open, resolved or all');
   const id = Number(c.query.get('id') ?? 0);
   const cat = c.query.get('category');
-  if (cat && !ALERT_CATEGORIES.includes(cat)) throw new HttpError(400, `category: one of ${ALERT_CATEGORIES.join(', ')}`);
+  if (cat && !ALERT_CATEGORIES.includes(cat))
+    throw new HttpError(400, `category: one of ${ALERT_CATEGORIES.join(', ')}`);
   const rows = db.alerts
     .filter((a) => s === 'all' || (s === 'open') === !a.resolved_at)
     .filter((a) => !id || a.id === id)
@@ -5348,7 +7783,8 @@ const alertFor = (c: Ctx, id: string) => {
   const u = need(c.user, 'admin', 'operator', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const a = find(db.alerts, (x) => x.id === Number(id), 'alert');
-  if (['break_glass', 'console_unlock', 'console_root_shell'].includes(a.kind)) need(c.user, 'admin', 'security_officer');
+  if (['break_glass', 'console_unlock', 'console_root_shell'].includes(a.kind))
+    need(c.user, 'admin', 'security_officer');
   return { u, a };
 };
 on('POST', '/alerts/:id/ack', async (c, [id]) => {
@@ -5364,7 +7800,11 @@ on('POST', '/alerts/:id/resolve', async (c, [id]) => {
   const { u, a } = alertFor(c, id);
   const note = alertNote(c.body);
   if (a.resolved_at) throw new HttpError(409, 'already resolved');
-  Object.assign(a, { resolved_at: now(), resolved_by: u.name, auto: false, acked_by: a.acked_by ?? u.name }, note ? { note } : {});
+  Object.assign(
+    a,
+    { resolved_at: now(), resolved_by: u.name, auto: false, acked_by: a.acked_by ?? u.name },
+    note ? { note } : {},
+  );
   await audit(u.name, 'alert.resolve', `alert/${a.id}`, { kind: a.kind, note });
   return [200, { id: a.id, resolved_by: u.name }];
 });
@@ -5377,7 +7817,11 @@ function b64(b: Uint8Array): string {
   let out = '';
   for (let i = 0; i < b.length; i += 3) {
     const n = (b[i] << 16) | ((b[i + 1] ?? 0) << 8) | (b[i + 2] ?? 0);
-    out += a[(n >> 18) & 63] + a[(n >> 12) & 63] + (i + 1 < b.length ? a[(n >> 6) & 63] : '') + (i + 2 < b.length ? a[n & 63] : '');
+    out +=
+      a[(n >> 18) & 63] +
+      a[(n >> 12) & 63] +
+      (i + 1 < b.length ? a[(n >> 6) & 63] : '') +
+      (i + 2 < b.length ? a[n & 63] : '');
   }
   return out;
 }
@@ -5392,7 +7836,10 @@ const sshKey = (name: string, purpose: string, created: number) => ({
 function rotateSshKey(name: string) {
   const k = find(db.sshKeys, (x) => x.name === name, 'ssh key');
   const fresh = sshKey(k.name, k.purpose, now());
-  Object.assign(k, { ...fresh, previous: { public_key: k.public_key, fingerprint: k.fingerprint, created: k.created } });
+  Object.assign(k, {
+    ...fresh,
+    previous: { public_key: k.public_key, fingerprint: k.fingerprint, created: k.created },
+  });
 }
 
 /** Phase 13a: legacy-ftp (vm-103) left its group; its old snapshots are unlocked and pruned as orphans. */
@@ -5402,8 +7849,12 @@ function seedPhase13a(t: number) {
     db.snapshots.push(snap('initech', 'vm-103', time, 18 * 2 ** 30, true, d > 40, time + 3600));
   }
   db.alerts.push({
-    id: nextId(), ts: t - 86400 * 2 + 3 * 3600, severity: 'info', kind: 'orphaned',
-    message: 'initech/vm-103 is in no protection group; pruned with the default retention', acked_by: null,
+    id: nextId(),
+    ts: t - 86400 * 2 + 3 * 3600,
+    severity: 'info',
+    kind: 'orphaned',
+    message: 'initech/vm-103 is in no protection group; pruned with the default retention',
+    acked_by: null,
   });
 }
 
@@ -5426,31 +7877,71 @@ function seedPhase12(t: number) {
     ],
   };
   db.alertSettings = {
-    smtp: { host: 'mail.example.com', port: 587, starttls: true, from: 'nexus@example.com', user: 'nexus', password: 'sealed:demo' },
+    smtp: {
+      host: 'mail.example.com',
+      port: 587,
+      starttls: true,
+      from: 'nexus@example.com',
+      user: 'nexus',
+      password: 'sealed:demo',
+    },
     rules: [
-      { name: 'ops-team', min_severity: 'warning', kinds: [], tenants: [], channels: { email: ['ops@example.com', 'backup-team@example.com'], webhook: null } },
       {
-        name: 'acme-chat', min_severity: 'info', kinds: ['job_failed', 'verify', 'offsite_lag'], tenants: ['acme'],
+        name: 'ops-team',
+        min_severity: 'warning',
+        kinds: [],
+        tenants: [],
+        channels: { email: ['ops@example.com', 'backup-team@example.com'], webhook: null },
+      },
+      {
+        name: 'acme-chat',
+        min_severity: 'info',
+        kinds: ['job_failed', 'verify', 'offsite_lag'],
+        tenants: ['acme'],
         channels: {
           email: [],
           webhook: {
-            url: 'https://hooks.slack.com/services/T0000/B0000/acme', headers: {},
-            template: '{"text": ":rotating_light: [{{severity}}] {{kind}} on {{host}}: {{message}}\\n{{hint}}\\n<{{alert_url}}|Open alert> (seen {{count}}x)"}',
+            url: 'https://hooks.slack.com/services/T0000/B0000/acme',
+            headers: {},
+            template:
+              '{"text": ":rotating_light: [{{severity}}] {{kind}} on {{host}}: {{message}}\\n{{hint}}\\n<{{alert_url}}|Open alert> (seen {{count}}x)"}',
           },
         },
       },
       {
-        name: 'siem', min_severity: 'critical', kinds: [], tenants: [],
-        channels: { email: [], webhook: { url: 'https://siem.example.com/api/events', headers: { Authorization: 'sealed:demo' }, template: null } },
+        name: 'siem',
+        min_severity: 'critical',
+        kinds: [],
+        tenants: [],
+        channels: {
+          email: [],
+          webhook: {
+            url: 'https://siem.example.com/api/events',
+            headers: { Authorization: 'sealed:demo' },
+            template: null,
+          },
+        },
       },
       {
-        name: 'msp-halo', min_severity: 'warning', kinds: [], tenants: ['initech'],
+        name: 'msp-halo',
+        min_severity: 'warning',
+        kinds: [],
+        tenants: ['initech'],
         channels: {
-          email: [], webhook: null,
+          email: [],
+          webhook: null,
           psa: {
-            vendor: 'halopsa', url: 'https://msp.halopsa.example/api', token_url: 'https://msp.halopsa.example/auth/token',
-            client_id: 'nexus-backup', username: null, secret: 'sealed:demo', company: null, account: '214', board: '31',
-            integration_code: null, closed_status: null,
+            vendor: 'halopsa',
+            url: 'https://msp.halopsa.example/api',
+            token_url: 'https://msp.halopsa.example/auth/token',
+            client_id: 'nexus-backup',
+            username: null,
+            secret: 'sealed:demo',
+            company: null,
+            account: '214',
+            board: '31',
+            integration_code: null,
+            closed_status: null,
           },
         },
       },
@@ -5477,15 +7968,28 @@ function seedPhase12(t: number) {
   };
   // a single-sign-on user (Keycloak group nexus-operators): no password, no TOTP on the appliance
   db.users.push({
-    id: nextId(), name: 'lwagner', role: 'operator', tenant: null, disabled: false, created: t - 86400 * 6,
-    password: '', totp_secret: '', auth: 'oidc', oidc_sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
+    id: nextId(),
+    name: 'lwagner',
+    role: 'operator',
+    tenant: null,
+    disabled: false,
+    created: t - 86400 * 6,
+    password: '',
+    totp_secret: '',
+    auth: 'oidc',
+    oidc_sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
   });
   // the break-glass alert of an earlier console recovery, acknowledged (the UI banner shows open ones)
   db.alerts.push(
     mkAlert({
-      ts: t - 86400 * 58, severity: 'critical', kind: 'break_glass',
-      message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).', acked_by: 'so',
-      resolved_at: t - 86400 * 58 + 3600, resolved_by: 'so', note: 'Confirmed with J. Weber (lost TOTP device).',
+      ts: t - 86400 * 58,
+      severity: 'critical',
+      kind: 'break_glass',
+      message: 'administrator "admin" was reset to pending activation at the console (nexus-setup recover-admin).',
+      acked_by: 'so',
+      resolved_at: t - 86400 * 58 + 3600,
+      resolved_by: 'so',
+      note: 'Confirmed with J. Weber (lost TOTP device).',
     }),
   );
 }
@@ -5496,10 +8000,28 @@ const isoDay = (ts: number) => new Date(ts * 1000).toISOString().slice(0, 10);
 const hash = (...xs: number[]) => xs.reduce((h, x) => Math.imul(h ^ x, 2654435761) >>> 0, 0x9e3779b9) >>> 0;
 /** friendly names of the demo VMs / containers */
 const GUEST_NAMES: Record<string, string> = {
-  'initech/100': 'erp-app', 'initech/101': 'erp-db', 'initech/200': 'proxy', 'initech/102': 'dev-sandbox', 'initech/103': 'legacy-ftp',
-  'acme/300': 'shop-web', 'acme/301': 'shop-api', 'acme/302': 'test-web',
+  'initech/100': 'erp-app',
+  'initech/101': 'erp-db',
+  'initech/200': 'proxy',
+  'initech/102': 'dev-sandbox',
+  'initech/103': 'legacy-ftp',
+  'acme/300': 'shop-web',
+  'acme/301': 'shop-api',
+  'acme/302': 'test-web',
 };
-interface Obj { source: string; name: string; kind: string; tenant: string; rpo_s: number; inGroup: boolean; names: string[]; sourceName?: string; sourceId?: number | null; paused?: boolean; group?: string }
+interface Obj {
+  source: string;
+  name: string;
+  kind: string;
+  tenant: string;
+  rpo_s: number;
+  inGroup: boolean;
+  names: string[];
+  sourceName?: string;
+  sourceId?: number | null;
+  paused?: boolean;
+  group?: string;
+}
 
 function protectedObjects(u: User): Obj[] {
   const out: Obj[] = [];
@@ -5509,12 +8031,16 @@ function protectedObjects(u: User): Obj[] {
     if (!src || !pol) continue;
     const rpo_s = schedulePeriod(pol.schedule);
     const paused = isPaused(g.paused_until, now()) || isPaused(src.maintenance_until, now());
-    const add = (source: string, name: string, names = [source]) => out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused, group: g.name });
+    const add = (source: string, name: string, names = [source]) =>
+      out.push({ source, name, kind: src.kind, tenant: g.tenant, rpo_s, inGroup: true, names, paused, group: g.name });
     const guests = resolveGuests(g);
     if (src.kind === 'pve')
-      for (const v of guests) add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
-    else if (src.kind === 'linux') for (const a of guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
-    else if (src.kind === 'truenas') for (const d of guests) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
+      for (const v of guests)
+        add(guestName(v), `${GUEST_NAMES[`${g.tenant}/${v}`] ?? 'guest'} (${v})`, [`vm-${v}`, `ct-${v}`]);
+    else if (src.kind === 'linux')
+      for (const a of guests) add(`host-${a}`, db.agents.find((x) => x.id === a)?.name ?? String(a));
+    else if (src.kind === 'truenas')
+      for (const d of guests) add(`nas-${src.id}-${String(d).replaceAll('/', '.')}`, `${src.name}: ${d}`);
     else if (src.kind === 'nfs' || src.kind === 'smb') add(`share-${src.id}`, src.name);
     else if (src.kind.startsWith('plugin:')) {
       const pid = pluginKind(src.kind)?.plugin.id ?? src.kind.slice(7);
@@ -5529,30 +8055,65 @@ function protectedObjects(u: User): Obj[] {
     if (!src || (u.tenant && src.tenant !== u.tenant)) continue;
     for (const r of rows)
       if (r.gone === null && !coveringGroups(sid, r.guest).length)
-        extra.push({ source: r.guest, name: src.kind === 'pve' ? `${r.name} (${r.guest})` : `${src.name}: ${r.name}`, kind: src.kind, tenant: src.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: src.name, sourceId: src.id } as Obj);
+        extra.push({
+          source: r.guest,
+          name: src.kind === 'pve' ? `${r.name} (${r.guest})` : `${src.name}: ${r.name}`,
+          kind: src.kind,
+          tenant: src.tenant,
+          rpo_s: DAY,
+          inGroup: false,
+          names: [],
+          sourceName: src.name,
+          sourceId: src.id,
+        } as Obj);
   }
   for (const a of byTenant(u, db.agents))
     if (!out.some((o) => o.source === `host-${a.id}`))
-      extra.push({ source: a.id, name: a.name, kind: 'linux', tenant: a.tenant, rpo_s: DAY, inGroup: false, names: [], sourceName: a.name, sourceId: null } as Obj);
+      extra.push({
+        source: a.id,
+        name: a.name,
+        kind: 'linux',
+        tenant: a.tenant,
+        rpo_s: DAY,
+        inGroup: false,
+        names: [],
+        sourceName: a.name,
+        sourceId: null,
+      } as Obj);
   return [...out, ...extra];
 }
 
 /** Synthetic daily job counts of one tenant (scheduler runs per group + offsite / verify / retention). */
 function tenantDay(tenant: string, dayStart: number, t: number) {
   const groups = db.groups.filter((g) => g.tenant === tenant);
-  const hourly = groups.filter((g) => db.policies.find((p) => p.id === g.policy_id)?.schedule.startsWith('hourly')).length;
+  const hourly = groups.filter((g) =>
+    db.policies.find((p) => p.id === g.policy_id)?.schedule.startsWith('hourly'),
+  ).length;
   const tn = db.tenants.find((x) => x.name === tenant);
-  const extra = (tn?.offsite?.remote ? 1 : 0) + (groups.length ? 2 : 0) + (db.replSources.some((r) => r.tenants.includes(tenant)) ? 1 : 0);
+  const extra =
+    (tn?.offsite?.remote ? 1 : 0) +
+    (groups.length ? 2 : 0) +
+    (db.replSources.some((r) => r.tenants.includes(tenant)) ? 1 : 0);
   const frac = Math.min(1, Math.max(0, (t - dayStart) / DAY));
   const base = Math.round((groups.length - hourly + hourly * 24 + extra) * frac);
   const kinds = [...new Set(groups.map((g) => db.sources.find((s) => s.id === g.source_id)?.kind ?? 'pve'))];
-  const h = hash(dayStart / DAY, [...tenant].reduce((a, c) => a + c.charCodeAt(0), 0));
+  const h = hash(
+    dayStart / DAY,
+    [...tenant].reduce((a, c) => a + c.charCodeAt(0), 0),
+  );
   let failed = groups.length && frac === 1 ? (h % 11 === 0 ? 2 : h % 4 === 0 ? 1 : 0) : 0;
   const fkind = kinds[(h >>> 7) % Math.max(1, kinds.length)] ?? 'pve';
   // acme backs up an SMB share without NAS snapshots daily: one "not point-in-time consistent" warning
-  const warning = groups.some((g) => db.sources.find((s) => s.id === g.source_id)?.kind === 'smb') && frac > 0.15 ? 1 : 0;
+  const warning =
+    groups.some((g) => db.sources.find((s) => s.id === g.source_id)?.kind === 'smb') && frac > 0.15 ? 1 : 0;
   // the seeded vm-101 failures (initech): yesterday's nightly run, today's run and the manual retry
-  const real = db.jobs.filter((j) => j.tenant === tenant && j.state === 'failed' && (j.finished ?? 0) >= dayStart && (j.finished ?? 0) < dayStart + DAY);
+  const real = db.jobs.filter(
+    (j) =>
+      j.tenant === tenant &&
+      j.state === 'failed' &&
+      (j.finished ?? 0) >= dayStart &&
+      (j.finished ?? 0) < dayStart + DAY,
+  );
   if (tenant === 'initech' && t - dayStart >= DAY && t - dayStart < 2 * DAY) failed = Math.max(failed, 1);
   const byKind: Record<string, number> = {};
   if (real.length) byKind.pve = real.length;
@@ -5569,9 +8130,20 @@ function dashboard(u: User, days: number) {
 
   // protection
   const objs = protectedObjects(u).map((o) => {
-    const last = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).reduce((m, s) => Math.max(m, s.time), 0) || null;
+    const last =
+      snaps
+        .filter((s) => s.tenant === o.tenant && o.names.includes(s.source))
+        .reduce((m, s) => Math.max(m, s.time), 0) || null;
     const age_s = last ? t - last : null;
-    const sla = tenantOff(o.tenant) ? 'deactivated' : !last ? 'never' : (age_s as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
+    const sla = tenantOff(o.tenant)
+      ? 'deactivated'
+      : !last
+        ? 'never'
+        : (age_s as number) > o.rpo_s * 1.5
+          ? o.paused
+            ? 'paused'
+            : 'breach'
+          : 'ok';
     return { ...o, last_ok: last, age_s, sla };
   });
   const inGroup = objs.filter((o) => o.inGroup);
@@ -5587,11 +8159,32 @@ function dashboard(u: User, days: number) {
     never: inGroup.filter((o) => o.sla === 'never').length,
     unprotected_list: objs
       .filter((o) => !o.inGroup)
-      .map((o) => ({ tenant: o.tenant, kind: o.kind, source_id: o.sourceId ?? null, source: o.sourceName ?? '', guest: o.source, name: o.name })),
+      .map((o) => ({
+        tenant: o.tenant,
+        kind: o.kind,
+        source_id: o.sourceId ?? null,
+        source: o.sourceName ?? '',
+        guest: o.source,
+        name: o.name,
+      })),
     worst: inGroup
-      .sort((a, b) => Number(!['ok', 'paused', 'deactivated'].includes(b.sla)) - Number(!['ok', 'paused', 'deactivated'].includes(a.sla)) || (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s)
+      .sort(
+        (a, b) =>
+          Number(!['ok', 'paused', 'deactivated'].includes(b.sla)) -
+            Number(!['ok', 'paused', 'deactivated'].includes(a.sla)) ||
+          (b.age_s ?? Infinity) / b.rpo_s - (a.age_s ?? Infinity) / a.rpo_s,
+      )
       .slice(0, 10)
-      .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla })),
+      .map(({ source, name, kind, tenant, last_ok, age_s, rpo_s, sla }) => ({
+        source,
+        name,
+        kind,
+        tenant,
+        last_ok,
+        age_s,
+        rpo_s,
+        sla,
+      })),
   };
 
   // jobs per day
@@ -5609,7 +8202,10 @@ function dashboard(u: User, days: number) {
     }
     per_day.push(row);
   }
-  const sum = per_day.reduce((a, r) => ({ ok: a.ok + r.ok, warning: a.warning + r.warning, failed: a.failed + r.failed }), { ok: 0, warning: 0, failed: 0 });
+  const sum = per_day.reduce(
+    (a, r) => ({ ok: a.ok + r.ok, warning: a.warning + r.warning, failed: a.failed + r.failed }),
+    { ok: 0, warning: 0, failed: 0 },
+  );
   const total = sum.ok + sum.warning + sum.failed;
 
   // capacity: 64 TiB store, 78 % used today (see the capacity alert), growing ~0.11 %/day
@@ -5622,7 +8218,8 @@ function dashboard(u: User, days: number) {
   const reg = sample(30);
   const mx = reg.reduce((a, p) => a - p.d, 0) / reg.length;
   const my = reg.reduce((a, p) => a + p.used, 0) / reg.length;
-  const slope = reg.reduce((a, p) => a + (-p.d - mx) * (p.used - my), 0) / reg.reduce((a, p) => a + (-p.d - mx) ** 2, 0);
+  const slope =
+    reg.reduce((a, p) => a + (-p.d - mx) * (p.used - my), 0) / reg.reduce((a, p) => a + (-p.d - mx) ** 2, 0);
   const fit = my + slope * (0 - mx);
   const forecast = slope > 0 ? Math.round((TOTAL - fit) / slope) : null;
   const used = usedAt(0);
@@ -5638,16 +8235,29 @@ function dashboard(u: User, days: number) {
     reduction,
     dedup: st.dedup,
     compression: st.compression,
-    per_day: sample(days).map((p) => ({ day: isoDay(today - p.d * DAY), used: Math.round(p.used * share), logical: Math.round(p.used * share * 0.97 * reduction) })),
+    per_day: sample(days).map((p) => ({
+      day: isoDay(today - p.d * DAY),
+      used: Math.round(p.used * share),
+      logical: Math.round(p.used * share * 0.97 * reduction),
+    })),
     forecast_full_days: forecast,
   };
 
   // offsite + replication
   const offT = tenants.filter((n) => db.tenants.find((x) => x.name === n)?.offsite?.remote);
-  const lags = offT.map((n) => t - (snaps.filter((s) => s.tenant === n && s.offsite).reduce((m, s) => Math.max(m, s.time), 0) || t - 30 * DAY));
+  const lags = offT.map(
+    (n) =>
+      t - (snaps.filter((s) => s.tenant === n && s.offsite).reduce((m, s) => Math.max(m, s.time), 0) || t - 30 * DAY),
+  );
   const replLags = [
-    ...db.replSources.flatMap((r) => r.tenants.filter((n: string) => tenants.includes(n)).map((n: string) => t - (r.status?.[n]?.last_ok ?? r.created))),
-    ...db.replPeers.filter((p) => p.state === 'enrolled' && p.tenants.some((n: string) => tenants.includes(n))).map((p) => t - (p.last_seen ?? p.created)),
+    ...db.replSources.flatMap((r) =>
+      r.tenants
+        .filter((n: string) => tenants.includes(n))
+        .map((n: string) => t - (r.status?.[n]?.last_ok ?? r.created)),
+    ),
+    ...db.replPeers
+      .filter((p) => p.state === 'enrolled' && p.tenants.some((n: string) => tenants.includes(n)))
+      .map((p) => t - (p.last_seen ?? p.created)),
   ];
   const verified = snaps.map((s) => s.verified).filter(Boolean) as number[];
   const offsite = {
@@ -5676,7 +8286,9 @@ function dashboard(u: User, days: number) {
       total,
       ...sum,
       per_day,
-      failed_by_kind: Object.entries(byKind).map(([kind, failed]) => ({ kind, failed })).sort((a, b) => b.failed - a.failed),
+      failed_by_kind: Object.entries(byKind)
+        .map(([kind, failed]) => ({ kind, failed }))
+        .sort((a, b) => b.failed - a.failed),
     },
     capacity,
     offsite,
@@ -5691,12 +8303,33 @@ function storeUsedAt(d: number) {
   const wobble = ((hash(d, 7) % 1000) / 1000 - 0.5) * 0.004;
   return Math.round(STORE_TOTAL * (0.78 - 0.0011 * d + wobble));
 }
-const COMPRESSION: [string, number][] = [['plugin-postgresql-', 3.2], ['plugin-', 1.8], ['host-', 2.1], ['share-', 1.25], ['nas-', 1.4], ['', 1.7]];
-interface Sum { snapshots: number; logical: number; data_in: number; stored: number }
+const COMPRESSION: [string, number][] = [
+  ['plugin-postgresql-', 3.2],
+  ['plugin-', 1.8],
+  ['host-', 2.1],
+  ['share-', 1.25],
+  ['nas-', 1.4],
+  ['', 1.7],
+];
+interface Sum {
+  snapshots: number;
+  logical: number;
+  data_in: number;
+  stored: number;
+}
 function sumJson(s: Sum, k = 1) {
   const r = (a: number, b: number) => (b > 0 ? +(a / b).toFixed(3) : null);
   const [l, d, st] = [s.logical * k, s.data_in * k, s.stored * k].map(Math.round);
-  return { snapshots: s.snapshots, logical: l, data_in: d, stored: st, saved: Math.max(0, l - st), dedup: r(l, d), compression: r(d, st), reduction: r(l, st) };
+  return {
+    snapshots: s.snapshots,
+    logical: l,
+    data_in: d,
+    stored: st,
+    saved: Math.max(0, l - st),
+    dedup: r(l, d),
+    compression: r(d, st),
+    reduction: r(l, st),
+  };
 }
 function groupOfSource(tenant: string, source: string): (typeof db.groups)[number] | undefined {
   return db.groups.find((g) => {
@@ -5720,7 +8353,10 @@ function storageStats(u: User) {
   const zero = (): Sum => ({ snapshots: 0, logical: 0, data_in: 0, stored: 0 });
   const all = zero();
   const perTenant = new Map<string, Sum>();
-  const perGroup = new Map<string, { tenant: string; group_id: number | null; group: string | null; sum: Sum; sources: Set<string> }>();
+  const perGroup = new Map<
+    string,
+    { tenant: string; group_id: number | null; group: string | null; sum: Sum; sources: Set<string> }
+  >();
   for (const s of snaps) {
     const key = `${s.tenant}/${s.source}`;
     const rate = 0.02 + (hash(s.source.length, s.time % 97) % 5) / 100;
@@ -5729,7 +8365,14 @@ function storageStats(u: User) {
     const comp = COMPRESSION.find(([p]) => s.source.startsWith(p))![1];
     const g = groupOfSource(s.tenant, s.source);
     const gk = `${s.tenant}/${g?.id ?? '-'}`;
-    if (!perGroup.has(gk)) perGroup.set(gk, { tenant: s.tenant, group_id: g?.id ?? null, group: g?.name ?? null, sum: zero(), sources: new Set() });
+    if (!perGroup.has(gk))
+      perGroup.set(gk, {
+        tenant: s.tenant,
+        group_id: g?.id ?? null,
+        group: g?.name ?? null,
+        sum: zero(),
+        sources: new Set(),
+      });
     if (!perTenant.has(s.tenant)) perTenant.set(s.tenant, zero());
     const pg = perGroup.get(gk)!;
     pg.sources.add(s.source);
@@ -5756,19 +8399,41 @@ function storageStats(u: User) {
   const tot = sumJson(total, k);
   return {
     generated: t,
-    totals: { ...tot, snapshots_all: kept.filter((s) => !u.tenant || s.tenant === u.tenant).length, used: usedTotal, growth: growth(usedTotal) },
+    totals: {
+      ...tot,
+      snapshots_all: kept.filter((s) => !u.tenant || s.tenant === u.tenant).length,
+      used: usedTotal,
+      growth: growth(usedTotal),
+    },
     tenants: tenants.map((n) => {
       const used = usedOf(n);
       const q = db.tenants.find((x) => x.name === n)?.quota_bytes ?? null;
-      return { tenant: n, ...sumJson(perTenant.get(n) ?? zero(), k), used, quota_bytes: q, quota_used: q ? +(used / q).toFixed(4) : null, growth: growth(used) };
+      return {
+        tenant: n,
+        ...sumJson(perTenant.get(n) ?? zero(), k),
+        used,
+        quota_bytes: q,
+        quota_used: q ? +(used / q).toFixed(4) : null,
+        growth: growth(used),
+      };
     }),
     groups: [...perGroup.values()]
       .filter((g) => !u.tenant || g.tenant === u.tenant)
       .sort((a, b) => a.tenant.localeCompare(b.tenant) || (a.group_id ?? 1e9) - (b.group_id ?? 1e9))
-      .map((g) => ({ tenant: g.tenant, group_id: g.group_id, group: g.group, sources: g.sources.size, ...sumJson(g.sum, k) })),
+      .map((g) => ({
+        tenant: g.tenant,
+        group_id: g.group_id,
+        group: g.group,
+        sources: g.sources.size,
+        ...sumJson(g.sum, k),
+      })),
     per_day: Array.from({ length: 90 }, (_, i) => 89 - i).map((d) => {
       const used = Math.round(storeUsedAt(d) * share);
-      return { day: isoDay(Math.floor(t / DAY) * DAY - d * DAY), used, logical: Math.round(used * 0.97 * (tot.reduction ?? 1)) };
+      return {
+        day: isoDay(Math.floor(t / DAY) * DAY - d * DAY),
+        used,
+        logical: Math.round(used * 0.97 * (tot.reduction ?? 1)),
+      };
     }),
   };
 }
@@ -5777,7 +8442,8 @@ on('PUT', '/tenants/:name/quota', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const x = find(db.tenants, (y) => y.name === decodeURIComponent(name), 'tenant');
   const q = c.body.quota_bytes;
-  if (q !== null && !(Number.isInteger(q) && q > 0)) throw new HttpError(400, 'quota_bytes: a positive number of bytes, or null');
+  if (q !== null && !(Number.isInteger(q) && q > 0))
+    throw new HttpError(400, 'quota_bytes: a positive number of bytes, or null');
   x.quota_bytes = q;
   await audit(u.name, 'tenant.quota', `tenant/${x.name}`, { name: x.name, quota_bytes: q });
   return [200, { name: x.name, quota_bytes: q }];
@@ -5790,8 +8456,13 @@ on('PUT', '/settings/anomaly', async (c) => {
   if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled: boolean required');
   if (!(factor >= 1.5 && factor <= 100)) throw new HttpError(400, 'factor: 1.5..=100');
   if (!(Number.isInteger(history) && history >= 5 && history <= 100)) throw new HttpError(400, 'history: 5..=100 runs');
-  if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50)) throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
-  if (!Array.isArray(ransom_notes) || ransom_notes.length > 100 || ransom_notes.some((g: unknown) => typeof g !== 'string' || !g.trim() || g.length > 100 || g.includes('/')))
+  if (!(Number.isInteger(floor_bytes) && floor_bytes >= 2 ** 20 && floor_bytes <= 2 ** 50))
+    throw new HttpError(400, 'floor_bytes: 1 MiB..=1 PiB');
+  if (
+    !Array.isArray(ransom_notes) ||
+    ransom_notes.length > 100 ||
+    ransom_notes.some((g: unknown) => typeof g !== 'string' || !g.trim() || g.length > 100 || g.includes('/'))
+  )
     throw new HttpError(400, 'ransom_notes: at most 100 file name patterns of 1..=100 characters, no `/`');
   const next = { enabled, factor, history, floor_bytes, ransom_notes };
   const old = db.anomaly;
@@ -5817,48 +8488,74 @@ on('PUT', '/settings/forwarding', async (c) => {
   const pin = (v: unknown, w: string) => {
     if (v === null || v === undefined || String(v).trim() === '') return null;
     const h = String(v).replace(/:/g, '').trim();
-    if (!/^[0-9a-fA-F]{64}$/.test(h)) throw new HttpError(400, `${w}.pin_sha256: 64 hex digits (SHA-256 of the certificate)`);
+    if (!/^[0-9a-fA-F]{64}$/.test(h))
+      throw new HttpError(400, `${w}.pin_sha256: 64 hex digits (SHA-256 of the certificate)`);
     return h.toLowerCase();
   };
   const pem = (v: unknown, w: string) => {
     if (v === null || v === undefined || String(v).trim() === '') return null;
-    if (!String(v).includes('-----BEGIN CERTIFICATE-----')) throw new HttpError(400, `${w}.ca_pem: PEM certificate(s), at most 64 KiB`);
+    if (!String(v).includes('-----BEGIN CERTIFICATE-----'))
+      throw new HttpError(400, `${w}.ca_pem: PEM certificate(s), at most 64 KiB`);
     return String(v);
   };
   const s = c.body.syslog;
   const h = c.body.https;
   let syslog: Json | null = null;
   if (s) {
-    if (!/^[A-Za-z0-9.:[\]-]{1,253}$/.test(s.host ?? '')) throw new HttpError(400, 'syslog.host: host name or IP address');
+    if (!/^[A-Za-z0-9.:[\]-]{1,253}$/.test(s.host ?? ''))
+      throw new HttpError(400, 'syslog.host: host name or IP address');
     const facility = s.facility ?? 13;
-    if (!(Number.isInteger(facility) && facility >= 0 && facility <= 23)) throw new HttpError(400, 'syslog.facility: 0..=23');
+    if (!(Number.isInteger(facility) && facility >= 0 && facility <= 23))
+      throw new HttpError(400, 'syslog.facility: 0..=23');
     const app = s.app_name ?? 'nexus';
-    if (!/^[!-~]{1,48}$/.test(app)) throw new HttpError(400, 'syslog.app_name: 1..=48 printable ASCII characters, no spaces');
-    syslog = { enabled: s.enabled ?? true, host: s.host, port: s.port ?? 6514, ca_pem: pem(s.ca_pem, 'syslog'), pin_sha256: pin(s.pin_sha256, 'syslog'), app_name: app, facility };
+    if (!/^[!-~]{1,48}$/.test(app))
+      throw new HttpError(400, 'syslog.app_name: 1..=48 printable ASCII characters, no spaces');
+    syslog = {
+      enabled: s.enabled ?? true,
+      host: s.host,
+      port: s.port ?? 6514,
+      ca_pem: pem(s.ca_pem, 'syslog'),
+      pin_sha256: pin(s.pin_sha256, 'syslog'),
+      app_name: app,
+      facility,
+    };
   }
   let https: Json | null = null;
   if (h) {
-    if (!/^https:\/\/[^/@\s]+(\/\S*)?$/.test(h.url ?? '')) throw new HttpError(400, 'https.url: https://host[:port]/path, without user info');
+    if (!/^https:\/\/[^/@\s]+(\/\S*)?$/.test(h.url ?? ''))
+      throw new HttpError(400, 'https.url: https://host[:port]/path, without user info');
     const batch = h.batch_max ?? 100;
-    if (!(Number.isInteger(batch) && batch >= 1 && batch <= 1000)) throw new HttpError(400, 'https.batch_max: 1..=1000');
+    if (!(Number.isInteger(batch) && batch >= 1 && batch <= 1000))
+      throw new HttpError(400, 'https.batch_max: 1..=1000');
     const headers: Json = {};
     for (const [k, v] of Object.entries(h.headers ?? {})) {
       if (v === null) {
         const prev = old.https?.url === h.url ? old.https.headers?.[k] : undefined;
-        if (prev === undefined) throw new HttpError(400, `https.headers: a value for ${k} is required (new header or URL changed)`);
+        if (prev === undefined)
+          throw new HttpError(400, `https.headers: a value for ${k} is required (new header or URL changed)`);
         headers[k] = prev;
       } else headers[k] = v;
     }
     const format = h.format ?? 'json_array';
-    if (!['json_array', 'splunk_hec'].includes(format)) throw new HttpError(400, 'https.format: json_array or splunk_hec');
+    if (!['json_array', 'splunk_hec'].includes(format))
+      throw new HttpError(400, 'https.format: json_array or splunk_hec');
     const index = typeof h.index === 'string' && h.index.trim() ? h.index.trim() : null;
     if (index && (format !== 'splunk_hec' || !/^[a-z0-9_-]{1,80}$/.test(index)))
       throw new HttpError(400, 'https.index: Splunk HEC only; lower-case letters, digits, _ and -, at most 80');
-    https = { enabled: h.enabled ?? true, url: h.url, headers, batch_max: batch, ca_pem: pem(h.ca_pem, 'https'), pin_sha256: pin(h.pin_sha256, 'https'), format };
+    https = {
+      enabled: h.enabled ?? true,
+      url: h.url,
+      headers,
+      batch_max: batch,
+      ca_pem: pem(h.ca_pem, 'https'),
+      pin_sha256: pin(h.pin_sha256, 'https'),
+      format,
+    };
     if (index) https.index = index;
   }
   const next = { syslog, https };
-  const same = (a: Json, b: Json | null, keys: string[]) => !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
+  const same = (a: Json, b: Json | null, keys: string[]) =>
+    !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
   const weaker =
     (old.syslog?.enabled && !same(old.syslog, syslog, ['host', 'port', 'ca_pem', 'pin_sha256'])) ||
     (old.https?.enabled && !same(old.https, https, ['url', 'ca_pem', 'pin_sha256', 'headers']));
@@ -5872,8 +8569,12 @@ on('POST', '/settings/forwarding/test', async (c) => {
   const u = need(c.user, 'admin');
   const f = db.forwarding;
   const out: Json = {};
-  if (f.syslog) out.syslog = /bad|invalid/.test(f.syslog.host) ? `error: connecting ${f.syslog.host}:${f.syslog.port}: connection refused` : 'ok';
-  if (f.https) out.https = /bad|invalid/.test(f.https.url) ? 'error: HTTP status client error (401 Unauthorized)' : 'ok';
+  if (f.syslog)
+    out.syslog = /bad|invalid/.test(f.syslog.host)
+      ? `error: connecting ${f.syslog.host}:${f.syslog.port}: connection refused`
+      : 'ok';
+  if (f.https)
+    out.https = /bad|invalid/.test(f.https.url) ? 'error: HTTP status client error (401 Unauthorized)' : 'ok';
   if (!f.syslog && !f.https) out.forwarding = 'error: no sink configured';
   await audit(u.name, 'job.create', 'job/0', { kind: 'forward_test', params: {} });
   return [200, out];
@@ -5910,40 +8611,113 @@ function reportTable(u: User, kind: string, scope: string | null, from: number, 
       }
     }
     const objs = [...merged.values()].map((o) => {
-        const mine = snaps.filter((s) => s.tenant === o.tenant && o.names.includes(s.source)).sort((a, b) => b.time - a.time);
-        const last = mine[0];
-        const age = last ? t - last.time : null;
-        const sla = !last ? 'never' : (age as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
-        return { o, last, age, sla, groups: o.groups.join(' ') };
-      });
+      const mine = snaps
+        .filter((s) => s.tenant === o.tenant && o.names.includes(s.source))
+        .sort((a, b) => b.time - a.time);
+      const last = mine[0];
+      const age = last ? t - last.time : null;
+      const sla = !last ? 'never' : (age as number) > o.rpo_s * 1.5 ? (o.paused ? 'paused' : 'breach') : 'ok';
+      return { o, last, age, sla, groups: o.groups.join(' ') };
+    });
     if (kind === 'protection')
       return [
-        ['tenant', 'groups', 'object', 'kind', 'source', 'rpo_hours', 'last_good', 'age_hours', 'status', 'local', 'offsite', 'verified', 'consistency'],
+        [
+          'tenant',
+          'groups',
+          'object',
+          'kind',
+          'source',
+          'rpo_hours',
+          'last_good',
+          'age_hours',
+          'status',
+          'local',
+          'offsite',
+          'verified',
+          'consistency',
+        ],
         objs.map(({ o, last, age, sla, groups }) => [
-          o.tenant, groups, o.name, o.kind, last?.source ?? o.names[0], hours(o.rpo_s), isoTime(last?.time), age === null ? '' : hours(age), sla,
-          last ? (last.local ? 'yes' : 'no') : '', last ? (last.offsite ? 'yes' : 'no') : '', isoTime(last?.verified),
+          o.tenant,
+          groups,
+          o.name,
+          o.kind,
+          last?.source ?? o.names[0],
+          hours(o.rpo_s),
+          isoTime(last?.time),
+          age === null ? '' : hours(age),
+          sla,
+          last ? (last.local ? 'yes' : 'no') : '',
+          last ? (last.offsite ? 'yes' : 'no') : '',
+          isoTime(last?.verified),
           o.kind === 'pve' || !last ? 'unknown' : 'consistent',
         ]),
       ];
     const rows: [number, unknown[]][] = [];
     // Phase 19b: the tiers of the policies behind the groups (web-api SLA column `tier`)
     const tierOf = (tenant: string, names: string[]) =>
-      [...new Set(names.map((n) => db.policies.find((p) => p.id === db.groups.find((g) => g.tenant === tenant && g.name === n)?.policy_id)?.tier).filter(Boolean))].join(' ');
+      [
+        ...new Set(
+          names
+            .map(
+              (n) =>
+                db.policies.find((p) => p.id === db.groups.find((g) => g.tenant === tenant && g.name === n)?.policy_id)
+                  ?.tier,
+            )
+            .filter(Boolean),
+        ),
+      ].join(' ');
     for (const { o, last, sla, groups } of objs) {
       const limit = o.rpo_s * 1.5;
       if (sla === 'breach' && last) {
         const s = Math.max(last.time + limit, from);
         const e = Math.min(t, to);
-        if (s < e) rows.push([s, ['rpo_breach', o.tenant, groups, tierOf(o.tenant, o.groups), o.name, isoTime(s), '', hours(e - s), hours(limit), `ongoing: no good backup since ${isoTime(last.time)}`]]);
+        if (s < e)
+          rows.push([
+            s,
+            [
+              'rpo_breach',
+              o.tenant,
+              groups,
+              tierOf(o.tenant, o.groups),
+              o.name,
+              isoTime(s),
+              '',
+              hours(e - s),
+              hours(limit),
+              `ongoing: no good backup since ${isoTime(last.time)}`,
+            ],
+          ]);
       }
     }
-    for (const a of db.alerts.filter((x) => x.kind === 'sla_missed' && x.ts >= from && x.ts < to && (!scope || x.tenant === scope)))
-      rows.push([a.ts, ((g) => ['sla_missed', a.tenant ?? '', g, tierOf(a.tenant ?? '', [g]), '', isoTime(a.ts), '', '', '', a.message])(/group (\S+)/.exec(a.message)?.[1] ?? '')]);
+    for (const a of db.alerts.filter(
+      (x) => x.kind === 'sla_missed' && x.ts >= from && x.ts < to && (!scope || x.tenant === scope),
+    ))
+      rows.push([
+        a.ts,
+        ((g) => [
+          'sla_missed',
+          a.tenant ?? '',
+          g,
+          tierOf(a.tenant ?? '', [g]),
+          '',
+          isoTime(a.ts),
+          '',
+          '',
+          '',
+          a.message,
+        ])(/group (\S+)/.exec(a.message)?.[1] ?? ''),
+      ]);
     rows.sort((a, b) => a[0] - b[0]);
-    return [['type', 'tenant', 'groups', 'tier', 'object', 'start', 'end', 'hours', 'target_hours', 'detail'], rows.map((r) => r[1])];
+    return [
+      ['type', 'tenant', 'groups', 'tier', 'object', 'start', 'end', 'hours', 'target_hours', 'detail'],
+      rows.map((r) => r[1]),
+    ];
   }
   if (kind === 'failed') {
-    const jobs = db.jobs.filter((j) => j.state === 'failed' && j.finished && j.finished >= from && j.finished < to && (!scope || j.tenant === scope));
+    const jobs = db.jobs.filter(
+      (j) =>
+        j.state === 'failed' && j.finished && j.finished >= from && j.finished < to && (!scope || j.tenant === scope),
+    );
     const target = (p: Json) => {
       const g = db.groups.find((x) => x.id === p.group_id);
       if (g) return `group ${g.name}`;
@@ -5952,29 +8726,123 @@ function reportTable(u: User, kind: string, scope: string | null, from: number, 
       return p.agent_id ? `agent ${p.agent_id}` : p.vmid ? `guest ${p.vmid}` : '';
     };
     const errLine = (log: string) => {
-      const lines = log.split('\n').map((l) => l.trim()).filter(Boolean);
+      const lines = log
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
       return (lines.find((l) => /error|failed|fatal/i.test(l)) ?? lines.at(-1) ?? '').slice(0, 300);
     };
     return [
       ['job', 'tenant', 'kind', 'target', 'created', 'finished', 'attempt', 'error'],
-      jobs.sort((a, b) => a.finished! - b.finished!).map((j) => [j.id, j.tenant, j.kind, target(j.params), isoTime(j.created), isoTime(j.finished), j.attempt ?? 1, errLine(j.log || j.fail || '')]),
+      jobs
+        .sort((a, b) => a.finished! - b.finished!)
+        .map((j) => [
+          j.id,
+          j.tenant,
+          j.kind,
+          target(j.params),
+          isoTime(j.created),
+          isoTime(j.finished),
+          j.attempt ?? 1,
+          errLine(j.log || j.fail || ''),
+        ]),
     ];
   }
   if (kind === 'usage') {
     const rows = usageRows(v, from, to);
     const d = (x: number) => isoDay(x);
     return [
-      ['period_start', 'period_end', 'tenant', 'tenant_uid', 'objects', 'backups', 'logical_avg_bytes', 'logical_peak_bytes', 'stored_avg_bytes', 'stored_peak_bytes', 'offsite_avg_bytes', 'offsite_peak_bytes', 'days_sampled', 'quota_bytes'],
-      rows.map((r) => [d(from), d(to - 1), r.tenant, r.tenant_uid, r.objects, r.backups, r.logical_avg, r.logical_peak, r.stored_avg, r.stored_peak, r.offsite_avg, r.offsite_peak, r.days_sampled, r.quota_bytes ?? '']),
+      [
+        'period_start',
+        'period_end',
+        'tenant',
+        'tenant_uid',
+        'objects',
+        'backups',
+        'logical_avg_bytes',
+        'logical_peak_bytes',
+        'stored_avg_bytes',
+        'stored_peak_bytes',
+        'offsite_avg_bytes',
+        'offsite_peak_bytes',
+        'days_sampled',
+        'quota_bytes',
+      ],
+      rows.map((r) => [
+        d(from),
+        d(to - 1),
+        r.tenant,
+        r.tenant_uid,
+        r.objects,
+        r.backups,
+        r.logical_avg,
+        r.logical_peak,
+        r.stored_avg,
+        r.stored_peak,
+        r.offsite_avg,
+        r.offsite_peak,
+        r.days_sampled,
+        r.quota_bytes ?? '',
+      ]),
     ];
   }
   const s = storageStats(v);
-  const sums = (x: Json) => [x.logical, x.data_in, x.stored, x.saved, ratio3(x.dedup), ratio3(x.compression), ratio3(x.reduction)];
+  const sums = (x: Json) => [
+    x.logical,
+    x.data_in,
+    x.stored,
+    x.saved,
+    ratio3(x.dedup),
+    ratio3(x.compression),
+    ratio3(x.reduction),
+  ];
   return [
-    ['level', 'tenant', 'group', 'sources', 'snapshots', 'logical_bytes', 'data_in_bytes', 'stored_bytes', 'saved_bytes', 'dedup', 'compression', 'reduction', 'used_bytes', 'quota_bytes', 'growth_7d_bytes', 'growth_30d_bytes', 'growth_90d_bytes'],
     [
-      ...s.tenants.map((x) => ['tenant', x.tenant, '', '', x.snapshots, ...sums(x), x.used, x.quota_bytes ?? '', x.growth.d7, x.growth.d30, x.growth.d90]),
-      ...s.groups.map((g) => ['group', g.tenant, g.group ?? '', g.sources, g.snapshots, ...sums(g), '', '', '', '', '']),
+      'level',
+      'tenant',
+      'group',
+      'sources',
+      'snapshots',
+      'logical_bytes',
+      'data_in_bytes',
+      'stored_bytes',
+      'saved_bytes',
+      'dedup',
+      'compression',
+      'reduction',
+      'used_bytes',
+      'quota_bytes',
+      'growth_7d_bytes',
+      'growth_30d_bytes',
+      'growth_90d_bytes',
+    ],
+    [
+      ...s.tenants.map((x) => [
+        'tenant',
+        x.tenant,
+        '',
+        '',
+        x.snapshots,
+        ...sums(x),
+        x.used,
+        x.quota_bytes ?? '',
+        x.growth.d7,
+        x.growth.d30,
+        x.growth.d90,
+      ]),
+      ...s.groups.map((g) => [
+        'group',
+        g.tenant,
+        g.group ?? '',
+        g.sources,
+        g.snapshots,
+        ...sums(g),
+        '',
+        '',
+        '',
+        '',
+        '',
+      ]),
     ],
   ];
 }
@@ -5982,7 +8850,8 @@ function reportRange(q: URLSearchParams): [number, number] {
   const when = (v: string, what: string, end: boolean) => {
     if (/^-?\d+$/.test(v)) return Number(v);
     const ms = /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T00:00:00Z`) : NaN;
-    if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== v) throw new HttpError(400, `${what}: YYYY-MM-DD or unix seconds`);
+    if (Number.isNaN(ms) || new Date(ms).toISOString().slice(0, 10) !== v)
+      throw new HttpError(400, `${what}: YYYY-MM-DD or unix seconds`);
     return ms / 1000 + (end ? DAY : 0);
   };
   const to = q.get('to') ? when(q.get('to')!, 'to', true) : now();
@@ -6001,14 +8870,22 @@ on('GET', '/reports/:file', async (c, [file]) => {
   const [from, to] = reportRange(c.query);
   const [cols, rows] = reportTable(u, kind, scope, from, to);
   await audit(u.name, 'report.export', `report/${kind}`, { type: kind, from, to, tenant: scope, rows: rows.length });
-  c.res.setHeader('Content-Disposition', `attachment; filename="nexus-${kind}${scope ? `-${scope}` : ''}-${isoDay(to - 1)}.csv"`);
+  c.res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="nexus-${kind}${scope ? `-${scope}` : ''}-${isoDay(to - 1)}.csv"`,
+  );
   return [200, toCsv(cols, rows), 'text/csv; charset=utf-8'];
 });
 const reportsView = () => ({
   smtp: !!db.alertSettings.smtp?.host,
   reports: db.reports.map((r) => {
     const j = [...db.jobs].reverse().find((x) => x.kind === 'report_send' && x.params.name === r.name);
-    return { ...r, last: j ? { job_id: j.id, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by } : null };
+    return {
+      ...r,
+      last: j
+        ? { job_id: j.id, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by }
+        : null,
+    };
   }),
 });
 on('GET', '/settings/reports', (c) => (need(c.user, 'admin', 'security_officer'), [200, reportsView()]));
@@ -6017,25 +8894,34 @@ on('PUT', '/settings/reports', async (c) => {
   const list = c.body.reports;
   if (!Array.isArray(list)) throw new HttpError(400, 'reports: array required');
   if (list.length > 32) throw new HttpError(400, 'reports: at most 32');
-  if (list.length && !db.alertSettings.smtp?.host) throw new HttpError(400, 'scheduled reports are mailed through the SMTP server: configure it under Settings → Alert delivery first');
+  if (list.length && !db.alertSettings.smtp?.host)
+    throw new HttpError(
+      400,
+      'scheduled reports are mailed through the SMTP server: configure it under Settings → Alert delivery first',
+    );
   const names = new Set<string>();
   const out: Json[] = [];
   for (const r of list) {
     const what = (m: string) => new HttpError(400, `report ${r.name}: ${m}`);
-    const extra = Object.keys(r).find((k) => !['name', 'types', 'schedule', 'timezone', 'recipients', 'tenant'].includes(k));
+    const extra = Object.keys(r).find(
+      (k) => !['name', 'types', 'schedule', 'timezone', 'recipients', 'tenant'].includes(k),
+    );
     if (extra) throw new HttpError(400, `unknown field \`${extra}\``);
-    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name))) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name)))
+      throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
     if (names.has(r.name)) throw what('names must be unique');
     names.add(r.name);
     const types = r.types ?? [];
-    if (!types.length || new Set(types).size !== types.length || types.some((x: string) => !REPORT_TYPES.includes(x))) throw what('types: one or more of protection, failed, sla, storage, each once');
+    if (!types.length || new Set(types).size !== types.length || types.some((x: string) => !REPORT_TYPES.includes(x)))
+      throw what('types: one or more of protection, failed, sla, storage, each once');
     const recipients = r.recipients ?? [];
     if (!recipients.length || recipients.length > 16) throw what('recipients: 1..=16 mail addresses');
     const bad = recipients.find((x: string) => !mailRe.test(x));
     if (bad) throw what(`recipients: "${bad}" is not a mail address`);
     const sch = parseSchedule(String(r.schedule));
     if (!sch) throw what(`bad schedule "${r.schedule}"`);
-    if (sch.kind === 'hours') throw what('schedule: a report runs on weekdays (`Mon 07:00`, `daily 07:00`) or monthly (`monthly 1 07:00`)');
+    if (sch.kind === 'hours')
+      throw what('schedule: a report runs on weekdays (`Mon 07:00`, `daily 07:00`) or monthly (`monthly 1 07:00`)');
     const tz = String(r.timezone ?? 'UTC');
     try {
       new Intl.DateTimeFormat('en', { timeZone: tz });
@@ -6052,12 +8938,18 @@ on('PUT', '/settings/reports', async (c) => {
 on('POST', '/settings/reports/:name/send', async (c, [name]) => {
   const u = need(c.user, 'admin');
   const r = find(db.reports, (x) => x.name === decodeURIComponent(name), 'report');
-  if (db.jobs.some((j) => j.kind === 'report_send' && j.params.name === r.name && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'this report is already being sent');
+  if (
+    db.jobs.some((j) => j.kind === 'report_send' && j.params.name === r.name && ['queued', 'running'].includes(j.state))
+  )
+    throw new HttpError(409, 'this report is already being sent');
   const sch = parseSchedule(r.schedule);
   const period = sch ? schedulePeriod(r.schedule) : 7 * DAY;
   const p = { name: r.name, from: now() - period, to: now() };
   const j = addJob('report_send', '-', p, u.name, {
-    plan: [`composing report ${r.name}: ${r.types.join(', ')}`, `mailing to ${r.recipients.join(', ')} via ${db.alertSettings.smtp?.host ?? '-'}`],
+    plan: [
+      `composing report ${r.name}: ${r.types.join(', ')}`,
+      `mailing to ${r.recipients.join(', ')} via ${db.alertSettings.smtp?.host ?? '-'}`,
+    ],
     duration: 3,
   });
   await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'report_send', params: p });
@@ -6067,19 +8959,51 @@ on('POST', '/settings/reports/:name/send', async (c, [name]) => {
 function reportSent(j: Job) {
   const r = db.reports.find((x) => x.name === j.params.name);
   j.result = r
-    ? { name: r.name, types: r.types, tenant: r.tenant, recipients: r.recipients, from: j.params.from, to: j.params.to, attachments: r.types.map((k: string) => `${r.name}-${k}-${isoDay(j.params.to - 1)}.csv`), rows: 42 }
+    ? {
+        name: r.name,
+        types: r.types,
+        tenant: r.tenant,
+        recipients: r.recipients,
+        from: j.params.from,
+        to: j.params.to,
+        attachments: r.types.map((k: string) => `${r.name}-${k}-${isoDay(j.params.to - 1)}.csv`),
+        rows: 42,
+      }
     : null;
   void audit('scheduler', 'report.sent', `report/${j.params.name}`, { job: j.id, summary: j.result });
 }
 function seedReports(t: number) {
   db.reports = [
-    { name: 'weekly-ops', types: ['protection', 'failed', 'sla'], schedule: 'Mon 07:00', timezone: 'Europe/Berlin', recipients: ['ops@example.com', 'it-lead@example.com'], tenant: null },
-    { name: 'acme-monthly', types: ['protection', 'storage'], schedule: 'monthly 1 06:00', timezone: 'Europe/Berlin', recipients: ['it@acme.example.com'], tenant: 'acme' },
+    {
+      name: 'weekly-ops',
+      types: ['protection', 'failed', 'sla'],
+      schedule: 'Mon 07:00',
+      timezone: 'Europe/Berlin',
+      recipients: ['ops@example.com', 'it-lead@example.com'],
+      tenant: null,
+    },
+    {
+      name: 'acme-monthly',
+      types: ['protection', 'storage'],
+      schedule: 'monthly 1 06:00',
+      timezone: 'Europe/Berlin',
+      recipients: ['it@acme.example.com'],
+      tenant: 'acme',
+    },
   ];
   // last Monday's weekly run (sent) and the monthly one
-  const monday = Math.floor((t / DAY - ((Math.floor(t / DAY) + 3) % 7))) * DAY + 5 * 3600;
-  for (const [r, at] of [[db.reports[0], monday], [db.reports[1], t - 11 * DAY]] as [Json, number][]) {
-    const j = addJob('report_send', '-', { name: r.name, from: at - 7 * DAY, to: at }, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 4, log: `report ${r.name} mailed to ${r.recipients.join(', ')}` });
+  const monday = Math.floor(t / DAY - ((Math.floor(t / DAY) + 3) % 7)) * DAY + 5 * 3600;
+  for (const [r, at] of [
+    [db.reports[0], monday],
+    [db.reports[1], t - 11 * DAY],
+  ] as [Json, number][]) {
+    const j = addJob('report_send', '-', { name: r.name, from: at - 7 * DAY, to: at }, 'scheduler', {
+      state: 'ok',
+      created: at,
+      started: at,
+      finished: at + 4,
+      log: `report ${r.name} mailed to ${r.recipients.join(', ')}`,
+    });
     j.result = { name: r.name, types: r.types, recipients: r.recipients, rows: 37 };
   }
 }
@@ -6107,14 +9031,21 @@ const pubOidc = () => {
 };
 on('GET', '/auth/oidc', () => [
   200,
-  { ...(db.oidc.enabled ? { enabled: true, label: db.oidc.label } : { enabled: false }), organizations: Object.values(db.tenantIdps).some((x) => x.enabled) },
+  {
+    ...(db.oidc.enabled ? { enabled: true, label: db.oidc.label } : { enabled: false }),
+    organizations: Object.values(db.tenantIdps).some((x) => x.enabled),
+  },
 ]);
 on('GET', '/auth/oidc/start', (c) => {
   // Phase 23a: a tenant's own IdP by e-mail domain or tenant name (no IdP in the mock either)
-  const org = String(c.query.get('org') ?? '').trim().toLowerCase();
+  const org = String(c.query.get('org') ?? '')
+    .trim()
+    .toLowerCase();
   if (org) {
     const dom = org.includes('@') ? org.split('@').pop() : null;
-    const hit = Object.entries(db.tenantIdps).find(([n, x]) => x.enabled && (dom ? (x.domains ?? []).includes(dom) : n === org));
+    const hit = Object.entries(db.tenantIdps).find(
+      ([n, x]) => x.enabled && (dom ? (x.domains ?? []).includes(dom) : n === org),
+    );
     c.res.setHeader('Location', hit ? '/#/login?oidc_error=idp' : '/#/login?oidc_error=org');
     return [302, ''];
   }
@@ -6127,7 +9058,11 @@ on('GET', '/auth/oidc/start', (c) => {
   return [302, ''];
 });
 on('GET', '/auth/oidc/callback', async (c) => {
-  const claims = { sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15', preferred_username: 'lwagner', groups: ['nexus-operators', 'staff'] };
+  const claims = {
+    sub: 'f3c1a9e2-5b7d-4e08-9a61-2d4c8b0e7f15',
+    preferred_username: 'lwagner',
+    groups: ['nexus-operators', 'staff'],
+  };
   const fail = async (code: string) => {
     await audit(claims.preferred_username, 'auth.oidc_denied', 'session', { reason: code });
     c.res.setHeader('Location', `/#/login?oidc_error=${code}`);
@@ -6139,14 +9074,33 @@ on('GET', '/auth/oidc/callback', async (c) => {
   const best = hits.sort((a, b) => MAPPING_ROLES.indexOf(a.role) - MAPPING_ROLES.indexOf(b.role))[0];
   let x = db.users.find((y) => y.auth === 'oidc' && y.oidc_sub === claims.sub);
   if (!x) {
-    x = { id: nextId(), name: claims.preferred_username, role: best.role, tenant: null, disabled: false, created: now(), password: '', totp_secret: '', auth: 'oidc', oidc_sub: claims.sub };
+    x = {
+      id: nextId(),
+      name: claims.preferred_username,
+      role: best.role,
+      tenant: null,
+      disabled: false,
+      created: now(),
+      password: '',
+      totp_secret: '',
+      auth: 'oidc',
+      oidc_sub: claims.sub,
+    };
     db.users.push(x);
     await audit('system', 'user.oidc_created', `user/${x.id}`, { name: x.name, role: x.role });
   }
   Object.assign(x, { role: best.role, tenant: best.tenants?.[0] ?? null });
   if (x.disabled) return fail('denied');
   const sid = rand(32);
-  db.sessions.set(sid, { id: nextId(), userId: x.id, csrf: rand(16), created: now(), last: now(), ip: CLIENT_IP, ua: String(c.headers['user-agent'] ?? '').slice(0, 256) });
+  db.sessions.set(sid, {
+    id: nextId(),
+    userId: x.id,
+    csrf: rand(16),
+    created: now(),
+    last: now(),
+    ip: CLIENT_IP,
+    ua: String(c.headers['user-agent'] ?? '').slice(0, 256),
+  });
   c.res.setHeader('Set-Cookie', `nx_session=${sid}; HttpOnly; SameSite=Lax; Path=/`);
   await audit(x.name, 'auth.oidc_login', 'session', { groups: claims.groups });
   const state = decodeURIComponent(String(c.query.get('state') ?? '/'));
@@ -6157,7 +9111,8 @@ on('GET', '/settings/oidc', (c) => (need(c.user, 'admin', 'security_officer'), [
 on('PUT', '/settings/oidc', async (c) => {
   const u = need(c.user, 'admin');
   const b = c.body;
-  if (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer)) throw new HttpError(400, 'issuer: https URL required');
+  if (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer))
+    throw new HttpError(400, 'issuer: https URL required');
   if (!String(b.client_id ?? '').trim()) throw new HttpError(400, 'client_id: required');
   if (!Array.isArray(b.scopes) || !b.scopes.includes('openid')) throw new HttpError(400, 'scopes: must include openid');
   if (!String(b.label ?? '').trim()) throw new HttpError(400, 'label: required');
@@ -6165,13 +9120,22 @@ on('PUT', '/settings/oidc', async (c) => {
   for (const m of b.mappings) {
     if (!String(m.group ?? '').trim()) throw new HttpError(400, 'mappings: group required');
     if (!MAPPING_ROLES.includes(m.role)) throw new HttpError(400, `mappings: unknown role ${m.role}`);
-    if (!Array.isArray(m.tenants) || m.tenants.some((n: string) => !db.tenants.some((x) => x.name === n))) throw new HttpError(400, 'mappings: unknown tenant');
-    if ((m.role === 'tenant_user' || m.role === 'tenant_admin') && m.tenants.length !== 1) throw new HttpError(400, 'mappings: tenant users and tenant admins need exactly one tenant');
+    if (!Array.isArray(m.tenants) || m.tenants.some((n: string) => !db.tenants.some((x) => x.name === n)))
+      throw new HttpError(400, 'mappings: unknown tenant');
+    if ((m.role === 'tenant_user' || m.role === 'tenant_admin') && m.tenants.length !== 1)
+      throw new HttpError(400, 'mappings: tenant users and tenant admins need exactly one tenant');
   }
   const next = {
-    enabled: !!b.enabled, issuer: b.issuer, client_id: String(b.client_id).trim(), scopes: b.scopes, label: String(b.label).trim(),
-    username_claim: String(b.username_claim || 'preferred_username'), groups_claim: String(b.groups_claim || 'groups'), mappings: b.mappings,
-    client_secret_expires: typeof b.client_secret_expires === 'number' && b.client_secret_expires > 0 ? b.client_secret_expires : null,
+    enabled: !!b.enabled,
+    issuer: b.issuer,
+    client_id: String(b.client_id).trim(),
+    scopes: b.scopes,
+    label: String(b.label).trim(),
+    username_claim: String(b.username_claim || 'preferred_username'),
+    groups_claim: String(b.groups_claim || 'groups'),
+    mappings: b.mappings,
+    client_secret_expires:
+      typeof b.client_secret_expires === 'number' && b.client_secret_expires > 0 ? b.client_secret_expires : null,
   };
   const secret = b.client_secret ? String(b.client_secret) : undefined;
   if (db.approvals) {
@@ -6180,19 +9144,37 @@ on('PUT', '/settings/oidc', async (c) => {
     return q;
   }
   Object.assign(db.oidc, next, secret ? { client_secret: secret } : {});
-  await audit(u.name, 'settings.oidc', 'settings/oidc', { enabled: next.enabled, issuer: next.issuer, approvals: 'disabled' });
+  await audit(u.name, 'settings.oidc', 'settings/oidc', {
+    enabled: next.enabled,
+    issuer: next.issuer,
+    approvals: 'disabled',
+  });
   return [200, pubOidc()];
 });
 on('POST', '/settings/oidc/test', (c) => {
   need(c.user, 'admin');
   const host = /^https:\/\/([^/]+)/.exec(String(db.oidc.issuer))?.[1] ?? '';
-  if (/bad|invalid/.test(host)) return [200, { discovery: `error: ${host}: connection refused`, jwks: 'error: discovery failed' }];
-  return [200, { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' }];
+  if (/bad|invalid/.test(host))
+    return [200, { discovery: `error: ${host}: connection refused`, jwks: 'error: discovery failed' }];
+  return [
+    200,
+    { discovery: `ok: ${db.oidc.issuer}/.well-known/openid-configuration`, jwks: 'ok: 2 signing keys (RS256)' },
+  ];
 });
 
 // ---- Phase 23a: service-provider operations (web-api usage.rs, simulate.rs, keep.rs, tenant_idp.rs, openapi.rs)
 const pubIdp = (n: string) => {
-  const { client_secret, ...rest } = db.tenantIdps[n] ?? { enabled: false, issuer: '', client_id: '', scopes: ['openid', 'profile', 'email'], username_claim: 'preferred_username', groups_claim: 'groups', label: '', mappings: [], domains: [] };
+  const { client_secret, ...rest } = db.tenantIdps[n] ?? {
+    enabled: false,
+    issuer: '',
+    client_id: '',
+    scopes: ['openid', 'profile', 'email'],
+    username_claim: 'preferred_username',
+    groups_claim: 'groups',
+    label: '',
+    mappings: [],
+    domains: [],
+  };
   return { ...structuredClone(rest), client_secret_set: !!client_secret, tenant: n };
 };
 on('GET', '/tenants/:name/oidc', (c, [name]) => {
@@ -6207,21 +9189,31 @@ on('PUT', '/tenants/:name/oidc', async (c, [name]) => {
   const n = decodeURIComponent(name);
   find(db.tenants, (x) => x.name === n, 'tenant');
   const b = c.body;
-  if (b.enabled && (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer))) throw new HttpError(400, 'issuer: https URL required');
+  if (b.enabled && (typeof b.issuer !== 'string' || !/^https:\/\/[^\s/]+/.test(b.issuer)))
+    throw new HttpError(400, 'issuer: https URL required');
   if (!Array.isArray(b.mappings)) throw new HttpError(400, 'mappings: array required');
   for (const m of b.mappings) {
-    if (!TENANT_ROLES.includes(m.role)) throw new HttpError(400, "mappings: a tenant's IdP maps to tenant_admin, tenant_user or viewer only");
+    if (!TENANT_ROLES.includes(m.role))
+      throw new HttpError(400, "mappings: a tenant's IdP maps to tenant_admin, tenant_user or viewer only");
     if ((m.tenants ?? []).some((x: string) => x !== n)) throw new HttpError(400, `mappings: only tenant ${n}`);
     m.tenants = [n];
   }
   const domains = ((b.domains ?? []) as string[]).map((d) => d.trim().replace(/^@/, '').toLowerCase());
-  if (domains.some((d) => !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d))) throw new HttpError(400, 'domains: not a domain name');
-  const taken = Object.entries(db.tenantIdps).find(([o, x]) => o !== n && (x.domains ?? []).some((d: string) => domains.includes(d)));
+  if (domains.some((d) => !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d)))
+    throw new HttpError(400, 'domains: not a domain name');
+  const taken = Object.entries(db.tenantIdps).find(
+    ([o, x]) => o !== n && (x.domains ?? []).some((d: string) => domains.includes(d)),
+  );
   if (taken) throw new HttpError(409, `domains: belongs to tenant ${taken[0]}`);
   const { client_secret, domains: _d, ...rest } = b;
   const settings = { ...rest, mappings: b.mappings, enabled: !!b.enabled };
   if (db.approvals) {
-    const q = await quorum(u, 'tenant_oidc.update', { tenant: n, settings, domains, client_secret_changed: !!client_secret });
+    const q = await quorum(u, 'tenant_oidc.update', {
+      tenant: n,
+      settings,
+      domains,
+      client_secret_changed: !!client_secret,
+    });
     if (client_secret) db.quorumSecrets.set(q[1].quorum_id, { client_secret });
     return q;
   }
@@ -6254,12 +9246,22 @@ function usageRows(u: User, from: number, to: number) {
         offsite: kept.filter((s) => s.offsite).reduce((a, s) => a + s.size, 0),
       };
     });
-    const avg = (k: 'logical' | 'stored' | 'offsite') => (series.length ? Math.round(series.reduce((a, s) => a + s[k], 0) / series.length) : null);
+    const avg = (k: 'logical' | 'stored' | 'offsite') =>
+      series.length ? Math.round(series.reduce((a, s) => a + s[k], 0) / series.length) : null;
     const peak = (k: 'logical' | 'stored' | 'offsite') => (series.length ? Math.max(...series.map((s) => s[k])) : null);
     return {
-      tenant: x.tenant, tenant_uid: tenantUid(x.tenant), objects: new Set(inRange.map((s) => s.source)).size, backups: inRange.length,
-      logical_avg: avg('logical'), logical_peak: peak('logical'), stored_avg: avg('stored'), stored_peak: peak('stored'),
-      offsite_avg: avg('offsite'), offsite_peak: peak('offsite'), days_sampled: series.length, quota_bytes: x.quota_bytes ?? null,
+      tenant: x.tenant,
+      tenant_uid: tenantUid(x.tenant),
+      objects: new Set(inRange.map((s) => s.source)).size,
+      backups: inRange.length,
+      logical_avg: avg('logical'),
+      logical_peak: peak('logical'),
+      stored_avg: avg('stored'),
+      stored_peak: peak('stored'),
+      offsite_avg: avg('offsite'),
+      offsite_peak: peak('offsite'),
+      days_sampled: series.length,
+      quota_bytes: x.quota_bytes ?? null,
     };
   });
 }
@@ -6278,7 +9280,10 @@ on('GET', '/usage', async (c) => {
   if (c.query.get('format') === 'csv') {
     const [cols, rows] = reportTable(v, 'usage', v.tenant, from, to);
     await audit(u.name, 'report.export', 'report/usage', { type: 'usage', month, tenant: v.tenant, rows: rows.length });
-    c.res.setHeader('Content-Disposition', `attachment; filename="nexus-usage-${v.tenant ? `${v.tenant}-` : ''}${month}.csv"`);
+    c.res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="nexus-usage-${v.tenant ? `${v.tenant}-` : ''}${month}.csv"`,
+    );
     return [200, toCsv(cols, rows), 'text/csv; charset=utf-8'];
   }
   return [200, { month, from, to, complete: end <= now(), tenants: usageRows(v, from, to) }];
@@ -6289,11 +9294,18 @@ function keepGfs(times: number[], g: Json): Map<number, string[]> {
   const sorted = [...new Set(times)].sort((a, b) => b - a);
   const out = new Map<number, string[]>();
   const add = (t: number, c: string) => out.set(t, [...(out.get(t) ?? []), c]);
-  if (sorted.length && g.recent > 0) for (const t of sorted.filter((t) => t > sorted[0] - g.recent * 3600)) add(t, 'recent');
+  if (sorted.length && g.recent > 0)
+    for (const t of sorted.filter((t) => t > sorted[0] - g.recent * 3600)) add(t, 'recent');
   const period = (c: string, t: number) => {
     const d = new Date(t * 1000);
     const days = Math.floor(t / DAY);
-    return c === 'daily' ? days : c === 'weekly' ? Math.floor((days + 3) / 7) : c === 'monthly' ? d.getUTCFullYear() * 12 + d.getUTCMonth() : d.getUTCFullYear();
+    return c === 'daily'
+      ? days
+      : c === 'weekly'
+        ? Math.floor((days + 3) / 7)
+        : c === 'monthly'
+          ? d.getUTCFullYear() * 12 + d.getUTCMonth()
+          : d.getUTCFullYear();
   };
   for (const c of ['daily', 'weekly', 'monthly', 'yearly']) {
     let last: number | null = null;
@@ -6315,7 +9327,11 @@ on('POST', '/policies/simulate', (c) => {
   const { schedule, gfs, policy_id, days = 400 } = c.body;
   const sch = parseSchedule(String(schedule ?? ''));
   if (!sch) throw new HttpError(400, `bad schedule "${schedule}"`);
-  if (!gfs || ['daily', 'weekly', 'monthly', 'yearly'].some((k) => !(Number.isInteger(gfs[k]) && gfs[k] >= 0 && gfs[k] <= 1000))) throw new HttpError(400, 'gfs: values must be within 0..=1000');
+  if (
+    !gfs ||
+    ['daily', 'weekly', 'monthly', 'yearly'].some((k) => !(Number.isInteger(gfs[k]) && gfs[k] >= 0 && gfs[k] <= 1000))
+  )
+    throw new HttpError(400, 'gfs: values must be within 0..=1000');
   if (!(days >= 1 && days <= 1100)) throw new HttpError(400, 'days: 1..=1100');
   const step = Math.max(300, schedulePeriod(String(schedule)));
   const t0 = now();
@@ -6323,28 +9339,63 @@ on('POST', '/policies/simulate', (c) => {
   for (let t = t0 + step; t <= t0 + days * DAY && times.length < 20000; t += step) times.push(t);
   const every = Math.max(1, Math.ceil(times.length / 60));
   const series: Json[] = [];
-  for (let i = every - 1; i < times.length; i += every) series.push({ run: i + 1, t: times[i], points: keepGfs(times.slice(0, i + 1), gfs).size });
-  if (times.length && series.at(-1)?.run !== times.length) series.push({ run: times.length, t: times.at(-1), points: keepGfs(times, gfs).size });
+  for (let i = every - 1; i < times.length; i += every)
+    series.push({ run: i + 1, t: times[i], points: keepGfs(times.slice(0, i + 1), gfs).size });
+  if (times.length && series.at(-1)?.run !== times.length)
+    series.push({ run: times.length, t: times.at(-1), points: keepGfs(times, gfs).size });
   const kept = keepGfs(times, gfs);
   const count = (k: string) => [...kept.values()].filter((v) => v.includes(k)).length;
   const peak = Math.max(0, ...series.map((p) => p.points));
   // estimate from the demo's snapshots of the policy's groups (or the user's tenants)
-  const groups = db.groups.filter((g) => (!policy_id || g.policy_id === policy_id) && (!u.tenant || g.tenant === u.tenant));
-  const sources = [...new Set(groups.flatMap((g) => resolveGuests(g).map(guestName)))].filter((n) => db.snapshots.some((s) => s.source === n));
-  const latest = sources.map((n) => db.snapshots.filter((s) => s.source === n).sort((a, b) => b.time - a.time)[0]?.size ?? 0);
+  const groups = db.groups.filter(
+    (g) => (!policy_id || g.policy_id === policy_id) && (!u.tenant || g.tenant === u.tenant),
+  );
+  const sources = [...new Set(groups.flatMap((g) => resolveGuests(g).map(guestName)))].filter((n) =>
+    db.snapshots.some((s) => s.source === n),
+  );
+  const latest = sources.map(
+    (n) => db.snapshots.filter((s) => s.source === n).sort((a, b) => b.time - a.time)[0]?.size ?? 0,
+  );
   const full = Math.round(latest.reduce((a, b) => a + b, 0) / 2.2);
   const delta = Math.round(full * 0.018);
   const size = (n: number) => full + Math.max(0, n - 1) * delta;
   return [
     200,
     {
-      runs: times.length, days, truncated: times.length >= 20000, series,
-      final: { points: kept.size, peak, recent: count('recent'), daily: count('daily'), weekly: count('weekly'), monthly: count('monthly'), yearly: count('yearly'), oldest: [...kept.keys()].sort((a, b) => a - b)[0] ?? null, newest: times.at(-1) ?? null },
-      estimate: sources.length ? { sources: sources.length, samples: sources.length * 30, compression: 2.2, full, delta, stored: size(kept.size), stored_peak: size(peak) } : null,
+      runs: times.length,
+      days,
+      truncated: times.length >= 20000,
+      series,
+      final: {
+        points: kept.size,
+        peak,
+        recent: count('recent'),
+        daily: count('daily'),
+        weekly: count('weekly'),
+        monthly: count('monthly'),
+        yearly: count('yearly'),
+        oldest: [...kept.keys()].sort((a, b) => a - b)[0] ?? null,
+        newest: times.at(-1) ?? null,
+      },
+      estimate: sources.length
+        ? {
+            sources: sources.length,
+            samples: sources.length * 30,
+            compression: 2.2,
+            full,
+            delta,
+            stored: size(kept.size),
+            stored_peak: size(peak),
+          }
+        : null,
     },
   ];
 });
-on('GET', '/settings/keep-until', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, { max_days: db.keepMaxDays }]));
+on(
+  'GET',
+  '/settings/keep-until',
+  (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, { max_days: db.keepMaxDays }]),
+);
 on('PUT', '/settings/keep-until', async (c) => {
   const u = need(c.user, 'admin');
   const n = c.body.max_days;
@@ -6378,14 +9429,22 @@ const pubAlerts = () => {
 function checkPsa(r: Json, prev: Json | undefined): Json {
   const p = r.channels.psa;
   const what = (m: string) => new HttpError(400, `rule ${r.name}: psa.${m}`);
-  if (!['halopsa', 'connectwise', 'autotask'].includes(p.vendor)) throw what('vendor: halopsa, connectwise or autotask');
+  if (!['halopsa', 'connectwise', 'autotask'].includes(p.vendor))
+    throw what('vendor: halopsa, connectwise or autotask');
   const httpsUrl = (u: unknown) => /^https:\/\/[^@\s/]+\S*$/.test(String(u ?? ''));
   if (!httpsUrl(p.url)) throw what('url: https://host[:port]/path, without user info');
   const v = (x: unknown) => (String(x ?? '').trim() || null) as string | null;
   const out: Json = {
-    vendor: p.vendor, url: p.url, token_url: p.vendor === 'halopsa' ? v(p.token_url) : null, client_id: v(p.client_id),
-    username: v(p.username), company: v(p.company), account: v(p.account), board: v(p.board),
-    integration_code: v(p.integration_code), closed_status: v(p.closed_status),
+    vendor: p.vendor,
+    url: p.url,
+    token_url: p.vendor === 'halopsa' ? v(p.token_url) : null,
+    client_id: v(p.client_id),
+    username: v(p.username),
+    company: v(p.company),
+    account: v(p.account),
+    board: v(p.board),
+    integration_code: v(p.integration_code),
+    closed_status: v(p.closed_status),
   };
   const need = (k: string) => {
     if (!out[k]) throw what(`${k}: required for ${p.vendor}`);
@@ -6409,10 +9468,38 @@ function checkPsa(r: Json, prev: Json | undefined): Json {
   else throw what('secret: required (new channel or a URL changed)');
   return out;
 }
-const TEMPLATE_FIELDS = ['id', 'ts', 'first_ts', 'last_ts', 'count', 'severity', 'kind', 'category', 'message', 'hint', 'tenant', 'host', 'alert_url'];
+const TEMPLATE_FIELDS = [
+  'id',
+  'ts',
+  'first_ts',
+  'last_ts',
+  'count',
+  'severity',
+  'kind',
+  'category',
+  'message',
+  'hint',
+  'tenant',
+  'host',
+  'alert_url',
+];
 /** Like catalog::alerting::check_template: placeholders JSON-escaped, the result must be JSON. */
 function checkTemplate(tpl: string): string | null {
-  const sample: Json = { id: 42, ts: 1, first_ts: 1, last_ts: 2, count: 3, severity: 'critical', kind: 'job_failed', category: 'backup', message: 'a "quoted"\nline', hint: 'x', tenant: '', host: 'nexus', alert_url: 'https://nexus/#/alerts?id=42' };
+  const sample: Json = {
+    id: 42,
+    ts: 1,
+    first_ts: 1,
+    last_ts: 2,
+    count: 3,
+    severity: 'critical',
+    kind: 'job_failed',
+    category: 'backup',
+    message: 'a "quoted"\nline',
+    hint: 'x',
+    tenant: '',
+    host: 'nexus',
+    alert_url: 'https://nexus/#/alerts?id=42',
+  };
   let bad: string | null = null;
   const out = tpl.replace(/\{\{([^}]*)\}\}/g, (_, f: string) => {
     const k = f.trim();
@@ -6439,28 +9526,39 @@ on('PUT', '/settings/alerts', async (c) => {
     if (!String(s.host ?? '').trim()) throw new HttpError(400, 'smtp.host: required');
     if (!(Number.isInteger(s.port) && s.port > 0 && s.port < 65536)) throw new HttpError(400, 'smtp.port: 1..65535');
     if (!mailRe.test(String(s.from ?? ''))) throw new HttpError(400, 'smtp.from: a mail address');
-    smtp = { host: s.host, port: s.port, starttls: !!s.starttls, from: s.from, user: String(s.user ?? ''), password: s.password || old.smtp?.password || '' };
+    smtp = {
+      host: s.host,
+      port: s.port,
+      starttls: !!s.starttls,
+      from: s.from,
+      user: String(s.user ?? ''),
+      password: s.password || old.smtp?.password || '',
+    };
   }
   const rules = (b.rules ?? []) as Json[];
   const names = new Set<string>();
   for (const r of rules) {
     const what = (m: string) => new HttpError(400, `rule ${r.name}: ${m}`);
-    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name)) || names.has(r.name)) throw new HttpError(400, 'rules.name: unique, [A-Za-z0-9._-]{1,64}');
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(r.name)) || names.has(r.name))
+      throw new HttpError(400, 'rules.name: unique, [A-Za-z0-9._-]{1,64}');
     names.add(r.name);
-    if (!['info', 'warning', 'critical'].includes(r.min_severity)) throw what('min_severity: info, warning or critical');
+    if (!['info', 'warning', 'critical'].includes(r.min_severity))
+      throw what('min_severity: info, warning or critical');
     const email = r.channels?.email ?? [];
     if (email.some((x: string) => !mailRe.test(x))) throw what('email: up to 16 mail addresses');
     if (email.length && !smtp) throw what('email needs the SMTP server (smtp)');
     const w = r.channels?.webhook;
     if (w) {
-      if (!/^https?:\/\/[^@\s/]+\S*$/.test(String(w.url))) throw what('webhook.url: http(s)://host[:port]/path, without user info');
+      if (!/^https?:\/\/[^@\s/]+\S*$/.test(String(w.url)))
+        throw what('webhook.url: http(s)://host[:port]/path, without user info');
       if (w.template) {
         const e = checkTemplate(w.template);
         if (e) throw what(`webhook.template: ${e}`);
       }
       const prev = old.rules.find((o: Json) => o.name === r.name)?.channels.webhook;
       for (const [h, v] of Object.entries(w.headers ?? {})) {
-        if (v === null && !(prev && prev.url === w.url && prev.headers?.[h])) throw what(`webhook.headers: a value for ${h} is required (new header or URL changed)`);
+        if (v === null && !(prev && prev.url === w.url && prev.headers?.[h]))
+          throw what(`webhook.headers: a value for ${h} is required (new header or URL changed)`);
         if (v === '') throw what('webhook.headers: values of 1..=4096 printable characters');
         w.headers[h] = v === null ? prev.headers[h] : 'sealed:demo';
       }
@@ -6486,14 +9584,20 @@ on('POST', '/settings/alerts/test', async (c) => {
     const w = r.channels.webhook;
     if (w) out[key('webhook')] = /bad|invalid/.test(w.url) ? 'error: HTTP 404 from the webhook' : 'ok';
     if (r.channels.email.length)
-      out[key('email')] = !a.smtp ? 'error: no SMTP server configured' : /bad|invalid/.test(a.smtp.host) ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused` : 'ok';
+      out[key('email')] = !a.smtp
+        ? 'error: no SMTP server configured'
+        : /bad|invalid/.test(a.smtp.host)
+          ? `error: ${a.smtp.host}:${a.smtp.port}: connection refused`
+          : 'ok';
     const p = r.channels.psa;
-    if (p) out[key('psa')] = /bad|invalid/.test(p.url) ? 'error: create ticket: 401 Unauthorized' : `ok (ticket ${4700 + Math.floor(Math.random() * 99)} opened and closed)`;
+    if (p)
+      out[key('psa')] = /bad|invalid/.test(p.url)
+        ? 'error: create ticket: 401 Unauthorized'
+        : `ok (ticket ${4700 + Math.floor(Math.random() * 99)} opened and closed)`;
   }
   await audit(u.name, 'job.create', 'job/0', { kind: 'alert_test', params: only ? { rule: only } : {} });
   return [200, out];
 });
-
 
 // ---- appliance SSH keys (§4)
 on('GET', '/ssh-keys', (c) => (need(c.user, 'admin', 'operator', 'security_officer'), [200, db.sshKeys]));
@@ -6516,16 +9620,25 @@ on('POST', '/ssh-keys/:name/retire', async (c, [name]) => {
 // ---- updates (§5)
 const pubUpdates = () => {
   const x = db.updates;
-  if (x.status === 'checking' && now() - x.checking_since >= 3) Object.assign(x, { status: x.staged ? 'staged' : 'idle', last_check: now() });
+  if (x.status === 'checking' && now() - x.checking_since >= 3)
+    Object.assign(x, { status: x.staged ? 'staged' : 'idle', last_check: now() });
   const { checking_since: _c, ...rest } = x;
   return rest;
 };
 on('GET', '/updates', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, pubUpdates()]));
-on('GET', '/updates/registry', (c) => (need(c.user, 'admin', 'security_officer', 'operator'), [200, { configured: !!db.pullAuth, username: db.pullAuth?.username ?? null }]));
+on(
+  'GET',
+  '/updates/registry',
+  (c) => (
+    need(c.user, 'admin', 'security_officer', 'operator'),
+    [200, { configured: !!db.pullAuth, username: db.pullAuth?.username ?? null }]
+  ),
+);
 on('PUT', '/updates/registry', async (c) => {
   const u = need(c.user, 'admin');
   const b = c.body as { username?: string; token?: string };
-  if (!b.username || !b.token || /\s/.test(b.username + b.token)) return [400, { error: 'username and token: printable characters, no spaces' }];
+  if (!b.username || !b.token || /\s/.test(b.username + b.token))
+    return [400, { error: 'username and token: printable characters, no spaces' }];
   db.pullAuth = { username: b.username };
   await audit(u.name, 'update.registry_auth', 'appliance/update', { username: b.username });
   return [200, { configured: true, username: b.username }];
@@ -6552,7 +9665,17 @@ on('POST', '/updates/apply', (c) => {
 // ---------------------------------------------------------------- Phase 14d: API tokens, web certificate
 
 const p14 = {
-  tokens: [] as { id: number; user_id: number; name: string; prefix: string; scope: 'read' | 'operator'; expires: number; created: number; last_used: number | null; last_ip: string | null }[],
+  tokens: [] as {
+    id: number;
+    user_id: number;
+    name: string;
+    prefix: string;
+    scope: 'read' | 'operator';
+    expires: number;
+    created: number;
+    last_used: number | null;
+    last_ip: string | null;
+  }[],
   cert: {
     identity: null as Json | null,
     web: null as Json[] | null,
@@ -6560,12 +9683,32 @@ const p14 = {
     pending: null as Json | null,
   },
 };
-const fpHex = () => rand(32).toUpperCase().replace(/(..)(?=.)/g, '$1:');
-const certInfo = (subject: string, issuer: string, sans: string[], from: number, to: number, selfSigned = false, ca = false): Json => ({
-  subject, issuer, sans, not_before: from, not_after: to, sha256: fpHex(), self_signed: selfSigned, ca,
+const fpHex = () =>
+  rand(32)
+    .toUpperCase()
+    .replace(/(..)(?=.)/g, '$1:');
+const certInfo = (
+  subject: string,
+  issuer: string,
+  sans: string[],
+  from: number,
+  to: number,
+  selfSigned = false,
+  ca = false,
+): Json => ({
+  subject,
+  issuer,
+  sans,
+  not_before: from,
+  not_after: to,
+  sha256: fpHex(),
+  self_signed: selfSigned,
+  ca,
 });
 const pemOf = (label: string, n: number) => {
-  const body = b64(randomBytes(n)).replace(/(.{64})/g, '$1\n').trim();
+  const body = b64(randomBytes(n))
+    .replace(/(.{64})/g, '$1\n')
+    .trim();
   return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
 };
 
@@ -6573,48 +9716,154 @@ function seedPhase14d2(t: number) {
   const admin = db.users.find((u) => u.name === 'admin')!;
   const op = db.users.find((u) => u.name === 'op')!;
   p14.tokens.push(
-    { id: nextId(), user_id: admin.id, name: 'monitoring', prefix: rand(4), scope: 'read', expires: t + 86400 * 300, created: t - 86400 * 65, last_used: t - 240, last_ip: '198.51.100.20' },
-    { id: nextId(), user_id: admin.id, name: 'ci-restore-test', prefix: rand(4), scope: 'operator', expires: t + 86400 * 5, created: t - 86400 * 85, last_used: t - 86400 * 2, last_ip: '198.51.100.31' },
-    { id: nextId(), user_id: op.id, name: 'ansible', prefix: rand(4), scope: 'operator', expires: t + 86400 * 120, created: t - 86400 * 10, last_used: null, last_ip: null },
+    {
+      id: nextId(),
+      user_id: admin.id,
+      name: 'monitoring',
+      prefix: rand(4),
+      scope: 'read',
+      expires: t + 86400 * 300,
+      created: t - 86400 * 65,
+      last_used: t - 240,
+      last_ip: '198.51.100.20',
+    },
+    {
+      id: nextId(),
+      user_id: admin.id,
+      name: 'ci-restore-test',
+      prefix: rand(4),
+      scope: 'operator',
+      expires: t + 86400 * 5,
+      created: t - 86400 * 85,
+      last_used: t - 86400 * 2,
+      last_ip: '198.51.100.31',
+    },
+    {
+      id: nextId(),
+      user_id: op.id,
+      name: 'ansible',
+      prefix: rand(4),
+      scope: 'operator',
+      expires: t + 86400 * 120,
+      created: t - 86400 * 10,
+      last_used: null,
+      last_ip: null,
+    },
   );
   const sans = ['backup.example.com', '198.51.100.5'];
-  p14.cert.identity = certInfo('CN=backup.example.com, O=NexusBackup appliance', 'CN=backup.example.com, O=NexusBackup appliance', sans, t - 86400 * 455, t + 86400 * 3200, true);
+  p14.cert.identity = certInfo(
+    'CN=backup.example.com, O=NexusBackup appliance',
+    'CN=backup.example.com, O=NexusBackup appliance',
+    sans,
+    t - 86400 * 455,
+    t + 86400 * 3200,
+    true,
+  );
   p14.cert.web = [
-    certInfo('CN=backup.example.com', 'CN=Example Corp Issuing CA 1, O=Example Corp', sans, t - 86400 * 40, t + 86400 * 325),
-    certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true),
+    certInfo(
+      'CN=backup.example.com',
+      'CN=Example Corp Issuing CA 1, O=Example Corp',
+      sans,
+      t - 86400 * 40,
+      t + 86400 * 325,
+    ),
+    certInfo(
+      'CN=Example Corp Issuing CA 1, O=Example Corp',
+      'CN=Example Corp Root CA, O=Example Corp',
+      [],
+      t - 86400 * 900,
+      t + 86400 * 2700,
+      false,
+      true,
+    ),
   ];
   db.alerts.push(
-    mkAlert({ ts: t - 86400 * 3, severity: 'info', kind: 'cert_expiry', key: `cert_expiry:token:${p14.tokens[1].id}`, message: 'API token ci-restore-test of admin expires in 5 day(s)' }),
-    mkAlert({ ts: t - 86400 * 2, severity: 'info', kind: 'dek_rotation', key: 'dek_rotation:initech', tenant: 'initech', message: 'tenant initech: data encryption key v1 is 371 days old (rotation interval 365 days); rotate it at the console with keyd tenant-rotate' }),
-    mkAlert({ ts: t - 86400 * 6, severity: 'warning', kind: 'cert_expiry', key: 'cert_expiry:oidc_secret', message: 'The OIDC client secret (create a new one at the IdP, enter it in Settings → Single sign-on) expires in 24 day(s)' }),
+    mkAlert({
+      ts: t - 86400 * 3,
+      severity: 'info',
+      kind: 'cert_expiry',
+      key: `cert_expiry:token:${p14.tokens[1].id}`,
+      message: 'API token ci-restore-test of admin expires in 5 day(s)',
+    }),
+    mkAlert({
+      ts: t - 86400 * 2,
+      severity: 'info',
+      kind: 'dek_rotation',
+      key: 'dek_rotation:initech',
+      tenant: 'initech',
+      message:
+        'tenant initech: data encryption key v1 is 371 days old (rotation interval 365 days); rotate it at the console with keyd tenant-rotate',
+    }),
+    mkAlert({
+      ts: t - 86400 * 6,
+      severity: 'warning',
+      kind: 'cert_expiry',
+      key: 'cert_expiry:oidc_secret',
+      message:
+        'The OIDC client secret (create a new one at the IdP, enter it in Settings → Single sign-on) expires in 24 day(s)',
+    }),
   );
   db.oidc.client_secret_expires = t + 86400 * 24;
 }
 
 const pubToken = (x: (typeof p14.tokens)[number]) => ({
-  id: x.id, user: db.users.find((u) => u.id === x.user_id)?.name ?? '?', name: x.name, prefix: x.prefix, scope: x.scope,
-  expires: x.expires, created: x.created, last_used: x.last_used, last_ip: x.last_ip,
+  id: x.id,
+  user: db.users.find((u) => u.id === x.user_id)?.name ?? '?',
+  name: x.name,
+  prefix: x.prefix,
+  scope: x.scope,
+  expires: x.expires,
+  created: x.created,
+  last_used: x.last_used,
+  last_ip: x.last_ip,
 });
 on('GET', '/auth/tokens', (c) => {
   const u = need(c.user);
   const all = c.query.get('all') === 'true';
   if (all) need(c.user, 'admin');
-  return [200, p14.tokens.filter((x) => all || x.user_id === u.id).map(pubToken).sort((a, b) => a.user.localeCompare(b.user) || a.name.localeCompare(b.name))];
+  return [
+    200,
+    p14.tokens
+      .filter((x) => all || x.user_id === u.id)
+      .map(pubToken)
+      .sort((a, b) => a.user.localeCompare(b.user) || a.name.localeCompare(b.name)),
+  ];
 });
 on('POST', '/auth/tokens', async (c) => {
   const u = need(c.user);
   const { name = '', scope = '', days = 0, current_password, current_totp } = c.body;
-  if (!NAME_RE.test(String(name))) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  if (!NAME_RE.test(String(name)))
+    throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, 'days: 1..=365');
   if (scope !== 'read' && scope !== 'operator') throw new HttpError(400, 'scope: read or operator');
-  if (scope === 'operator' && (u.role === 'security_officer' || u.role === 'viewer')) throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
+  if (scope === 'operator' && (u.role === 'security_officer' || u.role === 'viewer'))
+    throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
   if (u.auth !== 'oidc' && (current_password !== u.password || !secondOk(u, current_totp)))
-    throw new HttpError(current_password === undefined ? 400 : 403, 're-authentication failed: wrong current password or TOTP code');
-  if (p14.tokens.some((x) => x.user_id === u.id && x.name === name)) throw new HttpError(409, 'conflicts with existing data (duplicate name or still referenced)');
+    throw new HttpError(
+      current_password === undefined ? 400 : 403,
+      're-authentication failed: wrong current password or TOTP code',
+    );
+  if (p14.tokens.some((x) => x.user_id === u.id && x.name === name))
+    throw new HttpError(409, 'conflicts with existing data (duplicate name or still referenced)');
   const secret = rand(32);
-  const x = { id: nextId(), user_id: u.id, name, prefix: rand(4), scope, expires: now() + days * 86400, created: now(), last_used: null, last_ip: null };
+  const x = {
+    id: nextId(),
+    user_id: u.id,
+    name,
+    prefix: rand(4),
+    scope,
+    expires: now() + days * 86400,
+    created: now(),
+    last_used: null,
+    last_ip: null,
+  };
   p14.tokens.push(x);
-  await audit(u.name, 'token.create', `token/${u.name}/${name}`, { id: x.id, prefix: x.prefix, scope, expires: x.expires });
+  await audit(u.name, 'token.create', `token/${u.name}/${name}`, {
+    id: x.id,
+    prefix: x.prefix,
+    scope,
+    expires: x.expires,
+  });
   return [201, { ...pubToken(x), token: `nxt_${x.prefix}_${secret}` }];
 });
 on('DELETE', '/auth/tokens/:id', async (c, [id]) => {
@@ -6635,16 +9884,25 @@ const certStatus = () => {
     pending: structuredClone(c.pending),
     can_revert: !!c.web || !!c.prev,
     previous: !!c.prev,
-    pins: { replication_identity: c.identity?.sha256 ?? null, replication_peers: db.replPeers.filter((p) => p.state === 'enrolled').length },
+    pins: {
+      replication_identity: c.identity?.sha256 ?? null,
+      replication_peers: db.replPeers.filter((p) => p.state === 'enrolled').length,
+    },
   };
 };
 const MOCK_NAME_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$|^[0-9.:a-f]+$/;
 on('GET', '/certificate', (c) => (need(c.user, 'admin', 'security_officer'), [200, certStatus()]));
 on('POST', '/certificate/csr', async (c) => {
   const u = need(c.user, 'admin');
-  const cn = String(c.body.cn ?? '').trim().toLowerCase();
-  const sans = [cn, ...(Array.isArray(c.body.sans) ? c.body.sans.map((s: unknown) => String(s).trim().toLowerCase()) : [])].filter((s, i, a) => s && a.indexOf(s) === i);
-  for (const s of sans) if (!MOCK_NAME_RE.test(s)) throw new HttpError(400, `cn: "${s}" is neither a DNS name nor an IP address`);
+  const cn = String(c.body.cn ?? '')
+    .trim()
+    .toLowerCase();
+  const sans = [
+    cn,
+    ...(Array.isArray(c.body.sans) ? c.body.sans.map((s: unknown) => String(s).trim().toLowerCase()) : []),
+  ].filter((s, i, a) => s && a.indexOf(s) === i);
+  for (const s of sans)
+    if (!MOCK_NAME_RE.test(s)) throw new HttpError(400, `cn: "${s}" is neither a DNS name nor an IP address`);
   p14.cert.pending = { cn, sans, created: now(), csr_pem: pemOf('CERTIFICATE REQUEST', 300) };
   await audit(u.name, 'tls.csr', 'tls/web', { pending: { cn, sans } });
   return [200, { csr_pem: p14.cert.pending.csr_pem, pending: p14.cert.pending }];
@@ -6657,19 +9915,43 @@ on('POST', '/certificate/install', async (c) => {
   const n = (pem.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
   if (!n) throw new HttpError(400, 'no certificate found (paste PEM: -----BEGIN CERTIFICATE-----)');
   const t = now();
-  const chain = [certInfo(`CN=${p.cn}`, 'CN=Example Corp Issuing CA 1, O=Example Corp', p.sans, t - 3600, t + 86400 * 397)];
-  if (n > 1) chain.push(certInfo('CN=Example Corp Issuing CA 1, O=Example Corp', 'CN=Example Corp Root CA, O=Example Corp', [], t - 86400 * 900, t + 86400 * 2700, false, true));
-  const warnings = n > 1 ? ['the issuer CN=Example Corp Root CA, O=Example Corp is not included: clients must trust it (or the root above it) already'] : [];
+  const chain = [
+    certInfo(`CN=${p.cn}`, 'CN=Example Corp Issuing CA 1, O=Example Corp', p.sans, t - 3600, t + 86400 * 397),
+  ];
+  if (n > 1)
+    chain.push(
+      certInfo(
+        'CN=Example Corp Issuing CA 1, O=Example Corp',
+        'CN=Example Corp Root CA, O=Example Corp',
+        [],
+        t - 86400 * 900,
+        t + 86400 * 2700,
+        false,
+        true,
+      ),
+    );
+  const warnings =
+    n > 1
+      ? [
+          'the issuer CN=Example Corp Root CA, O=Example Corp is not included: clients must trust it (or the root above it) already',
+        ]
+      : [];
   p14.cert.prev = p14.cert.web;
   p14.cert.web = chain;
   p14.cert.pending = null;
-  await audit(u.name, 'tls.install', 'tls/web', { subject: chain[0].subject, sha256: chain[0].sha256, not_after: chain[0].not_after, warnings });
+  await audit(u.name, 'tls.install', 'tls/web', {
+    subject: chain[0].subject,
+    sha256: chain[0].sha256,
+    not_after: chain[0].not_after,
+    warnings,
+  });
   return [200, { chain, warnings }];
 });
 on('POST', '/certificate/revert', async (c) => {
   const u = need(c.user, 'admin');
   const k = p14.cert;
-  if (!k.web && !k.prev) throw new HttpError(400, 'nothing to revert: the self-signed certificate is in use and there is no previous one');
+  if (!k.web && !k.prev)
+    throw new HttpError(400, 'nothing to revert: the self-signed certificate is in use and there is no previous one');
   [k.web, k.prev] = [k.prev, k.web];
   const active = k.web ? 'imported' : 'self_signed';
   await audit(u.name, 'tls.revert', 'tls/web', { active });
@@ -6678,11 +9960,23 @@ on('POST', '/certificate/revert', async (c) => {
 
 // ---- diagnostics (Phase 14b): nexus-diag picks a request up after ~1 s and finishes after ~3 s
 function diagChecks(t: number): Json[] {
-  const c = (id: string, title: string, status: string, severity: number, detail: string) =>
-    ({ id, title, status, severity, detail, manual: `15-troubleshooting-faq.md#check-${id.replace(/\./g, '-')}` });
+  const c = (id: string, title: string, status: string, severity: number, detail: string) => ({
+    id,
+    title,
+    status,
+    severity,
+    detail,
+    manual: `15-troubleshooting-faq.md#check-${id.replace(/\./g, '-')}`,
+  });
   const day = (d: number) => new Date((t + d * 86400) * 1000).toISOString().slice(0, 10);
   return [
-    c('disk.store', 'Disk space: /var/lib/nexus/chunkstore', 'pass', 1, '/var/lib/nexus/chunkstore: 58 % used, 1.7 TiB of 4.0 TiB free'),
+    c(
+      'disk.store',
+      'Disk space: /var/lib/nexus/chunkstore',
+      'pass',
+      1,
+      '/var/lib/nexus/chunkstore: 58 % used, 1.7 TiB of 4.0 TiB free',
+    ),
     c('disk.var', 'Disk space: /var', 'pass', 1, '/var: 58 % used, 1.7 TiB of 4.0 TiB free'),
     c('disk.root', 'Disk space: /sysroot', 'pass', 1, '/sysroot: 31 % used, 27.5 GiB of 40.0 GiB free'),
     c('disk.boot', 'Disk space: /boot', 'pass', 1, '/boot: 42 % used, 557 MiB of 960 MiB free'),
@@ -6696,15 +9990,39 @@ function diagChecks(t: number): Json[] {
     c('catalog.integrity', 'Catalog integrity', 'pass', 1, 'quick_check ok'),
     c('selinux', 'SELinux mode', 'pass', 1, 'enforcing'),
     c('systemd.failed', 'Failed system services', 'pass', 1, 'no failed units'),
-    c('bootc', 'OS image (bootc)', 'pass', 1, `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`),
+    c(
+      'bootc',
+      'OS image (bootc)',
+      'pass',
+      1,
+      `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`,
+    ),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
-    c('network.mtu', 'Network: path MTU', 'warn', 2, '10.30.4.20 (data): interface bond0.20 has MTU 9000, the path takes 1500'),
+    c(
+      'network.mtu',
+      'Network: path MTU',
+      'warn',
+      2,
+      '10.30.4.20 (data): interface bond0.20 has MTU 9000, the path takes 1500',
+    ),
     // Phase 21b security posture (recommendations: pass / warn, never update blockers)
     ...postureChecks().map((x) => c(x[0], x[1], x[2] ? 'pass' : 'warn', x[2] ? 1 : 2, x[3])),
   ];
 }
 function seedDiag(t: number) {
-  db.diag.push({ id: rand(16), kind: 'checks', by: 'admin', state: 'done', since: null, until: null, created: t - 2 * 3600 - 6, finished: t - 2 * 3600, error: null, checks: diagChecks(t), bundle: null });
+  db.diag.push({
+    id: rand(16),
+    kind: 'checks',
+    by: 'admin',
+    state: 'done',
+    since: null,
+    until: null,
+    created: t - 2 * 3600 - 6,
+    finished: t - 2 * 3600,
+    error: null,
+    checks: diagChecks(t),
+    bundle: null,
+  });
 }
 function diagView(u: User, x: Json): Json | null {
   if (x.kind === 'bundle' && x.by !== u.name) return null;
@@ -6723,8 +10041,22 @@ function diagView(u: User, x: Json): Json | null {
   return { ...rest, expires: x.created ? x.created + 86400 : undefined };
 }
 const diagSubmit = async (u: User, kind: string, since: number | null, until: number | null) => {
-  if (db.diag.some((x) => x.state === 'queued')) throw new HttpError(409, 'a diagnostics request is waiting to run; try again in a minute');
-  const x = { id: rand(16), kind, by: u.name, state: 'queued', since, until, created: null, finished: null, error: null, checks: null, bundle: null, queued: now() };
+  if (db.diag.some((x) => x.state === 'queued'))
+    throw new HttpError(409, 'a diagnostics request is waiting to run; try again in a minute');
+  const x = {
+    id: rand(16),
+    kind,
+    by: u.name,
+    state: 'queued',
+    since,
+    until,
+    created: null,
+    finished: null,
+    error: null,
+    checks: null,
+    bundle: null,
+    queued: now(),
+  };
   db.diag.unshift(x);
   await audit(u.name, `diag.${kind}`, `diag/${x.id}`, kind === 'bundle' ? { since, until } : {});
   return [202, { id: x.id, state: 'queued' }] as [number, Json];
@@ -6743,13 +10075,17 @@ on('POST', '/diagnostics/bundle', (c) => {
   const u = need(c.user, 'admin');
   const until = c.body.until ?? now();
   const since = c.body.since ?? until - 86400;
-  if (!(since < until) || until > now() + 3600) throw new HttpError(400, 'since must be before until, and until not in the future');
+  if (!(since < until) || until > now() + 3600)
+    throw new HttpError(400, 'since must be before until, and until not in the future');
   if (until - since > 31 * 86400) throw new HttpError(400, 'the time range is limited to 31 days');
   return diagSubmit(u, 'bundle', since, until);
 });
 on('GET', '/diagnostics/:id', (c, [id]) => {
   const u = diagReader(c);
-  const v = diagView(u, find(db.diag, (x) => x.id === id, 'diagnostics run'));
+  const v = diagView(
+    u,
+    find(db.diag, (x) => x.id === id, 'diagnostics run'),
+  );
   if (!v) throw new HttpError(404, 'diagnostics run not found');
   return [200, v];
 });
@@ -6760,8 +10096,20 @@ const CFG_FILES = 14;
 function cfgBackupDone(j: Job, t: number) {
   const c = db.cfgBackup;
   c.appliance_id ??= '3f9a0c51d2e8b746';
-  c.latest = { appliance: c.appliance_id, created: t, bytes: 1_843_200 + Math.floor(Math.random() * 20_000), sha256: rand(32), files: CFG_FILES };
-  j.result = { appliance: c.appliance_id, created: t, bytes: c.latest.bytes, sha256: c.latest.sha256, files: CFG_FILES };
+  c.latest = {
+    appliance: c.appliance_id,
+    created: t,
+    bytes: 1_843_200 + Math.floor(Math.random() * 20_000),
+    sha256: rand(32),
+    files: CFG_FILES,
+  };
+  j.result = {
+    appliance: c.appliance_id,
+    created: t,
+    bytes: c.latest.bytes,
+    sha256: c.latest.sha256,
+    files: CFG_FILES,
+  };
   for (const target of cfgTargets())
     addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
       plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
@@ -6771,7 +10119,13 @@ function cfgBackupDone(j: Job, t: number) {
 function seedCfgBackup(t: number) {
   for (const d of [2, 1]) {
     const at = t - d * 86400 + 3600;
-    const j = addJob('config_backup', '-', {}, 'scheduler', { state: 'ok', created: at, started: at, finished: at + 6, log: 'nexus-config-backup: bundle sealed' });
+    const j = addJob('config_backup', '-', {}, 'scheduler', {
+      state: 'ok',
+      created: at,
+      started: at,
+      finished: at + 6,
+      log: 'nexus-config-backup: bundle sealed',
+    });
     cfgBackupDone(j, at + 6);
     for (const u of db.jobs.filter((x) => x.kind === 'config_upload' && x.state === 'queued'))
       Object.assign(u, { state: 'ok', created: at + 6, started: at + 7, finished: at + 12, log: u.plan.join('\n') });
@@ -6782,30 +10136,46 @@ const cfgReader = (c: { user: User | null }) => {
   if (u.tenant) throw new HttpError(403, 'appliance-wide');
   return u;
 };
-const cfgRun = (j: Job) => ({ id: j.id, kind: j.kind, state: j.state, created: j.created, finished: j.finished, requested_by: j.requested_by, target: j.params.target ?? null, result: j.result ?? null });
+const cfgRun = (j: Job) => ({
+  id: j.id,
+  kind: j.kind,
+  state: j.state,
+  created: j.created,
+  finished: j.finished,
+  requested_by: j.requested_by,
+  target: j.params.target ?? null,
+  result: j.result ?? null,
+});
 on('GET', '/settings/config-backup', (c) => {
   cfgReader(c);
   const jobs = db.jobs.filter((j) => j.kind === 'config_backup' || j.kind === 'config_upload');
   const last = (pred: (j: Job) => boolean) => jobs.filter(pred).at(-1) ?? null;
   const okAt = (pred: (j: Job) => boolean) => last((j) => pred(j) && j.state === 'ok')?.finished ?? null;
-  return [200, {
-    appliance_id: db.cfgBackup.appliance_id,
-    last_success: okAt((j) => j.kind === 'config_backup'),
-    running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
-    latest: db.cfgBackup.latest,
-    targets: cfgTargets().map((tenant) => {
-      const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
-      const l = last(mine);
-      return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
-    }),
-    runs: jobs.slice(-20).reverse().map(cfgRun),
-  }];
+  return [
+    200,
+    {
+      appliance_id: db.cfgBackup.appliance_id,
+      last_success: okAt((j) => j.kind === 'config_backup'),
+      running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
+      latest: db.cfgBackup.latest,
+      targets: cfgTargets().map((tenant) => {
+        const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+        const l = last(mine);
+        return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+      }),
+      runs: jobs.slice(-20).reverse().map(cfgRun),
+    },
+  ];
 });
 on('POST', '/settings/config-backup/run', async (c) => {
   const u = need(c.user, 'admin');
   if (u.tenant) throw new HttpError(403, 'appliance-wide');
-  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state))) throw new HttpError(409, 'a configuration backup is already queued or running');
-  const j = addJob('config_backup', '-', {}, u.name, { plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'], duration: 4 });
+  if (db.jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)))
+    throw new HttpError(409, 'a configuration backup is already queued or running');
+  const j = addJob('config_backup', '-', {}, u.name, {
+    plan: ['request written', 'nexus-config-backup: catalog snapshot', 'nexus-config-backup: bundle sealed'],
+    duration: 4,
+  });
   await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'config_backup', params: {} });
   return [202, { job_id: j.id }];
 });
@@ -6814,7 +10184,12 @@ on('GET', '/settings/config-backup/download', async (c) => {
   if (u.tenant || !canDownload(u)) throw new HttpError(403, 'forbidden');
   const l = db.cfgBackup.latest;
   if (!l) throw new HttpError(404, 'not found');
-  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, { kind: 'config_backup', bytes: l.bytes, created: l.created, sha256: l.sha256 });
+  await audit(u.name, 'download.get', `config_backup/${l.appliance}`, {
+    kind: 'config_backup',
+    bytes: l.bytes,
+    created: l.created,
+    sha256: l.sha256,
+  });
   c.res.setHeader('Content-Disposition', `attachment; filename="nexus-config-${l.appliance}-${l.created}.bundle"`);
   return [200, 'NXCFGB1 (mock bundle: sealed to the recovery key)\n', 'application/octet-stream'];
 });
@@ -6822,11 +10197,37 @@ on('GET', '/settings/config-backup/download', async (c) => {
 // ---------------------------------------------------------------- network (Phase 22a)
 // nexus-net as the web-api sees it (GET /network): devices, the applied configuration, a
 // management change waiting for its confirmation, the path-MTU results, operations.
-const NET_FIELDS = { ports: [], mode: null, parent: null, vlan_id: null, role: null, mtu: null, dhcp: false, addresses: [], gateway: null, dns: [], routes: [] };
+const NET_FIELDS = {
+  ports: [],
+  mode: null,
+  parent: null,
+  vlan_id: null,
+  role: null,
+  mtu: null,
+  dhcp: false,
+  addresses: [],
+  gateway: null,
+  dns: [],
+  routes: [],
+};
 const netIface = (x: Json): Json => ({ ...structuredClone(NET_FIELDS), ...x });
 function seedNetwork(t: number) {
-  const nic = (name: string, mac: string, state: string, speed: number | null, master: string | null = null, addresses: string[] = []) => ({
-    name, kind: 'nic', mac, mtu: master ? 9000 : 1500, state, speed, master, addresses,
+  const nic = (
+    name: string,
+    mac: string,
+    state: string,
+    speed: number | null,
+    master: string | null = null,
+    addresses: string[] = [],
+  ) => ({
+    name,
+    kind: 'nic',
+    mac,
+    mtu: master ? 9000 : 1500,
+    state,
+    speed,
+    master,
+    addresses,
   });
   db.network = {
     scanned: t - 240,
@@ -6836,13 +10237,40 @@ function seedNetwork(t: number) {
       nic('ens5', '3c:ec:ef:10:22:03', 'up', 25000, 'bond0'),
       nic('ens6', '3c:ec:ef:10:22:04', 'up', 10000, null, ['172.16.50.5/24']),
       nic('ens7', '3c:ec:ef:10:22:05', 'down', null),
-      { name: 'bond0', kind: 'bond', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: [] },
-      { name: 'bond0.20', kind: 'vlan', mac: '3c:ec:ef:10:22:02', mtu: 9000, state: 'up', speed: 50000, master: null, addresses: ['10.0.20.5/24'] },
+      {
+        name: 'bond0',
+        kind: 'bond',
+        mac: '3c:ec:ef:10:22:02',
+        mtu: 9000,
+        state: 'up',
+        speed: 50000,
+        master: null,
+        addresses: [],
+      },
+      {
+        name: 'bond0.20',
+        kind: 'vlan',
+        mac: '3c:ec:ef:10:22:02',
+        mtu: 9000,
+        state: 'up',
+        speed: 50000,
+        master: null,
+        addresses: ['10.0.20.5/24'],
+      },
     ],
     config: {
       interfaces: [
         netIface({ name: 'bond0', kind: 'bond', ports: ['ens4', 'ens5'], mode: '802.3ad', mtu: 9000 }),
-        netIface({ name: 'bond0.20', kind: 'vlan', parent: 'bond0', vlan_id: 20, role: 'data', mtu: 9000, addresses: ['10.0.20.5/24'], routes: [{ to: '10.30.0.0/16', via: '10.0.20.1' }] }),
+        netIface({
+          name: 'bond0.20',
+          kind: 'vlan',
+          parent: 'bond0',
+          vlan_id: 20,
+          role: 'data',
+          mtu: 9000,
+          addresses: ['10.0.20.5/24'],
+          routes: [{ to: '10.30.0.0/16', via: '10.0.20.1' }],
+        }),
         netIface({ name: 'ens6', kind: 'ethernet', role: 'replication', addresses: ['172.16.50.5/24'] }),
       ],
       offsite_role: 'management',
@@ -6853,15 +10281,65 @@ function seedNetwork(t: number) {
     mtu: {
       ts: t - 1800,
       results: [
-        { role: 'data', addr: '10.0.20.11', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
-        { role: 'data', addr: '10.0.20.12', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'ok', path_mtu: null },
-        { role: 'data', addr: '10.30.4.20', dev: 'bond0.20', expected_dev: 'bond0.20', mtu: 9000, result: 'mismatch', path_mtu: 1500 },
-        { role: 'replication', addr: '172.16.50.9', dev: 'ens6', expected_dev: 'ens6', mtu: 1500, result: 'ok', path_mtu: null },
-        { role: 'offsite', addr: '198.51.100.40', dev: 'ens3', expected_dev: null, mtu: 1500, result: 'no_reply', path_mtu: null },
+        {
+          role: 'data',
+          addr: '10.0.20.11',
+          dev: 'bond0.20',
+          expected_dev: 'bond0.20',
+          mtu: 9000,
+          result: 'ok',
+          path_mtu: null,
+        },
+        {
+          role: 'data',
+          addr: '10.0.20.12',
+          dev: 'bond0.20',
+          expected_dev: 'bond0.20',
+          mtu: 9000,
+          result: 'ok',
+          path_mtu: null,
+        },
+        {
+          role: 'data',
+          addr: '10.30.4.20',
+          dev: 'bond0.20',
+          expected_dev: 'bond0.20',
+          mtu: 9000,
+          result: 'mismatch',
+          path_mtu: 1500,
+        },
+        {
+          role: 'replication',
+          addr: '172.16.50.9',
+          dev: 'ens6',
+          expected_dev: 'ens6',
+          mtu: 1500,
+          result: 'ok',
+          path_mtu: null,
+        },
+        {
+          role: 'offsite',
+          addr: '198.51.100.40',
+          dev: 'ens3',
+          expected_dev: null,
+          mtu: 1500,
+          result: 'no_reply',
+          path_mtu: null,
+        },
       ],
     },
     ops: [
-      { id: rand(16), op: 'apply', state: 'done', by: 'admin', quorum_id: null, created: t - 6 * 86400, finished: t - 6 * 86400 + 4, detail: 'applied: nexus-bond0, nexus-ens6, nexus-bond0.20', error: null },
+      {
+        id: rand(16),
+        op: 'apply',
+        state: 'done',
+        by: 'admin',
+        quorum_id: null,
+        created: t - 6 * 86400,
+        finished: t - 6 * 86400 + 4,
+        detail: 'applied: nexus-bond0, nexus-ens6, nexus-bond0.20',
+        error: null,
+      },
     ] as Json[],
   };
 }
@@ -6870,11 +10348,21 @@ function netView() {
   const t = now();
   if (n.pending && n.pending.deadline <= t) netFinish(false, null);
   return {
-    available: true, stale: false, scanned: n.scanned, devices: n.devices, config: n.config, management: n.management, reset: n.reset,
-    pending: n.pending ? { id: n.pending.id, by: n.pending.by, deadline: n.pending.deadline, remaining: n.pending.deadline - t } : null,
-    mtu: n.mtu, ops: [...n.ops].sort((a: Json, b: Json) => b.created - a.created),
+    available: true,
+    stale: false,
+    scanned: n.scanned,
+    devices: n.devices,
+    config: n.config,
+    management: n.management,
+    reset: n.reset,
+    pending: n.pending
+      ? { id: n.pending.id, by: n.pending.by, deadline: n.pending.deadline, remaining: n.pending.deadline - t }
+      : null,
+    mtu: n.mtu,
+    ops: [...n.ops].sort((a: Json, b: Json) => b.created - a.created),
     request_pending: db.quorum.filter((q) => q.action === 'network.apply' && q.state === 'pending').pop()?.id ?? null,
-    confirm_secs: 120, client_ip: CLIENT_IP,
+    confirm_secs: 120,
+    client_ip: CLIENT_IP,
   };
 }
 const netMgmtChain = (c: Json) => {
@@ -6894,40 +10382,61 @@ function netValidate(c: Json) {
   };
   for (const i of ifs) {
     const n = String(i.name ?? '');
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$/.test(n)) throw new HttpError(400, `"${n}": an interface name has 1-15 letters, digits, '.', '_' or '-'`);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$/.test(n))
+      throw new HttpError(400, `"${n}": an interface name has 1-15 letters, digits, '.', '_' or '-'`);
     if (i.kind === 'ethernet') take(n, `interface ${n}`, n);
     else if (i.kind === 'bond') {
-      if (!['active-backup', '802.3ad'].includes(i.mode)) throw new HttpError(400, `${n}: bond mode must be active-backup or 802.3ad (LACP)`);
+      if (!['active-backup', '802.3ad'].includes(i.mode))
+        throw new HttpError(400, `${n}: bond mode must be active-backup or 802.3ad (LACP)`);
       if (!i.ports?.length || i.ports.length > 8) throw new HttpError(400, `${n}: a bond has 1 to 8 ports`);
       for (const p of i.ports) take(p, `bond ${n}`, n);
     } else if (i.kind === 'vlan') {
       if (!(i.vlan_id >= 1 && i.vlan_id <= 4094)) throw new HttpError(400, `${n}: VLAN ID must be 1 to 4094`);
-      if (!ifs.some((x) => x.name === i.parent && x.kind !== 'vlan') && !nics.includes(i.parent)) throw new HttpError(400, `${n}: parent "${i.parent}" is neither a network card nor an interface here`);
+      if (!ifs.some((x) => x.name === i.parent && x.kind !== 'vlan') && !nics.includes(i.parent))
+        throw new HttpError(400, `${n}: parent "${i.parent}" is neither a network card nor an interface here`);
     } else throw new HttpError(400, `${n}: kind must be ethernet, bond or vlan`);
     if (i.role) {
       if (roles.has(i.role)) throw new HttpError(400, `only one interface can have the role ${i.role}`);
       roles.add(i.role);
     }
     if (i.mtu != null && !(i.mtu >= 1280 && i.mtu <= 9216)) throw new HttpError(400, `${n}: MTU must be 1280 to 9216`);
-    for (const a of i.addresses ?? []) if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(a)) throw new HttpError(400, `${n}: "${a}" is not address/prefix (192.0.2.10/24)`);
-    if (i.gateway && i.role !== 'management') throw new HttpError(400, `${n}: only the management interface has a default gateway; reach other networks with routes`);
-    if (i.role === 'management' && !i.dhcp && !(i.addresses ?? []).length) throw new HttpError(400, `${n}: the management interface needs DHCP or an address`);
-    for (const r of i.routes ?? []) if (!/\/\d{1,3}$/.test(r.to) || /\/0$/.test(r.to)) throw new HttpError(400, `${n}: route "${r.to}" is not a network (10.30.0.0/16)`);
+    for (const a of i.addresses ?? [])
+      if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(a))
+        throw new HttpError(400, `${n}: "${a}" is not address/prefix (192.0.2.10/24)`);
+    if (i.gateway && i.role !== 'management')
+      throw new HttpError(
+        400,
+        `${n}: only the management interface has a default gateway; reach other networks with routes`,
+      );
+    if (i.role === 'management' && !i.dhcp && !(i.addresses ?? []).length)
+      throw new HttpError(400, `${n}: the management interface needs DHCP or an address`);
+    for (const r of i.routes ?? [])
+      if (!/\/\d{1,3}$/.test(r.to) || /\/0$/.test(r.to))
+        throw new HttpError(400, `${n}: route "${r.to}" is not a network (10.30.0.0/16)`);
   }
   const hadMgmt = db.network.config.interfaces.some((i: Json) => i.role === 'management');
-  if (hadMgmt && !roles.has('management')) throw new HttpError(400, 'the management interface cannot be removed, only changed (or reset at the console)');
+  if (hadMgmt && !roles.has('management'))
+    throw new HttpError(400, 'the management interface cannot be removed, only changed (or reset at the console)');
   if (!roles.has('management') && used.has(db.network.management.ifname))
-    throw new HttpError(400, `${db.network.management.ifname} is the management network card (set at the console); it cannot be used as ${used.get(db.network.management.ifname)}. Give an interface the management role to move the management network.`);
+    throw new HttpError(
+      400,
+      `${db.network.management.ifname} is the management network card (set at the console); it cannot be used as ${used.get(db.network.management.ifname)}. Give an interface the management role to move the management network.`,
+    );
 }
 function netFinish(keep: boolean, by: string | null) {
   const n = db.network;
   const p = n.pending;
   if (!p) return;
   const op = n.ops.find((o: Json) => o.id === p.id);
-  if (keep) Object.assign(op, { state: 'done', detail: `applied; management change confirmed by ${by}`, finished: now() });
+  if (keep)
+    Object.assign(op, { state: 'done', detail: `applied; management change confirmed by ${by}`, finished: now() });
   else {
     n.config = p.prev;
-    Object.assign(op, { state: 'rolled_back', detail: by ? `reverted by ${by}` : 'not confirmed within 120 s', finished: now() });
+    Object.assign(op, {
+      state: 'rolled_back',
+      detail: by ? `reverted by ${by}` : 'not confirmed within 120 s',
+      finished: now(),
+    });
   }
   n.management = n.config.interfaces.some((i: Json) => i.role === 'management')
     ? { ifname: n.config.interfaces.find((i: Json) => i.role === 'management').name, source: 'config' }
@@ -6938,17 +10447,47 @@ function netFinish(keep: boolean, by: string | null) {
 function netExecute(p: Json, by: string, qid: number) {
   const n = db.network;
   if (JSON.stringify(n.config) !== JSON.stringify(p.old)) {
-    n.ops.push({ id: rand(16), op: 'apply', state: 'refused', by, quorum_id: qid || null, created: now(), finished: now(), detail: null, error: 'the network configuration changed since this request was made; request the change again' });
+    n.ops.push({
+      id: rand(16),
+      op: 'apply',
+      state: 'refused',
+      by,
+      quorum_id: qid || null,
+      created: now(),
+      finished: now(),
+      detail: null,
+      error: 'the network configuration changed since this request was made; request the change again',
+    });
     return;
   }
   const prev = n.config;
   n.config = structuredClone(p.config);
   const id = rand(16);
   if (netMgmtChain(prev) !== netMgmtChain(n.config)) {
-    n.ops.push({ id, op: 'apply', state: 'confirming', by, quorum_id: qid || null, created: now(), finished: null, detail: null, error: null });
+    n.ops.push({
+      id,
+      op: 'apply',
+      state: 'confirming',
+      by,
+      quorum_id: qid || null,
+      created: now(),
+      finished: null,
+      detail: null,
+      error: null,
+    });
     n.pending = { id, by, deadline: now() + 120, prev };
   } else {
-    n.ops.push({ id, op: 'apply', state: 'done', by, quorum_id: qid || null, created: now(), finished: now(), detail: `applied: ${n.config.interfaces.map((i: Json) => `nexus-${i.name}`).join(', ') || 'profiles removed'}`, error: null });
+    n.ops.push({
+      id,
+      op: 'apply',
+      state: 'done',
+      by,
+      quorum_id: qid || null,
+      created: now(),
+      finished: now(),
+      detail: `applied: ${n.config.interfaces.map((i: Json) => `nexus-${i.name}`).join(', ') || 'profiles removed'}`,
+      error: null,
+    });
   }
 }
 function netReader(c: { user: User | null }) {
@@ -6961,16 +10500,28 @@ on('PUT', '/network', async (c) => {
   const u = netReader(c);
   need(u, 'admin');
   const n = db.network;
-  if (n.pending && n.pending.deadline > now()) throw new HttpError(409, 'a change of the management interface waits for its confirmation; confirm or revert it first');
-  const cfg = { interfaces: (c.body.config?.interfaces ?? []).map(netIface), offsite_role: c.body.config?.offsite_role ?? 'management' };
+  if (n.pending && n.pending.deadline > now())
+    throw new HttpError(
+      409,
+      'a change of the management interface waits for its confirmation; confirm or revert it first',
+    );
+  const cfg = {
+    interfaces: (c.body.config?.interfaces ?? []).map(netIface),
+    offsite_role: c.body.config?.offsite_role ?? 'management',
+  };
   if (JSON.stringify(cfg) === JSON.stringify(n.config)) return [200, { unchanged: true }];
   netValidate(cfg);
-  return quorum(u, 'network.apply', { config: cfg, old: structuredClone(n.config), management_change: netMgmtChain(n.config) !== netMgmtChain(cfg) });
+  return quorum(u, 'network.apply', {
+    config: cfg,
+    old: structuredClone(n.config),
+    management_change: netMgmtChain(n.config) !== netMgmtChain(cfg),
+  });
 });
 on('POST', '/network/confirm', async (c) => {
   const u = need(netReader(c), 'admin');
   const p = db.network.pending;
-  if (!p || p.id !== c.body.id || p.deadline <= now()) throw new HttpError(409, 'no such change waits for confirmation (confirmed, reverted or rolled back already)');
+  if (!p || p.id !== c.body.id || p.deadline <= now())
+    throw new HttpError(409, 'no such change waits for confirmation (confirmed, reverted or rolled back already)');
   const keep = !!c.body.keep;
   netFinish(keep, u.name);
   await audit(u.name, keep ? 'network.confirm' : 'network.revert', 'network', { id: p.id, from: CLIENT_IP });
@@ -6979,7 +10530,17 @@ on('POST', '/network/confirm', async (c) => {
 on('POST', '/network/mtu-check', async (c) => {
   const u = need(netReader(c), 'admin', 'operator');
   const id = rand(16);
-  db.network.ops.push({ id, op: 'mtu_check', state: 'done', by: u.name, quorum_id: null, created: now(), finished: now(), detail: 'path-MTU check requested', error: null });
+  db.network.ops.push({
+    id,
+    op: 'mtu_check',
+    state: 'done',
+    by: u.name,
+    quorum_id: null,
+    created: now(),
+    finished: now(),
+    detail: 'path-MTU check requested',
+    error: null,
+  });
   db.network.mtu.ts = now();
   await audit(u.name, 'network.mtu_check', 'network', { id });
   return [202, { id, state: 'queued' }];
@@ -6989,64 +10550,229 @@ on('POST', '/network/mtu-check', async (c) => {
 // What nexus-disks reports (status.json + ops.json), with the web-api's `issues` and `summary`.
 // Rebuilds, reshapes and self-tests advance with mock time; layout requests go through quorum().
 
-function hwAttr(id: number, name: string, value: number, worst: number, thresh: number, raw: number, failing = false): Json {
+function hwAttr(
+  id: number,
+  name: string,
+  value: number,
+  worst: number,
+  thresh: number,
+  raw: number,
+  failing = false,
+): Json {
   return { id, name, value, worst, thresh, raw, failing };
 }
-function hwSmartAta(o: { temp: number; poh: number; realloc?: number; pending?: number; offline?: number; failed?: boolean; ssd?: boolean; last?: Json; checked: number }): Json {
+function hwSmartAta(o: {
+  temp: number;
+  poh: number;
+  realloc?: number;
+  pending?: number;
+  offline?: number;
+  failed?: boolean;
+  ssd?: boolean;
+  last?: Json;
+  checked: number;
+}): Json {
   const r = o.realloc ?? 0;
   const p = o.pending ?? 0;
   const off = o.offline ?? 0;
   const attrs = o.ssd
-    ? [hwAttr(5, 'Reallocated_Sector_Ct', 100, 100, 10, r), hwAttr(9, 'Power_On_Hours', 98, 98, 0, o.poh), hwAttr(12, 'Power_Cycle_Count', 99, 99, 0, 38),
-      hwAttr(177, 'Wear_Leveling_Count', 97, 97, 0, 31), hwAttr(194, 'Temperature_Celsius', 100 - o.temp + 31, 61, 0, o.temp), hwAttr(241, 'Total_LBAs_Written', 99, 99, 0, 9483712044)]
-    : [hwAttr(1, 'Raw_Read_Error_Rate', o.failed ? 1 : 200, o.failed ? 1 : 200, 51, o.failed ? 48211 : 0, !!o.failed), hwAttr(3, 'Spin_Up_Time', 176, 175, 21, 8175),
-      hwAttr(5, 'Reallocated_Sector_Ct', o.failed ? 120 : r ? 199 : 200, o.failed ? 120 : 199, 140, r, !!o.failed), hwAttr(9, 'Power_On_Hours', 79, 79, 0, o.poh),
-      hwAttr(194, 'Temperature_Celsius', 112, 101, 0, o.temp), hwAttr(197, 'Current_Pending_Sector', 200, 200, 0, p),
-      hwAttr(198, 'Offline_Uncorrectable', 100, 253, 0, off), hwAttr(199, 'UDMA_CRC_Error_Count', 200, 200, 0, 0)];
+    ? [
+        hwAttr(5, 'Reallocated_Sector_Ct', 100, 100, 10, r),
+        hwAttr(9, 'Power_On_Hours', 98, 98, 0, o.poh),
+        hwAttr(12, 'Power_Cycle_Count', 99, 99, 0, 38),
+        hwAttr(177, 'Wear_Leveling_Count', 97, 97, 0, 31),
+        hwAttr(194, 'Temperature_Celsius', 100 - o.temp + 31, 61, 0, o.temp),
+        hwAttr(241, 'Total_LBAs_Written', 99, 99, 0, 9483712044),
+      ]
+    : [
+        hwAttr(1, 'Raw_Read_Error_Rate', o.failed ? 1 : 200, o.failed ? 1 : 200, 51, o.failed ? 48211 : 0, !!o.failed),
+        hwAttr(3, 'Spin_Up_Time', 176, 175, 21, 8175),
+        hwAttr(5, 'Reallocated_Sector_Ct', o.failed ? 120 : r ? 199 : 200, o.failed ? 120 : 199, 140, r, !!o.failed),
+        hwAttr(9, 'Power_On_Hours', 79, 79, 0, o.poh),
+        hwAttr(194, 'Temperature_Celsius', 112, 101, 0, o.temp),
+        hwAttr(197, 'Current_Pending_Sector', 200, 200, 0, p),
+        hwAttr(198, 'Offline_Uncorrectable', 100, 253, 0, off),
+        hwAttr(199, 'UDMA_CRC_Error_Count', 200, 200, 0, 0),
+      ];
   return {
-    available: true, health: o.failed ? 'failed' : 'passed', temperature: o.temp, power_on_hours: o.poh, reallocated: r, pending: p,
-    offline_uncorrectable: off, percentage_used: null, media_errors: null, critical_warning: null, available_spare: null,
-    self_test: { running: false, remaining: null, last: o.last ?? { type: o.ssd ? 'Short offline' : 'Extended offline', status: 'Completed without error', passed: true, hours: o.poh - 96 } },
-    attributes: attrs, error: null, standby: false, checked: o.checked,
+    available: true,
+    health: o.failed ? 'failed' : 'passed',
+    temperature: o.temp,
+    power_on_hours: o.poh,
+    reallocated: r,
+    pending: p,
+    offline_uncorrectable: off,
+    percentage_used: null,
+    media_errors: null,
+    critical_warning: null,
+    available_spare: null,
+    self_test: {
+      running: false,
+      remaining: null,
+      last: o.last ?? {
+        type: o.ssd ? 'Short offline' : 'Extended offline',
+        status: 'Completed without error',
+        passed: true,
+        hours: o.poh - 96,
+      },
+    },
+    attributes: attrs,
+    error: null,
+    standby: false,
+    checked: o.checked,
   };
 }
 function hwSmartNvme(used: number, poh: number, temp: number, checked: number): Json {
   const nv: Json = {
-    critical_warning: 0, temperature: temp, available_spare: 100, available_spare_threshold: 10, percentage_used: used, data_units_read: 9418265,
-    data_units_written: 21983410, power_cycles: 41, power_on_hours: poh, unsafe_shutdowns: 3, media_errors: 0, num_err_log_entries: 0,
+    critical_warning: 0,
+    temperature: temp,
+    available_spare: 100,
+    available_spare_threshold: 10,
+    percentage_used: used,
+    data_units_read: 9418265,
+    data_units_written: 21983410,
+    power_cycles: 41,
+    power_on_hours: poh,
+    unsafe_shutdowns: 3,
+    media_errors: 0,
+    num_err_log_entries: 0,
   };
   return {
-    available: true, health: 'passed', temperature: temp, power_on_hours: poh, reallocated: null, pending: null, offline_uncorrectable: null,
-    percentage_used: used, media_errors: 0, critical_warning: 0, available_spare: 100,
-    self_test: { running: false, remaining: null, last: { type: 'Short', status: 'Completed without error', passed: true, hours: poh - 26 } },
-    attributes: Object.entries(nv).map(([name, raw]) => ({ id: null, name, value: null, worst: null, thresh: null, raw, failing: false })),
-    error: null, standby: false, checked,
+    available: true,
+    health: 'passed',
+    temperature: temp,
+    power_on_hours: poh,
+    reallocated: null,
+    pending: null,
+    offline_uncorrectable: null,
+    percentage_used: used,
+    media_errors: 0,
+    critical_warning: 0,
+    available_spare: 100,
+    self_test: {
+      running: false,
+      remaining: null,
+      last: { type: 'Short', status: 'Completed without error', passed: true, hours: poh - 26 },
+    },
+    attributes: Object.entries(nv).map(([name, raw]) => ({
+      id: null,
+      name,
+      value: null,
+      worst: null,
+      thresh: null,
+      raw,
+      failing: false,
+    })),
+    error: null,
+    standby: false,
+    checked,
   };
 }
-function hwDisk(name: string, model: string, serial: string, size: number, type: string, transport: string, role: string, array: string | null, smart: Json, extra: Json = {}): Json {
+function hwDisk(
+  name: string,
+  model: string,
+  serial: string,
+  size: number,
+  type: string,
+  transport: string,
+  role: string,
+  array: string | null,
+  smart: Json,
+  extra: Json = {},
+): Json {
   return {
-    name, path: `/dev/${name}`, model, serial, wwn: type === 'nvme' ? `eui.002538${serial.slice(-6).toLowerCase()}` : `0x50014ee2${serial.slice(-6).toLowerCase()}`,
-    size, type, transport, rotational: type === 'hdd', removable: false, role, array, why: null, smart, ...extra,
+    name,
+    path: `/dev/${name}`,
+    model,
+    serial,
+    wwn:
+      type === 'nvme' ? `eui.002538${serial.slice(-6).toLowerCase()}` : `0x50014ee2${serial.slice(-6).toLowerCase()}`,
+    size,
+    type,
+    transport,
+    rotational: type === 'hdd',
+    removable: false,
+    role,
+    array,
+    why: null,
+    smart,
+    ...extra,
   };
 }
-function hwOp(op: string, state: string, by: string, created: number, detail: string | null, params: Json = {}, quorum_id: number | null = null, error: string | null = null): Json {
-  return { id: rand(16), op, state, by, quorum_id, created, finished: state === 'queued' || state === 'running' ? null : created + 2, detail, error, params };
+function hwOp(
+  op: string,
+  state: string,
+  by: string,
+  created: number,
+  detail: string | null,
+  params: Json = {},
+  quorum_id: number | null = null,
+  error: string | null = null,
+): Json {
+  return {
+    id: rand(16),
+    op,
+    state,
+    by,
+    quorum_id,
+    created,
+    finished: state === 'queued' || state === 'running' ? null : created + 2,
+    detail,
+    error,
+    params,
+  };
 }
 
 function seedHardware(t: number) {
   const TB4 = 4000787030016;
   const HDD = 'WDC WD40EFPX-68C6CN0';
   const hdd = (name: string, serial: string, role: string, array: string | null, o: Json = {}) =>
-    hwDisk(name, HDD, serial, TB4, 'hdd', 'sata', role, array, hwSmartAta({ temp: 36 + (name.charCodeAt(2) % 4), poh: 15500 + name.charCodeAt(2), checked: t - 1200, ...o }));
+    hwDisk(
+      name,
+      HDD,
+      serial,
+      TB4,
+      'hdd',
+      'sata',
+      role,
+      array,
+      hwSmartAta({ temp: 36 + (name.charCodeAt(2) % 4), poh: 15500 + name.charCodeAt(2), checked: t - 1200, ...o }),
+    );
   const ssd = (name: string, serial: string) =>
-    hwDisk(name, 'Samsung SSD 870 EVO 250GB', serial, 250059350016, 'ssd', 'sata', 'system', 'md127', hwSmartAta({ temp: 31, poh: 9120, ssd: true, checked: t - 1200 }));
+    hwDisk(
+      name,
+      'Samsung SSD 870 EVO 250GB',
+      serial,
+      250059350016,
+      'ssd',
+      'sata',
+      'system',
+      'md127',
+      hwSmartAta({ temp: 31, poh: 9120, ssd: true, checked: t - 1200 }),
+    );
   const nvme = (name: string, serial: string, used: number) =>
-    hwDisk(name, 'Samsung SSD 990 PRO 1TB', serial, 1000204886016, 'nvme', 'nvme', 'empty', null, hwSmartNvme(used, 1488, 41, t - 1200));
+    hwDisk(
+      name,
+      'Samsung SSD 990 PRO 1TB',
+      serial,
+      1000204886016,
+      'nvme',
+      'nvme',
+      'empty',
+      null,
+      hwSmartNvme(used, 1488, 41, t - 1200),
+    );
   db.hardware = {
     scanned: t - 120,
     smart_scanned: t - 1200,
     tools: { smartctl: true, mdadm: true },
-    store: { path: '/var/lib/nexus/chunkstore', array: 'md126', array_uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', mounted: true, empty: false },
+    store: {
+      path: '/var/lib/nexus/chunkstore',
+      array: 'md126',
+      array_uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f',
+      mounted: true,
+      empty: false,
+    },
     disks: [
       ssd('sda', 'S6PNNM0T401234A'),
       ssd('sdb', 'S6PNNM0T401235B'),
@@ -7054,23 +10780,59 @@ function seedHardware(t: number) {
       hdd('sdd', 'WD-WX12D3456702', 'data', 'md126'),
       hdd('sde', 'WD-WX12D3456703', 'data', 'md126', { realloc: 24, pending: 8 }),
       hdd('sdf', 'WD-WX12D3456704', 'data', 'md126', {
-        failed: true, realloc: 1400, pending: 312, offline: 57,
+        failed: true,
+        realloc: 1400,
+        pending: 312,
+        offline: 57,
         last: { type: 'Short offline', status: 'Completed: read failure', passed: false, hours: 15519 },
       }),
       hdd('sdg', 'WD-WX12D3456705', 'data', 'md126'),
       hdd('sdh', 'WD-WX12D3456706', 'empty', null, { poh: 120 }),
       nvme('nvme0n1', 'S7DNNJ0W100001X', 3),
       nvme('nvme1n1', 'S7DNNJ0W100002Y', 4),
-      hwDisk('sdi', 'WD Elements 25A2', '575832314131313', 2000398934016, 'hdd', 'usb', 'in_use', null,
-        { available: false, health: null, temperature: null, power_on_hours: null, reallocated: null, pending: null, offline_uncorrectable: null,
-          percentage_used: null, media_errors: null, critical_warning: null, available_spare: null, self_test: null, attributes: [],
-          error: '/dev/sdi: Unknown USB bridge [0x1058:0x25a2 (0x1021)]', standby: false, checked: t - 1200 },
-        { removable: true, why: 'has partitions' }),
+      hwDisk(
+        'sdi',
+        'WD Elements 25A2',
+        '575832314131313',
+        2000398934016,
+        'hdd',
+        'usb',
+        'in_use',
+        null,
+        {
+          available: false,
+          health: null,
+          temperature: null,
+          power_on_hours: null,
+          reallocated: null,
+          pending: null,
+          offline_uncorrectable: null,
+          percentage_used: null,
+          media_errors: null,
+          critical_warning: null,
+          available_spare: null,
+          self_test: null,
+          attributes: [],
+          error: '/dev/sdi: Unknown USB bridge [0x1058:0x25a2 (0x1021)]',
+          standby: false,
+          checked: t - 1200,
+        },
+        { removable: true, why: 'has partitions' },
+      ),
     ],
     arrays: [
       {
-        name: 'md126', path: '/dev/md126', md_name: 'nexus-data', uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', role: 'data', level: 'raid6',
-        raid_devices: 4, size: 8001574060032, used_dev_size: 4000587055104, bitmap: 'Internal', mounts: ['/var/lib/nexus/chunkstore'],
+        name: 'md126',
+        path: '/dev/md126',
+        md_name: 'nexus-data',
+        uuid: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f',
+        role: 'data',
+        level: 'raid6',
+        raid_devices: 4,
+        size: 8001574060032,
+        used_dev_size: 4000587055104,
+        bitmap: 'Internal',
+        mounts: ['/var/lib/nexus/chunkstore'],
         fs: { type: 'xfs', uuid: '0e7d8c9b-aaaa-4bbb-8ccc-1234567890ab', size: 8000500318208, used: 3871043584000 },
         members: [
           { disk: 'sdc', dev: 'sdc', serial: 'WD-WX12D3456701', state: 'active', slot: 0 },
@@ -7083,8 +10845,17 @@ function seedHardware(t: number) {
         sync: { action: 'recover', base: 41, t0: t, secs: 5 * 3600 },
       },
       {
-        name: 'md127', path: '/dev/md127', md_name: 'root', uuid: '9a8b7c6d:5e4f3a2b:1c0d9e8f:7a6b5c4d', role: 'system', level: 'raid1',
-        raid_devices: 2, size: 248352203776, used_dev_size: 248352203776, bitmap: 'Internal', mounts: ['/sysroot', '/var', '/etc'],
+        name: 'md127',
+        path: '/dev/md127',
+        md_name: 'root',
+        uuid: '9a8b7c6d:5e4f3a2b:1c0d9e8f:7a6b5c4d',
+        role: 'system',
+        level: 'raid1',
+        raid_devices: 2,
+        size: 248352203776,
+        used_dev_size: 248352203776,
+        bitmap: 'Internal',
+        mounts: ['/sysroot', '/var', '/etc'],
         fs: { type: 'xfs', uuid: '6a1f0b2c-1d2e-4f30-8a41-5b6c7d8e9f00', size: 247278460928, used: 22548578304 },
         members: [
           { disk: 'sda', dev: 'sda3', serial: 'S6PNNM0T401234A', state: 'active', slot: 0 },
@@ -7094,27 +10865,60 @@ function seedHardware(t: number) {
       },
     ],
     ops: [
-      hwOp('add_spare', 'done', 'admin', t - 86400 * 30, 'WD-WX12D3456705 added to md126 as a hot spare', { array: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', disk: 'WD-WX12D3456705' }, 31),
-      hwOp('selftest', 'done', 'admin', t - 86400 * 2, 'short self-test started on WD-WX12D3456704, about 2 minutes', { disk: 'WD-WX12D3456704', type: 'short' }),
+      hwOp(
+        'add_spare',
+        'done',
+        'admin',
+        t - 86400 * 30,
+        'WD-WX12D3456705 added to md126 as a hot spare',
+        { array: '3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f', disk: 'WD-WX12D3456705' },
+        31,
+      ),
+      hwOp('selftest', 'done', 'admin', t - 86400 * 2, 'short self-test started on WD-WX12D3456704, about 2 minutes', {
+        disk: 'WD-WX12D3456704',
+        type: 'short',
+      }),
       hwOp('scan', 'done', 'op', t - 3 * 3600, 'rescan requested'),
     ],
   };
   db.alerts.push(
     mkAlert({
-      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:WD-WX12D3456704',
-      message: 'Disk sdf (WDC WD40EFPX-68C6CN0, WD-WX12D3456704): SMART health check failed; 312 pending, 1400 reallocated, 57 offline-uncorrectable sectors',
+      ts: t - 3 * 3600,
+      last_ts: t - 120,
+      count: 37,
+      severity: 'critical',
+      kind: 'disk',
+      key: 'disk:WD-WX12D3456704',
+      message:
+        'Disk sdf (WDC WD40EFPX-68C6CN0, WD-WX12D3456704): SMART health check failed; 312 pending, 1400 reallocated, 57 offline-uncorrectable sectors',
     }),
     mkAlert({
-      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'critical', kind: 'disk', key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f',
+      ts: t - 3 * 3600,
+      last_ts: t - 120,
+      count: 37,
+      severity: 'critical',
+      kind: 'disk',
+      key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f',
       message: 'Array md126 (nexus-data, raid6): degraded: 3 of 4 devices active, failed member sdf (WD-WX12D3456704)',
     }),
     mkAlert({
-      ts: t - 3 * 3600, last_ts: t - 120, count: 37, severity: 'info', kind: 'disk', key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f:sync',
+      ts: t - 3 * 3600,
+      last_ts: t - 120,
+      count: 37,
+      severity: 'info',
+      kind: 'disk',
+      key: 'disk:md:3f0c1a2b:4d5e6f70:81920a1b:2c3d4e5f:sync',
       message: 'Array md126 (nexus-data, raid6): rebuilding 41.0 % (about 295 min left)',
     }),
     mkAlert({
-      ts: t - 86400 * 4, last_ts: t - 1200, count: 96, severity: 'warning', kind: 'disk', key: 'disk:WD-WX12D3456703',
-      message: 'Disk sde (WDC WD40EFPX-68C6CN0, WD-WX12D3456703): 8 pending, 24 reallocated sectors', acked_by: 'op',
+      ts: t - 86400 * 4,
+      last_ts: t - 1200,
+      count: 96,
+      severity: 'warning',
+      kind: 'disk',
+      key: 'disk:WD-WX12D3456703',
+      message: 'Disk sde (WDC WD40EFPX-68C6CN0, WD-WX12D3456703): 8 pending, 24 reallocated sectors',
+      acked_by: 'op',
       note: 'Replacement disk ordered.',
     }),
   );
@@ -7136,7 +10940,11 @@ function hwAdvance() {
       const data = a.level === 'raid6' ? a.raid_devices - 2 : a.raid_devices - 1;
       a.size = a.used_dev_size * data;
       if (a.fs) a.fs.size = a.size - 1073741824;
-      h.ops.push(hwOp('growfs', 'done', 'nexus-disks', t, `file system on ${a.name} grown to the new array size`, { array: a.uuid }));
+      h.ops.push(
+        hwOp('growfs', 'done', 'nexus-disks', t, `file system on ${a.name} grown to the new array size`, {
+          array: a.uuid,
+        }),
+      );
     }
   }
   for (const d of h.disks) {
@@ -7149,8 +10957,20 @@ function hwAdvance() {
     }
     const nv = d.type === 'nvme';
     d.smart.self_test = {
-      running: false, remaining: null,
-      last: { type: nv ? (st.kind === 'long' ? 'Extended' : 'Short') : st.kind === 'long' ? 'Extended offline' : 'Short offline', status: 'Completed without error', passed: true, hours: d.smart.power_on_hours },
+      running: false,
+      remaining: null,
+      last: {
+        type: nv
+          ? st.kind === 'long'
+            ? 'Extended'
+            : 'Short'
+          : st.kind === 'long'
+            ? 'Extended offline'
+            : 'Short offline',
+        status: 'Completed without error',
+        passed: true,
+        hours: d.smart.power_on_hours,
+      },
     };
   }
 }
@@ -7165,16 +10985,40 @@ function hwArrayView(a: Json): Json {
   const faulty = a.members.filter((m: Json) => m.state === 'faulty');
   const degraded = active < a.raid_devices || inSlot.length < a.raid_devices;
   const action = s?.action ?? null;
-  const state = action === 'recover' ? 'recovering' : action === 'reshape' ? 'reshaping' : action === 'resync' ? 'resyncing' : degraded ? 'degraded' : 'clean';
-  const words = ['clean', degraded ? 'degraded' : '', state === 'recovering' ? 'recovering' : state === 'reshaping' ? 'reshaping' : state === 'resyncing' ? 'resyncing' : ''].filter(Boolean);
+  const state =
+    action === 'recover'
+      ? 'recovering'
+      : action === 'reshape'
+        ? 'reshaping'
+        : action === 'resync'
+          ? 'resyncing'
+          : degraded
+            ? 'degraded'
+            : 'clean';
+  const words = [
+    'clean',
+    degraded ? 'degraded' : '',
+    state === 'recovering'
+      ? 'recovering'
+      : state === 'reshaping'
+        ? 'reshaping'
+        : state === 'resyncing'
+          ? 'resyncing'
+          : '',
+  ].filter(Boolean);
   const issues: Json[] = [];
   if (degraded) {
     issues.push({
       severity: 'critical',
-      message: `degraded: ${active} of ${a.raid_devices} devices active` + (faulty.length ? `, failed member ${faulty.map((m: Json) => `${m.dev} (${m.serial})`).join(', ')}` : ''),
+      message:
+        `degraded: ${active} of ${a.raid_devices} devices active` +
+        (faulty.length ? `, failed member ${faulty.map((m: Json) => `${m.dev} (${m.serial})`).join(', ')}` : ''),
     });
   } else if (faulty.length) {
-    issues.push({ severity: 'warning', message: `${faulty.length} failed member(s) still listed: ${faulty.map((m: Json) => m.dev).join(', ')} (replace or remove it)` });
+    issues.push({
+      severity: 'warning',
+      message: `${faulty.length} failed member(s) still listed: ${faulty.map((m: Json) => m.dev).join(', ')} (replace or remove it)`,
+    });
   }
   if (action && progress !== null) {
     const what = { recover: 'rebuilding', reshape: 'reshaping', resync: 'resyncing' }[action as string] ?? action;
@@ -7182,9 +11026,17 @@ function hwArrayView(a: Json): Json {
   }
   const { sync: _s, ...rest } = a;
   return {
-    ...rest, state, degraded, state_detail: words.join(', '), active_devices: active, failed_devices: faulty.length,
+    ...rest,
+    state,
+    degraded,
+    state_detail: words.join(', '),
+    active_devices: active,
+    failed_devices: faulty.length,
     spare_devices: a.members.filter((m: Json) => m.state === 'spare' || m.state === 'rebuilding').length,
-    action, progress: progress === null ? null : Math.round(progress * 10) / 10, finish_minutes: finish, issues,
+    action,
+    progress: progress === null ? null : Math.round(progress * 10) / 10,
+    finish_minutes: finish,
+    issues,
   };
 }
 
@@ -7197,14 +11049,22 @@ function hwDiskIssues(d: Json): Json[] {
   const r = s.reallocated ?? 0;
   const o = s.offline_uncorrectable ?? 0;
   if (p || r || o) {
-    out.push({ severity: 'warning', message: [p && `${p} pending`, r && `${r} reallocated`, o && `${o} offline-uncorrectable`].filter(Boolean).join(', ') + ' sectors' });
+    out.push({
+      severity: 'warning',
+      message:
+        [p && `${p} pending`, r && `${r} reallocated`, o && `${o} offline-uncorrectable`].filter(Boolean).join(', ') +
+        ' sectors',
+    });
   }
-  if (s.critical_warning) out.push({ severity: 'warning', message: `NVMe critical warning 0x${s.critical_warning.toString(16)}` });
+  if (s.critical_warning)
+    out.push({ severity: 'warning', message: `NVMe critical warning 0x${s.critical_warning.toString(16)}` });
   if ((s.percentage_used ?? 0) >= 90) out.push({ severity: 'warning', message: `NVMe wear ${s.percentage_used} %` });
   if (s.media_errors) out.push({ severity: 'warning', message: `${s.media_errors} media errors` });
   const limit = d.type === 'hdd' ? 55 : 70;
-  if (s.temperature !== null && s.temperature > limit) out.push({ severity: 'warning', message: `temperature ${s.temperature} °C (above ${limit} °C)` });
-  if (s.self_test?.last && !s.self_test.last.passed && !s.self_test.running) out.push({ severity: 'warning', message: `last self-test: ${s.self_test.last.status}` });
+  if (s.temperature !== null && s.temperature > limit)
+    out.push({ severity: 'warning', message: `temperature ${s.temperature} °C (above ${limit} °C)` });
+  if (s.self_test?.last && !s.self_test.last.passed && !s.self_test.running)
+    out.push({ severity: 'warning', message: `last self-test: ${s.self_test.last.status}` });
   return out;
 }
 
@@ -7213,15 +11073,32 @@ function hwView(): Json {
   const h = db.hardware;
   // the mock's own self-test bookkeeping (until, secs, kind) stays inside
   const test = (st: Json) => st && (({ until: _u, secs: _s, kind: _k, ...x }) => x)(st);
-  const disks = h.disks.map((d: Json) => ({ ...d, issues: hwDiskIssues(d), smart: d.smart && { ...d.smart, self_test: test(d.smart.self_test) } }));
+  const disks = h.disks.map((d: Json) => ({
+    ...d,
+    issues: hwDiskIssues(d),
+    smart: d.smart && { ...d.smart, self_test: test(d.smart.self_test) },
+  }));
   const arrays = h.arrays.map(hwArrayView);
   const all = [...disks, ...arrays].flatMap((x: Json) => x.issues);
   const crit = all.filter((i: Json) => i.severity === 'critical').length;
   const warn = all.filter((i: Json) => i.severity === 'warning').length;
   return {
-    available: true, stale: false, scanned: h.scanned, smart_scanned: h.smart_scanned, tools: h.tools, store: h.store,
-    summary: { state: crit ? 'critical' : warn ? 'warning' : 'ok', disks: disks.length, arrays: arrays.length, warnings: warn, critical: crit },
-    disks, arrays, ops: [...h.ops].reverse(),
+    available: true,
+    stale: false,
+    scanned: h.scanned,
+    smart_scanned: h.smart_scanned,
+    tools: h.tools,
+    store: h.store,
+    summary: {
+      state: crit ? 'critical' : warn ? 'warning' : 'ok',
+      disks: disks.length,
+      arrays: arrays.length,
+      warnings: warn,
+      critical: crit,
+    },
+    disks,
+    arrays,
+    ops: [...h.ops].reverse(),
   };
 }
 
@@ -7236,15 +11113,23 @@ const hwDiskBySerial = (serial: unknown) => {
   return d;
 };
 const hwInfo = (d: Json) => ({ serial: d.serial, model: d.model, size: d.size, name: d.name });
-const hwTyped = (confirm: unknown) => new Set(String(confirm ?? '').split(/[\s,]+/).filter(Boolean));
+const hwTyped = (confirm: unknown) =>
+  new Set(
+    String(confirm ?? '')
+      .split(/[\s,]+/)
+      .filter(Boolean),
+  );
 function hwEmpty(d: Json, minSize?: number) {
-  if (d.role !== 'empty') throw new HttpError(409, `disk ${d.serial} (${d.name}) is not empty: ${d.role}${d.why ? `, ${d.why}` : ''}`);
-  if (minSize && d.size < minSize) throw new HttpError(409, `disk ${d.serial} (${d.name}) is smaller than the array members`);
+  if (d.role !== 'empty')
+    throw new HttpError(409, `disk ${d.serial} (${d.name}) is not empty: ${d.role}${d.why ? `, ${d.why}` : ''}`);
+  if (minSize && d.size < minSize)
+    throw new HttpError(409, `disk ${d.serial} (${d.name}) is smaller than the array members`);
 }
 function hwManaged(name: string): Json {
   const a = db.hardware.arrays.find((x: Json) => x.name === name);
   if (!a) throw new HttpError(404, 'array not found');
-  if (a.role !== 'data' && a.role !== 'metadata') throw new HttpError(409, `${a.name} is not a data or metadata array: shown only`);
+  if (a.role !== 'data' && a.role !== 'metadata')
+    throw new HttpError(409, `${a.name} is not a data or metadata array: shown only`);
   return a;
 }
 
@@ -7270,8 +11155,22 @@ on('POST', '/hardware/selftest', async (c) => {
   if (!d.smart?.available) throw new HttpError(409, `SMART is not available on ${d.name}`);
   if (d.smart.self_test?.running) throw new HttpError(409, `a self-test is running on ${d.name}`);
   const secs = type === 'short' ? 120 : d.type === 'hdd' ? 465 * 60 : 1800;
-  d.smart.self_test = { ...(d.smart.self_test ?? { last: null }), running: true, remaining: 90, until: now() + secs, secs, kind: type };
-  const o = hwOp('selftest', 'done', u.name, now(), `${type} self-test started on ${d.serial}, about ${Math.round(secs / 60)} minutes`, { disk: d.serial, type });
+  d.smart.self_test = {
+    ...(d.smart.self_test ?? { last: null }),
+    running: true,
+    remaining: 90,
+    until: now() + secs,
+    secs,
+    kind: type,
+  };
+  const o = hwOp(
+    'selftest',
+    'done',
+    u.name,
+    now(),
+    `${type} self-test started on ${d.serial}, about ${Math.round(secs / 60)} minutes`,
+    { disk: d.serial, type },
+  );
   db.hardware.ops.push(o);
   await audit(u.name, 'hardware.selftest', `disk/${d.serial}`, { type, device: d.name });
   return [202, { id: o.id, state: 'queued' }];
@@ -7279,18 +11178,23 @@ on('POST', '/hardware/selftest', async (c) => {
 on('POST', '/hardware/arrays', async (c) => {
   const u = need(c.user, 'admin');
   const { role, level, disks, confirm } = c.body;
-  if (role === 'metadata') throw new HttpError(400, 'the metadata tier is a follow-up: only the data role can be created');
+  if (role === 'metadata')
+    throw new HttpError(400, 'the metadata tier is a follow-up: only the data role can be created');
   if (role !== 'data') throw new HttpError(400, 'role: data');
   const min: Record<string, number> = { raid1: 2, raid5: 3, raid6: 4, raid10: 4 };
   if (!min[level]) throw new HttpError(400, 'level: raid1, raid5, raid6 or raid10');
-  if (!Array.isArray(disks) || new Set(disks).size !== disks.length) throw new HttpError(400, 'disks: a list of distinct serial numbers');
+  if (!Array.isArray(disks) || new Set(disks).size !== disks.length)
+    throw new HttpError(400, 'disks: a list of distinct serial numbers');
   if (disks.length < min[level]) throw new HttpError(400, `${level} needs at least ${min[level]} disks`);
   if (level === 'raid10' && disks.length % 2) throw new HttpError(400, 'raid10 needs an even number of disks');
   const typed = hwTyped(confirm);
-  if (typed.size !== disks.length || !disks.every((s: string) => typed.has(s))) throw new HttpError(400, 'type the serial numbers of the selected disks to confirm');
+  if (typed.size !== disks.length || !disks.every((s: string) => typed.has(s)))
+    throw new HttpError(400, 'type the serial numbers of the selected disks to confirm');
   const ds = disks.map(hwDiskBySerial);
-  if (db.hardware.arrays.some((a: Json) => a.role === 'data')) throw new HttpError(409, 'a data array exists already: grow it or add spares');
-  if (db.hardware.store.empty !== true) throw new HttpError(409, 'the store is not empty: a data array is only created while the store holds no backups');
+  if (db.hardware.arrays.some((a: Json) => a.role === 'data'))
+    throw new HttpError(409, 'a data array exists already: grow it or add spares');
+  if (db.hardware.store.empty !== true)
+    throw new HttpError(409, 'the store is not empty: a data array is only created while the store holds no backups');
   ds.forEach((d: Json) => hwEmpty(d));
   return quorum(u, 'disks.create_array', { op: 'create_array', role, level, disks, disk_info: ds.map(hwInfo) });
 });
@@ -7299,17 +11203,25 @@ for (const kind of ['spare', 'replace', 'grow']) {
     const u = need(c.user, 'admin');
     const a = hwManaged(decodeURIComponent(name));
     const d = hwDiskBySerial(c.body.disk);
-    if (String(c.body.confirm ?? '').trim() !== d.serial) throw new HttpError(400, 'type the serial number of the new disk to confirm');
+    if (String(c.body.confirm ?? '').trim() !== d.serial)
+      throw new HttpError(400, 'type the serial number of the new disk to confirm');
     hwEmpty(d, a.used_dev_size);
     const v = hwArrayView(a);
     const failed = kind === 'replace' ? (c.body.failed ?? null) : undefined;
     if (kind === 'grow' && (!['raid5', 'raid6'].includes(a.level) || v.state !== 'clean')) {
-      throw new HttpError(409, `${a.name} is ${a.level}, ${v.state}: only a clean raid5 or raid6 array grows by a disk`);
+      throw new HttpError(
+        409,
+        `${a.name} is ${a.level}, ${v.state}: only a clean raid5 or raid6 array grows by a disk`,
+      );
     }
     if (kind === 'replace') {
-      if (failed !== null && !a.members.some((m: Json) => m.serial === failed)) throw new HttpError(409, `${failed} is not a member of ${a.name}`);
+      if (failed !== null && !a.members.some((m: Json) => m.serial === failed))
+        throw new HttpError(409, `${failed} is not a member of ${a.name}`);
       if (failed === null && !v.degraded && !a.members.some((m: Json) => m.state === 'faulty')) {
-        throw new HttpError(409, `${a.name} has no failed member: add the disk as a spare, or name the member to replace`);
+        throw new HttpError(
+          409,
+          `${a.name} has no failed member: add the disk as a spare, or name the member to replace`,
+        );
       }
     }
     const op = { spare: 'add_spare', replace: 'replace', grow: 'grow' }[kind]!;
@@ -7330,17 +11242,48 @@ function hwExecute(action: string, p: Json, by: string, qid: number) {
     const ds = p.disks.map(disk);
     const min = Math.min(...ds.map((d: Json) => d.size));
     const n = ds.length;
-    const dataDisks = p.level === 'raid1' ? 1 : p.level === 'raid5' ? n - 1 : p.level === 'raid6' ? n - 2 : Math.floor(n / 2);
+    const dataDisks =
+      p.level === 'raid1' ? 1 : p.level === 'raid5' ? n - 1 : p.level === 'raid6' ? n - 2 : Math.floor(n / 2);
     h.arrays.unshift({
-      name, path: `/dev/${name}`, md_name: 'nexus-data', uuid: rand(16).replace(/(.{8})(?=.)/g, '$1:'), role: 'data', level: p.level,
-      raid_devices: n, size: min * dataDisks, used_dev_size: min, bitmap: 'Internal', mounts: [h.store.path],
-      fs: { type: 'xfs', uuid: rand(16).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'), size: min * dataDisks - 1073741824, used: 0 },
-      members: ds.map((d: Json, i: number) => ({ disk: d.name, dev: d.name, serial: d.serial, state: 'active', slot: i })),
+      name,
+      path: `/dev/${name}`,
+      md_name: 'nexus-data',
+      uuid: rand(16).replace(/(.{8})(?=.)/g, '$1:'),
+      role: 'data',
+      level: p.level,
+      raid_devices: n,
+      size: min * dataDisks,
+      used_dev_size: min,
+      bitmap: 'Internal',
+      mounts: [h.store.path],
+      fs: {
+        type: 'xfs',
+        uuid: rand(16).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+        size: min * dataDisks - 1073741824,
+        used: 0,
+      },
+      members: ds.map((d: Json, i: number) => ({
+        disk: d.name,
+        dev: d.name,
+        serial: d.serial,
+        state: 'active',
+        slot: i,
+      })),
       sync: { action: 'resync', base: 0, t0: t, secs: 6 * 3600 },
     });
     for (const d of ds) Object.assign(d, { role: 'data', array: name });
     Object.assign(h.store, { array: name, array_uuid: h.arrays[0].uuid, mounted: true });
-    h.ops.push(hwOp('create_array', 'done', by, t, `${p.level} ${name} from ${n} disks, XFS, mounted at ${h.store.path}; the initial sync runs in the background`, p, q));
+    h.ops.push(
+      hwOp(
+        'create_array',
+        'done',
+        by,
+        t,
+        `${p.level} ${name} from ${n} disks, XFS, mounted at ${h.store.path}; the initial sync runs in the background`,
+        p,
+        q,
+      ),
+    );
     return;
   }
   const a = h.arrays.find((x: Json) => x.uuid === p.array);
@@ -7349,26 +11292,76 @@ function hwExecute(action: string, p: Json, by: string, qid: number) {
   Object.assign(d, { role: a.role, array: a.name });
   if (action === 'disks.add_spare') {
     const degraded = hwArrayView(a).degraded;
-    a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: degraded ? 'rebuilding' : 'spare', slot: degraded ? a.raid_devices - 1 : null });
+    a.members.push({
+      disk: d.name,
+      dev: d.name,
+      serial: d.serial,
+      state: degraded ? 'rebuilding' : 'spare',
+      slot: degraded ? a.raid_devices - 1 : null,
+    });
     if (degraded) a.sync = { action: 'recover', base: 0, t0: t, secs: 8 * 3600 };
-    h.ops.push(hwOp('add_spare', 'done', by, t, `${d.serial} added to ${a.name}${degraded ? ' (rebuild started)' : ' as a hot spare'}`, p, q));
+    h.ops.push(
+      hwOp(
+        'add_spare',
+        'done',
+        by,
+        t,
+        `${d.serial} added to ${a.name}${degraded ? ' (rebuild started)' : ' as a hot spare'}`,
+        p,
+        q,
+      ),
+    );
   } else if (action === 'disks.replace') {
     const old = a.members.filter((m: Json) => (p.failed ? m.serial === p.failed : m.state === 'faulty'));
     const working = old.some((m: Json) => m.state === 'active');
     if (!working) {
       a.members = a.members.filter((m: Json) => !old.includes(m));
-      for (const m of old) Object.assign(disk(m.serial) ?? {}, { role: 'in_use', array: null, why: 'contains a signature: linux_raid_member' });
+      for (const m of old)
+        Object.assign(disk(m.serial) ?? {}, {
+          role: 'in_use',
+          array: null,
+          why: 'contains a signature: linux_raid_member',
+        });
     }
     // a free slot is rebuilt at once; otherwise (another disk is already rebuilding it) the new disk waits as a spare
     const used = new Set(a.members.filter((m: Json) => m.slot !== null).map((m: Json) => m.slot));
     const free = [...Array(a.raid_devices).keys()].find((i) => !used.has(i));
-    a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: working || free !== undefined ? 'rebuilding' : 'spare', slot: working ? null : (free ?? null) });
-    if (!a.sync && a.members.some((m: Json) => m.state === 'rebuilding')) a.sync = { action: 'recover', base: 0, t0: t, secs: 8 * 3600 };
-    h.ops.push(hwOp('replace', 'done', by, t, working ? `${p.failed} is being replaced by ${d.serial} in ${a.name}` : `${old.map((m: Json) => m.serial).join(', ') || 'failed member'} removed from ${a.name}, ${d.serial} added: rebuild started`, p, q));
+    a.members.push({
+      disk: d.name,
+      dev: d.name,
+      serial: d.serial,
+      state: working || free !== undefined ? 'rebuilding' : 'spare',
+      slot: working ? null : (free ?? null),
+    });
+    if (!a.sync && a.members.some((m: Json) => m.state === 'rebuilding'))
+      a.sync = { action: 'recover', base: 0, t0: t, secs: 8 * 3600 };
+    h.ops.push(
+      hwOp(
+        'replace',
+        'done',
+        by,
+        t,
+        working
+          ? `${p.failed} is being replaced by ${d.serial} in ${a.name}`
+          : `${old.map((m: Json) => m.serial).join(', ') || 'failed member'} removed from ${a.name}, ${d.serial} added: rebuild started`,
+        p,
+        q,
+      ),
+    );
   } else if (action === 'disks.grow') {
     a.members.push({ disk: d.name, dev: d.name, serial: d.serial, state: 'active', slot: a.raid_devices });
     a.sync = { action: 'reshape', base: 0, t0: t, secs: 20 * 3600, grow: true };
-    h.ops.push(hwOp('grow', 'done', by, t, `${a.name} reshaping to ${a.raid_devices + 1} devices; the file system grows when the reshape has finished`, p, q));
+    h.ops.push(
+      hwOp(
+        'grow',
+        'done',
+        by,
+        t,
+        `${a.name} reshaping to ${a.raid_devices + 1} devices; the file system grows when the reshape has finished`,
+        p,
+        q,
+      ),
+    );
   }
 }
 
@@ -7401,15 +11394,24 @@ async function handle(req: Req, res: Res) {
     let user: User | null = null;
     if (sess) {
       const lim = db.security.session;
-      if (now() - sess.last > lim.idle_min * 60 || now() - sess.created > lim.absolute_h * 3600) db.sessions.delete(sid!);
+      if (now() - sess.last > lim.idle_min * 60 || now() - sess.created > lim.absolute_h * 3600)
+        db.sessions.delete(sid!);
       else {
         sess.last = now();
-        user = db.users.find((u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now())) ?? null;
+        user =
+          db.users.find(
+            (u) => u.id === sess.userId && !u.disabled && !tenantOff(u.tenant) && !(u.expires && u.expires <= now()),
+          ) ?? null;
       }
     }
     // Phase 30: just-in-time elevation of this session (ends at expiry or when the account changed)
     if (user && sess?.elev) {
-      if (sess.elev.until > now() && user.eligible_role === sess.elev.role && ['operator', 'viewer'].includes(user.role)) user = { ...user, role: sess.elev.role };
+      if (
+        sess.elev.until > now() &&
+        user.eligible_role === sess.elev.role &&
+        ['operator', 'viewer'].includes(user.role)
+      )
+        user = { ...user, role: sess.elev.role };
       else {
         delete sess.elev;
         resolveElevation(user.id, sess.id);
@@ -7424,7 +11426,13 @@ async function handle(req: Req, res: Res) {
         user = { ...user, role: sess.imp.role, tenant: sess.imp.tenant, can_download: false };
       }
     }
-    if (method !== 'GET' && path !== '/auth/login' && !path.startsWith('/auth/activate/') && user && req.headers['x-csrf-token'] !== sess?.csrf) {
+    if (
+      method !== 'GET' &&
+      path !== '/auth/login' &&
+      !path.startsWith('/auth/activate/') &&
+      user &&
+      req.headers['x-csrf-token'] !== sess?.csrf
+    ) {
       throw new HttpError(403, 'CSRF token missing or invalid');
     }
     if (user) p29Gate(method, path, user, sess); // Phase 29: step-up (428), freezes (409)
@@ -7458,7 +11466,10 @@ async function handle(req: Req, res: Res) {
     for (const [m, re, h] of routes) {
       const mm = method === m ? re.exec(path) : null;
       if (!mm) continue;
-      const [status, out, type] = await h({ method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res }, mm.slice(1));
+      const [status, out, type] = await h(
+        { method, path, query: url.searchParams, body, raw, headers: req.headers, user, sid, res },
+        mm.slice(1),
+      );
       // Phase 29, risk rule (c): deletes per account
       const acct = user && db.users.find((x) => x.id === user!.id);
       if (acct && method === 'DELETE' && status < 300) riskDelete(acct);
@@ -7478,8 +11489,7 @@ const CONSOLE_TTL = 24 * 3600;
 let consoleShell: Json | null = null;
 /** quorum id -> code hash (issued), plus what the gate / a revocation did with it */
 const consoleCodes = new Map<number, { hash: string; outcome: 'used' | 'revoked' | null }>();
-const consoleNorm = (s: string) =>
-  s.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+const consoleNorm = (s: string) => s.toUpperCase().replace(/[\s-]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
 function consoleStatus(q: Json, t = now()): string {
   const fresh = q.decided_at && q.decided_at + CONSOLE_TTL > t;
   if (q.state === 'pending' || q.state === 'rejected') return q.state;
@@ -7489,8 +11499,14 @@ function consoleStatus(q: Json, t = now()): string {
 }
 const consoleRows = () => db.quorum.filter((q) => q.action === 'console.unlock').sort((a, b) => b.id - a.id);
 const consoleView = (q: Json) => ({
-  id: q.id, hours: q.params.hours, reason: q.params.reason, requested_by: q.requested_by, created: q.created,
-  decided_by: q.decided_by, decided_at: q.decided_at, code_expires: q.decided_at ? q.decided_at + CONSOLE_TTL : null,
+  id: q.id,
+  hours: q.params.hours,
+  reason: q.params.reason,
+  requested_by: q.requested_by,
+  created: q.created,
+  decided_by: q.decided_by,
+  decided_at: q.decided_at,
+  code_expires: q.decided_at ? q.decided_at + CONSOLE_TTL : null,
   status: consoleStatus(q),
 });
 function consoleAdmin(c: Ctx, ...roles: Role[]): User {
@@ -7501,16 +11517,27 @@ function consoleAdmin(c: Ctx, ...roles: Role[]): User {
 function seedConsole(t: number) {
   // an earlier, used console session: approved by the security officer
   const q = {
-    id: nextId(), action: 'console.unlock', params: { hours: 2, reason: 'Storage controller firmware: collect vendor logs (case 4711)' },
-    requested_by: 'admin', created: t - 86400 * 33, decided_by: 'so', decided_at: t - 86400 * 33 + 1200, state: 'executed',
+    id: nextId(),
+    action: 'console.unlock',
+    params: { hours: 2, reason: 'Storage controller firmware: collect vendor logs (case 4711)' },
+    requested_by: 'admin',
+    created: t - 86400 * 33,
+    decided_by: 'so',
+    decided_at: t - 86400 * 33 + 1200,
+    state: 'executed',
   };
   db.quorum.push(q);
   consoleCodes.set(q.id, { hash: 'seeded', outcome: 'used' });
   db.alerts.push(
     mkAlert({
-      ts: t - 86400 * 33 + 1500, severity: 'critical', kind: 'console_root_shell',
+      ts: t - 86400 * 33 + 1500,
+      severity: 'critical',
+      kind: 'console_root_shell',
       message: `root shell opened on the appliance console with one-time code #${q.id} (requested by admin, approved by so; reason: ${q.params.reason}), for up to 2 h`,
-      acked_by: 'so', resolved_at: t - 86400 * 33 + 9000, resolved_by: 'so', note: 'Vendor logs collected, shell closed after 40 min.',
+      acked_by: 'so',
+      resolved_at: t - 86400 * 33 + 9000,
+      resolved_by: 'so',
+      note: 'Vendor logs collected, shell closed after 40 min.',
     }),
   );
 }
@@ -7531,7 +11558,8 @@ on('POST', '/console/unlock/:id/code', async (c, [id]) => {
   const q = find(consoleRows(), (x) => x.id === Number(id), 'console unlock request');
   if (q.requested_by !== u.name) throw new HttpError(403, 'only the requester sees the code');
   const st = consoleStatus(q);
-  if (['issued', 'used', 'revoked'].includes(st)) throw new HttpError(409, 'the code of this request was already shown');
+  if (['issued', 'used', 'revoked'].includes(st))
+    throw new HttpError(409, 'the code of this request was already shown');
   if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
   const a = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const code = Array.from({ length: 4 }, () => Array.from(randomBytes(5), (x) => a[x & 31]).join('')).join('-');
@@ -7540,12 +11568,18 @@ on('POST', '/console/unlock/:id/code', async (c, [id]) => {
   const solo = q.decided_by === q.requested_by;
   db.alerts.push(
     mkAlert({
-      ts: now(), severity: 'critical', kind: 'console_unlock',
+      ts: now(),
+      severity: 'critical',
+      kind: 'console_unlock',
       message: `console unlock code issued to ${u.name} for a root shell of up to ${q.params.hours} h on the appliance console (${solo ? 'approvals disabled' : `approved by ${q.decided_by}`}; reason: ${q.params.reason})`,
     }),
   );
   const expires = q.decided_at + CONSOLE_TTL;
-  await audit(u.name, 'console.unlock_code', `console-unlock/${q.id}`, { hours: q.params.hours, approved_by: q.decided_by, expires });
+  await audit(u.name, 'console.unlock_code', `console-unlock/${q.id}`, {
+    hours: q.params.hours,
+    approved_by: q.decided_by,
+    expires,
+  });
   return [200, { id: q.id, code, hours: q.params.hours, expires }];
 });
 on('DELETE', '/console/unlock/:id', async (c, [id]) => {
@@ -7562,7 +11596,8 @@ on('DELETE', '/console/unlock/:id', async (c, [id]) => {
 // for the demo and the manual's pictures. {code} opens a shell, {end: true} ends it.
 on('POST', '/mock/console-gate', async (c) => {
   if (c.body.end) {
-    if (consoleShell) await audit('console', 'console.root_shell_end', 'console', { how: 'exit', unlock: consoleShell.unlock });
+    if (consoleShell)
+      await audit('console', 'console.root_shell_end', 'console', { how: 'exit', unlock: consoleShell.unlock });
     consoleShell = null;
     return [200, { ok: true }];
   }
@@ -7572,12 +11607,25 @@ on('POST', '/mock/console-gate', async (c) => {
   consoleCodes.get(q.id)!.outcome = 'used';
   const at = now();
   const alert = mkAlert({
-    ts: at, severity: 'critical', kind: 'console_root_shell',
+    ts: at,
+    severity: 'critical',
+    kind: 'console_root_shell',
     message: `root shell opened on the appliance console with one-time code #${q.id} (requested by ${q.requested_by}, approved by ${q.decided_by}; reason: ${q.params.reason}), for up to ${q.params.hours} h`,
   });
   db.alerts.push(alert);
-  consoleShell = { at, until: at + q.params.hours * 3600, method: 'code', unlock: q.id, requested_by: q.requested_by, alert: alert.id };
-  await audit('console', 'console.root_shell', `console-unlock/${q.id}`, { method: 'code', hours: q.params.hours, unlock: q.id });
+  consoleShell = {
+    at,
+    until: at + q.params.hours * 3600,
+    method: 'code',
+    unlock: q.id,
+    requested_by: q.requested_by,
+    alert: alert.id,
+  };
+  await audit('console', 'console.root_shell', `console-unlock/${q.id}`, {
+    method: 'code',
+    hours: q.params.hours,
+    unlock: q.id,
+  });
   return [200, consoleShell];
 });
 
@@ -7595,14 +11643,18 @@ const RT_RUNNERS: Role[] = ['admin', 'operator', 'tenant_admin'];
 
 function rtChecks(c: Json | undefined, ct: boolean) {
   const x = c ?? {};
-  if (x.boot_timeout !== undefined && (x.boot_timeout < 30 || x.boot_timeout > 3600)) throw new HttpError(400, 'checks.boot_timeout: 30..=3600 seconds');
-  if ((x.ports ?? []).length > 16 || (x.ports ?? []).some((p: number) => !(p >= 1 && p <= 65535))) throw new HttpError(400, 'checks.ports: at most 16 ports 1..=65535');
-  if (x.agent === false && ((x.ports ?? []).length || (x.command ?? []).length)) throw new HttpError(400, 'checks: ports and command run through the guest agent');
+  if (x.boot_timeout !== undefined && (x.boot_timeout < 30 || x.boot_timeout > 3600))
+    throw new HttpError(400, 'checks.boot_timeout: 30..=3600 seconds');
+  if ((x.ports ?? []).length > 16 || (x.ports ?? []).some((p: number) => !(p >= 1 && p <= 65535)))
+    throw new HttpError(400, 'checks.ports: at most 16 ports 1..=65535');
+  if (x.agent === false && ((x.ports ?? []).length || (x.command ?? []).length))
+    throw new HttpError(400, 'checks: ports and command run through the guest agent');
   if (ct && (x.agent === true || (x.ports ?? []).length || (x.command ?? []).length))
     throw new HttpError(400, 'checks: containers have no guest agent (only boot_timeout; the init process is checked)');
 }
 const rtName = (v: unknown, what: string) => {
-  if (typeof v !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(v)) throw new HttpError(400, `${what}: must match [A-Za-z0-9._-]{1,64} without a leading dot`);
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(v))
+    throw new HttpError(400, `${what}: must match [A-Za-z0-9._-]{1,64} without a leading dot`);
 };
 function checkRestoreTest(tenant: string, p: Json) {
   if (!/^(vm|ct)-\d+$/.test(String(p.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
@@ -7610,40 +11662,90 @@ function checkRestoreTest(tenant: string, p: Json) {
   rtName(p.storage, 'storage');
   if (p.bridge) rtName(p.bridge, 'bridge');
   rtChecks(p.checks, String(p.source).startsWith('ct-'));
-  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time && s.local)) throw new HttpError(404, 'no such local snapshot');
+  if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time && s.local))
+    throw new HttpError(404, 'no such local snapshot');
 }
 
 /** One guest's mock result: vm-101 never answers (its backups fail too), the rest passes. */
-function rtResult(source: string, time: number, wave: number, target: number, name: string, checks: Json, start: number, test = true): Json {
+function rtResult(
+  source: string,
+  time: number,
+  wave: number,
+  target: number,
+  name: string,
+  checks: Json,
+  start: number,
+  test = true,
+): Json {
   const ct = source.startsWith('ct-');
   const bad = source === 'vm-101';
   const boot = ct ? 6 : 38 + (Number(source.slice(3)) % 20);
   const list: Json[] = ct
-    ? [{ name: 'init', ok: true, detail: `init PID ${4000 + target % 1000} running after ${boot} s` }]
+    ? [{ name: 'init', ok: true, detail: `init PID ${4000 + (target % 1000)} running after ${boot} s` }]
     : [{ name: 'running', ok: true, detail: 'running after 3 s' }];
-  if (!ct && bad) list.push({ name: 'guest_agent', ok: false, detail: `the QEMU guest agent did not answer within ${checks?.boot_timeout ?? 600} s` });
+  if (!ct && bad)
+    list.push({
+      name: 'guest_agent',
+      ok: false,
+      detail: `the QEMU guest agent did not answer within ${checks?.boot_timeout ?? 600} s`,
+    });
   if (!ct && !bad && checks?.agent !== false) {
     list.push({ name: 'guest_agent', ok: true, detail: `answered after ${boot} s` });
     for (const p of checks?.ports ?? []) list.push({ name: `tcp/${p}`, ok: true, detail: 'listening' });
-    if ((checks?.command ?? []).length) list.push({ name: 'command', ok: true, detail: `exit 0 (expected ${checks.expect_exit ?? 0}): active` });
+    if ((checks?.command ?? []).length)
+      list.push({ name: 'command', ok: true, detail: `exit 0 (expected ${checks.expect_exit ?? 0}): active` });
   }
   return {
-    source, time, wave, target, name, state: bad ? 'failed' : 'passed', started: start, finished: start + boot + 40,
-    boot_secs: bad ? null : boot, checks: list, error: null, destroyed: test ? true : null,
+    source,
+    time,
+    wave,
+    target,
+    name,
+    state: bad ? 'failed' : 'passed',
+    started: start,
+    finished: start + boot + 40,
+    boot_secs: bad ? null : boot,
+    checks: list,
+    error: null,
+    destroyed: test ? true : null,
   };
 }
 const rtLatest = (tenant: string, source: string) =>
-  (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[0];
-const rtGuestName = (source: string) => ({ 'vm-100': 'erp-app', 'vm-101': 'erp-db', 'vm-102': 'reporting', 'ct-200': 'proxy', 'vm-300': 'shop-web', 'vm-301': 'shop-db' } as Json)[source] ?? source;
+  (db.snapshots as Json[])
+    .filter((s) => s.tenant === tenant && s.source === source && s.local)
+    .sort((a, b) => b.time - a.time)[0];
+const rtGuestName = (source: string) =>
+  (
+    ({
+      'vm-100': 'erp-app',
+      'vm-101': 'erp-db',
+      'vm-102': 'reporting',
+      'ct-200': 'proxy',
+      'vm-300': 'shop-web',
+      'vm-301': 'shop-db',
+    }) as Json
+  )[source] ?? source;
 
 function rtRecord(tenant: string, job: number, run: number | null, r: Json) {
   rt.tests.push({ id: nextId(), tenant, job_id: job, run_id: run, ...r });
   const key = `restore_test:${tenant}/${r.source}`;
   const open = db.alerts.find((a) => a.key === key && !a.resolved_at);
-  if (r.state === 'passed' && open) Object.assign(open, { resolved_at: r.finished, resolved_by: 'scheduler', auto: true });
+  if (r.state === 'passed' && open)
+    Object.assign(open, { resolved_at: r.finished, resolved_by: 'scheduler', auto: true });
   if (r.state === 'failed' && !open && run === null)
-    db.alerts.push(mkAlert({ ts: r.finished, severity: 'warning', kind: 'restore_test', key, tenant,
-      message: `restore test of ${r.source} (${r.time}) failed (job ${job}): ${(r.checks as Json[]).filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`).join('; ')}` }));
+    db.alerts.push(
+      mkAlert({
+        ts: r.finished,
+        severity: 'warning',
+        kind: 'restore_test',
+        key,
+        tenant,
+        message: `restore test of ${r.source} (${r.time}) failed (job ${job}): ${(r.checks as Json[])
+          .filter((c) => !c.ok)
+          .map((c) => `${c.name}: ${c.detail}`)
+          .join('; ')}`,
+      }),
+    );
 }
 
 /** tick(): finished restore-test / recovery jobs, approved executions. */
@@ -7651,16 +11753,42 @@ function recoveryTick(j: Job | null, t: number) {
   if (!j) {
     for (const q of db.quorum.filter((x) => x.action === 'recovery_plan.execute' && x.state === 'approved')) {
       if (rt.runs.some((r) => r.quorum_id === q.id)) continue;
-      const run = { id: nextId(), plan_id: q.params.plan_id, tenant: q.params.tenant, mode: 'execute', state: 'running', requested_by: q.requested_by,
-        quorum_id: q.id, job_id: null as number | null, plan: q.params.plan, results: [], started: t, finished: null };
-      const job = addJob('recovery_execute', run.tenant, { run_id: run.id, plan_id: run.plan_id, quorum_id: q.id }, 'scheduler', { plan: rtPlanLines(run.plan, false), duration: 20 });
+      const run = {
+        id: nextId(),
+        plan_id: q.params.plan_id,
+        tenant: q.params.tenant,
+        mode: 'execute',
+        state: 'running',
+        requested_by: q.requested_by,
+        quorum_id: q.id,
+        job_id: null as number | null,
+        plan: q.params.plan,
+        results: [],
+        started: t,
+        finished: null,
+      };
+      const job = addJob(
+        'recovery_execute',
+        run.tenant,
+        { run_id: run.id, plan_id: run.plan_id, quorum_id: q.id },
+        'scheduler',
+        { plan: rtPlanLines(run.plan, false), duration: 20 },
+      );
       run.job_id = job.id;
       rt.runs.push(run);
     }
     return;
   }
   if (j.kind === 'restore_test') {
-    const r = rtResult(j.params.source, j.params.time, 0, 990001, `nxtest-${rtGuestName(j.params.source)}`, j.params.checks, j.started ?? t);
+    const r = rtResult(
+      j.params.source,
+      j.params.time,
+      0,
+      990001,
+      `nxtest-${rtGuestName(j.params.source)}`,
+      j.params.checks,
+      j.started ?? t,
+    );
     rtRecord(j.tenant, j.id, null, { ...r, finished: t });
     if (r.state === 'failed') {
       j.state = 'failed';
@@ -7674,8 +11802,16 @@ function recoveryTick(j: Job | null, t: number) {
     let base = j.started ?? t;
     run.results = (run.plan.steps as Json[]).map((s, i) => {
       const snap = rtLatest(run.tenant, s.source);
-      const r = rtResult(s.source, snap?.time ?? 0, s.wave, test ? 990001 + i : s.target ?? Number(s.source.slice(3)),
-        test ? `nxtest-${rtGuestName(s.source)}` : rtGuestName(s.source), s.checks, base, test);
+      const r = rtResult(
+        s.source,
+        snap?.time ?? 0,
+        s.wave,
+        test ? 990001 + i : (s.target ?? Number(s.source.slice(3))),
+        test ? `nxtest-${rtGuestName(s.source)}` : rtGuestName(s.source),
+        s.checks,
+        base,
+        test,
+      );
       base += 2;
       return r;
     });
@@ -7694,8 +11830,13 @@ function recoveryTick(j: Job | null, t: number) {
 }
 
 function rtPlanLines(p: Json, test: boolean): string[] {
-  const lines = [`nexus-pve restore-test: ${test ? 'test run' : 'EXECUTION'} of plan ${p.name} on ${p.node} / ${p.storage}`];
-  for (const s of p.steps as Json[]) lines.push(`wave ${s.wave}: ${s.source} ${test ? `as nxtest-${rtGuestName(s.source)}` : `restored as ${s.target ?? s.source.slice(3)}`}`);
+  const lines = [
+    `nexus-pve restore-test: ${test ? 'test run' : 'EXECUTION'} of plan ${p.name} on ${p.node} / ${p.storage}`,
+  ];
+  for (const s of p.steps as Json[])
+    lines.push(
+      `wave ${s.wave}: ${s.source} ${test ? `as nxtest-${rtGuestName(s.source)}` : `restored as ${s.target ?? s.source.slice(3)}`}`,
+    );
   lines.push(test ? 'checks done; destroying the test guests' : 'all guests restored and started');
   return lines;
 }
@@ -7709,15 +11850,29 @@ function rtReadiness(p: Json, t: number): Json {
     else {
       need += snap.size;
       const age = t - snap.time;
-      checks.push({ name: `snapshot ${s.source}`, ok: age <= p.rpo_hours * 3600, detail: `newest local snapshot ${Math.floor(age / 3600)} h old (RPO ${p.rpo_hours} h)` });
+      checks.push({
+        name: `snapshot ${s.source}`,
+        ok: age <= p.rpo_hours * 3600,
+        detail: `newest local snapshot ${Math.floor(age / 3600)} h old (RPO ${p.rpo_hours} h)`,
+      });
     }
   }
   checks.push({ name: `node ${p.node}`, ok: true, detail: 'online' });
-  checks.push({ name: `target storage ${p.storage}`, ok: true, detail: `active, ${Math.max(2048, Math.round(need / 2 ** 30) * 3)} GiB free` });
+  checks.push({
+    name: `target storage ${p.storage}`,
+    ok: true,
+    detail: `active, ${Math.max(2048, Math.round(need / 2 ** 30) * 3)} GiB free`,
+  });
   checks.push({ name: 'instant recovery storage nexus', ok: true, detail: 'active, 41210 GiB free' });
   checks.push({ name: 'bridges', ok: true, detail: 'present' });
-  const blocking = db.alerts.filter((a) => !a.resolved_at && (p.steps as Json[]).some((s) => a.key === `restore_test:${p.tenant}/${s.source}`));
-  checks.push({ name: 'alerts', ok: !blocking.length, detail: blocking.length ? blocking.map((a) => a.message).join('; ') : 'no blocking alerts' });
+  const blocking = db.alerts.filter(
+    (a) => !a.resolved_at && (p.steps as Json[]).some((s) => a.key === `restore_test:${p.tenant}/${s.source}`),
+  );
+  checks.push({
+    name: 'alerts',
+    ok: !blocking.length,
+    detail: blocking.length ? blocking.map((a) => a.message).join('; ') : 'no blocking alerts',
+  });
   return { ok: checks.every((c) => c.ok), at: t, checks };
 }
 
@@ -7725,22 +11880,68 @@ function seedRecovery(t: number) {
   const src = db.sources.find((s) => s.tenant === 'initech' && s.kind === 'pve')!;
   const acme = db.sources.find((s) => s.tenant === 'acme' && s.kind === 'pve')!;
   const prod = db.groups.find((g) => g.tenant === 'initech' && g.name === 'production')!;
-  rt.schedules.push({ group_id: prod.id, every_days: 7, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: { ports: [22], boot_timeout: 900 }, last_run: t - 2 * DAY });
+  rt.schedules.push({
+    group_id: prod.id,
+    every_days: 7,
+    node: 'pve2',
+    storage: 'local-lvm',
+    bridge: 'nxlab',
+    checks: { ports: [22], boot_timeout: 900 },
+    last_run: t - 2 * DAY,
+  });
   // two weeks of scheduled tests of the production group; vm-101's agent never answers
   for (const d of [9, 2]) {
     for (const source of ['vm-100', 'vm-101', 'ct-200']) {
-      const snap = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === source && s.local && s.time < t - d * DAY).sort((a, b) => b.time - a.time)[0];
+      const snap = (db.snapshots as Json[])
+        .filter((s) => s.tenant === 'initech' && s.source === source && s.local && s.time < t - d * DAY)
+        .sort((a, b) => b.time - a.time)[0];
       if (!snap) continue;
-      const j = addJob('restore_test', 'initech', { source, time: snap.time, node: 'pve2', storage: 'local-lvm', bridge: 'nxlab', checks: source.startsWith('ct-') ? { boot_timeout: 900 } : { ports: [22], boot_timeout: 900 }, group_id: prod.id, source_id: src.id }, 'scheduler');
+      const j = addJob(
+        'restore_test',
+        'initech',
+        {
+          source,
+          time: snap.time,
+          node: 'pve2',
+          storage: 'local-lvm',
+          bridge: 'nxlab',
+          checks: source.startsWith('ct-') ? { boot_timeout: 900 } : { ports: [22], boot_timeout: 900 },
+          group_id: prod.id,
+          source_id: src.id,
+        },
+        'scheduler',
+      );
       const at = t - d * DAY + 3 * 3600 + (source === 'vm-101' ? 900 : source === 'ct-200' ? 1800 : 0);
       const r = rtResult(source, snap.time, 0, 990001, `nxtest-${rtGuestName(source)}`, j.params.checks, at);
-      Object.assign(j, { state: r.state === 'passed' ? 'ok' : 'failed', created: at, started: at, finished: r.finished, log: rtPlanLines({ name: '-', node: 'pve2', storage: 'local-lvm', steps: [{ source, wave: 0 }] }, true).join('\n') });
+      Object.assign(j, {
+        state: r.state === 'passed' ? 'ok' : 'failed',
+        created: at,
+        started: at,
+        finished: r.finished,
+        log: rtPlanLines({ name: '-', node: 'pve2', storage: 'local-lvm', steps: [{ source, wave: 0 }] }, true).join(
+          '\n',
+        ),
+      });
       rtRecord('initech', j.id, null, r);
     }
   }
   const plan = (tenant: string, s: Json, name: string, steps: Json[], extra: Json = {}) => {
-    const p = { id: nextId(), tenant, name, source_id: s.id, node: tenant === 'acme' ? 'acme-pve1' : 'pve2', storage: 'local-lvm', test_bridge: 'nxlab',
-      network_map: { vmbr0: 'vmbr20' }, steps, rpo_hours: 24, readiness: null as Json | null, created: t - 30 * DAY, created_by: 'admin', ...extra };
+    const p = {
+      id: nextId(),
+      tenant,
+      name,
+      source_id: s.id,
+      node: tenant === 'acme' ? 'acme-pve1' : 'pve2',
+      storage: 'local-lvm',
+      test_bridge: 'nxlab',
+      network_map: { vmbr0: 'vmbr20' },
+      steps,
+      rpo_hours: 24,
+      readiness: null as Json | null,
+      created: t - 30 * DAY,
+      created_by: 'admin',
+      ...extra,
+    };
     rt.plans.push(p);
     p.readiness = rtReadiness(p, t - 6 * 3600);
     return p;
@@ -7750,22 +11951,53 @@ function seedRecovery(t: number) {
     { source: 'vm-100', wave: 2, delay: 60, checks: { ports: [443], command: ['systemctl', 'is-active', 'erp'] } },
     { source: 'ct-200', wave: 2, delay: 60, checks: {} },
   ]);
-  plan('acme', acme, 'shop', [
-    { source: 'vm-301', wave: 1, checks: { ports: [3306] } },
-    { source: 'vm-300', wave: 2, delay: 30, checks: { ports: [443] } },
-  ], { rpo_hours: 12, test_bridge: null, network_map: {} });
+  plan(
+    'acme',
+    acme,
+    'shop',
+    [
+      { source: 'vm-301', wave: 1, checks: { ports: [3306] } },
+      { source: 'vm-300', wave: 2, delay: 30, checks: { ports: [443] } },
+    ],
+    { rpo_hours: 12, test_bridge: null, network_map: {} },
+  );
   // a passed test run of the ERP plan three days ago
   const at = t - 3 * DAY + 10 * 3600;
   const { readiness: _r, created: _c, created_by: _b, ...asRun } = erp;
-  const run = { id: nextId(), plan_id: erp.id, tenant: 'initech', mode: 'test', state: 'running', requested_by: 'operator', quorum_id: null, job_id: null as number | null,
-    plan: asRun, results: [] as Json[], started: at, finished: null as number | null };
+  const run = {
+    id: nextId(),
+    plan_id: erp.id,
+    tenant: 'initech',
+    mode: 'test',
+    state: 'running',
+    requested_by: 'operator',
+    quorum_id: null,
+    job_id: null as number | null,
+    plan: asRun,
+    results: [] as Json[],
+    started: at,
+    finished: null as number | null,
+  };
   rt.runs.push(run);
-  const j = addJob('recovery_test', 'initech', { run_id: run.id, plan_id: erp.id }, 'operator', { plan: rtPlanLines(erp, true), created: at });
+  const j = addJob('recovery_test', 'initech', { run_id: run.id, plan_id: erp.id }, 'operator', {
+    plan: rtPlanLines(erp, true),
+    created: at,
+  });
   Object.assign(j, { state: 'ok', started: at, finished: at + 420, log: rtPlanLines(erp, true).join('\n') });
   run.job_id = j.id;
   run.results = (erp.steps as Json[]).map((s, i) => {
-    const snap = (db.snapshots as Json[]).filter((x) => x.tenant === 'initech' && x.source === s.source && x.local && x.time < at).sort((a, b) => b.time - a.time)[0];
-    return rtResult(s.source, snap?.time ?? 0, s.wave, 990101 + i, `nxtest-${rtGuestName(s.source)}`, s.checks, at + (s.wave - 1) * 160);
+    const snap = (db.snapshots as Json[])
+      .filter((x) => x.tenant === 'initech' && x.source === s.source && x.local && x.time < at)
+      .sort((a, b) => b.time - a.time)[0];
+    return rtResult(
+      s.source,
+      snap?.time ?? 0,
+      s.wave,
+      990101 + i,
+      `nxtest-${rtGuestName(s.source)}`,
+      s.checks,
+      at + (s.wave - 1) * 160,
+    );
   });
   for (const r of run.results) rtRecord('initech', j.id, run.id, r);
   Object.assign(run, { state: 'passed', finished: at + 420 });
@@ -7782,14 +12014,21 @@ on('GET', '/restore-tests', (c) => {
 });
 on('GET', '/restore-tests/schedules', (c) => {
   const u = need(c.user);
-  return [200, rt.schedules
-    .map((s) => { const g = db.groups.find((x) => x.id === s.group_id)!; return { ...s, group: g?.name, tenant: g?.tenant }; })
-    .filter((s) => s.tenant && (!u.tenant || s.tenant === u.tenant))];
+  return [
+    200,
+    rt.schedules
+      .map((s) => {
+        const g = db.groups.find((x) => x.id === s.group_id)!;
+        return { ...s, group: g?.name, tenant: g?.tenant };
+      })
+      .filter((s) => s.tenant && (!u.tenant || s.tenant === u.tenant)),
+  ];
 });
 on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
-  if (db.sources.find((s) => s.id === g.source_id)?.kind !== 'pve') throw new HttpError(400, 'restore tests need a group of a Proxmox VE source');
+  if (db.sources.find((s) => s.id === g.source_id)?.kind !== 'pve')
+    throw new HttpError(400, 'restore tests need a group of a Proxmox VE source');
   const b = c.body;
   if (!(b.every_days >= 1 && b.every_days <= 365)) throw new HttpError(400, 'every_days: 1..=365');
   rtName(b.node, 'node');
@@ -7797,7 +12036,15 @@ on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
   if (b.bridge) rtName(b.bridge, 'bridge');
   rtChecks(b.checks, false);
   const cur = rt.schedules.find((s) => s.group_id === g.id);
-  const v = { group_id: g.id, every_days: b.every_days, node: b.node, storage: b.storage, bridge: b.bridge || null, checks: b.checks ?? {}, last_run: cur?.last_run ?? null };
+  const v = {
+    group_id: g.id,
+    every_days: b.every_days,
+    node: b.node,
+    storage: b.storage,
+    bridge: b.bridge || null,
+    checks: b.checks ?? {},
+    last_run: cur?.last_run ?? null,
+  };
   if (cur) Object.assign(cur, v);
   else rt.schedules.push(v);
   await audit(u.name, 'restore_test.schedule', `group/${g.id}`, b);
@@ -7812,10 +12059,12 @@ on('DELETE', '/restore-tests/schedules/:id', async (c, [id]) => {
   return [200, {}];
 });
 
-const rtPlan = (u: User, id: string) => find(byTenant(u, rt.plans as any[]), (p) => p.id === Number(id), 'recovery plan');
+const rtPlan = (u: User, id: string) =>
+  find(byTenant(u, rt.plans as any[]), (p) => p.id === Number(id), 'recovery plan');
 function checkPlan(tenant: string, b: Json) {
   rtName(b.name, 'name');
-  if (!db.sources.some((s) => s.id === b.source_id && s.tenant === tenant && s.kind === 'pve')) throw new HttpError(400, 'source_id: no PVE source of this tenant');
+  if (!db.sources.some((s) => s.id === b.source_id && s.tenant === tenant && s.kind === 'pve'))
+    throw new HttpError(400, 'source_id: no PVE source of this tenant');
   rtName(b.node, 'node');
   rtName(b.storage, 'storage');
   if (b.test_bridge) rtName(b.test_bridge, 'test_bridge');
@@ -7828,21 +12077,36 @@ function checkPlan(tenant: string, b: Json) {
     if (!/^(vm|ct)-\d+$/.test(String(s.source ?? ''))) throw new HttpError(400, 'source: vm-<vmid> or ct-<vmid>');
     if (ids.has(s.source.slice(3))) throw new HttpError(400, `steps: ${s.source} twice`);
     ids.add(s.source.slice(3));
-    if (!((s.wave ?? 1) >= 1 && (s.wave ?? 1) <= 20) || (s.delay ?? 0) > 3600) throw new HttpError(400, 'steps: wave 1..=20, delay 0..=3600 seconds');
+    if (!((s.wave ?? 1) >= 1 && (s.wave ?? 1) <= 20) || (s.delay ?? 0) > 3600)
+      throw new HttpError(400, 'steps: wave 1..=20, delay 0..=3600 seconds');
     rtChecks(s.checks, s.source.startsWith('ct-'));
   }
 }
 const rtOut = (p: Json) => {
   const last = rt.runs.filter((r) => r.plan_id === p.id).at(-1);
-  return { ...p, last_run: last ? { id: last.id, mode: last.mode, state: last.state, started: last.started, finished: last.finished } : null };
+  return {
+    ...p,
+    last_run: last
+      ? { id: last.id, mode: last.mode, state: last.state, started: last.started, finished: last.finished }
+      : null,
+  };
 };
 function rtQueueReadiness(p: Json, by: string) {
-  addJob('recovery_readiness', p.tenant, { plan_id: p.id }, by, { plan: [`nexus-pve lab-check: ${p.node}, ${p.storage}`, 'readiness stored'], duration: 3 });
+  addJob('recovery_readiness', p.tenant, { plan_id: p.id }, by, {
+    plan: [`nexus-pve lab-check: ${p.node}, ${p.storage}`, 'readiness stored'],
+    duration: 3,
+  });
 }
 on('GET', '/recovery-plans', (c) => {
   const u = need(c.user);
   const tq = c.query.get('tenant');
-  return [200, byTenant(u, rt.plans as any[]).filter((p) => !tq || p.tenant === tq).sort((a, b) => (a.tenant + a.name < b.tenant + b.name ? -1 : 1)).map(rtOut)];
+  return [
+    200,
+    byTenant(u, rt.plans as any[])
+      .filter((p) => !tq || p.tenant === tq)
+      .sort((a, b) => (a.tenant + a.name < b.tenant + b.name ? -1 : 1))
+      .map(rtOut),
+  ];
 });
 on('POST', '/recovery-plans', async (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
@@ -7851,9 +12115,23 @@ on('POST', '/recovery-plans', async (c) => {
   if (u.tenant && b.tenant && b.tenant !== u.tenant) throw new HttpError(403, 'forbidden');
   find(db.tenants, (x) => x.name === tenant, 'tenant');
   checkPlan(tenant, b);
-  if (rt.plans.some((p) => p.tenant === tenant && p.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
-  const p = { id: nextId(), tenant, name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null,
-    network_map: b.network_map, steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours, readiness: null, created: now(), created_by: u.name };
+  if (rt.plans.some((p) => p.tenant === tenant && p.name === b.name))
+    throw new HttpError(409, 'a recovery plan with this name exists');
+  const p = {
+    id: nextId(),
+    tenant,
+    name: b.name,
+    source_id: b.source_id,
+    node: b.node,
+    storage: b.storage,
+    test_bridge: b.test_bridge || null,
+    network_map: b.network_map,
+    steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })),
+    rpo_hours: b.rpo_hours,
+    readiness: null,
+    created: now(),
+    created_by: u.name,
+  };
   rt.plans.push(p);
   rtQueueReadiness(p, u.name);
   await audit(u.name, 'recovery_plan.create', `recovery_plan/${p.id}`, b);
@@ -7864,10 +12142,19 @@ on('PUT', '/recovery-plans/:id', async (c, [id]) => {
   const p = rtPlan(u, id);
   const b: Json = { test_bridge: null, network_map: {}, rpo_hours: 24, ...c.body };
   checkPlan(p.tenant, b);
-  if (rt.plans.some((x) => x.id !== p.id && x.tenant === p.tenant && x.name === b.name)) throw new HttpError(409, 'a recovery plan with this name exists');
+  if (rt.plans.some((x) => x.id !== p.id && x.tenant === p.tenant && x.name === b.name))
+    throw new HttpError(409, 'a recovery plan with this name exists');
   const old = { ...p };
-  Object.assign(p, { name: b.name, source_id: b.source_id, node: b.node, storage: b.storage, test_bridge: b.test_bridge || null, network_map: b.network_map,
-    steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })), rpo_hours: b.rpo_hours });
+  Object.assign(p, {
+    name: b.name,
+    source_id: b.source_id,
+    node: b.node,
+    storage: b.storage,
+    test_bridge: b.test_bridge || null,
+    network_map: b.network_map,
+    steps: b.steps.map((s: Json) => ({ wave: 1, delay: 0, checks: {}, ...s })),
+    rpo_hours: b.rpo_hours,
+  });
   rtQueueReadiness(p, u.name);
   await audit(u.name, 'recovery_plan.update', `recovery_plan/${p.id}`, { old, new: b });
   return [200, p];
@@ -7890,12 +12177,28 @@ on('POST', '/recovery-plans/:id/readiness', async (c, [id]) => {
 on('POST', '/recovery-plans/:id/test', async (c, [id]) => {
   const u = need(c.user, ...RT_RUNNERS);
   const p = rtPlan(u, id);
-  if (rt.runs.some((r) => r.plan_id === p.id && r.state === 'running')) throw new HttpError(409, 'a run of this plan is in progress');
+  if (rt.runs.some((r) => r.plan_id === p.id && r.state === 'running'))
+    throw new HttpError(409, 'a run of this plan is in progress');
   const { readiness: _r, created: _c, created_by: _b, ...asRun } = p;
-  const run = { id: nextId(), plan_id: p.id, tenant: p.tenant, mode: 'test', state: 'running', requested_by: u.name, quorum_id: null, job_id: null as number | null,
-    plan: structuredClone(asRun), results: [], started: now(), finished: null };
+  const run = {
+    id: nextId(),
+    plan_id: p.id,
+    tenant: p.tenant,
+    mode: 'test',
+    state: 'running',
+    requested_by: u.name,
+    quorum_id: null,
+    job_id: null as number | null,
+    plan: structuredClone(asRun),
+    results: [],
+    started: now(),
+    finished: null,
+  };
   rt.runs.push(run);
-  const j = addJob('recovery_test', p.tenant, { run_id: run.id, plan_id: p.id }, u.name, { plan: rtPlanLines(p, true), duration: 14 });
+  const j = addJob('recovery_test', p.tenant, { run_id: run.id, plan_id: p.id }, u.name, {
+    plan: rtPlanLines(p, true),
+    duration: 14,
+  });
   run.job_id = j.id;
   await audit(u.name, 'recovery_plan.test', `recovery_plan/${p.id}`, { run: run.id, job: j.id });
   return [202, { run_id: run.id, job_id: j.id }];
@@ -7910,7 +12213,13 @@ on('POST', '/recovery-plans/:id/execute', async (c, [id]) => {
 on('GET', '/recovery-plans/:id/runs', (c, [id]) => {
   const u = need(c.user);
   const p = rtPlan(u, id);
-  return [200, rt.runs.filter((r) => r.plan_id === p.id).sort((a, b) => b.id - a.id).map(({ plan: _p, plan_id: _i, tenant: _t, ...r }) => r)];
+  return [
+    200,
+    rt.runs
+      .filter((r) => r.plan_id === p.id)
+      .sort((a, b) => b.id - a.id)
+      .map(({ plan: _p, plan_id: _i, tenant: _t, ...r }) => r),
+  ];
 });
 on('GET', '/recovery-runs/:id/report', (c, [id]) => {
   const u = need(c.user);
@@ -7918,30 +12227,41 @@ on('GET', '/recovery-runs/:id/report', (c, [id]) => {
   const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
   const iso = (x: number | null | undefined) => (x ? new Date(x * 1000).toISOString().replace('.000', '') : '');
   const rows = (r.results as Json[])
-    .map((g) => `<tr><td>${g.wave ?? ''}</td><td>${esc(g.source)}</td><td>${iso(g.time)}</td><td>${g.target ?? '–'} ${esc(g.name)}</td><td>${esc(g.state)}</td><td>${g.boot_secs ?? '–'} s</td><td>${(g.checks ?? []).map((ch: Json) => `${ch.ok ? '✓' : '✗'} ${esc(ch.name)}: ${esc(ch.detail)}`).join('<br>')}</td></tr>`)
+    .map(
+      (g) =>
+        `<tr><td>${g.wave ?? ''}</td><td>${esc(g.source)}</td><td>${iso(g.time)}</td><td>${g.target ?? '–'} ${esc(g.name)}</td><td>${esc(g.state)}</td><td>${g.boot_secs ?? '–'} s</td><td>${(g.checks ?? []).map((ch: Json) => `${ch.ok ? '✓' : '✗'} ${esc(ch.name)}: ${esc(ch.detail)}`).join('<br>')}</td></tr>`,
+    )
     .join('');
   c.res.setHeader('Content-Disposition', `attachment; filename="dr-report-run-${r.id}.html"`);
-  return [200, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>DR report</title></head><body style="font-family:Arial,sans-serif">
+  return [
+    200,
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>DR report</title></head><body style="font-family:Arial,sans-serif">
 <h1>${r.mode === 'execute' ? 'Disaster recovery execution' : 'Recovery plan test run'}: ${esc(r.plan.name)}</h1>
 <p>tenant ${esc(r.tenant)} · run ${r.id} · ${esc(r.state.toUpperCase())} · requested by ${esc(r.requested_by)} · ${iso(r.started)} – ${iso(r.finished)}</p>
 <table border="1" cellpadding="4" style="border-collapse:collapse"><tr><th>Wave</th><th>Guest</th><th>Snapshot</th><th>Restored as</th><th>Result</th><th>Boot</th><th>Checks</th></tr>${rows}</table>
-<p>Times are UTC. (mock report)</p></body></html>`, 'text/html; charset=utf-8'];
+<p>Times are UTC. (mock report)</p></body></html>`,
+    'text/html; charset=utf-8',
+  ];
 });
 
 /** Dashboard KPI: the newest passed/failed result per guest within the window. */
 function rtKpi(u: User, days: number) {
   const since = (Math.floor(now() / DAY) - days + 1) * DAY;
   const newest = new Map<string, Json>();
-  for (const r of byTenant(u, rt.tests as any[]).filter((x) => x.state === "passed" || x.state === "failed")) {
+  for (const r of byTenant(u, rt.tests as any[]).filter((x) => x.state === 'passed' || x.state === 'failed')) {
     const k = `${r.tenant}/${r.source}`;
     const cur = newest.get(k);
     if (!cur || r.finished > cur.finished) newest.set(k, r);
   }
   const rows = [...newest.values()].filter((r) => r.finished >= since);
-  const failing = rows.filter((r) => r.state === "failed");
-  return { tested: rows.length, passed: rows.length - failing.length, failed: failing.length,
+  const failing = rows.filter((r) => r.state === 'failed');
+  return {
+    tested: rows.length,
+    passed: rows.length - failing.length,
+    failed: failing.length,
     last: rows.reduce((m: number | null, r) => Math.max(m ?? 0, r.finished), null),
-    failing: failing.slice(0, 10).map((r) => ({ tenant: r.tenant, source: r.source, finished: r.finished })) };
+    failing: failing.slice(0, 10).map((r) => ({ tenant: r.tenant, source: r.source, finished: r.finished })),
+  };
 }
 
 export function mockApi(): Plugin {
@@ -7960,35 +12280,109 @@ export function mockApi(): Plugin {
       [t - 86400 * 89 + 300, 'admin', 'tenant.create', 'tenant/acme', {}],
       [t - 86400 * 89 + 400, 'admin', 'tenant.create', 'tenant/initech', {}],
       [t - 86400 * 60, 'admin', 'settings.approvals', 'settings/approvals', { enabled: true }],
-      [t - 86400 * 41, 'admin', 'quorum.request', 'quorum/plugin_key.add', { action: 'plugin_key.add', publisher: 'example-labs' }],
+      [
+        t - 86400 * 41,
+        'admin',
+        'quorum.request',
+        'quorum/plugin_key.add',
+        { action: 'plugin_key.add', publisher: 'example-labs' },
+      ],
       [t - 86400 * 41 + 900, 'so', 'quorum.approve', 'quorum/plugin_key.add', { action: 'plugin_key.add' }],
-      [t - 86400 * 21, 'admin', 'quorum.request', 'quorum/replication_peer.create', { action: 'replication_peer.create', name: 'dr-site', tenants: ['acme'] }],
-      [t - 86400 * 21 + 900, 'so', 'quorum.approve', 'quorum/replication_peer.create', { action: 'replication_peer.create' }],
+      [
+        t - 86400 * 21,
+        'admin',
+        'quorum.request',
+        'quorum/replication_peer.create',
+        { action: 'replication_peer.create', name: 'dr-site', tenants: ['acme'] },
+      ],
+      [
+        t - 86400 * 21 + 900,
+        'so',
+        'quorum.approve',
+        'quorum/replication_peer.create',
+        { action: 'replication_peer.create' },
+      ],
       [t - 86400 * 20, 'system', 'replication_peer.enrolled', 'replication_peer/a1b2c3d4e5f60718', { name: 'dr-site' }],
-      [t - 86400 * 20 + 900, 'so2', 'quorum.approve', 'quorum/replication.key_export', { action: 'replication.key_export' }],
-      [t - 86400 * 9, 'so', 'quorum.reject', 'quorum/source.delete', { action: 'source.delete', name: 'old-esx-import' }],
-      [t - 86400 - 7200, 'acme', 'job.create', 'job/files_get', { kind: 'files_get', tenant: 'acme', paths: ['/etc/nginx'], format: 'zip' }],
-      [t - 86400 - 3600, 'admin', 'job.create', 'job/plugin_restore', { kind: 'plugin_restore', tenant: 'acme', restore: 'pitr' }],
+      [
+        t - 86400 * 20 + 900,
+        'so2',
+        'quorum.approve',
+        'quorum/replication.key_export',
+        { action: 'replication.key_export' },
+      ],
+      [
+        t - 86400 * 9,
+        'so',
+        'quorum.reject',
+        'quorum/source.delete',
+        { action: 'source.delete', name: 'old-esx-import' },
+      ],
+      [
+        t - 86400 - 7200,
+        'acme',
+        'job.create',
+        'job/files_get',
+        { kind: 'files_get', tenant: 'acme', paths: ['/etc/nginx'], format: 'zip' },
+      ],
+      [
+        t - 86400 - 3600,
+        'admin',
+        'job.create',
+        'job/plugin_restore',
+        { kind: 'plugin_restore', tenant: 'acme', restore: 'pitr' },
+      ],
       [t - 5400, 'admin', 'job.create', 'job/backup', { kind: 'backup', tenant: 'initech', params: { vmid: 101 } }],
       [t - 3605, 'unknown-user', 'auth.login_failed', 'session', {}],
-      [t - 86400 * 8, 'admin', 'settings.forwarding', 'settings/forwarding', { syslog: { host: 'siem.example.com', port: 6514 }, https: null }],
+      [
+        t - 86400 * 8,
+        'admin',
+        'settings.forwarding',
+        'settings/forwarding',
+        { syslog: { host: 'siem.example.com', port: 6514 }, https: null },
+      ],
       // Phase 19b: acme's tenant admin and the provider's "view as tenant"
-      [t - 86400 * 12, 'admin', 'tenant.policies', 'tenant/acme', { tenant: 'acme', policy_ids: db.tenantPolicies.acme, old: [] }],
-      [t - 86400 * 12 + 60, 'admin', 'user.create', 'user/90001', { name: 'tara', role: 'tenant_admin', tenant: 'acme' }],
+      [
+        t - 86400 * 12,
+        'admin',
+        'tenant.policies',
+        'tenant/acme',
+        { tenant: 'acme', policy_ids: db.tenantPolicies.acme, old: [] },
+      ],
+      [
+        t - 86400 * 12 + 60,
+        'admin',
+        'user.create',
+        'user/90001',
+        { name: 'tara', role: 'tenant_admin', tenant: 'acme' },
+      ],
       [t - 86400 * 4, 'tara', 'user.create', 'user/90002', { name: 'acme-ops', role: 'tenant_user', tenant: 'acme' }],
       [t - 7200, 'admin', 'tenant.impersonate', 'tenant/acme', { tenant: 'acme', role: 'viewer' }],
-      [t - 7100, 'admin impersonating:acme', 'job.create', 'job/files_list', { kind: 'files_list', tenant: 'acme', params: { source: 'vm-100', path: '/' } }],
+      [
+        t - 7100,
+        'admin impersonating:acme',
+        'job.create',
+        'job/files_list',
+        { kind: 'files_list', tenant: 'acme', params: { source: 'vm-100', path: '/' } },
+      ],
       [t - 6900, 'admin impersonating:acme', 'tenant.impersonate_end', 'tenant/acme', { tenant: 'acme' }],
       [t - 86400 * 33, 'admin', 'tenant.delete', 'tenant/hooli', { tenant: 'hooli', approvals: 'disabled' }],
     ];
     // the scheduler's daily anchor (head seq + hash leave the box with the forwarding)
-    for (let d = 7; d >= 1; d--) hist.push([t - 86400 * d - 3000, 'scheduler', 'audit.anchor', 'audit/chain', { head_seq: 0, head_hash: '' }]);
+    for (let d = 7; d >= 1; d--)
+      hist.push([t - 86400 * d - 3000, 'scheduler', 'audit.anchor', 'audit/chain', { head_seq: 0, head_hash: '' }]);
     for (const q of [...db.quorum].filter((x) => x.state === 'pending').sort((a, b) => a.created - b.created))
-      hist.push([q.created, q.requested_by, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params }]);
+      hist.push([
+        q.created,
+        q.requested_by,
+        'quorum.request',
+        `quorum/${q.id}`,
+        { action: q.action, params: q.params },
+      ]);
     hist.sort((a, b) => a[0] - b[0]);
     for (const [ts, actor, action, target, details] of hist) {
       const head = db.audit[db.audit.length - 1];
-      const d = action === 'audit.anchor' ? { head_seq: head?.seq ?? 0, head_hash: head?.hash ?? '0'.repeat(64) } : details;
+      const d =
+        action === 'audit.anchor' ? { head_seq: head?.seq ?? 0, head_hash: head?.hash ?? '0'.repeat(64) } : details;
       await audit(actor, action, target, d, ts);
     }
   })();
@@ -8012,7 +12406,9 @@ export function mockApi(): Plugin {
 
 /** Set by a security officer (immediate); release = approval `snapshot.hold_release`. */
 function openHold(tenant: string, source: string, time: number): Json | undefined {
-  return db.holds.find((h) => h.tenant === tenant && h.source === source && h.time === time && ['active', 'advisory'].includes(h.state));
+  return db.holds.find(
+    (h) => h.tenant === tenant && h.source === source && h.time === time && ['active', 'advisory'].includes(h.state),
+  );
 }
 function activeHold(tenant: string, source: string, time: number): Json | undefined {
   const h = openHold(tenant, source, time);
@@ -8020,7 +12416,10 @@ function activeHold(tenant: string, source: string, time: number): Json | undefi
 }
 function holdView(h: Json | undefined): Json | null {
   if (!h) return null;
-  const q = db.quorum.find((x) => x.action === 'snapshot.hold_release' && ['pending', 'approved'].includes(x.state) && x.params.hold_id === h.id);
+  const q = db.quorum.find(
+    (x) =>
+      x.action === 'snapshot.hold_release' && ['pending', 'approved'].includes(x.state) && x.params.hold_id === h.id,
+  );
   return { ...h, release_quorum: q?.id ?? null };
 }
 /** The snapshot an alert offers to hold (anomaly: the last one before it; advisory: its own). */
@@ -8037,7 +12436,8 @@ function alertSnapshot(a: Json): Json | null {
 }
 function holdReason(b: Json): string {
   const r = typeof b?.reason === 'string' ? b.reason.trim() : '';
-  if (!r || r.length > 500 || /[\u0000-\u001f]/.test(r)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!r || r.length > 500 || /[\u0000-\u001f]/.test(r))
+    throw new HttpError(400, 'reason: 1 to 500 characters, one line');
   return r;
 }
 /** Holds one snapshot; applies an advisory. null if already held. */
@@ -8048,10 +12448,24 @@ function holdOne(tenant: string, source: string, time: number, reason: string, b
     const from = { advisory_from: open.origin, primary_held_by: open.held_by };
     Object.assign(open, { state: 'active', reason, held_by: by, held_at: now() });
     for (const a of db.alerts)
-      if (a.key === `legal_hold_advisory:${tenant}/${source}/${time}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: by, auto: true });
+      if (a.key === `legal_hold_advisory:${tenant}/${source}/${time}` && !a.resolved_at)
+        Object.assign(a, { resolved_at: now(), resolved_by: by, auto: true });
     return { id: open.id, ...from };
   }
-  const h = { id: nextId(), tenant, source, time, state: 'active', reason, held_by: by, held_at: now(), origin: null, released_by: null, approved_by: null, released_at: null };
+  const h = {
+    id: nextId(),
+    tenant,
+    source,
+    time,
+    state: 'active',
+    reason,
+    held_by: by,
+    held_at: now(),
+    origin: null,
+    released_by: null,
+    approved_by: null,
+    released_at: null,
+  };
   db.holds.push(h);
   return { id: h.id };
 }
@@ -8059,7 +12473,10 @@ function holdOne(tenant: string, source: string, time: number, reason: string, b
 /** The case's search: a file_search job; the matches are made up from the tenant's snapshots. */
 function caseSearch(cs: Json, by: string) {
   const crit = cs.criteria;
-  const word = String(crit.query).replace(/[*?\[\]]/g, '').trim() || 'match';
+  const word =
+    String(crit.query)
+      .replace(/[*?\[\]]/g, '')
+      .trim() || 'match';
   const snaps = (db.snapshots as Json[])
     .filter((s) => s.tenant === cs.tenant && s.local && String(s.source).startsWith(crit.source_prefix ?? ''))
     .filter((s) => (!crit.from || s.time >= crit.from) && (!crit.to || s.time <= crit.to))
@@ -8067,12 +12484,33 @@ function caseSearch(cs: Json, by: string) {
   const bySource = new Map<string, number[]>();
   for (const s of snaps) bySource.set(s.source, [...(bySource.get(s.source) ?? []), s.time]);
   cs.matches = [...bySource.entries()].flatMap(([source, times], i) => [
-    { source, path: `mail/Inbox/${word} ~${(4711 + i).toString(16)}a1.eml`, kind: 'file', size: 48_211 + i, mtime: times[times.length - 1], times },
-    ...(i % 2 ? [] : [{ source, path: `mail/Sent Items/RE ${word} ~${(9311 + i).toString(16)}c7.eml`, kind: 'file', size: 21_904, mtime: times[0], times: times.slice(0, 2) }]),
+    {
+      source,
+      path: `mail/Inbox/${word} ~${(4711 + i).toString(16)}a1.eml`,
+      kind: 'file',
+      size: 48_211 + i,
+      mtime: times[times.length - 1],
+      times,
+    },
+    ...(i % 2
+      ? []
+      : [
+          {
+            source,
+            path: `mail/Sent Items/RE ${word} ~${(9311 + i).toString(16)}c7.eml`,
+            kind: 'file',
+            size: 21_904,
+            mtime: times[0],
+            times: times.slice(0, 2),
+          },
+        ]),
   ]);
-  const held = new Map((cs.snapshot_list ?? []).filter((x: Json) => x.hold).map((x: Json) => [`${x.source}/${x.time}`, x.hold]));
+  const held = new Map(
+    (cs.snapshot_list ?? []).filter((x: Json) => x.hold).map((x: Json) => [`${x.source}/${x.time}`, x.hold]),
+  );
   const items = new Map<string, number>();
-  for (const m of cs.matches) for (const t of m.times) items.set(`${m.source}/${t}`, (items.get(`${m.source}/${t}`) ?? 0) + 1);
+  for (const m of cs.matches)
+    for (const t of m.times) items.set(`${m.source}/${t}`, (items.get(`${m.source}/${t}`) ?? 0) + 1);
   cs.snapshot_list = [...items.entries()]
     .map(([k, n]) => {
       const i = k.lastIndexOf('/');
@@ -8085,11 +12523,15 @@ function caseSearch(cs: Json, by: string) {
 }
 function caseView(cs: Json, full = false): Json {
   const list: Json[] = cs.snapshot_list ?? [];
-  for (const x of list) if (x.hold) x.hold = { ...x.hold, state: db.holds.find((h) => h.id === x.hold.id)?.state ?? x.hold.state };
+  for (const x of list)
+    if (x.hold) x.hold = { ...x.hold, state: db.holds.find((h) => h.id === x.hold.id)?.state ?? x.hold.state };
   const job = db.jobs.find((j) => j.id === cs.last_job);
   const v: Json = {
-    ...cs, snapshots: list.filter((x) => x.items > 0).length, items: list.reduce((a, x) => a + x.items, 0),
-    held: list.filter((x) => x.hold?.state === 'active').length, job_state: job?.state ?? null,
+    ...cs,
+    snapshots: list.filter((x) => x.items > 0).length,
+    items: list.reduce((a, x) => a + x.items, 0),
+    held: list.filter((x) => x.hold?.state === 'active').length,
+    job_state: job?.state ?? null,
   };
   delete v.matches;
   delete v.snapshot_list;
@@ -8104,28 +12546,54 @@ on('GET', '/cases', (c) => {
   const u = need(c.user, 'admin', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const tq = c.query.get('tenant');
-  return [200, db.cases.filter((x) => !tq || x.tenant === tq).sort((a, b) => a.state.localeCompare(b.state) || b.id - a.id).map((x) => caseView(x))];
+  return [
+    200,
+    db.cases
+      .filter((x) => !tq || x.tenant === tq)
+      .sort((a, b) => a.state.localeCompare(b.state) || b.id - a.id)
+      .map((x) => caseView(x)),
+  ];
 });
 on('POST', '/cases', async (c) => {
   const u = need(c.user, 'admin', 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const b = c.body;
   find(db.tenants, (x) => x.name === b.tenant, 'tenant');
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(b.name))) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(b.name)))
+    throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
   const q = String(b.criteria?.query ?? '').trim();
   if (!q || q.length > 256) throw new HttpError(400, 'criteria.query: 1..=256 characters');
-  if (db.cases.some((x) => x.tenant === b.tenant && x.name === b.name)) throw new HttpError(409, 'a case of this name exists in the tenant');
+  if (db.cases.some((x) => x.tenant === b.tenant && x.name === b.name))
+    throw new HttpError(409, 'a case of this name exists in the tenant');
   const criteria: Json = { query: q, case_sensitive: !!b.criteria.case_sensitive };
   const prefix = b.criteria.source_prefix ?? 'plugin-m365-';
   if (prefix) criteria.source_prefix = prefix;
-  for (const k of ['source', 'from', 'to']) if (b.criteria[k] !== undefined && b.criteria[k] !== null) criteria[k] = b.criteria[k];
+  for (const k of ['source', 'from', 'to'])
+    if (b.criteria[k] !== undefined && b.criteria[k] !== null) criteria[k] = b.criteria[k];
   const cs: Json = {
-    id: nextId(), tenant: b.tenant, name: b.name, description: String(b.description ?? '').trim(), criteria, state: 'open',
-    created_by: u.name, created_at: now(), closed_by: null, closed_at: null, last_job: null, searched_at: null, truncated: false,
+    id: nextId(),
+    tenant: b.tenant,
+    name: b.name,
+    description: String(b.description ?? '').trim(),
+    criteria,
+    state: 'open',
+    created_by: u.name,
+    created_at: now(),
+    closed_by: null,
+    closed_at: null,
+    last_job: null,
+    searched_at: null,
+    truncated: false,
   };
   db.cases.push(cs);
   caseSearch(cs, u.name);
-  await audit(u.name, 'case.create', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, name: cs.name, criteria, job: cs.last_job });
+  await audit(u.name, 'case.create', `case/${cs.id}`, {
+    case_tenant: cs.tenant,
+    case: cs.id,
+    name: cs.name,
+    criteria,
+    job: cs.last_job,
+  });
   return [201, { ...caseView(cs), job_id: cs.last_job }];
 });
 on('GET', '/cases/:id', async (c, [id]) => {
@@ -8136,7 +12604,8 @@ on('GET', '/cases/:id', async (c, [id]) => {
 on('POST', '/cases/:id/search', async (c, [id]) => {
   const { u, cs } = caseOf(c, id);
   if (cs.state !== 'open') throw new HttpError(409, 'the case is closed');
-  if (['queued', 'running'].includes(db.jobs.find((j) => j.id === cs.last_job)?.state ?? '')) throw new HttpError(409, "the case's search is still running");
+  if (['queued', 'running'].includes(db.jobs.find((j) => j.id === cs.last_job)?.state ?? ''))
+    throw new HttpError(409, "the case's search is still running");
   caseSearch(cs, u.name);
   await audit(u.name, 'case.search', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, job: cs.last_job });
   return [202, { job_id: cs.last_job }];
@@ -8159,24 +12628,39 @@ on('POST', '/cases/:id/hold', async (c, [id]) => {
 on('POST', '/cases/:id/export', async (c, [id]) => {
   const { u, cs } = caseOf(c, id);
   if (!canDownload(u)) throw new HttpError(403, 'this account may not download files');
-  if (db.vault.enabled) throw new HttpError(409, 'vault mode is on: case exports are not allowed on this appliance (Settings → Vault)');
+  if (db.vault.enabled)
+    throw new HttpError(409, 'vault mode is on: case exports are not allowed on this appliance (Settings → Vault)');
   const format = c.body?.format ?? 'tar';
   if (!['tar', 'zip'].includes(format)) throw new HttpError(400, 'format: tar or zip');
   const mail = c.body?.mail_format;
   if (mail && !['eml', 'mbox', 'pst'].includes(mail)) throw new HttpError(400, 'mail_format: eml, mbox or pst');
   if (!cs.matches?.length) throw new HttpError(409, "the case's last search matched nothing");
   const per = new Map<string, string[]>();
-  for (const m of cs.matches) for (const t of m.times) per.set(`${t}\0${m.source}`, [...(per.get(`${t}\0${m.source}`) ?? []), '/' + m.path]);
+  for (const m of cs.matches)
+    for (const t of m.times) per.set(`${t}\0${m.source}`, [...(per.get(`${t}\0${m.source}`) ?? []), '/' + m.path]);
   const jobs = [...per.entries()]
     .sort((a, b) => Number(b[0].split('\0')[0]) - Number(a[0].split('\0')[0]))
     .slice(0, 50)
     .map(([k, paths]) => {
       const [time, source] = k.split('\0');
-      const p: Json = { source, time: Number(time), paths, format, download_token: rand(32), ...(mail && source.startsWith('plugin-m365-') ? { params: { mail_format: mail } } : {}) };
+      const p: Json = {
+        source,
+        time: Number(time),
+        paths,
+        format,
+        download_token: rand(32),
+        ...(mail && source.startsWith('plugin-m365-') ? { params: { mail_format: mail } } : {}),
+      };
       const j = addJob('files_get', cs.tenant, p, u.name);
       return { id: j.id, source, time: Number(time), download_token: p.download_token };
     });
-  await audit(u.name, 'case.export', `case/${cs.id}`, { case_tenant: cs.tenant, case: cs.id, jobs: jobs.map((j) => j.id), format, mail_format: mail ?? null });
+  await audit(u.name, 'case.export', `case/${cs.id}`, {
+    case_tenant: cs.tenant,
+    case: cs.id,
+    jobs: jobs.map((j) => j.id),
+    format,
+    mail_format: mail ?? null,
+  });
   return [202, { jobs }];
 });
 on('POST', '/cases/:id/close', async (c, [id]) => {
@@ -8211,18 +12695,28 @@ on('POST', '/holds', async (c) => {
   const u = need(c.user, 'security_officer');
   const { tenant, source = null, from, to } = c.body ?? {};
   if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
-  if (!Number.isInteger(from) || !Number.isInteger(to) || from > to) throw new HttpError(400, 'from must not be after to');
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from > to)
+    throw new HttpError(400, 'from must not be after to');
   const reason = holdReason(c.body);
   const held: string[] = [];
-  for (const s of db.snapshots.filter((x) => x.tenant === tenant && (!source || x.source === source) && x.time >= from && x.time <= to))
+  for (const s of db.snapshots.filter(
+    (x) => x.tenant === tenant && (!source || x.source === source) && x.time >= from && x.time <= to,
+  ))
     if (holdOne(s.tenant, s.source, s.time, reason, u.name)) held.push(`${s.source}/${s.time}`);
-  if (held.length) await audit(u.name, 'snapshot.hold', `tenant/${tenant}`, { reason, source, from, to, snapshots: held });
+  if (held.length)
+    await audit(u.name, 'snapshot.hold', `tenant/${tenant}`, { reason, source, from, to, snapshots: held });
   return [200, { held: held.length, snapshots: held }];
 });
 on('GET', '/holds', (c) => {
   const u = need(c.user);
   const st = c.query.get('state');
-  return [200, byTenant(u, db.holds as any[]).filter((h) => !st || h.state === st).map(holdView).sort((a, b) => b!.id - a!.id)];
+  return [
+    200,
+    byTenant(u, db.holds as any[])
+      .filter((h) => !st || h.state === st)
+      .map(holdView)
+      .sort((a, b) => b!.id - a!.id),
+  ];
 });
 function seedHolds(t: number) {
   const of = (tenant: string, source: string, n: number) =>
@@ -8230,26 +12724,54 @@ function seedHolds(t: number) {
   // a litigation hold on an older initech snapshot
   const lit = of('initech', 'vm-100', 6);
   db.holds.push({
-    id: nextId(), tenant: 'initech', source: 'vm-100', time: lit.time, state: 'active', reason: 'Litigation hold, case 2026-17 (legal department)',
-    held_by: 'so', held_at: t - 86400 * 4, origin: null, released_by: null, approved_by: null, released_at: null,
+    id: nextId(),
+    tenant: 'initech',
+    source: 'vm-100',
+    time: lit.time,
+    state: 'active',
+    reason: 'Litigation hold, case 2026-17 (legal department)',
+    held_by: 'so',
+    held_at: t - 86400 * 4,
+    origin: null,
+    released_by: null,
+    approved_by: null,
+    released_at: null,
   });
   // the change-rate anomaly on acme/vm-301 names the last good snapshot ("Hold last good snapshot")
   const [bad, good] = [of('acme', 'vm-301', 0), of('acme', 'vm-301', 1)];
   db.alerts.push(
     mkAlert({
-      ts: bad.time + 1500, severity: 'critical', kind: 'anomaly', key: 'anomaly:acme/vm-301', tenant: 'acme',
+      ts: bad.time + 1500,
+      severity: 'critical',
+      kind: 'anomaly',
+      key: 'anomaly:acme/vm-301',
+      tenant: 'acme',
       message: `change-rate anomaly on acme/vm-301: snapshot ${bad.time}: 21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted; last snapshot before: vm-301/${good.time}`,
     }),
   );
   // the primary hq-primary holds a replicated globex snapshot: advisory here
   const adv = db.snapshots.filter((s) => s.tenant === 'globex').sort((a, b) => b.time - a.time)[3];
   db.holds.push({
-    id: nextId(), tenant: 'globex', source: adv.source, time: adv.time, state: 'advisory', reason: 'Tax audit 2026 (hold all globex data)',
-    held_by: 'legal-hq', held_at: t - 86400, origin: 'hq-primary', released_by: null, approved_by: null, released_at: null,
+    id: nextId(),
+    tenant: 'globex',
+    source: adv.source,
+    time: adv.time,
+    state: 'advisory',
+    reason: 'Tax audit 2026 (hold all globex data)',
+    held_by: 'legal-hq',
+    held_at: t - 86400,
+    origin: 'hq-primary',
+    released_by: null,
+    approved_by: null,
+    released_at: null,
   });
   db.alerts.push(
     mkAlert({
-      ts: t - 3 * 3600, severity: 'warning', kind: 'legal_hold_advisory', key: `legal_hold_advisory:globex/${adv.source}/${adv.time}`, tenant: 'globex',
+      ts: t - 3 * 3600,
+      severity: 'warning',
+      kind: 'legal_hold_advisory',
+      key: `legal_hold_advisory:globex/${adv.source}/${adv.time}`,
+      tenant: 'globex',
       message: `primary hq-primary holds globex/${adv.source}/${adv.time} under a legal hold (Tax audit 2026 (hold all globex data), set by legal-hq); not applied here`,
     }),
   );
@@ -8259,7 +12781,10 @@ function seedHolds(t: number) {
 // The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
 
 const TKEY_TTL = 24 * 3600;
-const tenantKeys = new Map<string, { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum: boolean }>();
+const tenantKeys = new Map<
+  string,
+  { kid: string; set_at: number; requested_by: string; approved_by: string; post_quantum: boolean }
+>();
 function tkeyStatus(q: Json, t = now()): string {
   if (q.state === 'pending' || q.state === 'rejected') return q.state;
   if (q.state === 'approved') return q.decided_at && q.decided_at + TKEY_TTL > t ? 'approved' : 'expired';
@@ -8277,12 +12802,24 @@ function tkeyUser(c: Ctx, tenant: string, ...roles: Role[]): User {
 function seedTenantKeys(t: number) {
   // acme set up a tenant recovery key three weeks ago
   const q = {
-    id: nextId(), action: 'tenant.recovery_key', params: { tenant: 'acme', replace: false },
-    requested_by: 'admin', created: t - 86400 * 21, decided_by: 'so', decided_at: t - 86400 * 21 + 900, state: 'executed',
+    id: nextId(),
+    action: 'tenant.recovery_key',
+    params: { tenant: 'acme', replace: false },
+    requested_by: 'admin',
+    created: t - 86400 * 21,
+    decided_by: 'so',
+    decided_at: t - 86400 * 21 + 900,
+    state: 'executed',
   };
   db.quorum.push(q);
   // set before Phase 30: X25519-only escrow
-  tenantKeys.set('acme', { kid: rand(8), set_at: t - 86400 * 21 + 1200, requested_by: 'admin', approved_by: 'so', post_quantum: false });
+  tenantKeys.set('acme', {
+    kid: rand(8),
+    set_at: t - 86400 * 21 + 1200,
+    requested_by: 'admin',
+    approved_by: 'so',
+    post_quantum: false,
+  });
 }
 on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
   const tenant = decodeURIComponent(tn);
@@ -8292,10 +12829,17 @@ on('GET', '/tenants/:tenant/recovery-key', (c, [tn]) => {
     {
       tenant,
       key: tenantKeys.get(tenant) ?? null,
-      requests: tkeyRows(tenant).slice(0, 20).map((q) => ({
-        id: q.id, requested_by: q.requested_by, created: q.created, decided_by: q.decided_by, decided_at: q.decided_at,
-        show_until: q.decided_at ? q.decided_at + TKEY_TTL : null, status: tkeyStatus(q),
-      })),
+      requests: tkeyRows(tenant)
+        .slice(0, 20)
+        .map((q) => ({
+          id: q.id,
+          requested_by: q.requested_by,
+          created: q.created,
+          decided_by: q.decided_by,
+          decided_at: q.decided_at,
+          show_until: q.decided_at ? q.decided_at + TKEY_TTL : null,
+          status: tkeyStatus(q),
+        })),
     },
   ];
 });
@@ -8320,9 +12864,19 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   const replaced = tenantKeys.get(tenant)?.kid ?? null;
   q.state = 'executed';
   // Phase 30: new keys seal the escrow X25519 + ML-KEM-768
-  tenantKeys.set(tenant, { kid, set_at: now(), requested_by: q.requested_by, approved_by: q.decided_by, post_quantum: true });
+  tenantKeys.set(tenant, {
+    kid,
+    set_at: now(),
+    requested_by: q.requested_by,
+    approved_by: q.decided_by,
+    post_quantum: true,
+  });
   await audit(u.name, 'tenant.recovery_key_shown', `tenant/${tenant}/recovery-key`, {
-    kid, replaced, quorum_id: q.id, approved_by: q.decided_by, approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
+    kid,
+    replaced,
+    quorum_id: q.id,
+    approved_by: q.decided_by,
+    approvals: q.decided_by === q.requested_by ? 'disabled' : 'enabled',
   });
   return [200, { tenant, key, kid, replaced }];
 });
@@ -8334,33 +12888,52 @@ function incidentBanner(u: User): Json | null {
   const { since, by, reason } = db.incident;
   return { since, by, reason };
 }
-const incidentLeaveQuorum = () => db.quorum.find((q) => q.action === 'incident.leave' && q.state === 'pending')?.id ?? null;
+const incidentLeaveQuorum = () =>
+  db.quorum.find((q) => q.action === 'incident.leave' && q.state === 'pending')?.id ?? null;
 on('GET', '/incident', (c) => {
   const u = need(c.user, 'admin', 'security_officer', 'operator', 'viewer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
-  return [200, { ...(db.incident ?? { active: false }), leave_quorum: incidentLeaveQuorum(), freeze_lift_quorum: freezeLiftQuorum('appliance') }];
+  return [
+    200,
+    {
+      ...(db.incident ?? { active: false }),
+      leave_quorum: incidentLeaveQuorum(),
+      freeze_lift_quorum: freezeLiftQuorum('appliance'),
+    },
+  ];
 });
 on('POST', '/incident', async (c) => {
   const u = need(c.user, 'security_officer');
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const b = c.body ?? {};
   const reason = String(b.reason ?? '').trim();
-  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
-  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
-  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason))
+    throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!b.current_password || !b.current_totp)
+    throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp)))
+    throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
   if (db.incident?.active) throw new HttpError(409, 'incident mode is already active');
   const h = b.hold ?? null;
   const held: string[] = [];
   if (h) {
     if (h.from > h.to) throw new HttpError(400, 'hold: from must not be after to');
     const tenants: string[] = h.tenants?.length ? h.tenants : db.tenants.map((x) => x.name);
-    for (const t of tenants) if (!db.tenants.some((x) => x.name === t)) throw new HttpError(400, `hold: no tenant ${t}`);
+    for (const t of tenants)
+      if (!db.tenants.some((x) => x.name === t)) throw new HttpError(400, `hold: no tenant ${t}`);
     for (const x of db.snapshots)
-      if (tenants.includes(x.tenant) && x.time >= h.from && x.time <= h.to && (!h.sources?.length || h.sources.includes(x.source)))
-        if (holdOne(x.tenant, x.source, x.time, `incident: ${reason}`, u.name)) held.push(`${x.tenant}/${x.source}/${x.time}`);
+      if (
+        tenants.includes(x.tenant) &&
+        x.time >= h.from &&
+        x.time <= h.to &&
+        (!h.sources?.length || h.sources.includes(x.source))
+      )
+        if (holdOne(x.tenant, x.source, x.time, `incident: ${reason}`, u.name))
+          held.push(`${x.tenant}/${x.source}/${x.time}`);
   }
   const ids: number[] | null = Array.isArray(b.groups) ? b.groups : null;
-  for (const id of ids ?? []) if (!db.groups.some((g) => g.id === id)) throw new HttpError(400, `groups: no group ${id}`);
+  for (const id of ids ?? [])
+    if (!db.groups.some((g) => g.id === id)) throw new HttpError(400, `groups: no group ${id}`);
   const paused: Json[] = [];
   for (const g of db.groups) {
     if ((ids && !ids.includes(g.id)) || g.paused_until === -1) continue;
@@ -8375,7 +12948,19 @@ on('POST', '/incident', async (c) => {
   const msg = `incident mode entered by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens ended)`;
   const alert = mkAlert({ ts: t, severity: 'critical', kind: 'incident', key: 'incident', message: msg });
   db.alerts.push(alert);
-  db.incident = { active: true, freeze: normFreeze(b.freeze, true), since: t, by: u.name, reason, hold: h ? { tenants: h.tenants ?? [], sources: h.sources ?? [], from: h.from, to: h.to } : null, held, paused, sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id };
+  db.incident = {
+    active: true,
+    freeze: normFreeze(b.freeze, true),
+    since: t,
+    by: u.name,
+    reason,
+    hold: h ? { tenants: h.tenants ?? [], sources: h.sources ?? [], from: h.from, to: h.to } : null,
+    held,
+    paused,
+    sessions_ended: sessions,
+    tokens_revoked: tokens,
+    alert: alert.id,
+  };
   dashCache.clear();
   await audit(u.name, 'incident.enter', 'appliance', { incident: db.incident });
   return [201, db.incident];
@@ -8386,7 +12971,16 @@ on('POST', '/incident/leave', async (c) => {
   if (!db.incident?.active) throw new HttpError(409, 'incident mode is not active');
   if (incidentLeaveQuorum()) throw new HttpError(409, 'leaving incident mode is already requested');
   // always a second person, even with approvals disabled
-  const q = { id: nextId(), action: 'incident.leave', params: { since: db.incident.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'incident.leave',
+    params: { since: db.incident.since },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
   return [202, { quorum_id: q.id }];
@@ -8400,42 +12994,111 @@ function postureChecks(): [string, string, boolean, string][] {
   const dormant = approvers.filter((u) => (u.last_login ?? 0) < t - dormantDays * DAY).map((u) => u.name);
   const sinks = ['syslog', 'https'].filter((k) => db.forwarding[k]?.enabled);
   const failing = sinks.filter((k) => db.forwardErr[k]);
-  const unlocked = db.tenants.filter((x) => !(x.offsite?.remote?.type === 's3' && x.offsite.remote.lock)).map((x) => x.name);
+  const unlocked = db.tenants
+    .filter((x) => !(x.offsite?.remote?.type === 's3' && x.offsite.remote.lock))
+    .map((x) => x.name);
   const allow = db.firewall.web.allow;
   // Phase 30: standing administrators vs. just-in-time elevation
   const standing = db.users.filter((u) => u.role === 'admin' && !u.disabled && !u.act && !u.tenant).map((u) => u.name);
   const jit = db.users.filter((u) => u.eligible_role && !u.disabled).length;
   const jitTail = jit ? `; ${jit} account(s) elevate just in time` : '';
   return [
-    ['posture.approvals', 'Security posture: approvals', db.approvals && approvers.length >= 3,
-      `approvals ${db.approvals ? 'on' : 'off'}, ${approvers.length} possible approver(s) (active admins and security officers)`],
-    ['posture.forwarding', 'Security posture: audit forwarding', sinks.length > 0 && !failing.length,
-      !sinks.length ? 'no audit forwarding to a syslog or HTTPS receiver configured' : failing.length ? `forwarding not delivering: ${failing.join(', ')}` : `forwarding delivers to ${sinks.join(', ')}`],
-    ['posture.offsite_lock', 'Security posture: offsite lock', !unlocked.length,
-      unlocked.length ? `no offsite copy with S3 Object Lock for: ${unlocked.join(', ')}` : `${db.tenants.length} tenant(s) copy offsite with S3 Object Lock`],
-    ['posture.inbound', 'Security posture: inbound allow-list', allow.length > 0,
-      allow.length ? `web UI and API restricted to ${allow.join(', ')}` : 'the web UI and API accept connections from any address (no inbound allow-list)'],
-    ['posture.certificate', 'Security posture: own web certificate', !!p14.cert.web, p14.cert.web ? 'imported certificate CN=backup.example.com' : 'the self-signed certificate is in use; import one signed by your CA'],
-    ['posture.dormant_admins', 'Security posture: dormant administrators', !dormant.length,
-      dormant.length ? `no login for ${dormantDays} days: ${dormant.join(', ')}` : `every admin and security officer logged in within ${dormantDays} days`],
-    ['posture.standing_admins', 'Security posture: standing administrators', standing.length <= 2,
+    [
+      'posture.approvals',
+      'Security posture: approvals',
+      db.approvals && approvers.length >= 3,
+      `approvals ${db.approvals ? 'on' : 'off'}, ${approvers.length} possible approver(s) (active admins and security officers)`,
+    ],
+    [
+      'posture.forwarding',
+      'Security posture: audit forwarding',
+      sinks.length > 0 && !failing.length,
+      !sinks.length
+        ? 'no audit forwarding to a syslog or HTTPS receiver configured'
+        : failing.length
+          ? `forwarding not delivering: ${failing.join(', ')}`
+          : `forwarding delivers to ${sinks.join(', ')}`,
+    ],
+    [
+      'posture.offsite_lock',
+      'Security posture: offsite lock',
+      !unlocked.length,
+      unlocked.length
+        ? `no offsite copy with S3 Object Lock for: ${unlocked.join(', ')}`
+        : `${db.tenants.length} tenant(s) copy offsite with S3 Object Lock`,
+    ],
+    [
+      'posture.inbound',
+      'Security posture: inbound allow-list',
+      allow.length > 0,
+      allow.length
+        ? `web UI and API restricted to ${allow.join(', ')}`
+        : 'the web UI and API accept connections from any address (no inbound allow-list)',
+    ],
+    [
+      'posture.certificate',
+      'Security posture: own web certificate',
+      !!p14.cert.web,
+      p14.cert.web
+        ? 'imported certificate CN=backup.example.com'
+        : 'the self-signed certificate is in use; import one signed by your CA',
+    ],
+    [
+      'posture.dormant_admins',
+      'Security posture: dormant administrators',
+      !dormant.length,
+      dormant.length
+        ? `no login for ${dormantDays} days: ${dormant.join(', ')}`
+        : `every admin and security officer logged in within ${dormantDays} days`,
+    ],
+    [
+      'posture.standing_admins',
+      'Security posture: standing administrators',
+      standing.length <= 2,
       standing.length > 2
         ? `${standing.length} standing administrators (${standing.join(', ')}); keep at most 2 (break-glass and one more) and give the others an eligible role${jitTail}`
-        : `${standing.length} standing administrator(s)${jitTail}`],
-    ['posture.totp', 'Security posture: second factor', true, `${db.users.filter((u) => !u.disabled).length} local account(s) with password + TOTP`],
+        : `${standing.length} standing administrator(s)${jitTail}`,
+    ],
+    [
+      'posture.totp',
+      'Security posture: second factor',
+      true,
+      `${db.users.filter((u) => !u.disabled).length} local account(s) with password + TOTP`,
+    ],
     ['posture.grub', 'Security posture: boot menu password', true, 'boot menu password set'],
   ];
 }
 
 // Phase 24d: fleet enrollment (fleet secrets, discovery candidates, CSV bulk enrollment)
 type MockFleet = {
-  id: string; name: string; tenant: string; created: number; created_by: string; expires: number;
-  max_uses: number | null; uses: number; revoked: boolean; auto_accept: boolean; port: number; ranges: string[];
-  group: string | null; group_rules: { pattern: string; group: string }[]; last_scan: number | null;
+  id: string;
+  name: string;
+  tenant: string;
+  created: number;
+  created_by: string;
+  expires: number;
+  max_uses: number | null;
+  uses: number;
+  revoked: boolean;
+  auto_accept: boolean;
+  port: number;
+  ranges: string[];
+  group: string | null;
+  group_rules: { pattern: string; group: string }[];
+  last_scan: number | null;
 };
 type MockCandidate = {
-  id: number; fleet_id: string; host: string; port: number; hostname: string; os: string; version: string;
-  first_seen: number; last_seen: number; state: 'awaiting' | 'accepted' | 'rejected'; agent_id: string | null;
+  id: number;
+  fleet_id: string;
+  host: string;
+  port: number;
+  hostname: string;
+  os: string;
+  version: string;
+  first_seen: number;
+  last_seen: number;
+  state: 'awaiting' | 'accepted' | 'rejected';
+  agent_id: string | null;
 };
 const fleets: MockFleet[] = [];
 const candidates: MockCandidate[] = [];
@@ -8444,18 +13107,62 @@ let candidateSeq = 0;
 function seedFleet(t: number) {
   fleets.push(
     {
-      id: '3f9a1c07d2e84b56', name: 'acme-clients', tenant: 'acme', created: t - 86400 * 3, created_by: 'admin', expires: t + 86400 * 11,
-      max_uses: 200, uses: 1, revoked: false, auto_accept: false, port: 7444, ranges: ['198.51.100.0/24', 'build01.acme.example.com'],
-      group: 'acme-web01', group_rules: [{ pattern: 'fs*', group: 'acme-fs02' }], last_scan: t - 420,
+      id: '3f9a1c07d2e84b56',
+      name: 'acme-clients',
+      tenant: 'acme',
+      created: t - 86400 * 3,
+      created_by: 'admin',
+      expires: t + 86400 * 11,
+      max_uses: 200,
+      uses: 1,
+      revoked: false,
+      auto_accept: false,
+      port: 7444,
+      ranges: ['198.51.100.0/24', 'build01.acme.example.com'],
+      group: 'acme-web01',
+      group_rules: [{ pattern: 'fs*', group: 'acme-fs02' }],
+      last_scan: t - 420,
     },
     {
-      id: '81c4e0b9a6f2d371', name: 'initech-pilot', tenant: 'initech', created: t - 86400 * 40, created_by: 'admin', expires: t - 86400 * 10,
-      max_uses: 10, uses: 3, revoked: true, auto_accept: true, port: 7444, ranges: ['192.0.2.0/26'], group: null, group_rules: [], last_scan: t - 86400 * 11,
+      id: '81c4e0b9a6f2d371',
+      name: 'initech-pilot',
+      tenant: 'initech',
+      created: t - 86400 * 40,
+      created_by: 'admin',
+      expires: t - 86400 * 10,
+      max_uses: 10,
+      uses: 3,
+      revoked: true,
+      auto_accept: true,
+      port: 7444,
+      ranges: ['192.0.2.0/26'],
+      group: null,
+      group_rules: [],
+      last_scan: t - 86400 * 11,
     },
   );
   const web01 = db.agents.find((a) => a.name === 'web01');
-  const c = (host: string, hostname: string, os: string, state: MockCandidate['state'], agent_id: string | null = null, age = 3600) =>
-    candidates.push({ id: ++candidateSeq, fleet_id: '3f9a1c07d2e84b56', host, port: 7444, hostname, os, version: '0.9.0', first_seen: t - age, last_seen: t - 420, state, agent_id });
+  const c = (
+    host: string,
+    hostname: string,
+    os: string,
+    state: MockCandidate['state'],
+    agent_id: string | null = null,
+    age = 3600,
+  ) =>
+    candidates.push({
+      id: ++candidateSeq,
+      fleet_id: '3f9a1c07d2e84b56',
+      host,
+      port: 7444,
+      hostname,
+      os,
+      version: '0.9.0',
+      first_seen: t - age,
+      last_seen: t - 420,
+      state,
+      agent_id,
+    });
   c('198.51.100.41', 'ws-041', 'Windows 11 Pro (10.0.26100)', 'awaiting');
   c('198.51.100.57', 'fs-branch2', 'Windows Server 2022 Standard (10.0.20348)', 'awaiting', null, 7200);
   c('198.51.100.62', 'kiosk-07', 'Ubuntu 24.04.1 LTS', 'rejected', null, 86400);
@@ -8463,12 +13170,16 @@ function seedFleet(t: number) {
 }
 const FLEET_ID_RE = /^[0-9a-f]{16}$/;
 const fleetActive = (f: MockFleet) => !f.revoked && f.expires > now() && (f.max_uses === null || f.uses < f.max_uses);
-const pubFleet = (f: MockFleet) => ({ ...f, awaiting: candidates.filter((c) => c.fleet_id === f.id && c.state === 'awaiting').length });
+const pubFleet = (f: MockFleet) => ({
+  ...f,
+  awaiting: candidates.filter((c) => c.fleet_id === f.id && c.state === 'awaiting').length,
+});
 /** a protection group of a linux source in the tenant (template for new agents) */
 function templateGroup(tenant: string, name: string, what: string) {
   const g = db.groups.find((x) => x.tenant === tenant && x.name === name);
   const src = g && db.sources.find((s) => s.id === g.source_id);
-  if (!g || src?.kind !== 'linux') throw new HttpError(400, `${what}: no protection group of a linux source named "${name}" in tenant ${tenant}`);
+  if (!g || src?.kind !== 'linux')
+    throw new HttpError(400, `${what}: no protection group of a linux source named "${name}" in tenant ${tenant}`);
   return { g, src };
 }
 /** number of addresses of one range entry (CIDR ≤ /22 resp. /118, an address or a host name) */
@@ -8477,7 +13188,8 @@ function checkRange(r: string) {
   if (m) {
     const v6 = m[1].includes(':');
     const p = Number(m[2]);
-    if (v6 ? p < 118 || p > 128 : p < 22 || p > 32) throw new HttpError(400, `ranges: ${r}: at most /22 (IPv4) or /118 (IPv6)`);
+    if (v6 ? p < 118 || p > 128 : p < 22 || p > 32)
+      throw new HttpError(400, `ranges: ${r}: at most /22 (IPv4) or /118 (IPv6)`);
     return v6 ? 2 ** (128 - p) : 2 ** (32 - p);
   }
   if (!/^[A-Za-z0-9.:-]{1,253}$/.test(r)) throw new HttpError(400, `ranges: ${r}: CIDR, address or host name`);
@@ -8487,14 +13199,34 @@ function checkRange(r: string) {
 function assignGroup(a: Agent, tenant: string, group: string | null) {
   if (!group) return;
   const { g, src } = templateGroup(tenant, group, 'group');
-  const s = { id: nextId(), tenant, kind: 'linux', name: `${a.name}-files`, config: { ...structuredClone(src.config), agent_id: a.id } as Json };
+  const s = {
+    id: nextId(),
+    tenant,
+    kind: 'linux',
+    name: `${a.name}-files`,
+    config: { ...structuredClone(src.config), agent_id: a.id } as Json,
+  };
   db.sources.push(s);
   db.groups.push({ ...structuredClone(g), id: nextId(), source_id: s.id, name: `${tenant}-${a.name}`, guests: [a.id] });
 }
 function newAgent(tenant: string, name: string, host: string, port: number): Agent {
   return {
-    id: rand(8), tenant, name, host, port, enrolled_at: null, cert_sha256: null, token_expires: null, last_seen: null, version: null,
-    os: null, token_hash: null, limits: {}, cert_issued: null, cert_expires: null, cert_renewal_pending: false,
+    id: rand(8),
+    tenant,
+    name,
+    host,
+    port,
+    enrolled_at: null,
+    cert_sha256: null,
+    token_expires: null,
+    last_seen: null,
+    version: null,
+    os: null,
+    token_hash: null,
+    limits: {},
+    cert_issued: null,
+    cert_expires: null,
+    cert_renewal_pending: false,
   } as Agent;
 }
 on('GET', '/fleets', (c) => {
@@ -8503,26 +13235,62 @@ on('GET', '/fleets', (c) => {
 });
 on('POST', '/fleets', async (c) => {
   const u = need(c.user, 'admin');
-  const { name, tenant, expires_days, max_uses = null, auto_accept = false, port = 7444, ranges = [], group = null, group_rules = [] } = c.body ?? {};
+  const {
+    name,
+    tenant,
+    expires_days,
+    max_uses = null,
+    auto_accept = false,
+    port = 7444,
+    ranges = [],
+    group = null,
+    group_rules = [],
+  } = c.body ?? {};
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
   find(db.tenants, (t) => t.name === tenant, 'tenant');
-  if (!(Number.isInteger(expires_days) && expires_days >= 1 && expires_days <= 30)) throw new HttpError(400, 'expires_days: 1..=30');
-  if (max_uses !== null && !(Number.isInteger(max_uses) && max_uses >= 1)) throw new HttpError(400, 'max_uses: at least 1');
+  if (!(Number.isInteger(expires_days) && expires_days >= 1 && expires_days <= 30))
+    throw new HttpError(400, 'expires_days: 1..=30');
+  if (max_uses !== null && !(Number.isInteger(max_uses) && max_uses >= 1))
+    throw new HttpError(400, 'max_uses: at least 1');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'invalid port');
   if (!Array.isArray(ranges) || ranges.length > 32) throw new HttpError(400, 'ranges: at most 32 entries');
-  if (ranges.reduce((n: number, r: string) => n + checkRange(r), 0) > 4096) throw new HttpError(400, 'ranges: at most 4096 addresses per fleet');
+  if (ranges.reduce((n: number, r: string) => n + checkRange(r), 0) > 4096)
+    throw new HttpError(400, 'ranges: at most 4096 addresses per fleet');
   if (group) templateGroup(tenant, group, 'group');
   for (const r of group_rules as { pattern: string; group: string }[]) {
-    if (!r.pattern || !/^[A-Za-z0-9.*?_-]{1,253}$/.test(r.pattern)) throw new HttpError(400, `group_rules: invalid pattern ${r.pattern}`);
+    if (!r.pattern || !/^[A-Za-z0-9.*?_-]{1,253}$/.test(r.pattern))
+      throw new HttpError(400, `group_rules: invalid pattern ${r.pattern}`);
     templateGroup(tenant, r.group, 'group_rules');
   }
   const f: MockFleet = {
-    id: rand(8), name, tenant, created: now(), created_by: u.name, expires: now() + expires_days * 86400, max_uses, uses: 0,
-    revoked: false, auto_accept: !!auto_accept, port, ranges, group, group_rules, last_scan: null,
+    id: rand(8),
+    name,
+    tenant,
+    created: now(),
+    created_by: u.name,
+    expires: now() + expires_days * 86400,
+    max_uses,
+    uses: 0,
+    revoked: false,
+    auto_accept: !!auto_accept,
+    port,
+    ranges,
+    group,
+    group_rules,
+    last_scan: null,
   };
   fleets.push(f);
   const secret = `nxf1.${f.id}.${b32(26)}`;
-  await audit(u.name, 'fleet.create', `fleet/${f.id}`, { name, tenant, expires: f.expires, max_uses, auto_accept: f.auto_accept, ranges, group, group_rules });
+  await audit(u.name, 'fleet.create', `fleet/${f.id}`, {
+    name,
+    tenant,
+    expires: f.expires,
+    max_uses,
+    auto_accept: f.auto_accept,
+    ranges,
+    group,
+    group_rules,
+  });
   return [
     201,
     {
@@ -8581,7 +13349,14 @@ on('POST', '/fleet/candidates/:id/accept', async (c, [id]) => {
   x.state = 'accepted';
   x.agent_id = a.id;
   const j = addJob('agent_enroll', f.tenant, { agent_id: a.id, fleet_id: f.id }, u.name);
-  await audit(u.name, 'fleet.accept', `fleet/${f.id}`, { tenant: f.tenant, candidate: x.id, host: x.host, hostname: x.hostname, agent_id: a.id, job: j.id });
+  await audit(u.name, 'fleet.accept', `fleet/${f.id}`, {
+    tenant: f.tenant,
+    candidate: x.id,
+    host: x.host,
+    hostname: x.hostname,
+    agent_id: a.id,
+    job: j.id,
+  });
   return [200, { agent_id: a.id, job: j.id }];
 });
 on('POST', '/fleet/candidates/:id/reject', async (c, [id]) => {
@@ -8595,7 +13370,9 @@ on('POST', '/fleet/candidates/:id/reject', async (c, [id]) => {
 on('POST', '/agents/bulk', async (c) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   vaultRefuse('new agents');
-  const lines = String(c.body?.csv ?? '').split(/\r?\n/).map((l) => l.trim());
+  const lines = String(c.body?.csv ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim());
   const head = (lines.shift() ?? '').split(',').map((h) => h.trim().toLowerCase());
   for (const k of ['host', 'tenant']) if (!head.includes(k)) throw new HttpError(400, `line 1: column ${k} missing`);
   const rows: { line: number; v: Record<string, string> }[] = [];
@@ -8615,7 +13392,8 @@ on('POST', '/agents/bulk', async (c) => {
     if (!NAME_RE.test(name)) throw err('invalid name');
     const port = v.port ? Number(v.port) : 7444;
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw err('invalid port');
-    if (db.agents.some((a) => a.tenant === v.tenant && a.name === name) || seen.has(`${v.tenant}/${name}`)) throw err('agent name exists in this tenant');
+    if (db.agents.some((a) => a.tenant === v.tenant && a.name === name) || seen.has(`${v.tenant}/${name}`))
+      throw err('agent name exists in this tenant');
     seen.add(`${v.tenant}/${name}`);
     if (v.group) {
       try {
@@ -8633,9 +13411,14 @@ on('POST', '/agents/bulk', async (c) => {
     db.agents.push(a);
     assignGroup(a, v.tenant, v.group || null);
     out.push(pubAgent(a));
-    csv.push([a.name, a.tenant, a.host, a.port, v.group ?? '', a.id, tok.token, tok.token_expires, tok.install_command].join(','));
+    csv.push(
+      [a.name, a.tenant, a.host, a.port, v.group ?? '', a.id, tok.token, tok.token_expires, tok.install_command].join(
+        ',',
+      ),
+    );
   }
-  for (const a of out) await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
+  for (const a of out)
+    await audit(u.name, 'agent.create', `agent/${a.id}`, { tenant: a.tenant, name: a.name, host: a.host, bulk: true });
   return [201, { created: out.length, agents: out, csv: csv.join('\n') + '\n' }];
 });
 
@@ -8648,21 +13431,58 @@ const RENAMED = /\.(pdf|docx|xlsx|odt|txt|sql|jpg|png)$/;
 function mockTree(s: Json): { path: string; kind: string; size: number; mtime: number }[] {
   const xs = walkSnapshot(s.source, s.time);
   if (!String(s.anomaly?.reason ?? '').includes('mass rename')) return xs;
-  const out = xs.map((e) => (e.kind === 'file' && RENAMED.test(e.path) ? { ...e, path: `${e.path}.lockbit3`, size: e.size + 512, mtime: s.time - 900 } : e));
-  for (const d of xs.filter((e) => e.kind === 'dir').slice(0, 12)) out.push({ path: `${d.path}/HOW_TO_DECRYPT.txt`, kind: 'file', size: 2210, mtime: s.time - 880 });
+  const out = xs.map((e) =>
+    e.kind === 'file' && RENAMED.test(e.path)
+      ? { ...e, path: `${e.path}.lockbit3`, size: e.size + 512, mtime: s.time - 900 }
+      : e,
+  );
+  for (const d of xs.filter((e) => e.kind === 'dir').slice(0, 12))
+    out.push({ path: `${d.path}/HOW_TO_DECRYPT.txt`, kind: 'file', size: 2210, mtime: s.time - 880 });
   return out;
 }
 function mockDiff(base: Json, cur: Json) {
-  const map = (s: Json) => new Map(mockTree(s).filter((e) => e.kind !== 'dir').map((e) => [e.path, e]));
+  const map = (s: Json) =>
+    new Map(
+      mockTree(s)
+        .filter((e) => e.kind !== 'dir')
+        .map((e) => [e.path, e]),
+    );
   const [b, c] = [map(base), map(cur)];
   const out: Json[] = [];
   for (const [p, e] of c) {
     const o = b.get(p);
-    if (!o) out.push({ path: p, change: 'added', kind: e.kind, size: e.size, mtime: e.mtime, old_size: null, old_mtime: null });
+    if (!o)
+      out.push({
+        path: p,
+        change: 'added',
+        kind: e.kind,
+        size: e.size,
+        mtime: e.mtime,
+        old_size: null,
+        old_mtime: null,
+      });
     else if (o.size !== e.size || o.mtime !== e.mtime)
-      out.push({ path: p, change: 'changed', kind: e.kind, size: e.size, mtime: e.mtime, old_size: o.size, old_mtime: o.mtime });
+      out.push({
+        path: p,
+        change: 'changed',
+        kind: e.kind,
+        size: e.size,
+        mtime: e.mtime,
+        old_size: o.size,
+        old_mtime: o.mtime,
+      });
   }
-  for (const [p, e] of b) if (!c.has(p)) out.push({ path: p, change: 'deleted', kind: e.kind, size: e.size, mtime: e.mtime, old_size: e.size, old_mtime: e.mtime });
+  for (const [p, e] of b)
+    if (!c.has(p))
+      out.push({
+        path: p,
+        change: 'deleted',
+        kind: e.kind,
+        size: e.size,
+        mtime: e.mtime,
+        old_size: e.size,
+        old_mtime: e.mtime,
+      });
   return out.sort((x, y) => (x.path < y.path ? -1 : 1));
 }
 const anomalous = (s: Json) => !!s.anomaly && !s.anomaly.cleared_at;
@@ -8673,27 +13493,51 @@ on('POST', '/snapshots/diff', async (c) => {
   const tenant = String(b.tenant ?? '');
   if (u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
   const time = Number(b.time);
-  if (b.base !== undefined && b.base !== null && !(Number(b.base) < time)) throw new HttpError(400, 'base: an earlier snapshot than time');
-  if (b.change && !['added', 'changed', 'deleted'].includes(b.change)) throw new HttpError(400, 'change: added, changed or deleted');
+  if (b.base !== undefined && b.base !== null && !(Number(b.base) < time))
+    throw new HttpError(400, 'base: an earlier snapshot than time');
+  if (b.change && !['added', 'changed', 'deleted'].includes(b.change))
+    throw new HttpError(400, 'change: added, changed or deleted');
   const limit = b.limit ?? 200;
   if (!(Number.isInteger(limit) && limit >= 1 && limit <= 1000)) throw new HttpError(400, 'limit: 1..=1000');
   const offset = Number(b.offset ?? 0);
   const local = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === b.source && s.local);
   const cur = local.find((s) => s.time === time);
   if (!cur) throw new HttpError(404, `no local snapshot ${b.source}/${time}`);
-  const base = b.base ? local.find((s) => s.time === Number(b.base)) : local.filter((s) => s.time < time).sort((x, y) => y.time - x.time)[0];
+  const base = b.base
+    ? local.find((s) => s.time === Number(b.base))
+    : local.filter((s) => s.time < time).sort((x, y) => y.time - x.time)[0];
   if (b.base && !base) throw new HttpError(404, `no local snapshot ${b.source}/${b.base}`);
-  const p: Json = { tenant, source: b.source, time, ...(b.base ? { base: Number(b.base) } : {}), ...(b.change ? { change: b.change } : {}), offset, limit };
+  const p: Json = {
+    tenant,
+    source: b.source,
+    time,
+    ...(b.base ? { base: Number(b.base) } : {}),
+    ...(b.change ? { change: b.change } : {}),
+    offset,
+    limit,
+  };
   const j = addJob('snapshot_diff', tenant, p, u.name);
   j.duration = 1;
   j.plan = [`comparing the file indexes of ${b.source}`, 'done'];
   if (!base) j.result = { indexed: false, base: null, time };
-  else if (/^(vm|ct)-/.test(b.source) && !vmIndexed(tenant, b.source)) j.result = { indexed: false, base: base.time, time };
+  else if (/^(vm|ct)-/.test(b.source) && !vmIndexed(tenant, b.source))
+    j.result = { indexed: false, base: base.time, time };
   else {
     const all = mockDiff(base, cur);
     const n = (k: string) => all.filter((x) => x.change === k).length;
     const sel = all.filter((x) => !b.change || x.change === b.change);
-    j.result = { indexed: true, base: base.time, time, added: n('added'), changed: n('changed'), deleted: n('deleted'), total: sel.length, offset, limit, entries: sel.slice(offset, offset + limit) };
+    j.result = {
+      indexed: true,
+      base: base.time,
+      time,
+      added: n('added'),
+      changed: n('changed'),
+      deleted: n('deleted'),
+      total: sel.length,
+      offset,
+      limit,
+      entries: sel.slice(offset, offset + limit),
+    };
   }
   await audit(u.name, 'snapshot.diff', `job/${j.id}`, p);
   return [202, { id: j.id }];
@@ -8727,27 +13571,33 @@ on('GET', '/stats/trends', (c) => {
     const k = `${s.tenant}\0${s.source}`;
     by.set(k, [...(by.get(k) ?? []), s]);
   }
-  const out = [...by.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, xs]) => {
-    const [tenant, source] = k.split('\0');
-    const indexed = !/^(vm|ct)-/.test(source) || vmIndexed(tenant, source);
-    const runs = xs
-      .sort((a, b) => a.time - b.time)
-      .slice(-30)
-      .map((s) => {
-        const r = noise(`${source}/${s.time}`);
-        const bad = !!s.anomaly;
-        const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
-        // Phase 30: bytes read and duration (an anomalous run reads about as much, nothing deduplicates, takes longer)
-        const read = Math.round(s.size * (0.02 + r * 0.01));
-        const secs = Math.round((/^vm-/.test(source) ? 240 : 90) * (0.8 + r * 0.4) * (bad ? 3.4 : 1));
-        return {
-          time: s.time, new_plain: plain, new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
-          files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null, anomalous: anomalous(s),
-          read, secs,
-        };
-      });
-    return { tenant, source, sensitivity: db.sensitivity[`${tenant}/${source}`] ?? 'medium', runs };
-  });
+  const out = [...by.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, xs]) => {
+      const [tenant, source] = k.split('\0');
+      const indexed = !/^(vm|ct)-/.test(source) || vmIndexed(tenant, source);
+      const runs = xs
+        .sort((a, b) => a.time - b.time)
+        .slice(-30)
+        .map((s) => {
+          const r = noise(`${source}/${s.time}`);
+          const bad = !!s.anomaly;
+          const plain = Math.round(s.size * (0.004 + r * 0.012) * (bad ? 14 : 1));
+          // Phase 30: bytes read and duration (an anomalous run reads about as much, nothing deduplicates, takes longer)
+          const read = Math.round(s.size * (0.02 + r * 0.01));
+          const secs = Math.round((/^vm-/.test(source) ? 240 : 90) * (0.8 + r * 0.4) * (bad ? 3.4 : 1));
+          return {
+            time: s.time,
+            new_plain: plain,
+            new_stored: Math.round(plain * (bad ? 0.99 : 0.48)),
+            files_changed: indexed ? Math.round((40 + r * 160) * (bad ? 30 : 1)) : null,
+            anomalous: anomalous(s),
+            read,
+            secs,
+          };
+        });
+      return { tenant, source, sensitivity: db.sensitivity[`${tenant}/${source}`] ?? 'medium', runs };
+    });
   return [200, out];
 });
 
@@ -8772,13 +13622,19 @@ on('PUT', '/stats/sensitivity', async (c) => {
 
 /** Phase 21d: verify found two bad chunks in initech's store; two snapshots of vm-102 reference them. */
 function seedDamage(t: number) {
-  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === 'initech' && s.source === 'vm-102' && s.local).sort((a, b) => b.time - a.time);
+  const snaps = (db.snapshots as Json[])
+    .filter((s) => s.tenant === 'initech' && s.source === 'vm-102' && s.local)
+    .sort((a, b) => b.time - a.time);
   const hit = snaps.slice(1, 3);
   if (!hit.length) return;
   hit.forEach((s, i) => Object.assign(s, { damaged: i + 1, damaged_at: t - 5 * 3600 }));
   db.alerts.push(
     mkAlert({
-      ts: t - 5 * 3600, severity: 'critical', kind: 'snapshot_damaged', key: 'snapshot_damaged:initech', tenant: 'initech',
+      ts: t - 5 * 3600,
+      severity: 'critical',
+      kind: 'snapshot_damaged',
+      key: 'snapshot_damaged:initech',
+      tenant: 'initech',
       message: `${hit.length} snapshot(s) of tenant initech reference 2 chunk(s) that failed verification: ${hit.map((s) => `vm-102/${s.time}`).join(', ')}. Run Repair on the Snapshots page; the next backup of these sources reads in full.`,
     }),
   );
@@ -8786,22 +13642,39 @@ function seedDamage(t: number) {
 
 function seedAnomalies(t: number) {
   const newest = (tenant: string, source: string, n = 0) =>
-    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+    (db.snapshots as Json[])
+      .filter((s) => s.tenant === tenant && s.source === source && s.local)
+      .sort((a, b) => b.time - a.time)[n];
   // the change-rate anomaly of the seeded alert (seedHolds) flags its snapshot
   const bad = newest('acme', 'vm-301');
-  if (bad) bad.anomaly = { reason: '21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted', at: bad.time + 1500, cleared_by: null, cleared_at: null, note: null };
+  if (bad)
+    bad.anomaly = {
+      reason: '21.4 GiB new data that does not compress (1.01, usually 2.08): possibly encrypted',
+      at: bad.time + 1500,
+      cleared_by: null,
+      cleared_at: null,
+      note: null,
+    };
   // a file-level finding on the fs02 file server: mass rename + ransom notes
   const fs = db.agents.find((a) => a.name === 'fs02');
   const enc = fs && newest('acme', `host-${fs.id}`);
   if (enc) {
     const prev = newest('acme', enc.source, 1);
     enc.anomaly = {
-      reason: '12 ransom-note file name(s), e.g. Users/HOW_TO_DECRYPT.txt; mass rename: 412 of 2,906 files deleted, 412 added with new extensions (.lockbit3, .txt)',
-      at: enc.time + 2400, cleared_by: null, cleared_at: null, note: null,
+      reason:
+        '12 ransom-note file name(s), e.g. Users/HOW_TO_DECRYPT.txt; mass rename: 412 of 2,906 files deleted, 412 added with new extensions (.lockbit3, .txt)',
+      at: enc.time + 2400,
+      cleared_by: null,
+      cleared_at: null,
+      note: null,
     };
     db.alerts.push(
       mkAlert({
-        ts: enc.time + 2400, severity: 'critical', kind: 'anomaly', key: `anomaly:acme/${enc.source}`, tenant: 'acme',
+        ts: enc.time + 2400,
+        severity: 'critical',
+        kind: 'anomaly',
+        key: `anomaly:acme/${enc.source}`,
+        tenant: 'acme',
         message: `file-level anomaly on acme/${enc.source}: snapshot ${enc.time}: ${enc.anomaly.reason} (424 added, 3 changed, 412 deleted); last snapshot before: ${enc.source}/${prev?.time ?? 0}`,
       }),
     );
@@ -8810,8 +13683,11 @@ function seedAnomalies(t: number) {
   const fa = newest('initech', 'vm-102', 4);
   if (fa)
     fa.anomaly = {
-      reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)', at: fa.time + 1300,
-      cleared_by: 'so', cleared_at: fa.time + 86400, note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
+      reason: '48.0 GiB new data, limit 18.0 GiB (3× the median 6.0 GiB of the last 14 runs)',
+      at: fa.time + 1300,
+      cleared_by: 'so',
+      cleared_at: fa.time + 86400,
+      note: 'Database reorganisation by the DBA (change CHG-2291), checked with the application owner',
     };
 }
 
@@ -8819,13 +13695,18 @@ function seedAnomalies(t: number) {
 
 const SCAN_FIRST_KINDS = ['restore', 'restore_ct', 'instant_recover', 'restore_files', 'files_get', 'plugin_restore'];
 const scanSummary = (s: Json) => {
-  const x = (db.scans as Json[]).filter((y) => y.tenant === s.tenant && y.source === s.source && y.time === s.time).sort((a, b) => b.job - a.job)[0];
+  const x = (db.scans as Json[])
+    .filter((y) => y.tenant === s.tenant && y.source === s.source && y.time === s.time)
+    .sort((a, b) => b.job - a.job)[0];
   return x ? { job: x.job, finished: x.finished, matches: x.matches_total, complete: x.complete } : null;
 };
 const ruleLabel = () => (db.yaraRules as Json[]).map((r) => `${r.name}@${r.sha256.slice(0, 12)}`).join(',');
 const sha = (text: string) => {
   let h = '';
-  for (let i = 0; i < 8; i++) h += Math.floor(noise(`${i}:${text}`) * 1e8).toString(16).padStart(8, '0');
+  for (let i = 0; i < 8; i++)
+    h += Math.floor(noise(`${i}:${text}`) * 1e8)
+      .toString(16)
+      .padStart(8, '0');
   return h;
 };
 
@@ -8846,14 +13727,35 @@ function takeScanFirst(kind: string, params: Json): string | null {
 function mockScan(j: Job, tenant: string, source: string, time: number) {
   const known = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === source && x.time === time);
   const hits: Json[] = known?.infected ?? [];
-  const r = { files: 18_412, skipped: 3, errors: 0, matches: hits, matches_total: hits.length, complete: true, seconds: 412, source, time };
+  const r = {
+    files: 18_412,
+    skipped: 3,
+    errors: 0,
+    matches: hits,
+    matches_total: hits.length,
+    complete: true,
+    seconds: 412,
+    source,
+    time,
+  };
   j.duration = 6;
-  j.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${source}`, `${hits.length} matches`];
+  j.plan = [
+    'booting the restore micro-VM (no network, disks read-only)',
+    `compiling ${db.yaraRules.length} rule file(s)`,
+    `scanning ${source}`,
+    `${hits.length} matches`,
+  ];
   j.result = r;
   db.scans.push({ job: j.id, tenant, finished: now() + 6, rules: ruleLabel(), ...r });
   if (hits.length && known) {
     const why = `YARA: ${hits.length} matches (${[...new Set(hits.map((m) => m.rule))].slice(0, 3).join(', ')})`;
-    known.anomaly = { reason: known.anomaly?.reason && !known.anomaly.cleared_at ? `${known.anomaly.reason}; ${why}` : why, at: now(), cleared_by: null, cleared_at: null, note: null };
+    known.anomaly = {
+      reason: known.anomaly?.reason && !known.anomaly.cleared_at ? `${known.anomaly.reason}; ${why}` : why,
+      at: now(),
+      cleared_by: null,
+      cleared_at: null,
+      note: null,
+    };
   }
   return hits.length;
 }
@@ -8868,7 +13770,9 @@ function scanFirstJob(u: User, kind: string, tenant: string, p: Json, mode: stri
     return addJob(kind, tenant, { ...params, link_down: true, scan: { job: scan.id, matches: hits } }, u.name, {
       log: `[scheduler] scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restoring with the network disconnected\n`,
     });
-  return addJob(kind, tenant, params, u.name, { fail: `scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restore refused` });
+  return addJob(kind, tenant, params, u.name, {
+    fail: `scan first: ${hits} YARA matches in the snapshot (scan job ${scan.id}); restore refused`,
+  });
 }
 
 on('GET', '/scan/rules', (c) => {
@@ -8878,7 +13782,8 @@ on('GET', '/scan/rules', (c) => {
 on('PUT', '/scan/rules/:name', async (c, [name]) => {
   const u = need(c.user, 'admin', 'security_officer');
   const n = decodeURIComponent(name);
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64} without a leading dot');
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n))
+    throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64} without a leading dot');
   const text = String(c.body?.text ?? '');
   if (!text.trim() || text.length > 256 * 1024) throw new HttpError(400, 'text: 1 to 256 KiB of YARA rules');
   if (!text.includes('rule')) throw new HttpError(400, 'text: no YARA rule in the file');
@@ -8904,8 +13809,13 @@ on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, t
   const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
   if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
   const b = c.body?.budget_min;
-  if (b !== undefined && !(Number.isInteger(b) && b >= 1 && b <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
-  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (b !== undefined && !(Number.isInteger(b) && b >= 1 && b <= 1440))
+    throw new HttpError(400, 'budget_min: 1..=1440');
+  find(
+    db.snapshots as Json[],
+    (y) => y.tenant === tn && y.source === src && y.time === tm && y.local,
+    'local snapshot',
+  );
   if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
   const params: Json = { source: src, time: tm, ...(b ? { budget: b * 60 } : {}) };
   const j = addJob('snapshot_scan', tn, params, u.name);
@@ -8913,7 +13823,11 @@ on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, t
   if (hits)
     db.alerts.push(
       mkAlert({
-        ts: now(), severity: 'critical', kind: 'malware', key: `malware:${tn}/${src}`, tenant: tn,
+        ts: now(),
+        severity: 'critical',
+        kind: 'malware',
+        key: `malware:${tn}/${src}`,
+        tenant: tn,
         message: `YARA scan of ${tn}/${src} snapshot ${tm}: YARA: ${hits} matches, e.g. ${j.result!.matches[0].rule} in ${j.result!.matches[0].path}`,
       }),
     );
@@ -8923,7 +13837,9 @@ on('POST', '/snapshots/:tenant/:source/:time/scan', async (c, [tenant, source, t
 on('GET', '/scans', (c) => {
   const u = need(c.user);
   const [tq, sq, tm] = [c.query.get('tenant'), c.query.get('source'), c.query.get('time')];
-  const xs = byTenant(u, db.scans as any[]).filter((x) => (!tq || x.tenant === tq) && (!sq || x.source === sq) && (!tm || x.time === Number(tm)));
+  const xs = byTenant(u, db.scans as any[]).filter(
+    (x) => (!tq || x.tenant === tq) && (!sq || x.source === sq) && (!tm || x.time === Number(tm)),
+  );
   return [200, xs.sort((a, b) => b.job - a.job).slice(0, 50)];
 });
 
@@ -8937,10 +13853,19 @@ function seedScans(t: number) {
   ].join('\n');
   db.yaraRules.push(
     { name: 'lockbit.yar', text, size: text.length, sha256: sha(text), uploaded_by: 'so', uploaded_at: t - 86400 * 6 },
-    { name: 'webshells.yar', text: 'rule Php_Webshell { strings: $a = "eval(base64_decode(" condition: $a }', size: 70, sha256: sha('ws'), uploaded_by: 'so', uploaded_at: t - 86400 * 20 },
+    {
+      name: 'webshells.yar',
+      text: 'rule Php_Webshell { strings: $a = "eval(base64_decode(" condition: $a }',
+      size: 70,
+      sha256: sha('ws'),
+      uploaded_by: 'so',
+      uploaded_at: t - 86400 * 20,
+    },
   );
   const newest = (tenant: string, source: string, n = 0) =>
-    (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time)[n];
+    (db.snapshots as Json[])
+      .filter((s) => s.tenant === tenant && s.source === source && s.local)
+      .sort((a, b) => b.time - a.time)[n];
   // the encrypted file server (seedAnomalies): ransom notes found by the rules
   const fs = db.agents.find((a) => a.name === 'fs02');
   const enc = fs && newest('acme', `host-${fs.id}`);
@@ -8953,7 +13878,11 @@ function seedScans(t: number) {
   // finished scans: the infected one and a clean one before it, plus a clean VM
   const done = (s: Json | undefined, at: number) => {
     if (!s) return;
-    const j = addJob('snapshot_scan', s.tenant, { source: s.source, time: s.time }, 'so', { state: 'ok', started: at - 400, finished: at });
+    const j = addJob('snapshot_scan', s.tenant, { source: s.source, time: s.time }, 'so', {
+      state: 'ok',
+      started: at - 400,
+      finished: at,
+    });
     mockScan(j, s.tenant, s.source, s.time);
     db.scans[db.scans.length - 1].finished = at;
   };
@@ -8963,7 +13892,11 @@ function seedScans(t: number) {
   if (enc)
     db.alerts.push(
       mkAlert({
-        ts: enc.time + 5400, severity: 'critical', kind: 'malware', key: `malware:acme/${enc.source}`, tenant: 'acme',
+        ts: enc.time + 5400,
+        severity: 'critical',
+        kind: 'malware',
+        key: `malware:acme/${enc.source}`,
+        tenant: 'acme',
         message: `YARA scan of acme/${enc.source} snapshot ${enc.time}: YARA: 3 matches (lockbit.yar:LockBit3_Ransom_Note), e.g. lockbit.yar:LockBit3_Ransom_Note in Users/HOW_TO_DECRYPT.txt`,
       }),
     );
@@ -8971,9 +13904,20 @@ function seedScans(t: number) {
 
 // Phase 26: edge proxies for roaming agents (admin only; docs/edge.md)
 type MockEdge = {
-  id: string; name: string; host: string; port: number; public_host: string; public_port: number; cert_sha256: string | null;
-  enrolled_at: number | null; token_hash: string | null; token_expires: number | null; last_seen: number | null; version: string | null;
-  health: Json | null; log: string[];
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  public_host: string;
+  public_port: number;
+  cert_sha256: string | null;
+  enrolled_at: number | null;
+  token_hash: string | null;
+  token_expires: number | null;
+  last_seen: number | null;
+  version: string | null;
+  health: Json | null;
+  log: string[];
 };
 const edges: MockEdge[] = [];
 /** fixed ids (no rand()): the seeded PRNG sequence of the other fixtures stays as it was */
@@ -8981,10 +13925,28 @@ function seedEdges(t: number) {
   const nb07 = db.agents.find((a) => a.name === 'nb07');
   edges.push(
     {
-      id: '5b2e9d40c1f7a863', name: 'dmz-edge', host: '10.20.0.5', port: 7445, public_host: 'edge.acme.example.com', public_port: 443,
-      cert_sha256: '7c1f0a9e5d3b2c4a6f8e0d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9c0b1a', enrolled_at: t - 86400 * 6, token_hash: null, token_expires: null,
-      last_seen: t - 12, version: '0.9.0',
-      health: { version: '0.9.0', uptime_secs: 86400 * 3 + 4000, agents_online: nb07 ? [nb07.id] : [], connections: 3, relays: 1, refused: 214, rate_limited: 37, configured: true },
+      id: '5b2e9d40c1f7a863',
+      name: 'dmz-edge',
+      host: '10.20.0.5',
+      port: 7445,
+      public_host: 'edge.acme.example.com',
+      public_port: 443,
+      cert_sha256: '7c1f0a9e5d3b2c4a6f8e0d1c2b3a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d9c0b1a',
+      enrolled_at: t - 86400 * 6,
+      token_hash: null,
+      token_expires: null,
+      last_seen: t - 12,
+      version: '0.9.0',
+      health: {
+        version: '0.9.0',
+        uptime_secs: 86400 * 3 + 4000,
+        agents_online: nb07 ? [nb07.id] : [],
+        connections: 3,
+        relays: 1,
+        refused: 214,
+        rate_limited: 37,
+        configured: true,
+      },
       log: [
         'refused handshake from 203.0.113.77: unknown client certificate',
         nb07 ? `agent ${nb07.id} rendezvous from 192.0.2.188` : 'agent rendezvous',
@@ -8993,8 +13955,20 @@ function seedEdges(t: number) {
       ],
     },
     {
-      id: 'a04c7e19b3d58f62', name: 'branch-edge', host: '10.30.0.5', port: 7445, public_host: '198.51.100.200', public_port: 443,
-      cert_sha256: null, enrolled_at: null, token_hash: 'x', token_expires: t + 86400 - 1800, last_seen: null, version: null, health: null, log: [],
+      id: 'a04c7e19b3d58f62',
+      name: 'branch-edge',
+      host: '10.30.0.5',
+      port: 7445,
+      public_host: '198.51.100.200',
+      public_port: 443,
+      cert_sha256: null,
+      enrolled_at: null,
+      token_hash: 'x',
+      token_expires: t + 86400 - 1800,
+      last_seen: null,
+      version: null,
+      health: null,
+      log: [],
     },
   );
   if (nb07) {
@@ -9023,12 +13997,26 @@ on('POST', '/edges', async (c) => {
   const u = need(c.user, 'admin');
   const { name, host, port = 7445, public_host, public_port = 443 } = c.body ?? {};
   if (!NAME_RE.test(name ?? '')) throw new HttpError(400, 'invalid name');
-  for (const h of [host, public_host]) if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(h ?? '')) throw new HttpError(400, 'invalid host');
-  for (const p of [port, public_port]) if (!Number.isInteger(p) || p < 1 || p > 65535) throw new HttpError(400, 'port, public_port: must be 1..=65535');
+  for (const h of [host, public_host])
+    if (!/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(h ?? '')) throw new HttpError(400, 'invalid host');
+  for (const p of [port, public_port])
+    if (!Number.isInteger(p) || p < 1 || p > 65535) throw new HttpError(400, 'port, public_port: must be 1..=65535');
   if (edges.some((e) => e.name === name)) throw new HttpError(409, 'an edge with this name exists');
   const e: MockEdge = {
-    id: rand(8), name, host, port, public_host, public_port, cert_sha256: null, enrolled_at: null, token_hash: null, token_expires: null,
-    last_seen: null, version: null, health: null, log: [],
+    id: rand(8),
+    name,
+    host,
+    port,
+    public_host,
+    public_port,
+    cert_sha256: null,
+    enrolled_at: null,
+    token_hash: null,
+    token_expires: null,
+    last_seen: null,
+    version: null,
+    health: null,
+    log: [],
   };
   edges.push(e);
   const tok = await edgeToken(e);
@@ -9047,7 +14035,12 @@ on('POST', '/edges/:id/enroll', async (c, [id]) => {
   const e = findEdge(id);
   if (!e.token_hash || !e.token_expires || e.token_expires <= now())
     throw new HttpError(409, 'no valid enrollment token: create a new token and enter it on the edge console');
-  const j = addJob('edge_enroll', '-', { edge_id: e.id }, u.name, { state: 'ok', started: now(), finished: now(), log: `edge-enrolled {"edge_id":"${e.id}"}\n` });
+  const j = addJob('edge_enroll', '-', { edge_id: e.id }, u.name, {
+    state: 'ok',
+    started: now(),
+    finished: now(),
+    log: `edge-enrolled {"edge_id":"${e.id}"}\n`,
+  });
   // the mock "enrolls" at once
   e.cert_sha256 = rand(32);
   e.enrolled_at = now();
@@ -9055,7 +14048,16 @@ on('POST', '/edges/:id/enroll', async (c, [id]) => {
   e.token_expires = null;
   e.last_seen = now();
   e.version = '0.9.0';
-  e.health = { version: '0.9.0', uptime_secs: 5, agents_online: [], connections: 0, relays: 0, refused: 0, rate_limited: 0, configured: true };
+  e.health = {
+    version: '0.9.0',
+    uptime_secs: 5,
+    agents_online: [],
+    connections: 0,
+    relays: 0,
+    refused: 0,
+    rate_limited: 0,
+    configured: true,
+  };
   await audit(u.name, 'job.create', `job/${j.id}`, { kind: 'edge_enroll', params: j.params });
   await audit(u.name, 'edge.enroll', `edge/${e.id}`, { job: j.id });
   return [202, { id: j.id }];
@@ -9070,7 +14072,12 @@ on('DELETE', '/edges/:id', async (c, [id]) => {
       n++;
     }
   edges.splice(edges.indexOf(e), 1);
-  await audit(u.name, 'edge.delete', `edge/${e.id}`, { name: e.name, host: e.host, public_host: e.public_host, agents: n });
+  await audit(u.name, 'edge.delete', `edge/${e.id}`, {
+    name: e.name,
+    host: e.host,
+    public_host: e.public_host,
+    agents: n,
+  });
   return [200, { id: e.id, agents: n }];
 });
 on('PUT', '/agents/:id/edge', async (c, [id]) => {
@@ -9087,25 +14094,71 @@ on('PUT', '/agents/:id/edge', async (c, [id]) => {
 });
 
 // Phase 27: agent releases, rollouts, automatic mode (docs/agent-update-plan.md "Implementation")
-type MockArtifact = { name: string; kind: string; os: string; arch: string; version: string; size: number; sha256: string };
+type MockArtifact = {
+  name: string;
+  kind: string;
+  os: string;
+  arch: string;
+  version: string;
+  size: number;
+  sha256: string;
+};
 type MockRelease = {
-  version: string; source: 'image' | 'upload'; signed: boolean; key: string | null; error: string | null; protocol: string | null;
-  min_appliance: string | null; released: string | null; notes: string | null; artifacts: MockArtifact[];
+  version: string;
+  source: 'image' | 'upload';
+  signed: boolean;
+  key: string | null;
+  error: string | null;
+  protocol: string | null;
+  min_appliance: string | null;
+  released: string | null;
+  notes: string | null;
+  artifacts: MockArtifact[];
 };
 type MockRolloutItem = {
-  agent_id: string; tenant: string; wave: number; state: string; job_id: number | null; attempts: number; error: string | null;
-  from_version: string | null; updated: number | null;
+  agent_id: string;
+  tenant: string;
+  wave: number;
+  state: string;
+  job_id: number | null;
+  attempts: number;
+  error: string | null;
+  from_version: string | null;
+  updated: number | null;
 };
 type MockRollout = {
-  id: number; version: string; scope: Json; canary: number; canary_pct: number | null; soak_minutes: number; concurrency: number;
-  max_failures: number; max_failure_pct: number; windows: Json[]; rollback: boolean; automatic: boolean; state: string; reason: string | null;
-  wave: number; quorum_id: number | null; created: number; created_by: string; finished: number | null; items: MockRolloutItem[];
+  id: number;
+  version: string;
+  scope: Json;
+  canary: number;
+  canary_pct: number | null;
+  soak_minutes: number;
+  concurrency: number;
+  max_failures: number;
+  max_failure_pct: number;
+  windows: Json[];
+  rollback: boolean;
+  automatic: boolean;
+  state: string;
+  reason: string | null;
+  wave: number;
+  quorum_id: number | null;
+  created: number;
+  created_by: string;
+  finished: number | null;
+  items: MockRolloutItem[];
   /** mock-only: time of the last simulated step */
   wave_at: number;
 };
 type MockUpdateSetting = {
-  tenant: string; group_id: number | null; mode: 'manual' | 'automatic'; windows: Json[]; canary: number; soak_minutes: number;
-  updated: number | null; updated_by: string | null;
+  tenant: string;
+  group_id: number | null;
+  mode: 'manual' | 'automatic';
+  windows: Json[];
+  canary: number;
+  soak_minutes: number;
+  updated: number | null;
+  updated_by: string | null;
 };
 const releases: MockRelease[] = [];
 const rollouts: MockRollout[] = [];
@@ -9123,10 +14176,19 @@ const fakeSha = (s: string) => {
 };
 function artifacts(v: string, gui: string): MockArtifact[] {
   const a = (name: string, kind: string, os: string, arch: string, size: number, version = v): MockArtifact => ({
-    name, kind, os, arch, version, size, sha256: fakeSha(`${v}/${name}`),
+    name,
+    kind,
+    os,
+    arch,
+    version,
+    size,
+    sha256: fakeSha(`${v}/${name}`),
   });
   const out: MockArtifact[] = [];
-  for (const [arch, deb] of [['x86_64', 'amd64'], ['aarch64', 'arm64']]) {
+  for (const [arch, deb] of [
+    ['x86_64', 'amd64'],
+    ['aarch64', 'arm64'],
+  ]) {
     const d = `linux-${arch}`;
     out.push(
       a(`${d}/nexus-agent`, 'binary', 'linux', arch, 6_912_512),
@@ -9149,18 +14211,40 @@ const isWindows = (a: Agent) => !!a.os?.startsWith('Windows');
 function seedAgentUpdates(t: number) {
   releases.push(
     {
-      version: '0.10.0', source: 'image', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
-      released: '2026-10-12', notes: 'Chunked in-band updates, package installs updated with apt/dnf/MSI, start watchdog.',
+      version: '0.10.0',
+      source: 'image',
+      signed: true,
+      key: 'nexus-release-2026.pub',
+      error: null,
+      protocol: '1.8',
+      min_appliance: '1.4.0',
+      released: '2026-10-12',
+      notes: 'Chunked in-band updates, package installs updated with apt/dnf/MSI, start watchdog.',
       artifacts: artifacts('0.10.0', '0.10.0'),
     },
     {
-      version: '0.9.0', source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.7', min_appliance: '1.3.0',
-      released: '2026-09-02', notes: 'Edge proxy for roaming agents (kept for rollbacks).', artifacts: artifacts('0.9.0', '0.9.0'),
+      version: '0.9.0',
+      source: 'upload',
+      signed: true,
+      key: 'nexus-release-2026.pub',
+      error: null,
+      protocol: '1.7',
+      min_appliance: '1.3.0',
+      released: '2026-09-02',
+      notes: 'Edge proxy for roaming agents (kept for rollbacks).',
+      artifacts: artifacts('0.9.0', '0.9.0'),
     },
     {
-      version: '0.11.0', source: 'upload', signed: false, key: null,
-      error: 'manifest.json.sig does not verify with any pinned release key', protocol: '1.8', min_appliance: '1.4.0', released: '2026-10-13',
-      notes: null, artifacts: artifacts('0.11.0', '0.11.0').slice(0, 3),
+      version: '0.11.0',
+      source: 'upload',
+      signed: false,
+      key: null,
+      error: 'manifest.json.sig does not verify with any pinned release key',
+      protocol: '1.8',
+      min_appliance: '1.4.0',
+      released: '2026-10-13',
+      notes: null,
+      artifacts: artifacts('0.11.0', '0.11.0').slice(0, 3),
     },
   );
   const by = (n: string) => db.agents.find((a) => a.name === n);
@@ -9170,46 +14254,125 @@ function seedAgentUpdates(t: number) {
   const caps18 = ['lz4', 'poll', 'edge', 'update2'];
   if (web01)
     Object.assign(web01, {
-      version: '0.10.0', arch: 'x86_64', install: 'deb', caps: caps18, tags: ['ring1'],
-      update_target: '0.10.0', update_state: 'ok', update_attempts: 1, update_at: t - 3600 * 20,
+      version: '0.10.0',
+      arch: 'x86_64',
+      install: 'deb',
+      caps: caps18,
+      tags: ['ring1'],
+      update_target: '0.10.0',
+      update_state: 'ok',
+      update_attempts: 1,
+      update_at: t - 3600 * 20,
     });
   if (fs02)
     Object.assign(fs02, {
-      version: '0.9.0', arch: 'x86_64', install: 'msi', gui_version: '0.9.0', caps: caps18, tags: ['ring2'],
-      update_target: '0.10.0', update_state: 'failed', update_attempts: 1, update_at: t - 3600 * 19,
-      update_error: 'msiexec exit code 1603 (fatal error during installation); update-msi.log: "Error 1920. Service NexusAgent failed to start"',
+      version: '0.9.0',
+      arch: 'x86_64',
+      install: 'msi',
+      gui_version: '0.9.0',
+      caps: caps18,
+      tags: ['ring2'],
+      update_target: '0.10.0',
+      update_state: 'failed',
+      update_attempts: 1,
+      update_at: t - 3600 * 19,
+      update_error:
+        'msiexec exit code 1603 (fatal error during installation); update-msi.log: "Error 1920. Service NexusAgent failed to start"',
     });
   if (nb07)
     Object.assign(nb07, {
-      version: '0.9.0', arch: 'x86_64', install: 'deb', gui_version: '0.9.0', caps: caps18, tags: ['laptops'],
-      update_target: '0.10.0', update_state: 'pending', update_at: t - 1200,
+      version: '0.9.0',
+      arch: 'x86_64',
+      install: 'deb',
+      gui_version: '0.9.0',
+      caps: caps18,
+      tags: ['laptops'],
+      update_target: '0.10.0',
+      update_state: 'pending',
+      update_at: t - 1200,
     });
   // two more enrolled agents: an aarch64 rpm install and an old bundle install (protocol 1.7)
   const extra = (id: string, name: string, host: string, os: string, o: Partial<Agent>): Agent => ({
-    id, tenant: 'initech', name, host, port: 7444, enrolled_at: t - 86400 * 90, cert_sha256: fakeSha(id), token_expires: null,
-    last_seen: t - 300, version: '0.9.0', os, token_hash: null, limits: {}, cert_issued: t - 86400 * 90,
-    cert_expires: t - 86400 * 90 + 3650 * 86400, cert_renewal_pending: false, reachable: true, last_poll: t - 90,
-    power: { on_battery: false, battery_percent: null, metered: false, network_name: null }, ui_policy: {}, ui_policy_version: 0,
-    ui_policy_seen: null, laptop: {}, missed_at: null, last_request: null, ...o,
+    id,
+    tenant: 'initech',
+    name,
+    host,
+    port: 7444,
+    enrolled_at: t - 86400 * 90,
+    cert_sha256: fakeSha(id),
+    token_expires: null,
+    last_seen: t - 300,
+    version: '0.9.0',
+    os,
+    token_hash: null,
+    limits: {},
+    cert_issued: t - 86400 * 90,
+    cert_expires: t - 86400 * 90 + 3650 * 86400,
+    cert_renewal_pending: false,
+    reachable: true,
+    last_poll: t - 90,
+    power: { on_battery: false, battery_percent: null, metered: false, network_name: null },
+    ui_policy: {},
+    ui_policy_version: 0,
+    ui_policy_seen: null,
+    laptop: {},
+    missed_at: null,
+    last_request: null,
+    ...o,
   });
   db.agents.push(
     extra('3f9a0c2e7b1d4e58', 'arm01', 'arm01.initech.example.com', 'AlmaLinux 10.0 (Purple Lion)', {
-      arch: 'aarch64', install: 'rpm', caps: caps18, tags: ['ring1'],
+      arch: 'aarch64',
+      install: 'rpm',
+      caps: caps18,
+      tags: ['ring1'],
     }),
     extra('8d2b6e41a07c9f35', 'legacy03', '192.0.2.63', 'Debian GNU/Linux 12 (bookworm)', {
-      version: '0.8.0', arch: null, install: null, caps: ['lz4', 'poll'], tags: [],
+      version: '0.8.0',
+      arch: null,
+      install: null,
+      caps: ['lz4', 'poll'],
+      tags: [],
     }),
   );
   const ids: Record<string, string> = Object.fromEntries(db.agents.map((a) => [a.name, a.id]));
   const item = (name: string, wave: number, state: string, o: Partial<MockRolloutItem> = {}): MockRolloutItem => ({
-    agent_id: ids[name] ?? name, tenant: db.agents.find((a) => a.name === name)?.tenant ?? 'acme', wave, state, job_id: null,
-    attempts: state === 'waiting' ? 0 : 1, error: null, from_version: '0.9.0', updated: t - 3600, ...o,
+    agent_id: ids[name] ?? name,
+    tenant: db.agents.find((a) => a.name === name)?.tenant ?? 'acme',
+    wave,
+    state,
+    job_id: null,
+    attempts: state === 'waiting' ? 0 : 1,
+    error: null,
+    from_version: '0.9.0',
+    updated: t - 3600,
+    ...o,
   });
-  const base = { canary_pct: null, concurrency: 5, max_failures: 3, max_failure_pct: 20, rollback: false, quorum_id: null, wave_at: t };
+  const base = {
+    canary_pct: null,
+    concurrency: 5,
+    max_failures: 3,
+    max_failure_pct: 20,
+    rollback: false,
+    quorum_id: null,
+    wave_at: t,
+  };
   rollouts.push(
     {
-      ...base, id: 31, version: '0.9.0', scope: {}, canary: 1, soak_minutes: 60, windows: [], automatic: false, state: 'done', reason: null,
-      wave: 1, created: t - 86400 * 40, created_by: 'alice', finished: t - 86400 * 39,
+      ...base,
+      id: 31,
+      version: '0.9.0',
+      scope: {},
+      canary: 1,
+      soak_minutes: 60,
+      windows: [],
+      automatic: false,
+      state: 'done',
+      reason: null,
+      wave: 1,
+      created: t - 86400 * 40,
+      created_by: 'alice',
+      finished: t - 86400 * 39,
       items: [
         item('web01', 0, 'ok', { from_version: '0.8.0', updated: t - 86400 * 40 + 900 }),
         item('fs02', 1, 'ok', { from_version: '0.8.0', updated: t - 86400 * 39 }),
@@ -9217,18 +14380,44 @@ function seedAgentUpdates(t: number) {
       ],
     },
     {
-      ...base, id: 32, version: '0.10.0', scope: { tenant: 'acme' }, canary: 1, soak_minutes: 120,
-      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '19:00', to: '23:00' }], automatic: false, state: 'paused',
-      reason: 'canary failed: fs02 (msiexec exit code 1603)', wave: 0, created: t - 86400, created_by: 'alice', finished: null,
+      ...base,
+      id: 32,
+      version: '0.10.0',
+      scope: { tenant: 'acme' },
+      canary: 1,
+      soak_minutes: 120,
+      windows: [{ days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], from: '19:00', to: '23:00' }],
+      automatic: false,
+      state: 'paused',
+      reason: 'canary failed: fs02 (msiexec exit code 1603)',
+      wave: 0,
+      created: t - 86400,
+      created_by: 'alice',
+      finished: null,
       items: [
-        item('fs02', 0, 'failed', { error: 'msiexec exit code 1603 (fatal error during installation)', updated: t - 3600 * 19 }),
+        item('fs02', 0, 'failed', {
+          error: 'msiexec exit code 1603 (fatal error during installation)',
+          updated: t - 3600 * 19,
+        }),
         item('web01', 1, 'ok', { updated: t - 3600 * 20 }),
         item('nb07', 1, 'waiting', { updated: null }),
       ],
     },
     {
-      ...base, id: 33, version: '0.10.0', scope: { tenant: 'initech' }, canary: 1, soak_minutes: 60, windows: [], automatic: true,
-      state: 'running', reason: null, wave: 0, created: t - 1800, created_by: 'scheduler', finished: null,
+      ...base,
+      id: 33,
+      version: '0.10.0',
+      scope: { tenant: 'initech' },
+      canary: 1,
+      soak_minutes: 60,
+      windows: [],
+      automatic: true,
+      state: 'running',
+      reason: null,
+      wave: 0,
+      created: t - 1800,
+      created_by: 'scheduler',
+      finished: null,
       items: [
         item('arm01', 0, 'running', { updated: t - 120 }),
         item('legacy03', 1, 'waiting', { from_version: '0.8.0', updated: null }),
@@ -9236,16 +14425,30 @@ function seedAgentUpdates(t: number) {
     },
   );
   updateSettings.push({
-    tenant: 'initech', group_id: null, mode: 'automatic', windows: [{ days: [], from: '22:00', to: '05:00' }], canary: 1, soak_minutes: 60,
-    updated: t - 86400 * 3, updated_by: 'alice',
+    tenant: 'initech',
+    group_id: null,
+    mode: 'automatic',
+    windows: [{ days: [], from: '22:00', to: '05:00' }],
+    canary: 1,
+    soak_minutes: 60,
+    updated: t - 86400 * 3,
+    updated_by: 'alice',
   });
   db.alerts.push(
     mkAlert({
-      ts: t - 3600 * 19, severity: 'warning', kind: 'agent_update_failed', key: `agent_update_failed:${ids.fs02}`, tenant: 'acme',
+      ts: t - 3600 * 19,
+      severity: 'warning',
+      kind: 'agent_update_failed',
+      key: `agent_update_failed:${ids.fs02}`,
+      tenant: 'acme',
       message: 'agent fs02: update to 0.10.0 failed: msiexec exit code 1603 (fatal error during installation)',
     }),
     mkAlert({
-      ts: t - 3600 * 19, severity: 'warning', kind: 'rollout_paused', key: 'rollout_paused:32', tenant: null,
+      ts: t - 3600 * 19,
+      severity: 'warning',
+      kind: 'rollout_paused',
+      key: 'rollout_paused:32',
+      tenant: null,
       message: 'rollout 32 to 0.10.0 paused: canary failed: fs02 (msiexec exit code 1603)',
     }),
   );
@@ -9269,7 +14472,14 @@ function stepRollout(r: MockRollout) {
     else {
       // a protocol 1.7 agent with an unknown install type gets the old single-frame update: works for bundles only
       active.state = 'ok';
-      if (a) Object.assign(a, { version: r.version, update_state: 'ok', update_target: r.version, update_at: now(), update_error: null });
+      if (a)
+        Object.assign(a, {
+          version: r.version,
+          update_state: 'ok',
+          update_target: r.version,
+          update_at: now(),
+          update_error: null,
+        });
     }
     active.updated = now();
     return;
@@ -9286,7 +14496,16 @@ function stepRollout(r: MockRollout) {
   Object.assign(r, { state: 'done', finished: now() });
 }
 const rolloutCounts = (r: MockRollout) => {
-  const c: Record<string, number> = { total: r.items.length, waiting: 0, queued: 0, running: 0, ok: 0, failed: 0, skipped: 0, cancelled: 0 };
+  const c: Record<string, number> = {
+    total: r.items.length,
+    waiting: 0,
+    queued: 0,
+    running: 0,
+    ok: 0,
+    failed: 0,
+    skipped: 0,
+    cancelled: 0,
+  };
   for (const i of r.items) c[i.state]++;
   return c;
 };
@@ -9315,7 +14534,8 @@ on('GET', '/agent-releases', (c) => {
 });
 on('POST', '/agent-releases', async (c) => {
   const u = need(c.user, 'admin');
-  if (!String(c.headers['content-type'] ?? '').startsWith('application/x-tar')) throw new HttpError(415, 'Content-Type must be application/x-tar');
+  if (!String(c.headers['content-type'] ?? '').startsWith('application/x-tar'))
+    throw new HttpError(415, 'Content-Type must be application/x-tar');
   const raw = c.raw;
   if (!raw?.length) throw new HttpError(400, 'empty release');
   if (raw.length > 512 << 20) throw new HttpError(413, 'release larger than 512 MiB');
@@ -9324,8 +14544,16 @@ on('POST', '/agent-releases', async (c) => {
   const version = `${ma}.${mi}.${pa + 1}`;
   if (releases.some((r) => r.version === version)) throw new HttpError(409, `release ${version} exists`);
   releases.push({
-    version, source: 'upload', signed: true, key: 'nexus-release-2026.pub', error: null, protocol: '1.8', min_appliance: '1.4.0',
-    released: new Date(now() * 1000).toISOString().slice(0, 10), notes: 'Uploaded release', artifacts: artifacts(version, version),
+    version,
+    source: 'upload',
+    signed: true,
+    key: 'nexus-release-2026.pub',
+    error: null,
+    protocol: '1.8',
+    min_appliance: '1.4.0',
+    released: new Date(now() * 1000).toISOString().slice(0, 10),
+    notes: 'Uploaded release',
+    artifacts: artifacts(version, version),
   });
   await audit(u.name, 'agent.release.upload', `agent-release/${version}`, { version, bytes: raw.length });
   return [201, { version }];
@@ -9355,7 +14583,11 @@ on('PUT', '/agents/:id/tags', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const a = findAgent(u, id);
   const tags = c.body?.tags;
-  if (!Array.isArray(tags) || tags.length > 16 || tags.some((x: unknown) => typeof x !== 'string' || !/^[a-z0-9_.-]{1,32}$/.test(x)))
+  if (
+    !Array.isArray(tags) ||
+    tags.length > 16 ||
+    tags.some((x: unknown) => typeof x !== 'string' || !/^[a-z0-9_.-]{1,32}$/.test(x))
+  )
     throw new HttpError(400, 'tags: at most 16 of [a-z0-9_.-]{1,32}');
   const old = a.tags ?? [];
   a.tags = [...new Set(tags as string[])];
@@ -9383,13 +14615,17 @@ on('POST', '/agent-rollouts', async (c) => {
   const b = c.body ?? {};
   const rel = find(releases, (x) => x.version === b.version && x.signed, 'signed release');
   const scope: Json = b.scope ?? {};
-  for (const k of Object.keys(scope)) if (!['tenant', 'group_id', 'os', 'tag', 'agents'].includes(k)) throw new HttpError(400, `scope: unknown field ${k}`);
+  for (const k of Object.keys(scope))
+    if (!['tenant', 'group_id', 'os', 'tag', 'agents'].includes(k))
+      throw new HttpError(400, `scope: unknown field ${k}`);
   const int = (v: unknown, def: number, min: number, max: number, what: string) => {
     if (v === undefined || v === null) return def;
-    if (!Number.isInteger(v) || (v as number) < min || (v as number) > max) throw new HttpError(400, `${what}: ${min}..=${max}`);
+    if (!Number.isInteger(v) || (v as number) < min || (v as number) > max)
+      throw new HttpError(400, `${what}: ${min}..=${max}`);
     return v as number;
   };
-  const canaryPct = b.canary_pct === undefined || b.canary_pct === null ? null : int(b.canary_pct, 10, 1, 100, 'canary_pct');
+  const canaryPct =
+    b.canary_pct === undefined || b.canary_pct === null ? null : int(b.canary_pct, 10, 1, 100, 'canary_pct');
   const canary = int(b.canary, 1, 0, 1000, 'canary');
   const windows = Array.isArray(b.windows) ? b.windows : [];
   if (!windows.every(validUpdateWindow)) throw new HttpError(400, 'windows: days Mon..Sun, from/to HH:MM, different');
@@ -9403,7 +14639,11 @@ on('POST', '/agent-rollouts', async (c) => {
   if (!pool.length) throw new HttpError(400, 'scope: no enrolled agent matches');
   const rollback = !!b.rollback;
   const older = pool.some((a) => !!a.version && cmpVersion(rel.version, a.version) < 0);
-  if (older && !rollback) throw new HttpError(400, `version: ${rel.version} is older than agents in the scope (a downgrade needs rollback: true)`);
+  if (older && !rollback)
+    throw new HttpError(
+      400,
+      `version: ${rel.version} is older than agents in the scope (a downgrade needs rollback: true)`,
+    );
   if (rollback && !older) throw new HttpError(400, 'rollback: no agent in the scope runs a newer version');
   const nCanary = canaryPct !== null ? Math.max(1, Math.round((pool.length * canaryPct) / 100)) : canary;
   let w0 = 0;
@@ -9415,19 +14655,47 @@ on('POST', '/agent-rollouts', async (c) => {
       w0++;
     }
     return {
-      agent_id: a.id, tenant: a.tenant, wave, state: current ? 'skipped' : 'waiting', job_id: null, attempts: 0,
-      error: current ? 'already runs this version' : null, from_version: a.version, updated: null,
+      agent_id: a.id,
+      tenant: a.tenant,
+      wave,
+      state: current ? 'skipped' : 'waiting',
+      job_id: null,
+      attempts: 0,
+      error: current ? 'already runs this version' : null,
+      from_version: a.version,
+      updated: null,
     };
   });
   const r: MockRollout = {
-    id: nextId(), version: rel.version, scope, canary, canary_pct: canaryPct, soak_minutes: int(b.soak_minutes, 60, 0, 10080, 'soak_minutes'),
-    concurrency: int(b.concurrency, 5, 1, 100, 'concurrency'), max_failures: int(b.max_failures, 3, 0, 10000, 'max_failures'),
-    max_failure_pct: int(b.max_failure_pct, 20, 0, 100, 'max_failure_pct'), windows, rollback, automatic: false,
-    state: rollback ? 'pending_approval' : 'running', reason: null, wave: w0 ? 0 : 1, quorum_id: null, created: now(), created_by: u.name,
-    finished: null, items, wave_at: now(),
+    id: nextId(),
+    version: rel.version,
+    scope,
+    canary,
+    canary_pct: canaryPct,
+    soak_minutes: int(b.soak_minutes, 60, 0, 10080, 'soak_minutes'),
+    concurrency: int(b.concurrency, 5, 1, 100, 'concurrency'),
+    max_failures: int(b.max_failures, 3, 0, 10000, 'max_failures'),
+    max_failure_pct: int(b.max_failure_pct, 20, 0, 100, 'max_failure_pct'),
+    windows,
+    rollback,
+    automatic: false,
+    state: rollback ? 'pending_approval' : 'running',
+    reason: null,
+    wave: w0 ? 0 : 1,
+    quorum_id: null,
+    created: now(),
+    created_by: u.name,
+    finished: null,
+    items,
+    wave_at: now(),
   };
   rollouts.push(r);
-  await audit(u.name, 'agent.rollout.create', `rollout/${r.id}`, { version: r.version, scope, rollback, agents: items.length });
+  await audit(u.name, 'agent.rollout.create', `rollout/${r.id}`, {
+    version: r.version,
+    scope,
+    rollback,
+    agents: items.length,
+  });
   if (!rollback) return [201, pubRollout(r)];
   const [st, body] = await quorum(u, 'agent.rollback', { id: r.id, version: r.version, scope }, { id: r.id });
   if (st === 202) r.quorum_id = Number(body.quorum_id);
@@ -9438,7 +14706,12 @@ for (const verb of ['pause', 'resume', 'cancel'] as const) {
     const u = needAppliance(c.user, 'admin');
     const r = findRollout(id);
     const st = rolloutState(r);
-    const ok = verb === 'pause' ? st === 'running' : verb === 'resume' ? st === 'paused' : ['running', 'paused', 'pending_approval'].includes(st);
+    const ok =
+      verb === 'pause'
+        ? st === 'running'
+        : verb === 'resume'
+          ? st === 'paused'
+          : ['running', 'paused', 'pending_approval'].includes(st);
     if (!ok) throw new HttpError(409, `rollout is ${st}`);
     if (verb === 'pause') Object.assign(r, { state: 'paused', reason: `paused by ${u.name}` });
     if (verb === 'resume') Object.assign(r, { state: 'running', reason: null, wave_at: now() });
@@ -9448,7 +14721,8 @@ for (const verb of ['pause', 'resume', 'cancel'] as const) {
     }
     if (verb !== 'pause')
       for (const a of db.alerts)
-        if (a.key === `rollout_paused:${r.id}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
+        if (a.key === `rollout_paused:${r.id}` && !a.resolved_at)
+          Object.assign(a, { resolved_at: now(), resolved_by: 'scheduler', auto: true });
     await audit(u.name, `agent.rollout.${verb}`, `rollout/${r.id}`, { version: r.version });
     return [200, pubRollout(r)];
   });
@@ -9469,10 +14743,26 @@ on('PUT', '/agent-update-settings', async (c) => {
   const canary = Number.isInteger(b.canary) ? b.canary : 1;
   const soak_minutes = Number.isInteger(b.soak_minutes) ? b.soak_minutes : 60;
   const old = updateSettings.find((s) => s.tenant === b.tenant && (s.group_id ?? null) === group_id);
-  const next: MockUpdateSetting = { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes, updated: now(), updated_by: u.name };
+  const next: MockUpdateSetting = {
+    tenant: b.tenant,
+    group_id,
+    mode: b.mode,
+    windows,
+    canary,
+    soak_minutes,
+    updated: now(),
+    updated_by: u.name,
+  };
   if (old) Object.assign(old, next);
   else updateSettings.push(next);
-  await audit(u.name, 'agent.update_settings', `tenant/${b.tenant}`, { tenant: b.tenant, group_id, mode: b.mode, windows, canary, soak_minutes });
+  await audit(u.name, 'agent.update_settings', `tenant/${b.tenant}`, {
+    tenant: b.tenant,
+    group_id,
+    mode: b.mode,
+    windows,
+    canary,
+    soak_minutes,
+  });
   return [200, next];
 });
 
@@ -9490,13 +14780,25 @@ const p28 = {
   /** files with a recorded SHA-256 the demo hunts can find: [tenant, source, path, size, sha256, times] */
   hashed: [] as { tenant: string; source: string; path: string; size: number; sha256: string; times: number[] }[],
   lockdowns: [] as Json[],
-  devices: [] as { user_id: number; fingerprint: string; family: string; prefix: string; first_seen: number; last_seen: number }[],
+  devices: [] as {
+    user_id: number;
+    fingerprint: string;
+    family: string;
+    prefix: string;
+    first_seen: number;
+    last_seen: number;
+  }[],
   emails: {} as Record<number, string>,
 };
 const hex64 = (seed: string) => (sha(seed) + sha(`${seed}#2`)).slice(0, 64);
-const lockedDown = (tenant: string | null | undefined) => !!tenant && p28.lockdowns.some((l) => l.tenant === tenant && l.active);
+const lockedDown = (tenant: string | null | undefined) =>
+  !!tenant && p28.lockdowns.some((l) => l.tenant === tenant && l.active);
 function lockdownRefuse(tenant: string, what: string) {
-  if (lockedDown(tenant)) throw new HttpError(409, `tenant ${tenant} is locked down: ${what} are refused until the lockdown is lifted (approval)`);
+  if (lockedDown(tenant))
+    throw new HttpError(
+      409,
+      `tenant ${tenant} is locked down: ${what} are refused until the lockdown is lifted (approval)`,
+    );
 }
 /** web-api `lockdown::refuse_job`. */
 function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
@@ -9509,11 +14811,31 @@ function lockdownRefuseJob(tenant: string, kind: string, p: Json) {
 }
 
 function uaFamily(ua: string): string {
-  const b = ([['Edg/', 'Edge'], ['OPR/', 'Opera'], ['Firefox/', 'Firefox'], ['Chrome/', 'Chrome'], ['Safari/', 'Safari'], ['curl/', 'curl']] as const).find(([k]) => ua.includes(k))?.[1] ?? 'other';
-  const os = ([['Windows', 'Windows'], ['Android', 'Android'], ['iPhone', 'iOS'], ['Mac OS X', 'macOS'], ['Macintosh', 'macOS'], ['Linux', 'Linux']] as const).find(([k]) => ua.includes(k))?.[1];
+  const b =
+    (
+      [
+        ['Edg/', 'Edge'],
+        ['OPR/', 'Opera'],
+        ['Firefox/', 'Firefox'],
+        ['Chrome/', 'Chrome'],
+        ['Safari/', 'Safari'],
+        ['curl/', 'curl'],
+      ] as const
+    ).find(([k]) => ua.includes(k))?.[1] ?? 'other';
+  const os = (
+    [
+      ['Windows', 'Windows'],
+      ['Android', 'Android'],
+      ['iPhone', 'iOS'],
+      ['Mac OS X', 'macOS'],
+      ['Macintosh', 'macOS'],
+      ['Linux', 'Linux'],
+    ] as const
+  ).find(([k]) => ua.includes(k))?.[1];
   return os ? `${b} on ${os}` : b;
 }
-const ipPrefix = (ip: string) => (/^\d+\.\d+\.\d+\.\d+$/.test(ip) ? `${ip.split('.').slice(0, 3).join('.')}.0/24` : 'unknown');
+const ipPrefix = (ip: string) =>
+  /^\d+\.\d+\.\d+\.\d+$/.test(ip) ? `${ip.split('.').slice(0, 3).join('.')}.0/24` : 'unknown';
 /** web-api `devices::check`: records the device of a new session, raises `login_new_device` for an unseen one. */
 function deviceSeen(u: User, ua: string, ip: string) {
   const family = uaFamily(ua);
@@ -9526,8 +14848,11 @@ function deviceSeen(u: User, ua: string, ip: string) {
   if (!mine.length) return;
   db.alerts.push(
     mkAlert({
-      ts: now(), severity: u.role === 'admin' || u.role === 'security_officer' ? 'warning' : 'info', kind: 'login_new_device',
-      key: `login_new_device:${u.id}:${fingerprint}`, tenant: u.tenant,
+      ts: now(),
+      severity: u.role === 'admin' || u.role === 'security_officer' ? 'warning' : 'info',
+      kind: 'login_new_device',
+      key: `login_new_device:${u.id}:${fingerprint}`,
+      tenant: u.tenant,
       message: `account ${u.name} (${u.role}) signed in from a new device: ${family} from ${prefix} (address ${ip})`,
     }),
   );
@@ -9541,11 +14866,18 @@ on('PUT', '/groups/:id/threat-scan', async (c, [id]) => {
   const schedule = typeof b.schedule === 'string' && b.schedule.trim() ? b.schedule.trim() : null;
   if (schedule && !parseSchedule(schedule)) throw new HttpError(400, 'schedule: not a valid schedule');
   const budget = b.budget_min ?? null;
-  if (budget !== null && !(Number.isInteger(budget) && budget >= 1 && budget <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
+  if (budget !== null && !(Number.isInteger(budget) && budget >= 1 && budget <= 1440))
+    throw new HttpError(400, 'budget_min: 1..=1440');
   lockdownRefuse(g.tenant, 'group changes');
   g.scan_schedule = schedule;
   g.scan_budget_min = budget;
-  const out = { id: g.id, tenant: g.tenant, scan_schedule: schedule, scan_budget_min: budget, rules: db.yaraRules.length > 0 };
+  const out = {
+    id: g.id,
+    tenant: g.tenant,
+    scan_schedule: schedule,
+    scan_budget_min: budget,
+    rules: db.yaraRules.length > 0,
+  };
   await audit(u.name, 'group.threat_scan', `group/${g.id}`, out);
   return [200, out];
 });
@@ -9567,14 +14899,23 @@ function parseHashList(text: string): [string[], number] {
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
-    const hex = line.split(/[,;\t ]/).map((f) => f.trim().replace(/^"|"$/g, '')).filter((f) => f.length >= 32 && /^[0-9a-fA-F]+$/.test(f));
+    const hex = line
+      .split(/[,;\t ]/)
+      .map((f) => f.trim().replace(/^"|"$/g, ''))
+      .filter((f) => f.length >= 32 && /^[0-9a-fA-F]+$/.test(f));
     const h = hex.find((f) => f.length === 64);
     if (h) out.add(h.toLowerCase());
     else if (hex.length) skipped++;
   }
   return [[...out].sort(), skipped];
 }
-const pubList = (l: (typeof p28.lists)[number]) => ({ name: l.name, count: l.hashes.length, sha256: l.sha256, uploaded_by: l.uploaded_by, uploaded_at: l.uploaded_at });
+const pubList = (l: (typeof p28.lists)[number]) => ({
+  name: l.name,
+  count: l.hashes.length,
+  sha256: l.sha256,
+  uploaded_by: l.uploaded_by,
+  uploaded_at: l.uploaded_at,
+});
 on('GET', '/hash-lists', (c) => {
   need(c.user, 'admin', 'security_officer');
   return [200, p28.lists.map(pubList).sort((a, b) => (a.name < b.name ? -1 : 1))];
@@ -9582,7 +14923,8 @@ on('GET', '/hash-lists', (c) => {
 on('PUT', '/hash-lists/:name', async (c, [name]) => {
   const u = need(c.user, 'admin', 'security_officer');
   const n = decodeURIComponent(name);
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n)) throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(n))
+    throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
   const [hashes, skipped] = parseHashList(String(c.body?.text ?? ''));
   if (!hashes.length) throw new HttpError(400, 'text: no SHA-256 hash in the file (MD5 and SHA-1 are not supported)');
   if (hashes.length > 100_000) throw new HttpError(400, 'text: at most 100000 hashes per list');
@@ -9612,26 +14954,54 @@ function runHunt(j: Job, tenant: string, p: Json, seeding = false) {
   const inRange = (t: number) => (!p.from || t >= p.from) && (!p.to || t <= p.to);
   const matches = files
     .filter((f) => listed.has(f.sha256))
-    .map((f) => ({ source: f.source, path: f.path, size: f.size, sha256: f.sha256, lists: listed.get(f.sha256)!, times: f.times.filter(inRange) }))
+    .map((f) => ({
+      source: f.source,
+      path: f.path,
+      size: f.size,
+      sha256: f.sha256,
+      lists: listed.get(f.sha256)!,
+      times: f.times.filter(inRange),
+    }))
     .filter((m) => m.times.length);
-  const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && inRange(s.time));
+  const snaps = (db.snapshots as Json[]).filter(
+    (s) => s.tenant === tenant && s.local && (!p.source || s.source === p.source) && inRange(s.time),
+  );
   const hashedSources = new Set(p28.hashed.filter((f) => f.tenant === tenant).map((f) => f.source));
   j.duration = 4;
-  j.plan = [`hash hunt in ${tenant}: ${listed.size} hashes from ${lists.length} list(s)`, `${snaps.length} snapshots`, `${matches.length} file versions on a list`];
+  j.plan = [
+    `hash hunt in ${tenant}: ${listed.size} hashes from ${lists.length} list(s)`,
+    `${snaps.length} snapshots`,
+    `${matches.length} file versions on a list`,
+  ];
   j.result = {
-    matches, scanned: snaps.length, unhashed: snaps.filter((s) => !hashedSources.has(s.source)).length, truncated: false,
-    hashes: listed.size, elapsed_ms: 1840,
+    matches,
+    scanned: snaps.length,
+    unhashed: snaps.filter((s) => !hashedSources.has(s.source)).length,
+    truncated: false,
+    hashes: listed.size,
+    elapsed_ms: 1840,
   };
   if (matches.length && !seeding) {
     for (const m of matches)
       for (const t of m.times) {
         const s = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === m.source && x.time === t);
-        if (s && !anomalous(s)) s.anomaly = { reason: `IOC hash: 1 file(s) on a hash list (hunt job ${j.id}), e.g. ${m.path}`, at: now(), cleared_by: null, cleared_at: null, note: null };
+        if (s && !anomalous(s))
+          s.anomaly = {
+            reason: `IOC hash: 1 file(s) on a hash list (hunt job ${j.id}), e.g. ${m.path}`,
+            at: now(),
+            cleared_by: null,
+            cleared_at: null,
+            note: null,
+          };
       }
     const first = matches[0];
     db.alerts.push(
       mkAlert({
-        ts: now(), severity: 'critical', kind: 'hash_hunt_hit', key: `hash_hunt_hit:${tenant}`, tenant,
+        ts: now(),
+        severity: 'critical',
+        kind: 'hash_hunt_hit',
+        key: `hash_hunt_hit:${tenant}`,
+        tenant,
         message: `IOC hash hunt (job ${j.id}) in tenant ${tenant}: ${matches.length} file versions on a hash list in ${new Set(matches.flatMap((m) => m.times.map((t) => `${m.source}/${t}`))).size} snapshots, e.g. ${first.path} in ${first.source} (${first.lists[0]})`,
       }),
     );
@@ -9646,7 +15016,8 @@ on('POST', '/hunts', async (c) => {
   if (b.from && b.to && b.from > b.to) throw new HttpError(400, 'from: after to');
   const params: Json = {};
   if (b.lists !== undefined) {
-    if (!Array.isArray(b.lists) || !b.lists.length) throw new HttpError(400, 'lists: name at least one list, or leave it out for all');
+    if (!Array.isArray(b.lists) || !b.lists.length)
+      throw new HttpError(400, 'lists: name at least one list, or leave it out for all');
     for (const l of b.lists) if (!p28.lists.some((x) => x.name === l)) throw new HttpError(400, `lists: no list ${l}`);
     params.lists = b.lists;
   } else if (!p28.lists.length) throw new HttpError(409, 'no IOC hash lists uploaded (Settings → IOC hash lists)');
@@ -9658,7 +15029,9 @@ on('POST', '/hunts', async (c) => {
 });
 
 // tenant lockdown
-const liftQuorum = (tenant: string) => db.quorum.find((q) => q.action === 'tenant.lockdown.lift' && q.state === 'pending' && q.params.tenant === tenant)?.id ?? null;
+const liftQuorum = (tenant: string) =>
+  db.quorum.find((q) => q.action === 'tenant.lockdown.lift' && q.state === 'pending' && q.params.tenant === tenant)
+    ?.id ?? null;
 function needLockdown(u: User | null): User {
   const x = need(u, 'security_officer', 'admin');
   if (x.tenant) throw new HttpError(403, 'forbidden');
@@ -9671,7 +15044,15 @@ on('GET', '/lockdowns', (c) => {
     200,
     p28.lockdowns
       .filter((l) => l.active)
-      .map((l) => ({ tenant: l.tenant, since: l.since, by: l.by, reason: l.reason, lift_quorum: liftQuorum(l.tenant), freeze: l.freeze ?? null, freeze_lift_quorum: freezeLiftQuorum('tenant', l.tenant) })),
+      .map((l) => ({
+        tenant: l.tenant,
+        since: l.since,
+        by: l.by,
+        reason: l.reason,
+        lift_quorum: liftQuorum(l.tenant),
+        freeze: l.freeze ?? null,
+        freeze_lift_quorum: freezeLiftQuorum('tenant', l.tenant),
+      })),
   ];
 });
 on('GET', '/tenants/:name/lockdown', (c, [name]) => {
@@ -9679,23 +15060,40 @@ on('GET', '/tenants/:name/lockdown', (c, [name]) => {
   if (u.tenant) throw new HttpError(403, 'forbidden');
   const tn = decodeURIComponent(name);
   const l = p28.lockdowns.find((x) => x.tenant === tn);
-  return [200, { ...(l ?? { active: false }), lift_quorum: liftQuorum(tn), freeze: l?.freeze ?? null, freeze_lift_quorum: freezeLiftQuorum('tenant', tn) }];
+  return [
+    200,
+    {
+      ...(l ?? { active: false }),
+      lift_quorum: liftQuorum(tn),
+      freeze: l?.freeze ?? null,
+      freeze_lift_quorum: freezeLiftQuorum('tenant', tn),
+    },
+  ];
 });
 on('POST', '/tenants/:name/lockdown', async (c, [name]) => {
   const u = needLockdown(c.user);
   const tn = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant').name;
   const b = c.body ?? {};
   const reason = String(b.reason ?? '').trim();
-  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason)) throw new HttpError(400, 'reason: 1 to 500 characters, one line');
-  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
-  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp))) throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
+  if (!reason || reason.length > 500 || /[\u0000-\u001f]/.test(reason))
+    throw new HttpError(400, 'reason: 1 to 500 characters, one line');
+  if (!b.current_password || !b.current_totp)
+    throw new HttpError(400, 'current_password and current_totp are required');
+  if (b.current_password !== u.password || !/^\d{6}$/.test(String(b.current_totp)))
+    throw new HttpError(403, 're-authentication failed: wrong current password or TOTP code');
   if (lockedDown(tn)) throw new HttpError(409, 'the tenant is already locked down');
-  const range: [number, number] | null = b.hold === null ? null : b.hold ? [b.hold.from, b.hold.to] : [-Infinity, Infinity];
+  const range: [number, number] | null =
+    b.hold === null ? null : b.hold ? [b.hold.from, b.hold.to] : [-Infinity, Infinity];
   if (range && range[0] > range[1]) throw new HttpError(400, 'hold: from must not be after to');
   const held: string[] = [];
   if (range)
     for (const x of db.snapshots as Json[])
-      if (x.tenant === tn && x.time >= range[0] && x.time <= range[1] && holdOne(x.tenant, x.source, x.time, `tenant lockdown: ${reason}`, u.name))
+      if (
+        x.tenant === tn &&
+        x.time >= range[0] &&
+        x.time <= range[1] &&
+        holdOne(x.tenant, x.source, x.time, `tenant lockdown: ${reason}`, u.name)
+      )
         held.push(`${x.source}/${x.time}`);
   const paused: Json[] = [];
   for (const g of db.groups.filter((x) => x.tenant === tn && x.paused_until !== -1)) {
@@ -9703,18 +15101,36 @@ on('POST', '/tenants/:name/lockdown', async (c, [name]) => {
     g.paused_until = -1;
   }
   let sessions = 0;
-  for (const [sid, s] of [...db.sessions]) if (sid !== c.sid && db.users.find((y) => y.id === s.userId)?.tenant === tn) (db.sessions.delete(sid), sessions++);
+  for (const [sid, s] of [...db.sessions])
+    if (sid !== c.sid && db.users.find((y) => y.id === s.userId)?.tenant === tn) (db.sessions.delete(sid), sessions++);
   const mine = new Set(db.users.filter((y) => y.tenant === tn).map((y) => y.id));
   const before = p14.tokens.length;
   p14.tokens.splice(0, p14.tokens.length, ...p14.tokens.filter((x) => !mine.has(x.user_id)));
   const tokens = before - p14.tokens.length;
   const t = now();
   const msg = `tenant ${tn} locked down by ${u.name}: ${reason} (${held.length} snapshots held, ${paused.length} groups paused, ${sessions} sessions and ${tokens} API tokens of its accounts ended)`;
-  const alert = mkAlert({ ts: t, severity: 'critical', kind: 'tenant_lockdown', key: `tenant_lockdown:${tn}`, tenant: tn, message: msg });
+  const alert = mkAlert({
+    ts: t,
+    severity: 'critical',
+    kind: 'tenant_lockdown',
+    key: `tenant_lockdown:${tn}`,
+    tenant: tn,
+    message: msg,
+  });
   db.alerts.push(alert);
   const v = {
-    active: true, tenant: tn, freeze: normFreeze(b.freeze, false), since: t, by: u.name, reason, hold: b.hold === undefined ? 'all' : b.hold, held, paused,
-    sessions_ended: sessions, tokens_revoked: tokens, alert: alert.id,
+    active: true,
+    tenant: tn,
+    freeze: normFreeze(b.freeze, false),
+    since: t,
+    by: u.name,
+    reason,
+    hold: b.hold === undefined ? 'all' : b.hold,
+    held,
+    paused,
+    sessions_ended: sessions,
+    tokens_revoked: tokens,
+    alert: alert.id,
   };
   p28.lockdowns = [...p28.lockdowns.filter((x) => x.tenant !== tn), v];
   dashCache.clear();
@@ -9728,7 +15144,16 @@ on('POST', '/tenants/:name/lockdown/lift', async (c, [name]) => {
   if (!l) throw new HttpError(409, 'the tenant is not locked down');
   if (liftQuorum(tn)) throw new HttpError(409, 'lifting the lockdown is already requested');
   // always a second person, even with approvals disabled
-  const q = { id: nextId(), action: 'tenant.lockdown.lift', params: { tenant: tn, since: l.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'tenant.lockdown.lift',
+    params: { tenant: tn, since: l.since },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
   return [202, { quorum_id: q.id }];
@@ -9740,16 +15165,22 @@ function liftLockdown(p: Json, by: string, decider: string) {
   let resumed = 0;
   for (const g of l.paused) {
     const x = db.groups.find((y) => y.id === g.id);
-    if (x && x.paused_until === -1) (x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null, resumed++);
+    if (x && x.paused_until === -1)
+      ((x.paused_until = g.prev === -1 || (g.prev && g.prev > now()) ? g.prev : null), resumed++);
   }
-  for (const a of db.alerts) if (a.key === `tenant_lockdown:${p.tenant}` && !a.resolved_at) Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
+  for (const a of db.alerts)
+    if (a.key === `tenant_lockdown:${p.tenant}` && !a.resolved_at)
+      Object.assign(a, { resolved_at: now(), resolved_by: decider || by });
   Object.assign(l, { active: false, ended_at: now(), ended_by: by, approved_by: decider || by, resumed });
 }
 
 // sign-in devices and the account's address
 on('GET', '/auth/devices', (c) => {
   const u = need(c.user);
-  const devices = p28.devices.filter((d) => d.user_id === u.id).sort((a, b) => b.last_seen - a.last_seen).map(({ user_id: _u, ...d }) => d);
+  const devices = p28.devices
+    .filter((d) => d.user_id === u.id)
+    .sort((a, b) => b.last_seen - a.last_seen)
+    .map(({ user_id: _u, ...d }) => d);
   return [200, { devices, email: p28.emails[u.id] ?? null }];
 });
 on('DELETE', '/auth/devices/:fp', async (c, [fp]) => {
@@ -9762,7 +15193,8 @@ on('DELETE', '/auth/devices/:fp', async (c, [fp]) => {
 on('PUT', '/auth/email', async (c) => {
   const u = need(c.user);
   const e = typeof c.body?.email === 'string' ? c.body.email.trim() : '';
-  if (e && !/^[^\s@<>,;]+@[^\s@<>,;.]+(\.[^\s@<>,;.]+)+$/.test(e)) throw new HttpError(400, 'email: not a mail address');
+  if (e && !/^[^\s@<>,;]+@[^\s@<>,;.]+(\.[^\s@<>,;.]+)+$/.test(e))
+    throw new HttpError(400, 'email: not a mail address');
   if (e) p28.emails[u.id] = e;
   else delete p28.emails[u.id];
   await audit(u.name, 'user.email', `user/${u.name}`, { email: e || null });
@@ -9779,7 +15211,11 @@ function seedPhase28(t: number) {
   if (g2) g2.scan_schedule = 'Sun 02:00';
   // the encrypted file server: daily scheduled scans found every snapshot clean until the newest one
   const fs = db.agents.find((a) => a.name === 'fs02');
-  const fsSnaps = fs ? (db.snapshots as Json[]).filter((s) => s.tenant === 'acme' && s.source === `host-${fs.id}` && s.local).sort((a, b) => b.time - a.time) : [];
+  const fsSnaps = fs
+    ? (db.snapshots as Json[])
+        .filter((s) => s.tenant === 'acme' && s.source === `host-${fs.id}` && s.local)
+        .sort((a, b) => b.time - a.time)
+    : [];
   fsSnaps.forEach((s, i) => {
     if (i === 0) return; // the infected one: its seeded scan says hit
     s.scan_state = i === 4 ? 'incomplete' : i > 14 ? null : 'clean';
@@ -9788,27 +15224,74 @@ function seedPhase28(t: number) {
   const evil = hex64('invoice-dropper');
   const loader = hex64('cobalt-loader');
   p28.lists.push(
-    { name: 'cert-advisory-2026-41', hashes: [evil, loader, hex64('a'), hex64('b'), hex64('c')].sort(), sha256: hex64('l1'), uploaded_by: 'so', uploaded_at: t - 86400 * 2 },
-    { name: 'ir-case-4711', hashes: [evil, hex64('d')].sort(), sha256: hex64('l2'), uploaded_by: 'so', uploaded_at: t - 3600 * 5 },
+    {
+      name: 'cert-advisory-2026-41',
+      hashes: [evil, loader, hex64('a'), hex64('b'), hex64('c')].sort(),
+      sha256: hex64('l1'),
+      uploaded_by: 'so',
+      uploaded_at: t - 86400 * 2,
+    },
+    {
+      name: 'ir-case-4711',
+      hashes: [evil, hex64('d')].sort(),
+      sha256: hex64('l2'),
+      uploaded_by: 'so',
+      uploaded_at: t - 3600 * 5,
+    },
   );
   if (fs && fsSnaps.length > 3)
     p28.hashed.push(
-      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Downloads/Invoice_2026-10.pdf.exe', size: 412_672, sha256: evil, times: fsSnaps.slice(0, 2).map((s) => s.time) },
-      { tenant: 'acme', source: `host-${fs.id}`, path: 'ProgramData/Updater/svchost32.dll', size: 98_304, sha256: loader, times: [fsSnaps[0].time] },
-      { tenant: 'acme', source: `host-${fs.id}`, path: 'Users/anna/Documents/plan.docx', size: 23_552, sha256: hex64('benign'), times: fsSnaps.map((s) => s.time) },
+      {
+        tenant: 'acme',
+        source: `host-${fs.id}`,
+        path: 'Users/anna/Downloads/Invoice_2026-10.pdf.exe',
+        size: 412_672,
+        sha256: evil,
+        times: fsSnaps.slice(0, 2).map((s) => s.time),
+      },
+      {
+        tenant: 'acme',
+        source: `host-${fs.id}`,
+        path: 'ProgramData/Updater/svchost32.dll',
+        size: 98_304,
+        sha256: loader,
+        times: [fsSnaps[0].time],
+      },
+      {
+        tenant: 'acme',
+        source: `host-${fs.id}`,
+        path: 'Users/anna/Documents/plan.docx',
+        size: 23_552,
+        sha256: hex64('benign'),
+        times: fsSnaps.map((s) => s.time),
+      },
     );
   const hunt = addJob('hash_hunt', 'acme', {}, 'so', { state: 'ok', started: t - 3000, finished: t - 2990 });
   hunt.created = t - 3010;
   runHunt(hunt, 'acme', {}, true); // no flags / alert in the seed: the other pictures stay as they were
   // sign-in devices (the screenshot browser signs in as Chrome on Linux from 198.51.100.17)
   const dev = (u: User | undefined, family: string, prefix: string, first: number, last: number) =>
-    u && p28.devices.push({ user_id: u.id, fingerprint: sha(`${family}\n${prefix}`).slice(0, 16), family, prefix, first_seen: t - first, last_seen: t - last });
+    u &&
+    p28.devices.push({
+      user_id: u.id,
+      fingerprint: sha(`${family}\n${prefix}`).slice(0, 16),
+      family,
+      prefix,
+      first_seen: t - first,
+      last_seen: t - last,
+    });
   const admin = db.users.find((u) => u.name === 'admin');
   dev(admin, 'Firefox on Windows', '198.51.100.0/24', 86400 * 90, 1200);
   dev(admin, 'Safari on macOS', '192.0.2.0/24', 86400 * 30, 5400);
   dev(admin, 'Chrome on Linux', '198.51.100.0/24', 86400 * 12, 86400);
   if (admin) p28.emails[admin.id] = 'admin@example.com';
-  dev(db.users.find((u) => u.name === 'op'), 'Chrome on Linux', '198.51.100.0/24', 86400 * 60, 86400)
+  dev(
+    db.users.find((u) => u.name === 'op'),
+    'Chrome on Linux',
+    '198.51.100.0/24',
+    86400 * 60,
+    86400,
+  );
 }
 
 // ---------------------------------------------------------------- Phase 29 (NetBackup Tier 1): full read, flagged
@@ -9822,12 +15305,14 @@ const p29 = {
 };
 
 // ---- full read
-const fullReadDefault = (g: { source_id: number }) => (db.sources.find((s) => s.id === g.source_id)?.kind === 'pve' ? 90 : 30);
+const fullReadDefault = (g: { source_id: number }) =>
+  db.sources.find((s) => s.id === g.source_id)?.kind === 'pve' ? 90 : 30;
 on('PUT', '/groups/:id/full-read', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   const d = c.body?.days;
-  if (d !== null && !(Number.isInteger(d) && d >= 0 && d <= 365)) throw new HttpError(400, 'days: null (the default) or 0..=365 (0 = off)');
+  if (d !== null && !(Number.isInteger(d) && d >= 0 && d <= 365))
+    throw new HttpError(400, 'days: null (the default) or 0..=365 (0 = off)');
   lockdownRefuse(g.tenant, 'group changes');
   g.full_read_days = d;
   const out = { id: g.id, tenant: g.tenant, full_read_days: d, full_read_default: fullReadDefault(g) };
@@ -9837,7 +15322,12 @@ on('PUT', '/groups/:id/full-read', async (c, [id]) => {
 on('GET', '/full-reads', (c) => {
   const u = need(c.user);
   const [tq, sq] = [c.query.get('tenant'), c.query.get('source')];
-  return [200, byTenant(u, p29.fullReads as (Json & { tenant: string })[]).filter((r) => (!tq || r.tenant === tq) && (!sq || r.source === sq))];
+  return [
+    200,
+    byTenant(u, p29.fullReads as (Json & { tenant: string })[]).filter(
+      (r) => (!tq || r.tenant === tq) && (!sq || r.source === sq),
+    ),
+  ];
 });
 function fullReadSummary(u: User): Json {
   const rows = byTenant(u, p29.fullReads as (Json & { tenant: string })[]);
@@ -9863,26 +15353,55 @@ function productionRestore(kind: string, p: Json): boolean {
   return false;
 }
 const restoresFrozen = (tenant: string) =>
-  (db.incident?.active && db.incident.freeze?.restores) || p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.restores);
+  (db.incident?.active && db.incident.freeze?.restores) ||
+  p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.restores);
 const deletionsFrozen = (tenant: string | null) =>
-  (db.incident?.active && db.incident.freeze?.deletions) || (!!tenant && p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.deletions));
+  (db.incident?.active && db.incident.freeze?.deletions) ||
+  (!!tenant && p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.deletions));
 /** POST /jobs: frozen restores (409) and the `restore.infected` gate; null = go on as usual. */
 async function infectedGate(u: User, kind: string, tenant: string, p: Json): Promise<Reply | null> {
   if (!productionRestore(kind, p)) return null;
-  if (restoresFrozen(tenant)) throw new HttpError(409, 'incident mode: restores to production are frozen; restore isolated (network disconnected or another path) or lift the freeze (approval)');
-  const s = (db.snapshots as Json[]).find((x) => x.tenant === tenant && x.source === p.source && x.time === Number(p.time));
+  if (restoresFrozen(tenant))
+    throw new HttpError(
+      409,
+      'incident mode: restores to production are frozen; restore isolated (network disconnected or another path) or lift the freeze (approval)',
+    );
+  const s = (db.snapshots as Json[]).find(
+    (x) => x.tenant === tenant && x.source === p.source && x.time === Number(p.time),
+  );
   if (!s || !flaggedSnap(s)) return null;
   const params = { tenant, kind, params: p, reason: s.anomaly?.reason ?? 'malware scan matches' };
   if (!db.approvals) {
     if (u.role !== 'admin')
-      throw new HttpError(403, 'the snapshot is flagged (anomaly or malware): only an administrator may restore it to production while approvals are disabled; restore it isolated: network disconnected or another path');
-    const q = { id: nextId(), action: 'restore.infected', params, requested_by: u.name, created: now(), decided_by: u.name, decided_at: now(), state: 'approved' };
+      throw new HttpError(
+        403,
+        'the snapshot is flagged (anomaly or malware): only an administrator may restore it to production while approvals are disabled; restore it isolated: network disconnected or another path',
+      );
+    const q = {
+      id: nextId(),
+      action: 'restore.infected',
+      params,
+      requested_by: u.name,
+      created: now(),
+      decided_by: u.name,
+      decided_at: now(),
+      state: 'approved',
+    };
     db.quorum.push(q);
     addJob(kind, tenant, { ...p, quorum_id: q.id, requested_by: u.name }, 'scheduler');
     await audit(u.name, 'restore.infected', `quorum/${q.id}`, { approvals: 'disabled', params });
     return [200, { approvals: 'disabled', executed: false, quorum_id: q.id, state: 'approved', infected: true }];
   }
-  const q = { id: nextId(), action: 'restore.infected', params, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'restore.infected',
+    params,
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params });
   return [202, { quorum_id: q.id, infected: true }];
@@ -9894,34 +15413,82 @@ on('POST', '/snapshots/:tenant/:source/:time/scan-back', async (c, [tenant, sour
   const [tn, src, tm] = [decodeURIComponent(tenant), decodeURIComponent(source), Number(time)];
   if (u.tenant && u.tenant !== tn) throw new HttpError(403, 'forbidden');
   const b = c.body ?? {};
-  if (b.budget_min !== undefined && !(Number.isInteger(b.budget_min) && b.budget_min >= 1 && b.budget_min <= 1440)) throw new HttpError(400, 'budget_min: 1..=1440');
-  if (b.max !== undefined && !(Number.isInteger(b.max) && b.max >= 1 && b.max <= 100)) throw new HttpError(400, 'max: 1..=100');
-  find(db.snapshots as Json[], (y) => y.tenant === tn && y.source === src && y.time === tm && y.local, 'local snapshot');
+  if (b.budget_min !== undefined && !(Number.isInteger(b.budget_min) && b.budget_min >= 1 && b.budget_min <= 1440))
+    throw new HttpError(400, 'budget_min: 1..=1440');
+  if (b.max !== undefined && !(Number.isInteger(b.max) && b.max >= 1 && b.max <= 100))
+    throw new HttpError(400, 'max: 1..=100');
+  find(
+    db.snapshots as Json[],
+    (y) => y.tenant === tn && y.source === src && y.time === tm && y.local,
+    'local snapshot',
+  );
   if (!db.yaraRules.length) throw new HttpError(409, 'no YARA rules uploaded (Settings → Malware scan)');
-  const params: Json = { source: src, from: tm, ...(b.budget_min ? { budget: b.budget_min * 60 } : {}), ...(b.max ? { max: b.max } : {}) };
+  const params: Json = {
+    source: src,
+    from: tm,
+    ...(b.budget_min ? { budget: b.budget_min * 60 } : {}),
+    ...(b.max ? { max: b.max } : {}),
+  };
   const j = addJob('scan_back', tn, params, u.name);
   const max = b.max ?? 30;
-  const cands = (db.snapshots as Json[]).filter((x) => x.tenant === tn && x.source === src && x.local && x.time <= tm).sort((x, y) => y.time - x.time);
+  const cands = (db.snapshots as Json[])
+    .filter((x) => x.tenant === tn && x.source === src && x.local && x.time <= tm)
+    .sort((x, y) => y.time - x.time);
   const scanned: Json[] = [];
   let recommended: number | null = null;
   for (const s of cands.slice(0, max)) {
     // one ordinary snapshot_scan job per snapshot, with stop_on_match (the scan ends at its first match)
     const hit: Json | undefined = s.infected?.[0];
-    const sj = addJob('snapshot_scan', tn, { source: src, time: s.time, stop_on_match: true, scan_back: j.id }, 'scheduler');
-    const r = { files: 18_412 - scanned.length * 37, skipped: 3, errors: 0, matches_total: hit ? 1 : 0, matches: hit ? [hit] : [], complete: !hit, stopped: !!hit, seconds: hit ? 96 : 405, source: src, time: s.time };
+    const sj = addJob(
+      'snapshot_scan',
+      tn,
+      { source: src, time: s.time, stop_on_match: true, scan_back: j.id },
+      'scheduler',
+    );
+    const r = {
+      files: 18_412 - scanned.length * 37,
+      skipped: 3,
+      errors: 0,
+      matches_total: hit ? 1 : 0,
+      matches: hit ? [hit] : [],
+      complete: !hit,
+      stopped: !!hit,
+      seconds: hit ? 96 : 405,
+      source: src,
+      time: s.time,
+    };
     sj.duration = 3;
-    sj.plan = ['booting the restore micro-VM (no network, disks read-only)', `compiling ${db.yaraRules.length} rule file(s)`, `scanning ${src} (stop on the first match)`, hit ? '1 match: stopped' : 'clean'];
+    sj.plan = [
+      'booting the restore micro-VM (no network, disks read-only)',
+      `compiling ${db.yaraRules.length} rule file(s)`,
+      `scanning ${src} (stop on the first match)`,
+      hit ? '1 match: stopped' : 'clean',
+    ];
     sj.result = r;
     db.scans.push({ job: sj.id, tenant: tn, finished: now() + 3, rules: ruleLabel(), ...r });
-    scanned.push({ time: s.time, job: sj.id, matches_total: r.matches_total, complete: r.complete, stopped: r.stopped });
+    scanned.push({
+      time: s.time,
+      job: sj.id,
+      matches_total: r.matches_total,
+      complete: r.complete,
+      stopped: r.stopped,
+    });
     s.scan_state = hit ? 'hit' : 'clean';
-    if (hit && !anomalous(s)) s.anomaly = { reason: `YARA: 1 match (${hit.rule}), scan back job ${j.id}`, at: now(), cleared_by: null, cleared_at: null, note: null };
+    if (hit && !anomalous(s))
+      s.anomaly = {
+        reason: `YARA: 1 match (${hit.rule}), scan back job ${j.id}`,
+        at: now(),
+        cleared_by: null,
+        cleared_at: null,
+        note: null,
+      };
     if (!hit) {
       recommended = s.time;
       break;
     }
   }
-  for (const s of db.snapshots as Json[]) if (s.tenant === tn && s.source === src) s.clean_point = s.time === recommended ? recommended : null;
+  for (const s of db.snapshots as Json[])
+    if (s.tenant === tn && s.source === src) s.clean_point = s.time === recommended ? recommended : null;
   j.duration = 3 + 2 * scanned.length;
   j.plan = [
     `scan back of ${src} from ${tm}: at most ${max} snapshots, stop on the first match`,
@@ -9940,13 +15507,28 @@ const normFreeze = (f: Json | undefined, withConfig: boolean): Json | null => {
   return Object.values(v).some(Boolean) ? v : null;
 };
 const freezeLiftQuorum = (scope: string, tenant?: string) =>
-  db.quorum.find((q) => q.action === 'incident.freeze.lift' && q.state === 'pending' && q.params.scope === scope && (scope === 'appliance' || q.params.tenant === tenant))?.id ?? null;
+  db.quorum.find(
+    (q) =>
+      q.action === 'incident.freeze.lift' &&
+      q.state === 'pending' &&
+      q.params.scope === scope &&
+      (scope === 'appliance' || q.params.tenant === tenant),
+  )?.id ?? null;
 on('POST', '/incident/freeze/lift', async (c) => {
   const u = needLockdown(c.user);
   if (!db.incident?.active || !db.incident.freeze) throw new HttpError(409, 'incident mode freezes nothing');
   if (freezeLiftQuorum('appliance')) throw new HttpError(409, 'lifting the freezes is already requested');
   // always a second person, even with approvals disabled
-  const q = { id: nextId(), action: 'incident.freeze.lift', params: { scope: 'appliance', since: db.incident.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'incident.freeze.lift',
+    params: { scope: 'appliance', since: db.incident.since },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
   return [202, { quorum_id: q.id }];
@@ -9957,7 +15539,16 @@ on('POST', '/tenants/:name/lockdown/freeze/lift', async (c, [name]) => {
   const l = p28.lockdowns.find((x) => x.tenant === tn && x.active);
   if (!l?.freeze) throw new HttpError(409, 'the lockdown freezes nothing');
   if (freezeLiftQuorum('tenant', tn)) throw new HttpError(409, 'lifting the freezes is already requested');
-  const q = { id: nextId(), action: 'incident.freeze.lift', params: { scope: 'tenant', tenant: tn, since: l.since }, requested_by: u.name, created: now(), decided_by: null, decided_at: null, state: 'pending' };
+  const q = {
+    id: nextId(),
+    action: 'incident.freeze.lift',
+    params: { scope: 'tenant', tenant: tn, since: l.since },
+    requested_by: u.name,
+    created: now(),
+    decided_by: null,
+    decided_at: null,
+    state: 'pending',
+  };
   db.quorum.push(q);
   await audit(u.name, 'quorum.request', `quorum/${q.id}`, { action: q.action, params: q.params });
   return [202, { quorum_id: q.id }];
@@ -9965,7 +15556,8 @@ on('POST', '/tenants/:name/lockdown/freeze/lift', async (c, [name]) => {
 /** Quorum arm of `incident.freeze.lift`. */
 function liftFreeze(p: Json) {
   if (p.scope === 'appliance') {
-    if (!db.incident?.active || db.incident.since !== p.since) throw new HttpError(409, 'this incident is no longer active');
+    if (!db.incident?.active || db.incident.since !== p.since)
+      throw new HttpError(409, 'this incident is no longer active');
     db.incident.freeze = null;
     return;
   }
@@ -9977,15 +15569,34 @@ function liftFreeze(p: Json) {
 function freezeBanner(u: User): Json | null {
   if (u.tenant || u.role === 'tenant_user') return null;
   const f = db.incident?.active ? (db.incident.freeze ?? null) : null;
-  const tenants = p28.lockdowns.filter((l) => l.active && l.freeze).map((l) => ({ tenant: l.tenant, deletions: !!l.freeze.deletions, restores: !!l.freeze.restores }));
+  const tenants = p28.lockdowns
+    .filter((l) => l.active && l.freeze)
+    .map((l) => ({ tenant: l.tenant, deletions: !!l.freeze.deletions, restores: !!l.freeze.restores }));
   if (!f && !tenants.length) return null;
   return { config: !!f?.config, deletions: !!f?.deletions, restores: !!f?.restores, tenants };
 }
 /** Requests that stay allowed while configuration is frozen (contract item 4). */
 const FROZEN_OK = [
-  /^\/auth\//, /^\/incident/, /^\/tenants\/[^/]+\/lockdown/, /^\/quorum\/\d+\/(approve|reject)$/, /^\/users\/\d+$/, /^\/users\/\d+\/(sessions\/revoke|risk\/clear)$/,
-  /^\/alerts\/\d+\/(ack|resolve)$/, /^\/sessions/, /^\/auth\/sessions/, /^\/tokens\/\d+$/, /^\/snapshots\/[^/]+\/[^/]+\/\d+\/(hold|scan|scan-back)$/, /^\/holds/,
-  /^\/groups\/\d+\/pause$/, /^\/jobs/, /^\/restores$/, /^\/hunts$/, /^\/search$/, /^\/snapshots\/diff$/, /^\/diagnostics/, /^\/mock\//,
+  /^\/auth\//,
+  /^\/incident/,
+  /^\/tenants\/[^/]+\/lockdown/,
+  /^\/quorum\/\d+\/(approve|reject)$/,
+  /^\/users\/\d+$/,
+  /^\/users\/\d+\/(sessions\/revoke|risk\/clear)$/,
+  /^\/alerts\/\d+\/(ack|resolve)$/,
+  /^\/sessions/,
+  /^\/auth\/sessions/,
+  /^\/tokens\/\d+$/,
+  /^\/snapshots\/[^/]+\/[^/]+\/\d+\/(hold|scan|scan-back)$/,
+  /^\/holds/,
+  /^\/groups\/\d+\/pause$/,
+  /^\/jobs/,
+  /^\/restores$/,
+  /^\/hunts$/,
+  /^\/search$/,
+  /^\/snapshots\/diff$/,
+  /^\/diagnostics/,
+  /^\/mock\//,
 ];
 
 // ---- privileged-activity risk signals
@@ -9997,7 +15608,11 @@ function markRisk(u: User, rule: string, reason: string, severity: 'warning' | '
   u.risk_reason = reason;
   db.alerts.push(
     mkAlert({
-      ts: t, severity, kind: 'user_risk', key: `user_risk:${u.id}:${rule}`, tenant: u.tenant,
+      ts: t,
+      severity,
+      kind: 'user_risk',
+      key: `user_risk:${u.id}:${rule}`,
+      tenant: u.tenant,
       message: `risk signal for ${u.name} (${u.role}): ${reason}; the account must confirm it is the owner before its next change (step-up) until ${new Date(u.risk_until * 1000).toISOString()}`,
     }),
   );
@@ -10012,11 +15627,19 @@ function riskDelete(u: User) {
 /** 428 for a marked account's first change in a session; 409 while configuration / deletions are frozen. */
 function p29Gate(method: string, path: string, u: User, sess: { step_up_at?: number } | undefined) {
   if (method === 'GET') return;
-  const exempt = ['/auth/login', '/auth/logout', '/auth/step-up', '/auth/passkeys/challenge'].includes(path) || path.startsWith('/auth/activate/');
+  const exempt =
+    ['/auth/login', '/auth/logout', '/auth/step-up', '/auth/passkeys/challenge'].includes(path) ||
+    path.startsWith('/auth/activate/');
   if (riskActive(u) && !exempt && !((sess?.step_up_at ?? 0) >= (u.risk_since ?? 0)))
-    throw new HttpError(428, `step-up required: a risk signal marked this account (${u.risk_reason}); confirm with your password and a second factor (POST /auth/step-up)`);
+    throw new HttpError(
+      428,
+      `step-up required: a risk signal marked this account (${u.risk_reason}); confirm with your password and a second factor (POST /auth/step-up)`,
+    );
   if (db.incident?.active && db.incident.freeze?.config && !FROZEN_OK.some((re) => re.test(path)))
-    throw new HttpError(409, 'incident mode: configuration changes are frozen; lifting the freeze needs a second person (Settings → Incident mode)');
+    throw new HttpError(
+      409,
+      'incident mode: configuration changes are frozen; lifting the freeze needs a second person (Settings → Incident mode)',
+    );
   const del = /^\/snapshots\/([^/]+)\/[^/]+\/\d+$/.exec(path);
   if (method === 'DELETE' && del && deletionsFrozen(decodeURIComponent(del[1])))
     throw new HttpError(409, 'incident mode: deletions are frozen; lifting the freeze needs a second person');
@@ -10024,7 +15647,8 @@ function p29Gate(method: string, path: string, u: User, sess: { step_up_at?: num
 on('POST', '/auth/step-up', async (c) => {
   const u = need(c.user);
   const b = c.body ?? {};
-  if (!b.current_password || !b.current_totp) throw new HttpError(400, 'current_password and current_totp are required');
+  if (!b.current_password || !b.current_totp)
+    throw new HttpError(400, 'current_password and current_totp are required');
   if (b.current_password !== u.password || !secondOk(u, b.current_totp)) {
     await audit(u.name, 'auth.step_up_failed', `user/${u.name}`, {});
     throw new HttpError(403, 're-authentication failed: wrong current password or second factor');
@@ -10046,7 +15670,15 @@ on('GET', '/risk', (c) => {
     200,
     db.users
       .filter(riskActive)
-      .map((x) => ({ user_id: x.id, user: x.name, role: x.role, tenant: x.tenant, since: x.risk_since, until: x.risk_until, reason: x.risk_reason }))
+      .map((x) => ({
+        user_id: x.id,
+        user: x.name,
+        role: x.role,
+        tenant: x.tenant,
+        since: x.risk_since,
+        until: x.risk_until,
+        reason: x.risk_reason,
+      }))
       .sort((a, b) => (b.since ?? 0) - (a.since ?? 0)),
   ];
 });
@@ -10064,24 +15696,60 @@ on('POST', '/users/:id/risk/clear', async (c, [id]) => {
 
 function seedPhase29(t: number) {
   // full reads: one row per VM / host / NAS source with local snapshots; VM groups every 90 days, the rest 30
-  const keys = [...new Set((db.snapshots as Json[]).filter((s) => s.local && /^(vm|host|nas|share)-/.test(s.source)).map((s) => `${s.tenant}\u0000${s.source}`))].sort();
-  const trackerOf = (src: string) => (src.startsWith('vm-') ? 'dirty-bitmap' : src.startsWith('host-') ? 'metadata-cache' : src.startsWith('nas-') ? 'zfs-diff' : 'metadata-cache');
+  const keys = [
+    ...new Set(
+      (db.snapshots as Json[])
+        .filter((s) => s.local && /^(vm|host|nas|share)-/.test(s.source))
+        .map((s) => `${s.tenant}\u0000${s.source}`),
+    ),
+  ].sort();
+  const trackerOf = (src: string) =>
+    src.startsWith('vm-')
+      ? 'dirty-bitmap'
+      : src.startsWith('host-')
+        ? 'metadata-cache'
+        : src.startsWith('nas-')
+          ? 'zfs-diff'
+          : 'metadata-cache';
   keys.forEach((k, i) => {
     const [tenant, source] = k.split('\u0000');
-    const snaps = (db.snapshots as Json[]).filter((s) => s.tenant === tenant && s.source === source && s.local).sort((a, b) => b.time - a.time);
+    const snaps = (db.snapshots as Json[])
+      .filter((s) => s.tenant === tenant && s.source === source && s.local)
+      .sort((a, b) => b.time - a.time);
     const period = (source.startsWith('vm-') ? 90 : 30) * DAY;
     const fresh = i % 7 === 3; // a source protected only recently: no full read yet
     const pick = snaps[Math.min(snaps.length - 1, 1 + (i % 3))];
     const row: Json = {
-      tenant, source, next_due: null, last_at: null, last_snapshot: null, last_job: null, result: null, changed: null, unreported: null,
-      unreported_bytes: null, details: null, last_clean_at: null,
+      tenant,
+      source,
+      next_due: null,
+      last_at: null,
+      last_snapshot: null,
+      last_job: null,
+      result: null,
+      changed: null,
+      unreported: null,
+      unreported_bytes: null,
+      details: null,
+      last_clean_at: null,
     };
     if (!fresh && pick) {
       const compared = source.startsWith('vm-') ? 16_384 + i * 211 : 2_906 + i * 37;
       Object.assign(row, {
-        last_at: pick.time + 2400, last_snapshot: pick.time, last_job: 9_000 + i, result: snaps.length > 1 ? 'clean' : 'no_baseline',
-        changed: 120 + i * 13, unreported: 0, unreported_bytes: 0, next_due: pick.time + period,
-        details: { tracker: snaps.length > 1 ? trackerOf(source) : 'none', baseline: snaps[snaps.indexOf(pick) + 1]?.time ?? null, compared, examples: [] },
+        last_at: pick.time + 2400,
+        last_snapshot: pick.time,
+        last_job: 9_000 + i,
+        result: snaps.length > 1 ? 'clean' : 'no_baseline',
+        changed: 120 + i * 13,
+        unreported: 0,
+        unreported_bytes: 0,
+        next_due: pick.time + period,
+        details: {
+          tracker: snaps.length > 1 ? trackerOf(source) : 'none',
+          baseline: snaps[snaps.indexOf(pick) + 1]?.time ?? null,
+          compared,
+          examples: [],
+        },
       });
       if (row.result === 'clean') row.last_clean_at = row.last_at;
     } else row.next_due = (snaps[0]?.time ?? t) + DAY;
@@ -10092,27 +15760,54 @@ function seedPhase29(t: number) {
   if (d) {
     const prevClean = d.last_at - 90 * DAY;
     Object.assign(d, {
-      result: 'drift', changed: 2_211, unreported: 37, unreported_bytes: 37 * 4 * 2 ** 20, last_clean_at: prevClean,
-      details: { ...d.details, tracker: 'dirty-bitmap', examples: ['drive-scsi0@0x3a2400000', 'drive-scsi0@0x3a2800000', 'drive-scsi0@0x7f0c00000', 'drive-scsi1@0x12000000'] },
+      result: 'drift',
+      changed: 2_211,
+      unreported: 37,
+      unreported_bytes: 37 * 4 * 2 ** 20,
+      last_clean_at: prevClean,
+      details: {
+        ...d.details,
+        tracker: 'dirty-bitmap',
+        examples: [
+          'drive-scsi0@0x3a2400000',
+          'drive-scsi0@0x3a2800000',
+          'drive-scsi0@0x7f0c00000',
+          'drive-scsi1@0x12000000',
+        ],
+      },
     });
     // acknowledged by the security officer: the open-alert badge of the other pictures stays as it was
     db.alerts.push(
       mkAlert({
-        ts: d.last_at, severity: 'critical', kind: 'change_tracking', key: `change_tracking:${d.tenant}/${d.source}`, tenant: d.tenant,
+        ts: d.last_at,
+        severity: 'critical',
+        kind: 'change_tracking',
+        key: `change_tracking:${d.tenant}/${d.source}`,
+        tenant: d.tenant,
         message: `full read of ${d.tenant}/${d.source} snapshot ${d.last_snapshot}: 37 of 2211 changed chunks (148 MiB) were not reported by the dirty bitmap, e.g. drive-scsi0@0x3a2400000, drive-scsi0@0x3a2800000; incremental snapshots since the last clean full read may miss changes`,
-        acked_by: 'so', note: 'Host pve2 crashed on 2026-10-09; checking the bitmap handling with the PVE team',
+        acked_by: 'so',
+        note: 'Host pve2 crashed on 2026-10-09; checking the bitmap handling with the PVE team',
       }),
     );
   }
   // the contractor's download volume triggered rule (d): marked for step-up (alert acknowledged, see above)
   const ctr = db.users.find((u) => u.name === 'contractor');
   if (ctr) {
-    Object.assign(ctr, { risk_since: t - 5 * 3600, risk_until: t - 5 * 3600 + 86400, risk_reason: 'downloads: 14.2 GiB in 24 h (usually 0.4 GiB a day, limit 4.0 GiB)' });
+    Object.assign(ctr, {
+      risk_since: t - 5 * 3600,
+      risk_until: t - 5 * 3600 + 86400,
+      risk_reason: 'downloads: 14.2 GiB in 24 h (usually 0.4 GiB a day, limit 4.0 GiB)',
+    });
     db.alerts.push(
       mkAlert({
-        ts: t - 5 * 3600, severity: 'warning', kind: 'user_risk', key: `user_risk:${ctr.id}:downloads`, tenant: null,
+        ts: t - 5 * 3600,
+        severity: 'warning',
+        kind: 'user_risk',
+        key: `user_risk:${ctr.id}:downloads`,
+        tenant: null,
         message: `risk signal for contractor (operator): ${ctr.risk_reason}; the account must confirm it is the owner before its next change (step-up)`,
-        acked_by: 'so', note: 'Asked the contractor; waiting for an answer',
+        acked_by: 'so',
+        note: 'Asked the contractor; waiting for an answer',
       }),
     );
   }

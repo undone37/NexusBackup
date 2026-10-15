@@ -57,7 +57,9 @@
       groups_claim: o.groups_claim ?? 'groups',
       label: o.label ?? '',
       mappings: (o.mappings ?? []).map((m) => ({ group: m.group, role: m.role, tenants: m.tenants?.[0] ?? '' })),
-      secret_expires: o.client_secret_expires ? new Date(o.client_secret_expires * 1000).toISOString().slice(0, 10) : '',
+      secret_expires: o.client_secret_expires
+        ? new Date(o.client_secret_expires * 1000).toISOString().slice(0, 10)
+        : '',
     };
     secretSet = !!o.client_secret_set;
     domains = (o.domains ?? []).join(' ');
@@ -144,7 +146,8 @@
       <section class="card" aria-labelledby="{id}-idp">
         <div class="card-head">
           <h2 id="{id}-idp">{t.settings.oidc.provider}</h2>
-          <label class="inline-check"><input type="checkbox" bind:checked={f.enabled} />{t.settings.oidc.enabled}</label>
+          <label class="inline-check"><input type="checkbox" bind:checked={f.enabled} />{t.settings.oidc.enabled}</label
+          >
         </div>
         <div class="field">
           <label for="{id}-iss">{t.settings.oidc.issuer}</label>
@@ -169,7 +172,13 @@
           </div>
           <div class="field">
             <label for="{id}-sec">{t.settings.oidc.clientSecret}</label>
-            <input id="{id}-sec" type="password" bind:value={f.client_secret} autocomplete="new-password" aria-describedby="{id}-sec-hint" />
+            <input
+              id="{id}-sec"
+              type="password"
+              bind:value={f.client_secret}
+              autocomplete="new-password"
+              aria-describedby="{id}-sec-hint"
+            />
             <div class="hint" id="{id}-sec-hint">{secretSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
           </div>
           <div class="field">
@@ -182,7 +191,11 @@
           <span class="field-label" id="{id}-redir">{t.settings.oidc.redirect}</span>
           <div class="copyline">
             <code aria-labelledby="{id}-redir">{redirect}</code>
-            <button type="button" class="small" onclick={() => copyText(redirect)} aria-label="{t.users.copy}: {t.settings.oidc.redirect}"
+            <button
+              type="button"
+              class="small"
+              onclick={() => copyText(redirect)}
+              aria-label="{t.users.copy}: {t.settings.oidc.redirect}"
               ><IconCopy aria-hidden="true" />{t.users.copy}</button
             >
           </div>
@@ -190,16 +203,38 @@
         <div class="form-grid">
           <div class="field">
             <label for="{id}-scopes">{t.settings.oidc.scopes}</label>
-            <input id="{id}-scopes" class="mono" bind:value={f.scopes} required autocomplete="off" spellcheck="false" aria-describedby="{id}-scopes-hint" />
+            <input
+              id="{id}-scopes"
+              class="mono"
+              bind:value={f.scopes}
+              required
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="{id}-scopes-hint"
+            />
             <div class="hint" id="{id}-scopes-hint">{t.settings.oidc.scopesHint}</div>
           </div>
           <div class="field">
             <label for="{id}-uc">{t.settings.oidc.usernameClaim}</label>
-            <input id="{id}-uc" class="mono" bind:value={f.username_claim} required autocomplete="off" spellcheck="false" />
+            <input
+              id="{id}-uc"
+              class="mono"
+              bind:value={f.username_claim}
+              required
+              autocomplete="off"
+              spellcheck="false"
+            />
           </div>
           <div class="field">
             <label for="{id}-gc">{t.settings.oidc.groupsClaim}</label>
-            <input id="{id}-gc" class="mono" bind:value={f.groups_claim} required autocomplete="off" spellcheck="false" />
+            <input
+              id="{id}-gc"
+              class="mono"
+              bind:value={f.groups_claim}
+              required
+              autocomplete="off"
+              spellcheck="false"
+            />
           </div>
         </div>
         <div class="field">
@@ -209,7 +244,15 @@
         {#if tenant}
           <div class="field">
             <label for="{id}-dom">{t.sp.idp.domains}</label>
-            <input id="{id}-dom" class="mono" bind:value={domains} autocomplete="off" spellcheck="false" placeholder="example.com" aria-describedby="{id}-dom-hint" />
+            <input
+              id="{id}-dom"
+              class="mono"
+              bind:value={domains}
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="example.com"
+              aria-describedby="{id}-dom-hint"
+            />
             <div class="hint" id="{id}-dom-hint">{t.sp.idp.domainsHint}</div>
           </div>
         {/if}
@@ -218,7 +261,10 @@
       <section class="card" aria-labelledby="{id}-map">
         <div class="card-head">
           <h2 id="{id}-map">{t.settings.oidc.mappings}</h2>
-          <button type="button" class="small" onclick={() => f.mappings.push({ group: '', role: tenant ? 'tenant_user' : 'operator', tenants: '' })}
+          <button
+            type="button"
+            class="small"
+            onclick={() => f.mappings.push({ group: '', role: tenant ? 'tenant_user' : 'operator', tenants: '' })}
             ><IconPlus aria-hidden="true" />{t.settings.oidc.addMapping}</button
           >
         </div>
@@ -256,8 +302,11 @@
                   <option value="">{t.allTenants}</option>
                 {/if}
               </select>
-              <button type="button" class="icon" aria-label={t.settings.oidc.removeMapping(m.group)} onclick={() => f.mappings.splice(i, 1)}
-                ><IconTrash aria-hidden="true" /></button
+              <button
+                type="button"
+                class="icon"
+                aria-label={t.settings.oidc.removeMapping(m.group)}
+                onclick={() => f.mappings.splice(i, 1)}><IconTrash aria-hidden="true" /></button
               >
             {/each}
           </div>

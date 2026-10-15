@@ -42,4 +42,5 @@ export function setTheme(choice: ThemeChoice) {
 }
 
 /** The toggle cycles through the three choices. */
-export const nextTheme = (c: ThemeChoice): ThemeChoice => (c === 'system' ? 'light' : c === 'light' ? 'dark' : 'system');
+export const nextTheme = (c: ThemeChoice): ThemeChoice =>
+  c === 'system' ? 'light' : c === 'light' ? 'dark' : 'system';

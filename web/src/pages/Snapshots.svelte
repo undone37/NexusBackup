@@ -73,7 +73,8 @@
   async function load() {
     try {
       snaps = await get<Snapshot[]>(
-        '/snapshots' + qs({ tenant: route.query.get('tenant'), source: route.query.get('source'), held: route.query.get('held') }),
+        '/snapshots' +
+          qs({ tenant: route.query.get('tenant'), source: route.query.get('source'), held: route.query.get('held') }),
       );
       error = null;
     } catch (e) {
@@ -122,7 +123,9 @@
   let prScan: ScanFirstOpt | '' = $state('');
   // manifest v1.6 `target_source`: '' = the snapshot's own source
   let prTarget = $state('');
-  const prOwn = $derived(prSnap ? (sources.find((x) => x.id === parsePluginSnapshot(prSnap!.source)?.sourceId) ?? null) : null);
+  const prOwn = $derived(
+    prSnap ? (sources.find((x) => x.id === parsePluginSnapshot(prSnap!.source)?.sourceId) ?? null) : null,
+  );
   const prTargets = $derived.by(() => {
     const own = prOwn;
     if (!prSnap || !own || !prRestore?.target_source) return [];
@@ -177,7 +180,10 @@
     }
     prErrors = errors;
     const minutes = Number(prMinutes);
-    if (Object.keys(errors).length || (isMount(prRestore) && !(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440))) {
+    if (
+      Object.keys(errors).length ||
+      (isMount(prRestore) && !(Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440))
+    ) {
       notify('error', t.schema.invalid);
       return;
     }
@@ -230,7 +236,9 @@
     null;
   const cleanBefore = (s: Snapshot) =>
     preferScanned(
-      snaps.filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && !isFlagged(x) && x.time < s.time),
+      snaps.filter(
+        (x) => x.tenant === s.tenant && x.source === s.source && x.local && !isFlagged(x) && x.time < s.time,
+      ),
     );
   let flaggedOf: Snapshot | null = $state(null);
   function preferClean(s: Snapshot): Snapshot {
@@ -253,7 +261,9 @@
     const s = clearSnap;
     busy = true;
     const ok = await act(
-      post(`/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/anomaly/clear`, { note: clearNote.trim() }),
+      post(`/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/anomaly/clear`, {
+        note: clearNote.trim(),
+      }),
       t.snap.flagClearedOk,
     );
     busy = false;
@@ -358,7 +368,7 @@
     }
     const r = await act(
       post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }),
-      (d) => d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued,
+      (d) => (d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued),
       jobLink,
     );
     busy = false;
@@ -384,9 +394,13 @@
       .sort((a, b) => a.source.localeCompare(b.source, undefined, { numeric: true }));
   });
   const newerFlagged = (s: Snapshot) =>
-    snaps.filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && isFlagged(x) && x.time > s.time).sort((a, b) => b.time - a.time)[0];
+    snaps
+      .filter((x) => x.tenant === s.tenant && x.source === s.source && x.local && isFlagged(x) && x.time > s.time)
+      .sort((a, b) => b.time - a.time)[0];
   const manyPicked = $derived(manyLatest.filter((s) => manyChecked[s.source]));
-  const manyTenants = $derived([...new Set(snaps.filter((s) => /^(vm|ct)-/.test(s.source)).map((s) => s.tenant))].sort());
+  const manyTenants = $derived(
+    [...new Set(snaps.filter((s) => /^(vm|ct)-/.test(s.source)).map((s) => s.tenant))].sort(),
+  );
 
   async function openMany() {
     manyTenant = manyTenants.includes(tenant) ? tenant : (manyTenants[0] ?? '');
@@ -459,29 +473,62 @@
   function restoreItems(s: Snapshot): MenuItem[] {
     if (hostAgentId(s.source))
       return [
-        { label: t.snap.restorePath, hint: t.snap.restorePathHint, icon: IconHost, onselect: () => openRestoreFiles(s) },
+        {
+          label: t.snap.restorePath,
+          hint: t.snap.restorePathHint,
+          icon: IconHost,
+          onselect: () => openRestoreFiles(s),
+        },
         ...(s.local ? [synthetic(s)] : []),
       ];
     // any file tree onto a host with an agent of the tenant (Phase 15b)
-    const toHost: MenuItem = { label: t.snap.restoreToHost, hint: t.snap.restoreToHostHint, icon: IconHost, onselect: () => openRestoreFiles(s) };
+    const toHost: MenuItem = {
+      label: t.snap.restoreToHost,
+      hint: t.snap.restoreToHostHint,
+      icon: IconHost,
+      onselect: () => openRestoreFiles(s),
+    };
     const pl = pluginOf(s);
     if (pl) {
       const items: MenuItem[] = (pl.kind?.restores ?? [])
         .filter((r) => r.id !== 'download' && restoreApplies(r, pl.guest))
-        .map((r) => ({ label: r.title, hint: r.app_specific ? t.snap.appSpecific : undefined, icon: IconPlugin, onselect: () => openPluginRestore(s, r) }));
+        .map((r) => ({
+          label: r.title,
+          hint: r.app_specific ? t.snap.appSpecific : undefined,
+          icon: IconPlugin,
+          onselect: () => openPluginRestore(s, r),
+        }));
       // plugins with a download restore keep plain files in their snapshots
       if (pl.kind?.restores.some((r) => r.id === 'download')) items.push(toHost);
       return items;
     }
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
-    if (s.source.startsWith('nas-') || s.source.startsWith('share-')) return s.local ? [toHost, synthetic(s)] : [toHost];
-    const items: MenuItem[] = [{ label: t.snap.fullRestore, hint: t.snap.fullRestoreHint, icon: IconRestore, onselect: () => openRestore(s, 'restore') }];
+    if (s.source.startsWith('nas-') || s.source.startsWith('share-'))
+      return s.local ? [toHost, synthetic(s)] : [toHost];
+    const items: MenuItem[] = [
+      {
+        label: t.snap.fullRestore,
+        hint: t.snap.fullRestoreHint,
+        icon: IconRestore,
+        onselect: () => openRestore(s, 'restore'),
+      },
+    ];
     if (s.source.startsWith('vm-')) {
-      items.push({ label: t.snap.instant, hint: t.snap.instantHintShort, icon: IconZap, onselect: () => openRestore(s, 'instant') });
+      items.push({
+        label: t.snap.instant,
+        hint: t.snap.instantHintShort,
+        icon: IconZap,
+        onselect: () => openRestore(s, 'instant'),
+      });
       items.push({ label: t.idr.menu, hint: t.idr.menuHint, icon: IconDisk, onselect: () => openInstantDisk(s) });
     }
     // VM/CT files: chosen in the file browser (restore micro-VM), then restored onto a host
-    items.push({ label: t.snap.restoreFilesToHost, hint: t.snap.restoreFilesToHostHint, icon: IconHost, onselect: () => browse(s) });
+    items.push({
+      label: t.snap.restoreFilesToHost,
+      hint: t.snap.restoreFilesToHostHint,
+      icon: IconHost,
+      onselect: () => browse(s),
+    });
     return items;
   }
 
@@ -512,13 +559,19 @@
   }
 
   // Phase 21d: damaged snapshots per tenant, repaired per tenant
-  const damagedByTenant = $derived(
-    [...snaps.filter((s) => s.damaged).reduce((m, s) => m.set(s.tenant, (m.get(s.tenant) ?? 0) + 1), new Map<string, number>())],
-  );
+  const damagedByTenant = $derived([
+    ...snaps
+      .filter((s) => s.damaged)
+      .reduce((m, s) => m.set(s.tenant, (m.get(s.tenant) ?? 0) + 1), new Map<string, number>()),
+  ]);
 
   async function repair(tenant: string) {
     if (!(await askConfirm(t.snap.repairConfirm(tenant)))) return;
-    const r = await act(post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }), t.snap.repairQueued, jobLink);
+    const r = await act(
+      post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }),
+      t.snap.repairQueued,
+      jobLink,
+    );
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 
@@ -550,17 +603,54 @@
     const at = fmtTime(s.time);
     const out: MenuItem[] = [];
     if (can.restore(session.user) && s.local)
-      out.push({ label: t.snap.changes, icon: IconDiff, title: t.snap.changesLabel(s.source, at), onselect: () => navigate('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time })) });
-    if (can.scan(session.user) && s.local) out.push({ label: t.scan.scan, icon: IconScan, title: t.scan.scanLabel(s.source, at), onselect: () => startScan(s) });
+      out.push({
+        label: t.snap.changes,
+        icon: IconDiff,
+        title: t.snap.changesLabel(s.source, at),
+        onselect: () => navigate('/changes' + qs({ tenant: s.tenant, source: s.source, time: s.time })),
+      });
+    if (can.scan(session.user) && s.local)
+      out.push({
+        label: t.scan.scan,
+        icon: IconScan,
+        title: t.scan.scanLabel(s.source, at),
+        onselect: () => startScan(s),
+      });
     if (scanBackable(s))
-      out.push({ label: t.p29.scanBack.action, icon: IconHistory, title: t.p29.scanBack.label(s.source, at), onselect: () => ((sbSnap = s), (sbOpen = true)) });
+      out.push({
+        label: t.p29.scanBack.action,
+        icon: IconHistory,
+        title: t.p29.scanBack.label(s.source, at),
+        onselect: () => ((sbSnap = s), (sbOpen = true)),
+      });
     if (can.hold(session.user) && s.anomalous)
-      out.push({ label: t.snap.clearFlag, icon: IconCheck, title: t.snap.clearFlagLabel(s.source, at), onselect: () => ((clearSnap = s), (clearNote = ''), (clearOpen = true)) });
+      out.push({
+        label: t.snap.clearFlag,
+        icon: IconCheck,
+        title: t.snap.clearFlagLabel(s.source, at),
+        onselect: () => ((clearSnap = s), (clearNote = ''), (clearOpen = true)),
+      });
     if (can.hold(session.user) && s.hold?.state !== 'active')
-      out.push({ label: s.hold ? t.snap.applyHold : t.snap.hold, icon: IconGavel, title: t.snap.holdLabel(s.source, at), onselect: () => openHold(s) });
+      out.push({
+        label: s.hold ? t.snap.applyHold : t.snap.hold,
+        icon: IconGavel,
+        title: t.snap.holdLabel(s.source, at),
+        onselect: () => openHold(s),
+      });
     else if (can.releaseHold(session.user) && s.hold?.state === 'active' && !s.hold.release_quorum)
-      out.push({ label: t.snap.release, icon: IconUnlock, title: t.snap.releaseLabel(s.source, at), onselect: () => releaseHold(s) });
-    if (deletable(s)) out.push({ label: t.delete, icon: IconTrash, title: t.snap.deleteLabel(s.source, at), onselect: () => remove(s) });
+      out.push({
+        label: t.snap.release,
+        icon: IconUnlock,
+        title: t.snap.releaseLabel(s.source, at),
+        onselect: () => releaseHold(s),
+      });
+    if (deletable(s))
+      out.push({
+        label: t.delete,
+        icon: IconTrash,
+        title: t.snap.deleteLabel(s.source, at),
+        onselect: () => remove(s),
+      });
     return out;
   }
 </script>
@@ -682,25 +772,35 @@
                 {#if s.meta?.zfs_snapshot}<div class="muted small mono">@{s.meta.zfs_snapshot}</div>{/if}
                 {#if s.damaged}
                   <div>
-                    <span class="chip bad" title={t.snap.damagedTitle(s.damaged, fmtTime(s.damaged_at ?? 0))}>{t.snap.damaged}</span>
+                    <span class="chip bad" title={t.snap.damagedTitle(s.damaged, fmtTime(s.damaged_at ?? 0))}
+                      >{t.snap.damaged}</span
+                    >
                   </div>
                 {/if}
                 {#if s.index_state && t.snap.indexChip[s.index_state]}
                   <div>
-                    <span class="chip plain {s.index_state === 'failed' ? 'bad' : 'warn'}" title={s.index_reason ? t.snap.indexTitle(s.index_reason) : undefined}
+                    <span
+                      class="chip plain {s.index_state === 'failed' ? 'bad' : 'warn'}"
+                      title={s.index_reason ? t.snap.indexTitle(s.index_reason) : undefined}
                       >{t.snap.indexChip[s.index_state]}</span
                     >
                   </div>
                 {/if}
                 {#if s.anomalous && s.anomaly}
-                  <div><span class="chip bad" title={t.snap.anomalousTitle(s.anomaly.reason)}>{t.snap.anomalous}</span></div>
+                  <div>
+                    <span class="chip bad" title={t.snap.anomalousTitle(s.anomaly.reason)}>{t.snap.anomalous}</span>
+                  </div>
                   <div class="muted small reason">{s.anomaly.reason}</div>
                 {:else if s.anomaly}
                   <div>
                     <span
                       class="chip info plain"
-                      title={t.snap.flagClearedTitle(s.anomaly.cleared_by ?? '?', fmtTime(s.anomaly.cleared_at ?? 0), s.anomaly.note ?? '', s.anomaly.reason)}
-                      >{t.snap.flagCleared}</span
+                      title={t.snap.flagClearedTitle(
+                        s.anomaly.cleared_by ?? '?',
+                        fmtTime(s.anomaly.cleared_at ?? 0),
+                        s.anomaly.note ?? '',
+                        s.anomaly.reason,
+                      )}>{t.snap.flagCleared}</span
                     >
                   </div>
                 {/if}
@@ -711,18 +811,30 @@
                       class="chip plain linkish {s.scan.matches ? 'bad' : s.scan.complete ? 'ok' : 'warn'}"
                       title={t.scan.chipTitle(fmtTime(s.scan.finished))}
                       onclick={() => ((scanSnap = s), (scanOpen = true))}
-                      >{s.scan.matches ? t.scan.hits(s.scan.matches) : s.scan.complete ? t.scan.clean : t.scan.incomplete}</button
+                      >{s.scan.matches
+                        ? t.scan.hits(s.scan.matches)
+                        : s.scan.complete
+                          ? t.scan.clean
+                          : t.scan.incomplete}</button
                     >
                   </div>
                 {/if}
                 {#if s.clean_point}
-                  <div><span class="chip ok plain clean-point" title={t.p29.scanBack.badgeTitle}><IconBadge aria-hidden="true" />{t.p29.scanBack.badge}</span></div>
+                  <div>
+                    <span class="chip ok plain clean-point" title={t.p29.scanBack.badgeTitle}
+                      ><IconBadge aria-hidden="true" />{t.p29.scanBack.badge}</span
+                    >
+                  </div>
                 {/if}
                 {#if offsiteOnly(s)}<div><span class="chip info plain">{t.offsite.onlyOffsite}</span></div>{/if}
                 {#if s.hold?.state === 'active'}
                   <div>
-                    <span class="chip warn plain hold" title={t.snap.heldTitle(s.hold.held_by, fmtTime(s.hold.held_at), s.hold.reason)}
-                      ><IconGavel aria-hidden="true" />{t.snap.held}{s.hold.release_quorum ? ` · ${t.snap.releasePending}` : ''}</span
+                    <span
+                      class="chip warn plain hold"
+                      title={t.snap.heldTitle(s.hold.held_by, fmtTime(s.hold.held_at), s.hold.reason)}
+                      ><IconGavel aria-hidden="true" />{t.snap.held}{s.hold.release_quorum
+                        ? ` · ${t.snap.releasePending}`
+                        : ''}</span
                     >
                   </div>
                 {:else if s.hold}
@@ -746,7 +858,11 @@
                 <td class="actions">
                   {#if can.restore(session.user) && offsiteOnly(s)}
                     <!-- restores need a local copy: fetch it back first (17d) -->
-                    <button type="button" class="small" onclick={() => fetchBack(s)} aria-label={t.offsite.fetchLabel(s.source, fmtTime(s.time))}
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => fetchBack(s)}
+                      aria-label={t.offsite.fetchLabel(s.source, fmtTime(s.time))}
                       ><IconCloudDown aria-hidden="true" />{t.offsite.fetch}</button
                     >
                   {:else if can.restore(session.user)}
@@ -754,14 +870,19 @@
                       type="button"
                       class="small"
                       onclick={() => browse(s)}
-                      title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
+                      title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}
+                      ><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
                     >
                     {#if items.length}
                       <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
                     {/if}
                   {/if}
                   {#if snapActions(s).length}
-                    <Menu label={t.agents.more} ariaLabel={t.snap.moreLabel(s.source, fmtTime(s.time))} items={snapActions(s)} />
+                    <Menu
+                      label={t.agents.more}
+                      ariaLabel={t.snap.moreLabel(s.source, fmtTime(s.time))}
+                      items={snapActions(s)}
+                    />
                   {/if}
                 </td>
               {/if}
@@ -780,7 +901,12 @@
   {#if sel}
     <form onsubmit={startRestore}>
       <p class="muted">{sel.tenant} · {fmtTime(sel.time)}</p>
-      {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={sel} onswitch={(x) => (sel = x)} />{/if}
+      {#if flaggedOf}<FlaggedNotice
+          flagged={flaggedOf}
+          clean={cleanBefore(flaggedOf)}
+          using={sel}
+          onswitch={(x) => (sel = x)}
+        />{/if}
       <InfectedNotice
         snap={sel}
         production={mode === 'instant' ? !rLinkDown : rReplace || !rLinkDown}
@@ -790,7 +916,9 @@
       <div class="field">
         <label for="r-node">{t.snap.node}</label>
         <input id="r-node" bind:value={node} list="r-nodes" required autocomplete="off" />
-        <datalist id="r-nodes">{#each nodeNames as n (n)}<option value={n}></option>{/each}</datalist>
+        <datalist id="r-nodes"
+          >{#each nodeNames as n (n)}<option value={n}></option>{/each}</datalist
+        >
       </div>
       <div class="form-grid">
         <div class="field">
@@ -808,50 +936,81 @@
           {#if mode === 'restore'}
             <div class="field">
               <label for="r-name">{t.ropts.name}</label>
-              <input id="r-name" bind:value={rName} disabled={!!rPrefix.trim()} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-name-hint" />
+              <input
+                id="r-name"
+                bind:value={rName}
+                disabled={!!rPrefix.trim()}
+                pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}"
+                aria-describedby="r-name-hint"
+              />
               <div class="hint" id="r-name-hint">{t.ropts.nameHint('<name>-restore')}</div>
             </div>
           {/if}
           <div class="field">
             <label for="r-prefix">{t.ropts.prefix}</label>
-            <input id="r-prefix" bind:value={rPrefix} disabled={!!rName.trim() && mode === 'restore'} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-prefix-hint" />
+            <input
+              id="r-prefix"
+              bind:value={rPrefix}
+              disabled={!!rName.trim() && mode === 'restore'}
+              pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}"
+              aria-describedby="r-prefix-hint"
+            />
             <div class="hint" id="r-prefix-hint">{t.ropts.prefixHint}</div>
           </div>
           <div class="field">
             <label for="r-pool">{t.ropts.pool}</label>
-            <input id="r-pool" bind:value={rPool} pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}" aria-describedby="r-pool-hint" />
+            <input
+              id="r-pool"
+              bind:value={rPool}
+              pattern="[A-Za-z0-9_][A-Za-z0-9._\-]{'{0,62}'}"
+              aria-describedby="r-pool-hint"
+            />
             <div class="hint" id="r-pool-hint">{t.ropts.poolHint}</div>
           </div>
         </div>
         <div class="field">
-          <label class="inline-check"><input id="r-start" type="checkbox" bind:checked={rStart} />{mode === 'instant' ? t.ropts.irStart : t.ropts.start}</label>
+          <label class="inline-check"
+            ><input id="r-start" type="checkbox" bind:checked={rStart} />{mode === 'instant'
+              ? t.ropts.irStart
+              : t.ropts.start}</label
+          >
         </div>
         <div class="field">
-          <label class="inline-check"><input id="r-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label>
+          <label class="inline-check"
+            ><input id="r-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label
+          >
           <div class="hint">{t.ropts.linkDownHint}</div>
         </div>
         <ScanFirst bind:value={rScan} linkDown />
         {#if mode === 'restore' && can.backup(session.user)}
           <div class="field">
-            <label class="inline-check"><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label>
+            <label class="inline-check"
+              ><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label
+            >
           </div>
           {#if rReplace}
             {#if sel?.source.startsWith('vm-')}
               <div class="field">
-                <label class="inline-check"><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{t.p30.rollback.label}</label>
+                <label class="inline-check"
+                  ><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{t.p30.rollback.label}</label
+                >
                 <div class="hint">{t.p30.rollback.hint(origVmid(sel))}</div>
               </div>
             {/if}
             <p class="banner warn">{t.ropts.replaceHint(origVmid(sel))}</p>
             <div class="field">
-              <label class="inline-check"><input id="r-keeplinks" type="checkbox" bind:checked={rKeepLinks} />{t.ropts.keepLinks}</label>
+              <label class="inline-check"
+                ><input id="r-keeplinks" type="checkbox" bind:checked={rKeepLinks} />{t.ropts.keepLinks}</label
+              >
             </div>
           {/if}
         {/if}
       </fieldset>
       <div class="form-actions">
         <button type="button" onclick={() => (dlgOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}
+          >{session.vault ? t.vault.requestRestore : t.snap.start}</button
+        >
       </div>
     </form>
   {/if}
@@ -866,7 +1025,11 @@
       {#if manyTenants.length > 1}
         <div class="field">
           <label for="m-tenant">{t.tenant}</label>
-          <select id="m-tenant" bind:value={manyTenant} onchange={() => ((manyChecked = {}), (node = nodesOf(manyTenant)[0] ?? ''))}>
+          <select
+            id="m-tenant"
+            bind:value={manyTenant}
+            onchange={() => ((manyChecked = {}), (node = nodesOf(manyTenant)[0] ?? ''))}
+          >
             {#each manyTenants as tn (tn)}<option value={tn}>{tn}</option>{/each}
           </select>
         </div>
@@ -875,7 +1038,8 @@
         <label for="m-group">{t.ropts.manyGroup}</label>
         <select id="m-group" bind:value={manyGroup} onchange={pickGroup}>
           <option value="">{t.ropts.manyGroupNone}</option>
-          {#each groups.filter((g) => g.tenant === manyTenant) as g (g.id)}<option value={String(g.id)}>{g.name}</option>{/each}
+          {#each groups.filter((g) => g.tenant === manyTenant) as g (g.id)}<option value={String(g.id)}>{g.name}</option
+            >{/each}
         </select>
       </div>
     </div>
@@ -890,7 +1054,9 @@
               ><input type="checkbox" bind:checked={manyChecked[s.source]} /><span class="mono">{s.source}</span>
               <span class="muted">{fmtTime(s.time)}</span>
               <ConsistencyBadge level={s.consistency} />
-              {#if newerFlagged(s)}<span class="chip warn plain">{t.snap.flaggedSkipped(fmtTime(newerFlagged(s).time))}</span>{/if}</label
+              {#if newerFlagged(s)}<span class="chip warn plain"
+                  >{t.snap.flaggedSkipped(fmtTime(newerFlagged(s).time))}</span
+                >{/if}</label
             >
           {/each}
         </div>
@@ -900,7 +1066,9 @@
       <div class="field">
         <label for="m-node">{t.snap.node}</label>
         <input id="m-node" bind:value={node} list="m-nodes" required autocomplete="off" />
-        <datalist id="m-nodes">{#each nodesOf(manyTenant) as n (n)}<option value={n}></option>{/each}</datalist>
+        <datalist id="m-nodes"
+          >{#each nodesOf(manyTenant) as n (n)}<option value={n}></option>{/each}</datalist
+        >
       </div>
       <div class="field">
         <label for="m-base">{t.ropts.manyBase}</label>
@@ -923,11 +1091,15 @@
       <label class="inline-check"><input id="m-start" type="checkbox" bind:checked={rStart} />{t.ropts.start}</label>
     </div>
     <div class="field">
-      <label class="inline-check"><input id="m-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label>
+      <label class="inline-check"
+        ><input id="m-linkdown" type="checkbox" bind:checked={rLinkDown} />{t.ropts.linkDown}</label
+      >
     </div>
     <div class="form-actions">
       <button type="button" onclick={() => (manyOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy || !manyPicked.length}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
+      <button type="submit" class="primary" disabled={busy || !manyPicked.length}
+        >{session.vault ? t.vault.requestRestore : t.snap.start}</button
+      >
     </div>
   </form>
 </Modal>
@@ -943,7 +1115,12 @@
         {prSnap.tenant} · {fmtTime(prSnap.time)}
         {#if prRestore.app_specific}<span class="chip info">{t.snap.appSpecific}</span>{/if}
       </p>
-      {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={prSnap} onswitch={(x) => (prSnap = x)} />{/if}
+      {#if flaggedOf}<FlaggedNotice
+          flagged={flaggedOf}
+          clean={cleanBefore(flaggedOf)}
+          using={prSnap}
+          onswitch={(x) => (prSnap = x)}
+        />{/if}
       {#if range && hasTimeTarget}
         <div class="range" role="group" aria-labelledby="pr-range-label">
           <p id="pr-range-label">
@@ -952,7 +1129,10 @@
               {t.snap.recoverableBaseOnly(fmtTime(range.to_time), range.to_lsn, range.unit === 'binlog')}
             {:else}
               {t.snap.recoverableRange(fmtTime(range.from_time), fmtTime(range.to_time))}
-              <span class="muted mono">{t.snap.positionUnit(range.unit)} {range.from_lsn} → {range.to_lsn}{range.timeline ? ` · ${t.snap.timeline} ${range.timeline}` : ''}</span>
+              <span class="muted mono"
+                >{t.snap.positionUnit(range.unit)}
+                {range.from_lsn} → {range.to_lsn}{range.timeline ? ` · ${t.snap.timeline} ${range.timeline}` : ''}</span
+              >
             {/if}
           </p>
           {#if range.from_time < range.to_time}
@@ -993,13 +1173,24 @@
       {#if isMount(prRestore)}
         <div class="field">
           <label for="pr-min">{t.snap.mountMinutes}</label>
-          <input id="pr-min" type="number" min="1" max="1440" step="1" bind:value={prMinutes} required aria-describedby="pr-min-hint" />
+          <input
+            id="pr-min"
+            type="number"
+            min="1"
+            max="1440"
+            step="1"
+            bind:value={prMinutes}
+            required
+            aria-describedby="pr-min-hint"
+          />
           <div class="hint" id="pr-min-hint">{t.snap.mountMinutesHint}</div>
         </div>
       {/if}
       <div class="form-actions">
         <button type="button" onclick={() => (prOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{session.vault ? t.vault.requestRestore : t.snap.start}</button>
+        <button type="submit" class="primary" disabled={busy}
+          >{session.vault ? t.vault.requestRestore : t.snap.start}</button
+        >
       </div>
     </form>
   {/if}
@@ -1015,13 +1206,30 @@
   ondone={load}
 >
   {#if flaggedOf && holdSnap}
-    <FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={holdSnap} onswitch={(x) => (holdTarget = x)} />
+    <FlaggedNotice
+      flagged={flaggedOf}
+      clean={cleanBefore(flaggedOf)}
+      using={holdSnap}
+      onswitch={(x) => (holdTarget = x)}
+    />
   {/if}
 </HoldDialog>
 
 {#if rfSnap}
-  <RestoreFiles bind:open={rfOpen} tenant={rfSnap.tenant} source={rfSnap.source} time={rfSnap.time} paths={['/']} {agents}>
-    {#if flaggedOf}<FlaggedNotice flagged={flaggedOf} clean={cleanBefore(flaggedOf)} using={rfSnap} onswitch={(x) => (rfSnap = x)} />{/if}
+  <RestoreFiles
+    bind:open={rfOpen}
+    tenant={rfSnap.tenant}
+    source={rfSnap.source}
+    time={rfSnap.time}
+    paths={['/']}
+    {agents}
+  >
+    {#if flaggedOf}<FlaggedNotice
+        flagged={flaggedOf}
+        clean={cleanBefore(flaggedOf)}
+        using={rfSnap}
+        onswitch={(x) => (rfSnap = x)}
+      />{/if}
   </RestoreFiles>
 {/if}
 
@@ -1031,7 +1239,13 @@
 
 <ScanResults bind:open={scanOpen} snap={scanSnap} />
 
-{#if sbSnap}<ScanBack bind:open={sbOpen} tenant={sbSnap.tenant} source={sbSnap.source} time={sbSnap.time} ondone={load} />{/if}
+{#if sbSnap}<ScanBack
+    bind:open={sbOpen}
+    tenant={sbSnap.tenant}
+    source={sbSnap.source}
+    time={sbSnap.time}
+    ondone={load}
+  />{/if}
 
 <Modal bind:open={clearOpen} title={t.snap.clearTitle}>
   {#if clearSnap}
@@ -1050,7 +1264,6 @@
     </form>
   {/if}
 </Modal>
-
 
 <style>
   .damaged {

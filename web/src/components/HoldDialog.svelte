@@ -58,7 +58,10 @@
     const r = reason.trim();
     const ok = target
       ? await act(
-          post(`/snapshots/${encodeURIComponent(target.tenant)}/${encodeURIComponent(target.source)}/${target.time}/hold`, { reason: r }),
+          post(
+            `/snapshots/${encodeURIComponent(target.tenant)}/${encodeURIComponent(target.source)}/${target.time}/hold`,
+            { reason: r },
+          ),
           t.snap.holdSet,
         )
       : await act(
@@ -95,8 +98,16 @@
         </div>
         <div class="field">
           <label for="hold-source">{t.snap.source}</label>
-          <input id="hold-source" bind:value={source} list="hold-sources" placeholder={t.snap.allSources} autocomplete="off" />
-          <datalist id="hold-sources">{#each sources as s (s)}<option value={s}></option>{/each}</datalist>
+          <input
+            id="hold-source"
+            bind:value={source}
+            list="hold-sources"
+            placeholder={t.snap.allSources}
+            autocomplete="off"
+          />
+          <datalist id="hold-sources"
+            >{#each sources as s (s)}<option value={s}></option>{/each}</datalist
+          >
         </div>
         <div class="field">
           <label for="hold-from">{t.snap.from}</label>

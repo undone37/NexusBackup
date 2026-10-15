@@ -25,7 +25,8 @@
   let applied = $state({ actor: '', action: '', target: '', tenant: '', from: '', to: '' });
 
   // dates of the form → unix seconds (local day boundaries)
-  const day = (d: string, end: boolean) => (d ? Math.floor(new Date(`${d}T${end ? '23:59:59' : '00:00:00'}`).getTime() / 1000) : undefined);
+  const day = (d: string, end: boolean) =>
+    d ? Math.floor(new Date(`${d}T${end ? '23:59:59' : '00:00:00'}`).getTime() / 1000) : undefined;
   const filters = $derived({
     actor: applied.actor.trim(),
     action: applied.action.trim(),
@@ -40,7 +41,11 @@
   // Newest first; older pages via ?before=<oldest seq shown>.
   async function loadMore() {
     try {
-      const q = qs({ ...filters, limit: PAGE, ...(entries.length ? { before: entries[entries.length - 1].seq } : { order: 'desc' }) });
+      const q = qs({
+        ...filters,
+        limit: PAGE,
+        ...(entries.length ? { before: entries[entries.length - 1].seq } : { order: 'desc' }),
+      });
       const page = await get<AuditEntry[]>(`/audit${q}`);
       entries = [...entries, ...page];
       more = page.length === PAGE;
@@ -80,7 +85,9 @@
     verify = null;
     try {
       const r = await get<AuditVerify>('/audit/verify');
-      verify = r.ok ? { ok: true, text: t.audit.verifiedOk(r.entries) } : { ok: false, text: `${t.audit.verifiedBad}: ${r.error ?? ''}` };
+      verify = r.ok
+        ? { ok: true, text: t.audit.verifiedOk(r.entries) }
+        : { ok: false, text: `${t.audit.verifiedBad}: ${r.error ?? ''}` };
     } catch (e) {
       verify = { ok: false, text: `${t.audit.verifiedBad}: ${errText(e)}` };
     } finally {
@@ -91,8 +98,15 @@
   const short = (h: string) => `${h.slice(0, 10)}…`;
   type Sink = ForwardingStatus['sinks'][number];
   const sinkState = (s: Sink, head: number) =>
-    !s.enabled ? t.audit.fwd.off : s.failing_since ? t.audit.fwd.failing(fmtAgo(s.failing_since)) : s.audit_seq >= head ? t.audit.fwd.caughtUp : t.audit.fwd.behind(head - s.audit_seq);
-  const chip = (s: Sink, head: number) => (!s.enabled ? 'plain' : s.failing_since ? 'bad' : s.audit_seq >= head ? 'ok' : 'warn');
+    !s.enabled
+      ? t.audit.fwd.off
+      : s.failing_since
+        ? t.audit.fwd.failing(fmtAgo(s.failing_since))
+        : s.audit_seq >= head
+          ? t.audit.fwd.caughtUp
+          : t.audit.fwd.behind(head - s.audit_seq);
+  const chip = (s: Sink, head: number) =>
+    !s.enabled ? 'plain' : s.failing_since ? 'bad' : s.audit_seq >= head ? 'ok' : 'warn';
 </script>
 
 <div class="page-head">
@@ -210,7 +224,8 @@
               <td class="mono">
                 <!-- jobs and approvals open from their entries -->
                 {#if /^job\/\d+$/.test(e.target)}<a href={href(`/${e.target.replace('job/', 'jobs/')}`)}>{e.target}</a>
-                {:else if /^quorum\/\d+$/.test(e.target)}<a href={href(`/quorum?id=${e.target.slice(7)}`)}>{e.target}</a>
+                {:else if /^quorum\/\d+$/.test(e.target)}<a href={href(`/quorum?id=${e.target.slice(7)}`)}>{e.target}</a
+                  >
                 {:else}{e.target}{/if}
               </td>
               <td class="mono details">

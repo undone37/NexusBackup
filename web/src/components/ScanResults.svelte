@@ -52,7 +52,9 @@
               </tbody>
             </table>
           </div>
-          {#if s.matches_total > s.matches.length}<p class="hint">{t.scan.moreMatches(s.matches_total - s.matches.length)}</p>{/if}
+          {#if s.matches_total > s.matches.length}<p class="hint">
+              {t.scan.moreMatches(s.matches_total - s.matches.length)}
+            </p>{/if}
         {/if}
       </section>
     {/each}

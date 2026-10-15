@@ -41,7 +41,10 @@
   const candidates = $derived(
     agents
       .filter((a) => a.tenant === tenant)
-      .sort((a, b) => Number(b.enrolled_at !== null) - Number(a.enrolled_at !== null) || (b.last_seen ?? 0) - (a.last_seen ?? 0)),
+      .sort(
+        (a, b) =>
+          Number(b.enrolled_at !== null) - Number(a.enrolled_at !== null) || (b.last_seen ?? 0) - (a.last_seen ?? 0),
+      ),
   );
   const own = $derived(hostAgentId(source));
   let target = $state('');
@@ -93,7 +96,16 @@
     e.preventDefault();
     if (!ready || !agent) return;
     busy = true;
-    const params = { source, time, paths, target, overwrite, confirm, agent_id: agent.id, ...(scanFirst ? { scan_first: scanFirst } : {}) };
+    const params = {
+      source,
+      time,
+      paths,
+      target,
+      overwrite,
+      confirm,
+      agent_id: agent.id,
+      ...(scanFirst ? { scan_first: scanFirst } : {}),
+    };
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'restore_files', tenant, params }),
       (d) => t.snap.jobStarted(d.id),
@@ -179,7 +191,9 @@
     {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={!ready}>{session.vault ? t.vault.requestRestore : t.restoreFiles.start}</button>
+      <button type="submit" class="primary" disabled={!ready}
+        >{session.vault ? t.vault.requestRestore : t.restoreFiles.start}</button
+      >
     </div>
   </form>
 </Modal>

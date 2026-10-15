@@ -76,7 +76,9 @@
 {#if revokeAll}
   <p class="muted">{t.access.revokeAllHint}</p>
   <div class="form-actions">
-    <button type="button" class="danger" onclick={() => ((re = { password: '', totp: '' }), (allOpen = true))}>{t.access.revokeAll}</button>
+    <button type="button" class="danger" onclick={() => ((re = { password: '', totp: '' }), (allOpen = true))}
+      >{t.access.revokeAll}</button
+    >
   </div>
   <Modal bind:open={allOpen} title={t.access.revokeAll}>
     <form onsubmit={confirmAll}>
@@ -88,7 +90,15 @@
         </div>
         <div class="field">
           <label for="ra-totp">{t.users.currentTotp}</label>
-          <input id="ra-totp" bind:value={re.totp} inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" aria-describedby="ra-totp-hint" />
+          <input
+            id="ra-totp"
+            bind:value={re.totp}
+            inputmode="numeric"
+            pattern={'[0-9]{6}'}
+            maxlength="6"
+            autocomplete="one-time-code"
+            aria-describedby="ra-totp-hint"
+          />
           <div class="hint" id="ra-totp-hint">{t.passkeys.totpOrPasskey}</div>
         </div>
       </div>

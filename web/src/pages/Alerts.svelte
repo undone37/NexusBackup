@@ -67,7 +67,9 @@
     holdTarget = a.snapshot;
     const origin = /^primary (\S+) holds/.exec(a.message)?.[1] ?? '?';
     holdReason =
-      a.kind === 'anomaly' ? t.alerts.holdReasonAnomaly(`${a.snapshot.tenant}/${a.snapshot.source}`) : t.alerts.holdReasonAdvisory(origin);
+      a.kind === 'anomaly'
+        ? t.alerts.holdReasonAnomaly(`${a.snapshot.tenant}/${a.snapshot.source}`)
+        : t.alerts.holdReasonAdvisory(origin);
     holdOpen = true;
   }
   const ref = (s: SnapshotRef) => `${s.source} @ ${fmtTime(s.time)}`;
@@ -86,7 +88,9 @@
     if (!k) return;
     try {
       const xs = await get<Snapshot[]>('/snapshots' + qs(k));
-      const flagged = xs.filter((x) => x.local && (x.flagged ?? (!!x.anomalous || x.scan_state === 'hit'))).sort((x, y) => y.time - x.time);
+      const flagged = xs
+        .filter((x) => x.local && (x.flagged ?? (!!x.anomalous || x.scan_state === 'hit')))
+        .sort((x, y) => y.time - x.time);
       const from = flagged[0];
       if (!from) return void notify('info', t.p29.scanBack.noFlagged);
       sb = { ...k, time: from.time };
@@ -101,7 +105,10 @@
     if (!dlg) return;
     busy = true;
     const body = note.trim() ? { note: note.trim() } : {};
-    const ok = await act(post(`/alerts/${dlg.a.id}/${dlg.action}`, body), dlg.action === 'ack' ? t.alerts.done : t.alerts.resolvedDone);
+    const ok = await act(
+      post(`/alerts/${dlg.a.id}/${dlg.action}`, body),
+      dlg.action === 'ack' ? t.alerts.done : t.alerts.resolvedDone,
+    );
     busy = false;
     if (ok) {
       open = false;
@@ -109,7 +116,8 @@
     }
   }
   /** A readable title of an alert kind (`user_risk` -> "Unusual account activity" or "User risk"). */
-  const kindTitle = (k: string) => t.alerts.kindTitles[k] ?? k.charAt(0).toUpperCase() + k.slice(1).replaceAll('_', ' ');
+  const kindTitle = (k: string) =>
+    t.alerts.kindTitles[k] ?? k.charAt(0).toUpperCase() + k.slice(1).replaceAll('_', ' ');
   /** The message split around "job N" mentions (links to the job). */
   function linkParts(m: string): { text: string; job?: number }[] {
     const out: { text: string; job?: number }[] = [];
@@ -175,7 +183,8 @@
               </td>
               <td>
                 <!-- "job 220" in a message opens that job -->
-                {#each linkParts(a.message) as part, i (i)}{#if part.job}<a href={href(`/jobs/${part.job}`)}>{part.text}</a
+                {#each linkParts(a.message) as part, i (i)}{#if part.job}<a href={href(`/jobs/${part.job}`)}
+                      >{part.text}</a
                     >{:else}{part.text}{/if}{/each}
                 <details class="alert-hint">
                   <summary>{t.alerts.whatToDo}</summary>
@@ -185,7 +194,13 @@
                 {#if a.tickets?.length}
                   <div class="muted small">
                     {#each a.tickets as tk (tk.rule + tk.ticket)}
-                      <span class="ticket">{t.alerts.ticket(t.settings.al.psaVendors[tk.vendor] ?? tk.vendor, tk.ticket, !!tk.closed)}</span>
+                      <span class="ticket"
+                        >{t.alerts.ticket(
+                          t.settings.al.psaVendors[tk.vendor] ?? tk.vendor,
+                          tk.ticket,
+                          !!tk.closed,
+                        )}</span
+                      >
                     {/each}
                   </div>
                 {/if}
@@ -202,12 +217,18 @@
                       type="button"
                       class="small"
                       onclick={() => hold(a)}
-                      aria-label={a.kind === 'anomaly' ? t.alerts.holdLastGoodLabel(ref(a.snapshot)) : t.alerts.applyHoldLabel(ref(a.snapshot))}
-                      ><IconGavel aria-hidden="true" />{a.kind === 'anomaly' ? t.alerts.holdLastGood : t.alerts.applyHold}</button
+                      aria-label={a.kind === 'anomaly'
+                        ? t.alerts.holdLastGoodLabel(ref(a.snapshot))
+                        : t.alerts.applyHoldLabel(ref(a.snapshot))}
+                      ><IconGavel aria-hidden="true" />{a.kind === 'anomaly'
+                        ? t.alerts.holdLastGood
+                        : t.alerts.applyHold}</button
                     >
                   {/if}
                   {#if keySource(a) && can.scan(session.user)}
-                    <button type="button" class="small" onclick={() => scanBack(a)}><IconHistory aria-hidden="true" />{t.p29.scanBack.alertAction}</button>
+                    <button type="button" class="small" onclick={() => scanBack(a)}
+                      ><IconHistory aria-hidden="true" />{t.p29.scanBack.alertAction}</button
+                    >
                   {/if}
                   {#if a.acked_by}
                     <span class="muted small">{t.alerts.acked} {t.alerts.ackedBy(a.acked_by)}</span>
@@ -238,7 +259,9 @@
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-        <button type="submit" class="primary" disabled={busy}>{dlg.action === 'resolve' ? t.alerts.resolve : t.alerts.ack}</button>
+        <button type="submit" class="primary" disabled={busy}
+          >{dlg.action === 'resolve' ? t.alerts.resolve : t.alerts.ack}</button
+        >
       </div>
     </form>
   {/if}
@@ -277,4 +300,3 @@
     width: auto;
   }
 </style>
-

@@ -75,7 +75,19 @@
 
   let p2v = $state(blankP2v());
   function blankP2v() {
-    return { time: 0, source_id: 0, node: '', storage: '', iso: '', iso_storage: '', bridge: 'vmbr0', memory: 2048, cores: 2, vmid: '' as number | '', name: '' };
+    return {
+      time: 0,
+      source_id: 0,
+      node: '',
+      storage: '',
+      iso: '',
+      iso_storage: '',
+      bridge: 'vmbr0',
+      memory: 2048,
+      cores: 2,
+      vmid: '' as number | '',
+      name: '',
+    };
   }
   const pveNodes = $derived(Object.keys(pves.find((s) => s.id === Number(p2v.source_id))?.config.nodes ?? {}));
 
@@ -91,7 +103,9 @@
     load();
     try {
       const [ss, srcs] = await Promise.all([
-        get<Snapshot[]>(`/snapshots?tenant=${encodeURIComponent(a.tenant)}&source=${encodeURIComponent(`host-${a.id}`)}`),
+        get<Snapshot[]>(
+          `/snapshots?tenant=${encodeURIComponent(a.tenant)}&source=${encodeURIComponent(`host-${a.id}`)}`,
+        ),
         get<Source[]>('/sources'),
       ]);
       snaps = ss.sort((x, y) => y.time - x.time);
@@ -109,7 +123,10 @@
   async function issue() {
     if (!agent) return;
     if (!(await askConfirm(t.bmr.issueConfirm(agent.name)))) return;
-    const r = await act(post<RescueSession & { token: string }>(`/agents/${encodeURIComponent(agent.id)}/rescue`, { reboot }), t.bmr.issued);
+    const r = await act(
+      post<RescueSession & { token: string }>(`/agents/${encodeURIComponent(agent.id)}/rescue`, { reboot }),
+      t.bmr.issued,
+    );
     if (!r) return;
     if (!r.quorum && r.data.token) token = { token: r.data.token, expires: r.data.token_expires };
     load();
@@ -118,8 +135,9 @@
   async function start(s: RescueSession) {
     if (!pick) return;
     if (!(await askConfirm(t.bmr.startConfirm(`${s.host}:${s.port}`, diskList(s) || '—')))) return;
-    const r = await act(post<{ id: number }>(`/rescue/${encodeURIComponent(s.id)}/start`, { time: Number(pick), reboot: s.reboot }), (d) =>
-      t.bmr.started(d.id),
+    const r = await act(
+      post<{ id: number }>(`/rescue/${encodeURIComponent(s.id)}/start`, { time: Number(pick), reboot: s.reboot }),
+      (d) => t.bmr.started(d.id),
       jobLink,
     );
     if (r) load();
@@ -147,8 +165,9 @@
     if (p2v.iso_storage.trim()) body.iso_storage = p2v.iso_storage.trim();
     if (p2v.vmid !== '' && Number(p2v.vmid)) body.vmid = Number(p2v.vmid);
     if (p2v.name.trim()) body.name = p2v.name.trim();
-    const r = await act(post<RescueSession & { p2v_job: number }>(`/agents/${encodeURIComponent(agent.id)}/p2v`, body), (d) =>
-      t.bmr.p2vStarted(d.p2v_job),
+    const r = await act(
+      post<RescueSession & { p2v_job: number }>(`/agents/${encodeURIComponent(agent.id)}/p2v`, body),
+      (d) => t.bmr.p2vStarted(d.p2v_job),
     );
     if (r) load();
   }
@@ -199,7 +218,10 @@
               <td>{@render stateCell(s)}</td>
               <td>{@render target(s)}</td>
               <td class="nowrap">{s.snapshot_time ? fmtTime(s.snapshot_time) : '—'}</td>
-              <td class="nowrap" title={fmtTime(s.created)}>{fmtAgo(s.created, now)} <div class="muted">{s.created_by}</div></td>
+              <td class="nowrap" title={fmtTime(s.created)}
+                >{fmtAgo(s.created, now)}
+                <div class="muted">{s.created_by}</div></td
+              >
               <td class="actions">
                 {#if s.job_id}<a class="button small" href={href(`/jobs/${s.job_id}`)}>{t.bmr.job(s.job_id)}</a>{/if}
                 {#if manage}
@@ -267,14 +289,18 @@
                 <td>
                   {@render target(s)}
                   {#if s.checked_in}<div class="muted">{t.bmr.checkedIn(fmtAgo(s.checked_in, now))}</div>{/if}
-                  {#if s.snapshot_time && s.state !== 'waiting'}<div class="muted">{t.bmr.snapshot}: {fmtTime(s.snapshot_time)}</div>{/if}
+                  {#if s.snapshot_time && s.state !== 'waiting'}<div class="muted">
+                      {t.bmr.snapshot}: {fmtTime(s.snapshot_time)}
+                    </div>{/if}
                 </td>
                 <td class="nowrap">
                   {fmtTime(s.created)}
                   <div class="muted">{s.created_by}{s.reboot ? ` · ${t.bmr.rebootAfter}` : ''}</div>
                 </td>
                 <td class="actions">
-                  {#if s.job_id}<a class="button small" href={href(`/jobs/${s.job_id}`)} onclick={() => (open = false)}>{t.bmr.job(s.job_id)}</a>{/if}
+                  {#if s.job_id}<a class="button small" href={href(`/jobs/${s.job_id}`)} onclick={() => (open = false)}
+                      >{t.bmr.job(s.job_id)}</a
+                    >{/if}
                   {#if manage && (s.state === 'issued' || s.state === 'waiting')}
                     <button type="button" class="small danger" onclick={() => cancel(s)}>{t.bmr.cancel}</button>
                   {/if}
@@ -290,7 +316,9 @@
                         <div class="field">
                           <label for="bmr-snap-{s.id}">{t.bmr.snapshot}</label>
                           <select id="bmr-snap-{s.id}" bind:value={pick}>
-                            {#each snaps as x (x.time)}<option value={x.time}>{fmtTime(x.time)} · {fmtBytes(x.size)}</option>{/each}
+                            {#each snaps as x (x.time)}<option value={x.time}
+                                >{fmtTime(x.time)} · {fmtBytes(x.size)}</option
+                              >{/each}
                           </select>
                           {#if can.restore(session.user) && pick}
                             <a
@@ -305,7 +333,9 @@
                       </div>
                       <p class="banner warn" role="note">{t.bmr.eraseWarn}</p>
                       <div class="form-actions">
-                        <button type="button" class="primary" disabled={!pick} onclick={() => start(s)}>{t.bmr.start}</button>
+                        <button type="button" class="primary" disabled={!pick} onclick={() => start(s)}
+                          >{t.bmr.start}</button
+                        >
                       </div>
                     {/if}
                   </td>
@@ -341,12 +371,31 @@
             </div>
             <div class="field">
               <label for="p2v-node">{t.bmr.node}</label>
-              <input id="p2v-node" class="mono" list="p2v-nodes" bind:value={p2v.node} required maxlength="128" autocomplete="off" spellcheck="false" />
-              <datalist id="p2v-nodes">{#each pveNodes as n (n)}<option value={n}></option>{/each}</datalist>
+              <input
+                id="p2v-node"
+                class="mono"
+                list="p2v-nodes"
+                bind:value={p2v.node}
+                required
+                maxlength="128"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <datalist id="p2v-nodes"
+                >{#each pveNodes as n (n)}<option value={n}></option>{/each}</datalist
+              >
             </div>
             <div class="field">
               <label for="p2v-storage">{t.bmr.storage}</label>
-              <input id="p2v-storage" class="mono" bind:value={p2v.storage} required maxlength="128" autocomplete="off" spellcheck="false" />
+              <input
+                id="p2v-storage"
+                class="mono"
+                bind:value={p2v.storage}
+                required
+                maxlength="128"
+                autocomplete="off"
+                spellcheck="false"
+              />
             </div>
             <div class="field">
               <label for="p2v-iso">{t.bmr.iso}</label>
@@ -365,12 +414,27 @@
             </div>
             <div class="field">
               <label for="p2v-isos">{t.bmr.isoStorage}</label>
-              <input id="p2v-isos" class="mono" bind:value={p2v.iso_storage} maxlength="128" aria-describedby="p2v-isos-hint" autocomplete="off" spellcheck="false" />
+              <input
+                id="p2v-isos"
+                class="mono"
+                bind:value={p2v.iso_storage}
+                maxlength="128"
+                aria-describedby="p2v-isos-hint"
+                autocomplete="off"
+                spellcheck="false"
+              />
               <div class="hint" id="p2v-isos-hint">{t.bmr.isoStorageHint}</div>
             </div>
             <div class="field">
               <label for="p2v-bridge">{t.bmr.bridge}</label>
-              <input id="p2v-bridge" class="mono" bind:value={p2v.bridge} maxlength="128" autocomplete="off" spellcheck="false" />
+              <input
+                id="p2v-bridge"
+                class="mono"
+                bind:value={p2v.bridge}
+                maxlength="128"
+                autocomplete="off"
+                spellcheck="false"
+              />
             </div>
             <div class="field">
               <label for="p2v-mem">{t.bmr.memory}</label>
@@ -382,7 +446,14 @@
             </div>
             <div class="field">
               <label for="p2v-vmid">{t.bmr.vmid}</label>
-              <input id="p2v-vmid" type="number" min="100" max="999999999" bind:value={p2v.vmid} aria-describedby="p2v-vmid-hint" />
+              <input
+                id="p2v-vmid"
+                type="number"
+                min="100"
+                max="999999999"
+                bind:value={p2v.vmid}
+                aria-describedby="p2v-vmid-hint"
+              />
               <div class="hint" id="p2v-vmid-hint">{t.bmr.vmidHint}</div>
             </div>
             <div class="field">

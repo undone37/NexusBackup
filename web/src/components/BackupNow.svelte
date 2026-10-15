@@ -47,7 +47,14 @@
       // the end of the chosen day (UTC): "until" covers that day
       params.keep_until = Date.parse(`${keepUntil}T23:59:59Z`) / 1000;
     }
-    if (await act(post<{ id: number }>('/jobs', { kind: 'backup', tenant: g.tenant, params }), t.dash.backupQueued, jobLink)) open = false;
+    if (
+      await act(
+        post<{ id: number }>('/jobs', { kind: 'backup', tenant: g.tenant, params }),
+        t.dash.backupQueued,
+        jobLink,
+      )
+    )
+      open = false;
   }
 </script>
 
@@ -57,18 +64,26 @@
       {#if group.blackout_active}<p class="banner warn" role="status">{t.runctl.blackoutWarn}</p>{/if}
       <fieldset class="field">
         <legend>{t.groups.guestsShort}</legend>
-        <label class="inline-check"><input type="radio" name="bn-mode" value="all" bind:group={mode} />{t.runctl.allGuests}</label>
+        <label class="inline-check"
+          ><input type="radio" name="bn-mode" value="all" bind:group={mode} />{t.runctl.allGuests}</label
+        >
         {#if guests.length > 1}
-          <label class="inline-check"><input type="radio" name="bn-mode" value="some" bind:group={mode} />{t.runctl.someGuests}</label>
+          <label class="inline-check"
+            ><input type="radio" name="bn-mode" value="some" bind:group={mode} />{t.runctl.someGuests}</label
+          >
           {#if mode === 'some'}
             <div class="guests">
               {#each guests as g (g)}
-                <label class="inline-check mono"><input type="checkbox" value={g} bind:group={picked} />{label(g)}</label>
+                <label class="inline-check mono"
+                  ><input type="checkbox" value={g} bind:group={picked} />{label(g)}</label
+                >
               {/each}
             </div>
           {/if}
         {/if}
-        <label class="inline-check"><input type="radio" name="bn-mode" value="failed" bind:group={mode} />{t.runctl.failedOnly}</label>
+        <label class="inline-check"
+          ><input type="radio" name="bn-mode" value="failed" bind:group={mode} />{t.runctl.failedOnly}</label
+        >
       </fieldset>
       <fieldset class="field">
         <legend>{t.sp.keep.legend}</legend>
@@ -76,7 +91,14 @@
         {#if keep}
           <div class="field">
             <label for="bn-keep">{t.sp.keep.until}</label>
-            <input id="bn-keep" type="date" min={today} bind:value={keepUntil} required aria-describedby="bn-keep-hint" />
+            <input
+              id="bn-keep"
+              type="date"
+              min={today}
+              bind:value={keepUntil}
+              required
+              aria-describedby="bn-keep-hint"
+            />
           </div>
         {/if}
         <p class="hint" id="bn-keep-hint">{t.sp.keep.hint}</p>

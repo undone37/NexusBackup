@@ -41,14 +41,16 @@
   const logView = $derived(logLines(job?.log));
   const logTimed = $derived(logView.some((l) => l.time !== null));
   // a line that reports a problem (highlighted, and summarised for failed jobs)
-  const isError = (s: string) => /\b(ERROR|FAIL|failed|error:|refused)\b/.test(s) && !/^\s*\[scheduler\] attempt/.test(s);
+  const isError = (s: string) =>
+    /\b(ERROR|FAIL|failed|error:|refused)\b/.test(s) && !/^\s*\[scheduler\] attempt/.test(s);
   const errorLines = $derived(job?.state === 'failed' ? logView.filter((l) => isError(l.text)).slice(-5) : []);
   // "retry as job 179": the job the scheduler queued to try again
   const retryJob = $derived(Number(/retry as job (\d+)/.exec(job?.log ?? '')?.[1]) || null);
   const prog = $derived(job?.state === 'running' ? (job.progress ?? null) : null);
   // the connector reports about every 2 s while data flows; a long gap means it waits (vzdump start, a slow source)
   const quiet = $derived(prog?.updated ? Math.max(0, Date.now() / 1000 - prog.updated) : 0);
-  const pctText = (p: number | null | undefined) => (p === null || p === undefined ? '' : `${p.toFixed(p >= 10 ? 0 : 1)} %`);
+  const pctText = (p: number | null | undefined) =>
+    p === null || p === undefined ? '' : `${p.toFixed(p >= 10 ? 0 : 1)} %`;
 
   onMount(() => {
     load();
@@ -64,7 +66,8 @@
   async function cancel() {
     const running = job?.state === 'running';
     if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id))))) return;
-    if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled)) load();
+    if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled))
+      load();
   }
   import { rowLink } from '../lib/rowlink';
   // Phase 29: the scan back's scanned snapshots and recommended restore point
@@ -76,7 +79,8 @@
   <h1>{t.jobs.detail(Number(id))}</h1>
   <div class="row">
     {#if live}<span class="live">{t.jobs.live}</span>{/if}
-    {#if job?.cancel_by && job.state === 'running'}<span class="muted">{t.runctl.cancelRequested(job.cancel_by)}</span>{/if}
+    {#if job?.cancel_by && job.state === 'running'}<span class="muted">{t.runctl.cancelRequested(job.cancel_by)}</span
+      >{/if}
     {#if (job?.state === 'queued' || (job?.state === 'running' && !job.cancel_by)) && can.cancelJob(session.user)}
       <button type="button" class="danger" onclick={cancel}>{t.jobs.cancel}</button>
     {/if}
@@ -122,7 +126,9 @@
         <dd>{job.requested_by}</dd>
         {#if afterJob(job)}
           <dt>{t.jobs.origin}</dt>
-          <dd><a href={href(`/jobs/${afterJob(job)}`)}>#{afterJob(job)}</a> <span class="muted">{t.jobs.afterTitle}</span></dd>
+          <dd>
+            <a href={href(`/jobs/${afterJob(job)}`)}>#{afterJob(job)}</a> <span class="muted">{t.jobs.afterTitle}</span>
+          </dd>
         {/if}
         <dt>{t.jobs.created}</dt>
         <dd>{fmtTime(job.created)}</dd>
@@ -182,7 +188,11 @@
           <div class="pline">
             <div class="phead">
               <span>{t.jobs.overall}</span>
-              <span class="tabular">{pctText(prog.percent)}<span class="muted">{` · ${t.jobs.itemsDone(prog.items_done ?? 0, prog.items)}`}</span></span>
+              <span class="tabular"
+                >{pctText(prog.percent)}<span class="muted"
+                  >{` · ${t.jobs.itemsDone(prog.items_done ?? 0, prog.items)}`}</span
+                ></span
+              >
             </div>
             <ProgressBar value={prog.percent} label={t.jobs.overall} />
           </div>
@@ -191,9 +201,14 @@
           <div class="pline">
             <div class="phead">
               <span>
-                {#if prog.item}<span class="mono">{prog.item}</span>{#if prog.label}<span class="muted">{` ${prog.label}`}</span>{/if}{/if}
-                {#if prog.part}<span class="muted">{`${prog.item ? ' · ' : ''}${t.jobs.part} `}</span><span class="mono">{prog.part}</span
-                  >{#if prog.parts && prog.parts > 1}<span class="muted">{` (${t.jobs.itemOf(prog.part_index ?? 1, prog.parts)})`}</span>{/if}{/if}
+                {#if prog.item}<span class="mono">{prog.item}</span>{#if prog.label}<span class="muted"
+                      >{` ${prog.label}`}</span
+                    >{/if}{/if}
+                {#if prog.part}<span class="muted">{`${prog.item ? ' · ' : ''}${t.jobs.part} `}</span><span class="mono"
+                    >{prog.part}</span
+                  >{#if prog.parts && prog.parts > 1}<span class="muted"
+                      >{` (${t.jobs.itemOf(prog.part_index ?? 1, prog.parts)})`}</span
+                    >{/if}{/if}
               </span>
               <span class="tabular">{pctText(prog.item_percent)}</span>
             </div>
@@ -243,7 +258,9 @@
               <tbody>
                 {#each prog.active as a, i (a.item ?? i)}
                   <tr>
-                    <td class="mono nowrap">{a.item}{#if a.label}<span class="muted">{` ${a.label}`}</span>{/if}</td>
+                    <td class="mono nowrap"
+                      >{a.item}{#if a.label}<span class="muted">{` ${a.label}`}</span>{/if}</td
+                    >
                     <td class="mono">{a.part ?? ''}</td>
                     <td class="wide"><ProgressBar size="s" value={a.percent} label={a.item ?? ''} /></td>
                     <td class="num">{pctText(a.percent)}</td>
@@ -302,8 +319,11 @@
         </dl>
       {/if}
       <p class="row">
-        <a class="button small" href={`${API}/jobs/${job.id}/synthetic.csv`} download={`synthetic-restore-${job.id}.csv`} title={t.synth.reportHint}
-          >{t.synth.report}</a
+        <a
+          class="button small"
+          href={`${API}/jobs/${job.id}/synthetic.csv`}
+          download={`synthetic-restore-${job.id}.csv`}
+          title={t.synth.reportHint}>{t.synth.report}</a
         >
         {#if job.state === 'ok' && typeof job.params.download_token === 'string' && job.requested_by === session.user?.name}
           <a class="button primary small" href={downloadUrl(job.params.download_token)}>{t.files.get}</a>
@@ -379,13 +399,19 @@
     {#if job.kind === 'backup' && /^(\d{4}-\d\d-\d\dT\S+ )?error /m.test(job.log ?? '')}
       <!-- Phase 22b: entries a share backup could not read -->
       <p>
-        <a class="button small" href={`${API}/jobs/${job.id}/skipped.csv`} download={`nexus-job-${job.id}-skipped.csv`} title={t.nas.skippedHint}
-          >{t.nas.skippedCsv}</a
+        <a
+          class="button small"
+          href={`${API}/jobs/${job.id}/skipped.csv`}
+          download={`nexus-job-${job.id}-skipped.csv`}
+          title={t.nas.skippedHint}>{t.nas.skippedCsv}</a
         >
       </p>
     {/if}
-    <pre class="log" bind:this={logEl} aria-labelledby="jl">{#if job.log}{#each logView as l, i (i)}{#if logTimed}<span class="log-time">{l.time === null ? '        ' : clock(l.time)}</span> {/if}{#if isError(l.text)}<span class="log-err">{l.text}</span>{:else}{l.text}{/if}
-{/each}{:else}…{/if}</pre>
+    <pre class="log" bind:this={logEl} aria-labelledby="jl">{#if job.log}{#each logView as l, i (i)}{#if logTimed}<span
+              class="log-time">{l.time === null ? '        ' : clock(l.time)}</span
+            >
+          {/if}{#if isError(l.text)}<span class="log-err">{l.text}</span>{:else}{l.text}{/if}
+        {/each}{:else}…{/if}</pre>
   </section>
 {:else if !error}
   <p class="muted" aria-busy="true">{t.loading}</p>

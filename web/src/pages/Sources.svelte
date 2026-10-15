@@ -88,21 +88,23 @@
   /** A few non-secret config values for the table. */
   function summaryOf(x: PluginSource): string {
     const secret = kindsAll.get(x.kind)?.kind.secret_fields ?? [];
-    return Object.entries(x.config ?? {})
-      // short single-line values only (no PEM blocks or long lists)
-      .filter(
-        ([k, v]) =>
-          !k.endsWith('_set') &&
-          !secret.includes(k) &&
-          v !== '' &&
-          v !== null &&
-          !(Array.isArray(v) && v.some((i) => typeof i === 'object')) &&
-          !String(v).includes('\n') &&
-          String(v).length <= 64,
-      )
-      .slice(0, 3)
-      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`)
-      .join(' · ');
+    return (
+      Object.entries(x.config ?? {})
+        // short single-line values only (no PEM blocks or long lists)
+        .filter(
+          ([k, v]) =>
+            !k.endsWith('_set') &&
+            !secret.includes(k) &&
+            v !== '' &&
+            v !== null &&
+            !(Array.isArray(v) && v.some((i) => typeof i === 'object')) &&
+            !String(v).includes('\n') &&
+            String(v).length <= 64,
+        )
+        .slice(0, 3)
+        .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`)
+        .join(' · ')
+    );
   }
 
   // "Validate connection": plugin_validate job on the stored config.
@@ -212,7 +214,8 @@
   const tenantAgents = $derived(agents.filter((a) => a.tenant === f.tenant));
   // Keep the agent selection valid when the tenant changes.
   $effect(() => {
-    if (open && f.kind === 'linux' && !tenantAgents.some((a) => a.id === f.agent_id)) f.agent_id = tenantAgents[0]?.id ?? '';
+    if (open && f.kind === 'linux' && !tenantAgents.some((a) => a.id === f.agent_id))
+      f.agent_id = tenantAgents[0]?.id ?? '';
   });
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const lines = (s: string) =>
@@ -497,7 +500,9 @@
     const moved =
       old &&
       (pk.kind.endpoints ?? []).some((ep) =>
-        [ep.host, ep.port].some((ptr) => ptr && JSON.stringify(pointer(old, ptr)) !== JSON.stringify(pointer(r.value, ptr))),
+        [ep.host, ep.port].some(
+          (ptr) => ptr && JSON.stringify(pointer(old, ptr)) !== JSON.stringify(pointer(r.value, ptr)),
+        ),
       );
     if (moved) r = buildValue(pk.kind.config_schema, pv, { secretFields });
     pErrors = r.errors;
@@ -540,7 +545,10 @@
   let maintSource: Source | null = $state(null);
   async function maintenance(u: number | null) {
     const x = maintSource;
-    if (x && (await act(post(`/sources/${x.id}/maintenance`, u === null ? {} : { until: u }), t.runctl.maintenanceDone))) {
+    if (
+      x &&
+      (await act(post(`/sources/${x.id}/maintenance`, u === null ? {} : { until: u }), t.runctl.maintenanceDone))
+    ) {
       maintOpen = false;
       load();
     }
@@ -555,7 +563,11 @@
   let sp = $state({ roots: '', password: '', copy_groups: true });
   function openSplit(x: Source) {
     splitOf = x;
-    sp = { roots: (x.kind === 'nfs' || x.kind === 'smb' ? (x.config.include ?? []) : []).join('\n'), password: '', copy_groups: true };
+    sp = {
+      roots: (x.kind === 'nfs' || x.kind === 'smb' ? (x.config.include ?? []) : []).join('\n'),
+      password: '',
+      copy_groups: true,
+    };
     splitOpen = true;
   }
   async function split(e: SubmitEvent) {
@@ -571,7 +583,13 @@
     }
   }
   const sizingText = (x: Source) =>
-    x.sizing ? t.nas.sizing(x.sizing.entries.toLocaleString(), fmtBytes(x.sizing.est_ram_bytes), x.sizing.mem_total ? fmtBytes(x.sizing.mem_total) : null) : '';
+    x.sizing
+      ? t.nas.sizing(
+          x.sizing.entries.toLocaleString(),
+          fmtBytes(x.sizing.est_ram_bytes),
+          x.sizing.mem_total ? fmtBytes(x.sizing.mem_total) : null,
+        )
+      : '';
 
   async function remove(x: Source) {
     if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
@@ -596,7 +614,9 @@
 
 <div class="page-head">
   <h1>{t.sources.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.sources.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}
+    ><IconPlus aria-hidden="true" />{t.sources.new}</button
+  >
   <p class="lede">{t.sources.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -626,14 +646,17 @@
               <td
                 ><strong>{x.name}</strong>
                 {#if isPaused(x.maintenance_until)}<span class="chip warn"
-                    >{x.maintenance_until === -1 ? t.runctl.inMaintenance : t.runctl.maintenanceUntil(fmtTime(x.maintenance_until))}</span
+                    >{x.maintenance_until === -1
+                      ? t.runctl.inMaintenance
+                      : t.runctl.maintenanceUntil(fmtTime(x.maintenance_until))}</span
                   >{/if}
                 {#if x.overlaps?.length}<span class="chip warn" title={t.nas.overlapTitle}
                     >{t.nas.overlap(x.overlaps.map((o) => o.name).join(', '))}</span
                   >{/if}
                 {#if x.sizing}<div class="hint">
                     {sizingText(x)}
-                    {#if x.sizing.warn}<span class="chip warn" title={t.nas.sizingWarn}>{t.nas.sizingWarnShort}</span>{/if}
+                    {#if x.sizing.warn}<span class="chip warn" title={t.nas.sizingWarn}>{t.nas.sizingWarnShort}</span
+                      >{/if}
                   </div>{/if}</td
               >
               <td>{x.tenant}</td>
@@ -644,7 +667,9 @@
                   <a href={href('/groups')}>{t.policies.groupsN(pr.n)}</a>
                   {#if pr.last}<div>
                       <JobState state={pr.last.state} />
-                      {#if pr.last.finished}<span class="muted small" title={fmtTime(pr.last.finished)}>{fmtAgo(pr.last.finished)}</span>{/if}
+                      {#if pr.last.finished}<span class="muted small" title={fmtTime(pr.last.finished)}
+                          >{fmtAgo(pr.last.finished)}</span
+                        >{/if}
                     </div>{/if}
                 {:else if loaded}
                   <span class="chip warn" title={t.sources.unprotectedHint}>{t.sources.unprotected}</span>
@@ -666,17 +691,22 @@
                 </td>
               {:else if x.kind === 'linux'}
                 <td>{t.sources.agent} <strong>{agentName(x.config?.agent_id)}</strong></td>
-                <td class="mono wrap" title={x.config?.excludes?.length ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}` : undefined}
-                  >{(x.config?.paths ?? []).join(' ')}</td
+                <td
+                  class="mono wrap"
+                  title={x.config?.excludes?.length
+                    ? `${t.sources.excludes}: ${x.config.excludes.join(' ')}`
+                    : undefined}>{(x.config?.paths ?? []).join(' ')}</td
                 >
               {:else if x.kind === 'nfs'}
                 <td class="mono wrap">{x.config?.host}:{x.config?.export}</td>
-                <td class="mono wrap">NFS {x.config?.version ?? '4.2'}{x.config?.snapshot_dir ? ` · ${x.config.snapshot_dir}` : ''}</td>
+                <td class="mono wrap"
+                  >NFS {x.config?.version ?? '4.2'}{x.config?.snapshot_dir ? ` · ${x.config.snapshot_dir}` : ''}</td
+                >
               {:else if x.kind === 'smb'}
                 <td class="mono wrap">//{x.config?.host}/{x.config?.share}</td>
                 <td class="mono wrap"
-                  >SMB {x.config?.version ?? '3'} · {x.config?.sec ?? 'ntlmssp'}{x.config?.seal ? ' · seal' : ''}{x.config
-                    ?.snapshot_dir
+                  >SMB {x.config?.version ?? '3'} · {x.config?.sec ?? 'ntlmssp'}{x.config?.seal ? ' · seal' : ''}{x
+                    .config?.snapshot_dir
                     ? ` · ${x.config.snapshot_dir}`
                     : ''}</td
                 >
@@ -737,7 +767,9 @@
       {:else if f.kind === 'linux'}
         <div class="field">
           <label for="s-agent">{t.sources.agent}</label>
-          <select id="s-agent" bind:value={f.agent_id} 
+          <select
+            id="s-agent"
+            bind:value={f.agent_id}
             required
             aria-describedby={tenantAgents.length ? undefined : 's-agent-hint'}
           >
@@ -992,8 +1024,7 @@
           required
           spellcheck="false"
           placeholder={'/etc\n/home'}
-          aria-describedby="s-paths-hint"
-        ></textarea>
+          aria-describedby="s-paths-hint"></textarea>
         <div class="hint" id="s-paths-hint">{t.sources.pathsHint}</div>
       </div>
       <div class="field">
@@ -1003,8 +1034,7 @@
           bind:value={f.excludes}
           spellcheck="false"
           placeholder={'*.tmp\n/var/cache/**'}
-          aria-describedby="s-excl-hint"
-        ></textarea>
+          aria-describedby="s-excl-hint"></textarea>
         <div class="hint" id="s-excl-hint">{t.sources.excludesHint}</div>
       </div>
       <div class="field">
@@ -1018,15 +1048,20 @@
         <FileSelection bind:include={f.include} bind:regex={f.exclude_regex} share={false} />
         <div class="field">
           <label class="inline-check"
-            ><input type="checkbox" bind:checked={f.cross_mounts} aria-describedby="s-xm-hint" />{t.sources.crossMounts}</label
+            ><input type="checkbox" bind:checked={f.cross_mounts} aria-describedby="s-xm-hint" />{t.sources
+              .crossMounts}</label
           >
           <div class="hint" id="s-xm-hint">{t.sources.crossMountsHint}</div>
         </div>
         {#if f.cross_mounts}
           <div class="field">
             <label for="s-fst">{t.sources.skipFstypes}</label>
-            <textarea id="s-fst" bind:value={f.skip_fstypes} spellcheck="false" placeholder={'vfat\ntmpfs'} aria-describedby="s-fst-hint"
-            ></textarea>
+            <textarea
+              id="s-fst"
+              bind:value={f.skip_fstypes}
+              spellcheck="false"
+              placeholder={'vfat\ntmpfs'}
+              aria-describedby="s-fst-hint"></textarea>
             <div class="hint" id="s-fst-hint">{t.sources.skipFstypesHint}</div>
           </div>
         {/if}
@@ -1051,8 +1086,7 @@
           bind:value={f.excludes}
           spellcheck="false"
           placeholder={'*.tmp\n/scratch/**'}
-          aria-describedby="n-excl-hint"
-        ></textarea>
+          aria-describedby="n-excl-hint"></textarea>
         <div class="hint" id="n-excl-hint">{t.sources.sh.excludesHint}</div>
       </div>
       <FileSelection bind:include={f.include} bind:regex={f.exclude_regex} share={true} />
@@ -1067,8 +1101,7 @@
           required
           spellcheck="false"
           placeholder={'tank/data\ntank/smb'}
-          aria-describedby="t-ds-hint"
-        ></textarea>
+          aria-describedby="t-ds-hint"></textarea>
         <div class="hint" id="t-ds-hint">{t.sources.tn.datasetsHint}</div>
       </div>
       <div class="field">
@@ -1085,18 +1118,37 @@
       {#if f.tn_existing}
         <div class="field">
           <label for="t-ex-p">{t.nas.existingPrefix}</label>
-          <input id="t-ex-p" class="mono" bind:value={f.tn_prefix} required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{'{0,31}'}" spellcheck="false" />
+          <input
+            id="t-ex-p"
+            class="mono"
+            bind:value={f.tn_prefix}
+            required
+            pattern="[A-Za-z0-9][A-Za-z0-9_\-]{'{0,31}'}"
+            spellcheck="false"
+          />
         </div>
       {/if}
       <div class="field">
         <label for="t-cert">{t.sources.tn.cert}</label>
-        <textarea id="t-cert" class="mono" bind:value={f.ca_pem} required spellcheck="false" aria-describedby="t-cert-hint"
-        ></textarea>
+        <textarea
+          id="t-cert"
+          class="mono"
+          bind:value={f.ca_pem}
+          required
+          spellcheck="false"
+          aria-describedby="t-cert-hint"></textarea>
         <div class="hint" id="t-cert-hint">{t.sources.tn.certHint}</div>
       </div>
       <div class="field">
         <label for="t-hk">{t.sources.tn.hostKey}</label>
-        <input id="t-hk" class="mono" bind:value={f.host_key} required spellcheck="false" aria-describedby="t-hk-hint" />
+        <input
+          id="t-hk"
+          class="mono"
+          bind:value={f.host_key}
+          required
+          spellcheck="false"
+          aria-describedby="t-hk-hint"
+        />
         <div class="hint" id="t-hk-hint">{t.sources.tn.hostKeyHint}</div>
       </div>
       <div class="field">
@@ -1108,8 +1160,7 @@
           required={!editing}
           spellcheck="false"
           autocomplete="off"
-          aria-describedby="t-pem-hint"
-        ></textarea>
+          aria-describedby="t-pem-hint"></textarea>
         <div class="hint" id="t-pem-hint">
           {editing?.kind === 'truenas' && editing.config?.ssh?.key_pem_set ? t.writeOnlyKeep : t.writeOnlyHint}
         </div>
@@ -1141,7 +1192,12 @@
     {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}>{editing ? t.save : t.create}</button>
+      <button
+        type="submit"
+        class="primary"
+        disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}
+        >{editing ? t.save : t.create}</button
+      >
     </div>
   </form>
 </Modal>
@@ -1161,14 +1217,27 @@
     <p class="hint">{t.nas.splitHint}</p>
     <div class="field">
       <label for="sp-roots">{t.nas.roots}</label>
-      <textarea id="sp-roots" class="mono" bind:value={sp.roots} required spellcheck="false" placeholder={'/projects\n/home'} aria-describedby="sp-roots-hint"
-      ></textarea>
+      <textarea
+        id="sp-roots"
+        class="mono"
+        bind:value={sp.roots}
+        required
+        spellcheck="false"
+        placeholder={'/projects\n/home'}
+        aria-describedby="sp-roots-hint"></textarea>
       <div class="hint" id="sp-roots-hint">{t.nas.rootsHint}</div>
     </div>
     {#if splitOf?.kind === 'smb'}
       <div class="field">
         <label for="sp-pw">{t.sources.sh.password}</label>
-        <input id="sp-pw" type="password" autocomplete="new-password" bind:value={sp.password} required aria-describedby="sp-pw-hint" />
+        <input
+          id="sp-pw"
+          type="password"
+          autocomplete="new-password"
+          bind:value={sp.password}
+          required
+          aria-describedby="sp-pw-hint"
+        />
         <div class="hint" id="sp-pw-hint">{t.nas.splitPassword}</div>
       </div>
     {/if}

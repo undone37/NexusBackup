@@ -35,11 +35,16 @@
   const tenants = $derived([...new Set(tests.map((x) => x.tenant))].sort());
   const shown = $derived(tests.filter((x) => (!filter || x.state === filter) && (!tenantF || x.tenant === tenantF)));
   const nodesOf = (sid: number | undefined) =>
-    Object.keys(((sources.find((s) => s.id === sid)?.config as Record<string, unknown> | undefined)?.nodes as object) ?? {});
+    Object.keys(
+      ((sources.find((s) => s.id === sid)?.config as Record<string, unknown> | undefined)?.nodes as object) ?? {},
+    );
 
   async function load() {
     try {
-      [tests, schedules] = await Promise.all([get<RestoreTest[]>('/restore-tests'), get<RtSchedule[]>('/restore-tests/schedules')]);
+      [tests, schedules] = await Promise.all([
+        get<RestoreTest[]>('/restore-tests'),
+        get<RtSchedule[]>('/restore-tests/schedules'),
+      ]);
       error = null;
     } catch (e) {
       error = errText(e);
@@ -61,8 +66,14 @@
   let tc = $state(emptyChecks());
   const guestSnaps = $derived(snaps.filter((s) => s.local && /^(vm|ct)-\d+$/.test(s.source)));
   const guestSources = $derived([...new Set(guestSnaps.map((s) => `${s.tenant}/${s.source}`))].sort());
-  const versions = $derived(guestSnaps.filter((s) => `${s.tenant}/${s.source}` === `${tf.tenant}/${tf.source}`).sort((a, b) => b.time - a.time));
-  const tfSourceId = $derived(groups.find((g) => g.tenant === tf.tenant && pveIds.has(g.source_id) && g.guests.includes(Number(tf.source.slice(3))))?.source_id);
+  const versions = $derived(
+    guestSnaps.filter((s) => `${s.tenant}/${s.source}` === `${tf.tenant}/${tf.source}`).sort((a, b) => b.time - a.time),
+  );
+  const tfSourceId = $derived(
+    groups.find(
+      (g) => g.tenant === tf.tenant && pveIds.has(g.source_id) && g.guests.includes(Number(tf.source.slice(3))),
+    )?.source_id,
+  );
   function openTest() {
     tf = { tenant: '', source: '', time: '', node: '', storage: 'local-lvm', bridge: '' };
     tc = emptyChecks();
@@ -78,9 +89,19 @@
   async function startTest(e: Event) {
     e.preventDefault();
     const ct = tf.source.startsWith('ct-');
-    const params: Record<string, unknown> = { source: tf.source, time: Number(tf.time), node: tf.node, storage: tf.storage, checks: toChecks(tc, ct) };
+    const params: Record<string, unknown> = {
+      source: tf.source,
+      time: Number(tf.time),
+      node: tf.node,
+      storage: tf.storage,
+      checks: toChecks(tc, ct),
+    };
     if (tf.bridge.trim()) params.bridge = tf.bridge.trim();
-    const o = await act(post<{ id: number }>('/jobs', { kind: 'restore_test', tenant: tf.tenant, params }), (d) => t.rtest.started(d.id), jobLink);
+    const o = await act(
+      post<{ id: number }>('/jobs', { kind: 'restore_test', tenant: tf.tenant, params }),
+      (d) => t.rtest.started(d.id),
+      jobLink,
+    );
     if (o) {
       testOpen = false;
       load();
@@ -96,14 +117,26 @@
     schedEditing = !!s;
     sf = s
       ? { group_id: s.group_id, every_days: s.every_days, node: s.node, storage: s.storage, bridge: s.bridge ?? '' }
-      : { group_id: pveGroups.find((g) => !schedules.some((x) => x.group_id === g.id))?.id ?? 0, every_days: 7, node: '', storage: 'local-lvm', bridge: '' };
+      : {
+          group_id: pveGroups.find((g) => !schedules.some((x) => x.group_id === g.id))?.id ?? 0,
+          every_days: 7,
+          node: '',
+          storage: 'local-lvm',
+          bridge: '',
+        };
     sc = checksForm(s?.checks);
     schedOpen = true;
   }
   const groupName = (id: number) => groups.find((g) => g.id === id)?.name ?? `#${id}`;
   async function saveSchedule(e: Event) {
     e.preventDefault();
-    const body = { every_days: Number(sf.every_days), node: sf.node, storage: sf.storage, bridge: sf.bridge.trim() || null, checks: toChecks(sc, false) };
+    const body = {
+      every_days: Number(sf.every_days),
+      node: sf.node,
+      storage: sf.storage,
+      bridge: sf.bridge.trim() || null,
+      checks: toChecks(sc, false),
+    };
     if (await act(put(`/restore-tests/schedules/${sf.group_id}`, body), t.rtest.saved)) {
       schedOpen = false;
       load();
@@ -117,15 +150,22 @@
 
 <div class="page-head">
   <h1>{t.rtest.title}</h1>
-  {#if runner}<button type="button" class="primary" onclick={openTest}><IconPlay aria-hidden="true" />{t.rtest.testNow}</button>{/if}
+  {#if runner}<button type="button" class="primary" onclick={openTest}
+      ><IconPlay aria-hidden="true" />{t.rtest.testNow}</button
+    >{/if}
   <p class="lede">{t.rtest.lede}</p>
 </div>
 <ErrorBanner {error} />
 
 <section class="card" aria-labelledby="rt-sched-h">
   <div class="card-head">
-    <div><h2 id="rt-sched-h">{t.rtest.schedules}</h2><div class="sub">{t.rtest.schedulesHint}</div></div>
-    {#if writer}<button type="button" onclick={() => editSchedule(null)} disabled={!pveGroups.length}><IconPlus aria-hidden="true" />{t.rtest.addSchedule}</button>{/if}
+    <div>
+      <h2 id="rt-sched-h">{t.rtest.schedules}</h2>
+      <div class="sub">{t.rtest.schedulesHint}</div>
+    </div>
+    {#if writer}<button type="button" onclick={() => editSchedule(null)} disabled={!pveGroups.length}
+        ><IconPlus aria-hidden="true" />{t.rtest.addSchedule}</button
+      >{/if}
   </div>
   {#if schedules.length === 0}
     <p class="empty">{t.none}</p>
@@ -152,7 +192,12 @@
               <td class="nowrap">{t.rtest.everyShort(s.every_days)}</td>
               <td class="mono">{s.node} / {s.storage}</td>
               <td class="mono">{s.bridge ?? t.rtest.linksDown}</td>
-              <td class="mono small">{[...(s.checks.ports ?? []).map((p) => `tcp/${p}`), ...(s.checks.command?.length ? ['command'] : [])].join(' ') || 'guest_agent'}</td>
+              <td class="mono small"
+                >{[
+                  ...(s.checks.ports ?? []).map((p) => `tcp/${p}`),
+                  ...(s.checks.command?.length ? ['command'] : []),
+                ].join(' ') || 'guest_agent'}</td
+              >
               <td class="nowrap">{s.last_run ? fmtAgo(s.last_run) : t.rtest.never}</td>
               {#if writer}
                 <td class="actions">
@@ -182,7 +227,8 @@
       <label class="visually-hidden" for="rt-state">{t.state}</label>
       <select id="rt-state" bind:value={filter}>
         <option value="">{t.all}</option>
-        {#each ['passed', 'failed', 'cancelled', 'skipped'] as s (s)}<option value={s}>{t.rtest.states[s]}</option>{/each}
+        {#each ['passed', 'failed', 'cancelled', 'skipped'] as s (s)}<option value={s}>{t.rtest.states[s]}</option
+          >{/each}
       </select>
     </div>
   </div>
@@ -208,18 +254,30 @@
           {#each shown as x (x.id)}
             {@const bad = (x.checks ?? []).filter((c) => !c.ok)}
             <tr use:rowLink={`/jobs/${x.job_id}`}>
-              <td><strong>{x.source}</strong>{#if !session.user?.tenant}<span class="muted small">&nbsp;· {x.tenant}</span>{/if}{#if x.name}<div class="muted small mono">{x.target} {x.name}</div>{/if}</td>
-              <td class="nowrap"><a href={href(`/files?tenant=${x.tenant}&source=${x.source}&time=${x.time}`)}>{fmtTime(x.time)}</a></td>
+              <td
+                ><strong>{x.source}</strong>{#if !session.user?.tenant}<span class="muted small"
+                    >&nbsp;· {x.tenant}</span
+                  >{/if}{#if x.name}<div class="muted small mono">{x.target} {x.name}</div>{/if}</td
+              >
+              <td class="nowrap"
+                ><a href={href(`/files?tenant=${x.tenant}&source=${x.source}&time=${x.time}`)}>{fmtTime(x.time)}</a></td
+              >
               <td><span class="chip {stateChip(x.state)}">{t.rtest.states[x.state] ?? x.state}</span></td>
               <td>
                 <span class="mono small">{checkSummary(x.checks)}</span>
                 {#each bad as c (c.name)}<div class="small bad-text">{c.name}: {c.detail}</div>{/each}
                 {#if x.error}<div class="small bad-text">{x.error}</div>{/if}
-                {#if x.destroyed === false}<div class="small bad-text"><strong>{t.rtest.notDestroyed(x.target)}</strong></div>{/if}
+                {#if x.destroyed === false}<div class="small bad-text">
+                    <strong>{t.rtest.notDestroyed(x.target)}</strong>
+                  </div>{/if}
               </td>
               <td class="num nowrap">{x.boot_secs !== null ? `${x.boot_secs} s` : '—'}</td>
               <td class="nowrap" title={fmtTime(x.finished)}>{fmtAgo(x.finished)}</td>
-              <td><a href={href(`/jobs/${x.job_id}`)}>#{x.job_id}</a>{#if x.run_id}<span class="muted small"> · {t.rplan.mode.test}</span>{/if}</td>
+              <td
+                ><a href={href(`/jobs/${x.job_id}`)}>#{x.job_id}</a>{#if x.run_id}<span class="muted small">
+                    · {t.rplan.mode.test}</span
+                  >{/if}</td
+              >
             </tr>
           {/each}
         </tbody>
@@ -247,7 +305,9 @@
       <div class="field">
         <label for="rt-node">{t.rtest.node}</label>
         <input id="rt-node" required bind:value={tf.node} list="rt-nodes" />
-        <datalist id="rt-nodes">{#each nodesOf(tfSourceId) as n (n)}<option value={n}></option>{/each}</datalist>
+        <datalist id="rt-nodes"
+          >{#each nodesOf(tfSourceId) as n (n)}<option value={n}></option>{/each}</datalist
+        >
       </div>
       <div class="field">
         <label for="rt-storage">{t.rtest.storage}</label>
@@ -256,7 +316,12 @@
       </div>
       <div class="field">
         <label for="rt-bridge">{t.rtest.bridge}</label>
-        <input id="rt-bridge" bind:value={tf.bridge} placeholder={t.rtest.linksDown} aria-describedby="rt-bridge-hint" />
+        <input
+          id="rt-bridge"
+          bind:value={tf.bridge}
+          placeholder={t.rtest.linksDown}
+          aria-describedby="rt-bridge-hint"
+        />
         <div class="hint" id="rt-bridge-hint">{t.rtest.bridgeHint}</div>
       </div>
     </div>
@@ -266,18 +331,32 @@
     </fieldset>
     <div class="form-actions">
       <button type="button" onclick={() => (testOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={!tf.source || !tf.time}><IconPlay aria-hidden="true" />{t.rtest.testNow}</button>
+      <button type="submit" class="primary" disabled={!tf.source || !tf.time}
+        ><IconPlay aria-hidden="true" />{t.rtest.testNow}</button
+      >
     </div>
   </form>
 </Modal>
 
-<Modal bind:open={schedOpen} wide title={schedEditing ? t.rtest.editSchedule(groupName(sf.group_id)) : t.rtest.addSchedule}>
+<Modal
+  bind:open={schedOpen}
+  wide
+  title={schedEditing ? t.rtest.editSchedule(groupName(sf.group_id)) : t.rtest.addSchedule}
+>
   <form onsubmit={saveSchedule}>
     <div class="form-grid">
       <div class="field">
         <label for="rs-group">{t.rtest.group}</label>
-        <select id="rs-group" bind:value={sf.group_id} disabled={schedEditing} required aria-describedby="rs-group-hint">
-          {#each pveGroups as g (g.id)}<option value={g.id}>{session.user?.tenant ? g.name : `${g.tenant} / ${g.name}`}</option>{/each}
+        <select
+          id="rs-group"
+          bind:value={sf.group_id}
+          disabled={schedEditing}
+          required
+          aria-describedby="rs-group-hint"
+        >
+          {#each pveGroups as g (g.id)}<option value={g.id}
+              >{session.user?.tenant ? g.name : `${g.tenant} / ${g.name}`}</option
+            >{/each}
         </select>
         <div class="hint" id="rs-group-hint">{t.rtest.pveGroupsOnly}</div>
       </div>
@@ -288,7 +367,10 @@
       <div class="field">
         <label for="rs-node">{t.rtest.node}</label>
         <input id="rs-node" required bind:value={sf.node} list="rs-nodes" />
-        <datalist id="rs-nodes">{#each nodesOf(groups.find((g) => g.id === sf.group_id)?.source_id) as n (n)}<option value={n}></option>{/each}</datalist>
+        <datalist id="rs-nodes"
+          >{#each nodesOf(groups.find((g) => g.id === sf.group_id)?.source_id) as n (n)}<option value={n}
+            ></option>{/each}</datalist
+        >
       </div>
       <div class="field">
         <label for="rs-storage">{t.rtest.storage}</label>
@@ -296,7 +378,12 @@
       </div>
       <div class="field">
         <label for="rs-bridge">{t.rtest.bridge}</label>
-        <input id="rs-bridge" bind:value={sf.bridge} placeholder={t.rtest.linksDown} aria-describedby="rs-bridge-hint" />
+        <input
+          id="rs-bridge"
+          bind:value={sf.bridge}
+          placeholder={t.rtest.linksDown}
+          aria-describedby="rs-bridge-hint"
+        />
         <div class="hint" id="rs-bridge-hint">{t.rtest.bridgeHint}</div>
       </div>
     </div>

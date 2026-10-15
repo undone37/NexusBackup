@@ -23,7 +23,15 @@
     sOn: false,
     s: { enabled: true, host: '', port: 6514, ca_pem: '', pin_sha256: '', app_name: 'nexus', facility: 13 },
     hOn: false,
-    h: { enabled: true, url: '', batch_max: 100, ca_pem: '', pin_sha256: '', format: 'json_array' as 'json_array' | 'splunk_hec', index: '' },
+    h: {
+      enabled: true,
+      url: '',
+      batch_max: 100,
+      ca_pem: '',
+      pin_sha256: '',
+      format: 'json_array' as 'json_array' | 'splunk_hec',
+      index: '',
+    },
     headers: [] as Header[],
   });
 
@@ -31,7 +39,15 @@
     cur = c;
     f = {
       sOn: !!c.syslog,
-      s: { enabled: c.syslog?.enabled ?? true, host: c.syslog?.host ?? '', port: c.syslog?.port ?? 6514, ca_pem: c.syslog?.ca_pem ?? '', pin_sha256: c.syslog?.pin_sha256 ?? '', app_name: c.syslog?.app_name ?? 'nexus', facility: c.syslog?.facility ?? 13 },
+      s: {
+        enabled: c.syslog?.enabled ?? true,
+        host: c.syslog?.host ?? '',
+        port: c.syslog?.port ?? 6514,
+        ca_pem: c.syslog?.ca_pem ?? '',
+        pin_sha256: c.syslog?.pin_sha256 ?? '',
+        app_name: c.syslog?.app_name ?? 'nexus',
+        facility: c.syslog?.facility ?? 13,
+      },
       hOn: !!c.https,
       h: {
         enabled: c.https?.enabled ?? true,
@@ -60,7 +76,15 @@
   async function save(e: SubmitEvent) {
     e.preventDefault();
     const body = {
-      syslog: f.sOn ? { ...f.s, port: Number(f.s.port), facility: Number(f.s.facility), ca_pem: opt(f.s.ca_pem), pin_sha256: opt(f.s.pin_sha256) } : null,
+      syslog: f.sOn
+        ? {
+            ...f.s,
+            port: Number(f.s.port),
+            facility: Number(f.s.facility),
+            ca_pem: opt(f.s.ca_pem),
+            pin_sha256: opt(f.s.pin_sha256),
+          }
+        : null,
       https: f.hOn
         ? {
             ...f.h,
@@ -69,7 +93,11 @@
             pin_sha256: opt(f.h.pin_sha256),
             index: f.h.format === 'splunk_hec' ? opt(f.h.index) : null,
             // empty value of a stored header = keep it (null)
-            headers: Object.fromEntries(f.headers.filter((h) => h.name.trim()).map((h) => [h.name.trim(), h.value ? h.value : h.stored ? null : ''])),
+            headers: Object.fromEntries(
+              f.headers
+                .filter((h) => h.name.trim())
+                .map((h) => [h.name.trim(), h.value ? h.value : h.stored ? null : '']),
+            ),
           }
         : null,
     };
@@ -106,7 +134,9 @@
       <div class="card-head">
         <h2 id="fw-h">{t.settings.tabs.forwarding}</h2>
         {#if admin && (cur.syslog || cur.https)}
-          <button type="button" class="small" onclick={test} disabled={testing}><IconSend aria-hidden="true" />{testing ? t.settings.testing : t.settings.fw.test}</button>
+          <button type="button" class="small" onclick={test} disabled={testing}
+            ><IconSend aria-hidden="true" />{testing ? t.settings.testing : t.settings.fw.test}</button
+          >
         {/if}
       </div>
       <p>{t.settings.fw.intro}</p>
@@ -117,16 +147,31 @@
       <section class="card settings-section" aria-labelledby="fw-s">
         <div class="card-head">
           <h2 id="fw-s">{t.settings.fw.syslog}</h2>
-          {#if cur.syslog}<span class="chip {cur.syslog.enabled ? 'ok' : 'warn'}">{cur.syslog.enabled ? t.quorum.on : t.quorum.off}</span>{/if}
+          {#if cur.syslog}<span class="chip {cur.syslog.enabled ? 'ok' : 'warn'}"
+              >{cur.syslog.enabled ? t.quorum.on : t.quorum.off}</span
+            >{/if}
         </div>
         <p class="muted">{t.settings.fw.syslogIntro}</p>
-        <div class="field"><label class="inline-check"><input type="checkbox" bind:checked={f.sOn} />{t.settings.fw.configure}</label></div>
+        <div class="field">
+          <label class="inline-check"><input type="checkbox" bind:checked={f.sOn} />{t.settings.fw.configure}</label>
+        </div>
         {#if f.sOn}
-          <div class="field"><label class="inline-check"><input type="checkbox" bind:checked={f.s.enabled} />{t.settings.fw.enabled}</label></div>
+          <div class="field">
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={f.s.enabled} />{t.settings.fw.enabled}</label
+            >
+          </div>
           <div class="form-grid">
             <div class="field">
               <label for="fw-host">{t.settings.fw.host}</label>
-              <input id="fw-host" class="mono" bind:value={f.s.host} required spellcheck="false" placeholder="siem.example.com" />
+              <input
+                id="fw-host"
+                class="mono"
+                bind:value={f.s.host}
+                required
+                spellcheck="false"
+                placeholder="siem.example.com"
+              />
             </div>
             <div class="field">
               <label for="fw-port">{t.settings.fw.port}</label>
@@ -152,7 +197,13 @@
           </div>
           <div class="field">
             <label for="fw-sca">{t.settings.fw.caPem}</label>
-            <textarea id="fw-sca" class="mono" rows="4" bind:value={f.s.ca_pem} spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+            <textarea
+              id="fw-sca"
+              class="mono"
+              rows="4"
+              bind:value={f.s.ca_pem}
+              spellcheck="false"
+              placeholder="-----BEGIN CERTIFICATE-----"></textarea>
           </div>
         {/if}
       </section>
@@ -160,16 +211,32 @@
       <section class="card settings-section" aria-labelledby="fw-hh">
         <div class="card-head">
           <h2 id="fw-hh">{t.settings.fw.https}</h2>
-          {#if cur.https}<span class="chip {cur.https.enabled ? 'ok' : 'warn'}">{cur.https.enabled ? t.quorum.on : t.quorum.off}</span>{/if}
+          {#if cur.https}<span class="chip {cur.https.enabled ? 'ok' : 'warn'}"
+              >{cur.https.enabled ? t.quorum.on : t.quorum.off}</span
+            >{/if}
         </div>
         <p class="muted">{t.settings.fw.httpsIntro}</p>
-        <div class="field"><label class="inline-check"><input type="checkbox" bind:checked={f.hOn} />{t.settings.fw.configure}</label></div>
+        <div class="field">
+          <label class="inline-check"><input type="checkbox" bind:checked={f.hOn} />{t.settings.fw.configure}</label>
+        </div>
         {#if f.hOn}
-          <div class="field"><label class="inline-check"><input type="checkbox" bind:checked={f.h.enabled} />{t.settings.fw.enabled}</label></div>
+          <div class="field">
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={f.h.enabled} />{t.settings.fw.enabled}</label
+            >
+          </div>
           <div class="form-grid">
             <div class="field">
               <label for="fw-url">{t.settings.fw.url}</label>
-              <input id="fw-url" class="mono" type="url" bind:value={f.h.url} required spellcheck="false" placeholder="https://siem.example.com/ingest" />
+              <input
+                id="fw-url"
+                class="mono"
+                type="url"
+                bind:value={f.h.url}
+                required
+                spellcheck="false"
+                placeholder="https://siem.example.com/ingest"
+              />
             </div>
             <div class="field">
               <label for="fw-batch">{t.settings.fw.batch}</label>
@@ -185,7 +252,14 @@
             {#if hec}
               <div class="field">
                 <label for="fw-index">{t.settings.fw.index}</label>
-                <input id="fw-index" class="mono" bind:value={f.h.index} maxlength="80" spellcheck="false" placeholder="main" />
+                <input
+                  id="fw-index"
+                  class="mono"
+                  bind:value={f.h.index}
+                  maxlength="80"
+                  spellcheck="false"
+                  placeholder="main"
+                />
               </div>
             {/if}
           </div>
@@ -193,14 +267,37 @@
           <div class="field">
             <div class="card-head">
               <span class="field-label">{t.settings.al.headers}</span>
-              <button type="button" class="small" onclick={() => f.headers.push({ name: '', value: '', stored: false })}><IconPlus aria-hidden="true" />{t.settings.al.addHeader}</button>
+              <button type="button" class="small" onclick={() => f.headers.push({ name: '', value: '', stored: false })}
+                ><IconPlus aria-hidden="true" />{t.settings.al.addHeader}</button
+              >
             </div>
             <p class="hint">{t.settings.al.headersHint}</p>
             {#each f.headers as h, i (i)}
               <div class="header-row">
-                <input aria-label={t.settings.al.headerName} class="mono" bind:value={h.name} placeholder="Authorization" spellcheck="false" />
-                <input aria-label={t.settings.al.headerValue} type="password" bind:value={h.value} placeholder={h.stored ? t.writeOnlyKeep : hec && h.name.toLowerCase() === 'authorization' ? 'Splunk <HEC token>' : ''} autocomplete="new-password" />
-                <button type="button" class="icon" aria-label={t.settings.al.removeHeader(h.name)} onclick={() => f.headers.splice(i, 1)}><IconX aria-hidden="true" /></button>
+                <input
+                  aria-label={t.settings.al.headerName}
+                  class="mono"
+                  bind:value={h.name}
+                  placeholder="Authorization"
+                  spellcheck="false"
+                />
+                <input
+                  aria-label={t.settings.al.headerValue}
+                  type="password"
+                  bind:value={h.value}
+                  placeholder={h.stored
+                    ? t.writeOnlyKeep
+                    : hec && h.name.toLowerCase() === 'authorization'
+                      ? 'Splunk <HEC token>'
+                      : ''}
+                  autocomplete="new-password"
+                />
+                <button
+                  type="button"
+                  class="icon"
+                  aria-label={t.settings.al.removeHeader(h.name)}
+                  onclick={() => f.headers.splice(i, 1)}><IconX aria-hidden="true" /></button
+                >
               </div>
             {/each}
           </div>
@@ -213,7 +310,13 @@
           </div>
           <div class="field">
             <label for="fw-hca">{t.settings.fw.caPem}</label>
-            <textarea id="fw-hca" class="mono" rows="4" bind:value={f.h.ca_pem} spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+            <textarea
+              id="fw-hca"
+              class="mono"
+              rows="4"
+              bind:value={f.h.ca_pem}
+              spellcheck="false"
+              placeholder="-----BEGIN CERTIFICATE-----"></textarea>
           </div>
         {/if}
       </section>

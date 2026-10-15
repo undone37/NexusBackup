@@ -17,7 +17,13 @@
   type State = 'hit' | 'flagged' | 'clean' | 'incomplete' | 'unscanned';
   const stateOf = (s: Snapshot): State =>
     s.scan_state === 'hit' ? 'hit' : s.anomalous ? 'flagged' : (s.scan_state ?? 'unscanned');
-  const chipClass: Record<State, string> = { hit: 'bad', flagged: 'bad', clean: 'ok', incomplete: 'warn', unscanned: 'plain' };
+  const chipClass: Record<State, string> = {
+    hit: 'bad',
+    flagged: 'bad',
+    clean: 'ok',
+    incomplete: 'warn',
+    unscanned: 'plain',
+  };
 
   const newest = $derived(snaps.reduce((m, s) => Math.max(m, s.time), 0));
   let offset = $state(0); // months back from the newest snapshot's month
@@ -58,7 +64,8 @@
     return out;
   });
 
-  const hm = (s: Snapshot) => new Date(s.time * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const hm = (s: Snapshot) =>
+    new Date(s.time * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 </script>
 
 <section class="card calendar" aria-labelledby="cal-h">
@@ -77,7 +84,9 @@
   <p class="muted">{t.threat.calendarHint}</p>
   <table class="cal">
     <thead>
-      <tr>{#each weekdays as w (w)}<th scope="col">{w}</th>{/each}</tr>
+      <tr
+        >{#each weekdays as w (w)}<th scope="col">{w}</th>{/each}</tr
+      >
     </thead>
     <tbody>
       {#each weeks as week, wi (wi)}

@@ -45,7 +45,9 @@
     ['MiB', 2 ** 20],
     ['GiB', 2 ** 30],
   ];
-  const kinds0 = qp('kind').split(',').filter((k) => KINDS.includes(k));
+  const kinds0 = qp('kind')
+    .split(',')
+    .filter((k) => KINDS.includes(k));
   let kinds: string[] = $state(kinds0);
   let ext = $state(qp('ext'));
   let sizeMin = $state('');
@@ -76,7 +78,9 @@
     page.abort();
   });
 
-  const sources = $derived([...new Set(snaps.filter((s) => s.tenant === tenant && s.local).map((s) => s.source))].sort());
+  const sources = $derived(
+    [...new Set(snaps.filter((s) => s.tenant === tenant && s.local).map((s) => s.source))].sort(),
+  );
   // the guest's or agent's name next to the source (snapshot labels)
   const sourceLabel = $derived(new Map(snaps.filter((s) => s.label).map((s) => [s.source, s.label!])));
   const tenantGroups = $derived(groups.filter((g) => g.tenant === tenant));
@@ -90,7 +94,8 @@
     return href(`/files?${new URLSearchParams({ tenant, source: src, time: String(time), path })}`);
   };
   // unix seconds of a date input (start of the day, or the end of it for "until")
-  const day = (d: string, end: boolean) => (d ? Math.floor(new Date(`${d}T00:00:00`).getTime() / 1000) + (end ? 86399 : 0) : undefined);
+  const day = (d: string, end: boolean) =>
+    d ? Math.floor(new Date(`${d}T00:00:00`).getTime() / 1000) + (end ? 86399 : 0) : undefined;
   const unitSize = $derived(UNITS.find(([u]) => u === unit)?.[1] ?? 1);
   const bytes = (v: string) => (v.trim() !== '' && Number(v) >= 0 ? Math.round(Number(v) * unitSize) : undefined);
   const exts = $derived(
@@ -191,7 +196,10 @@
     error = null;
     failedJob = null;
     try {
-      const r = await get<FileSearchResult>(`/files/search${p}${cursor ? `&${new URLSearchParams({ cursor })}` : ''}`, c.signal);
+      const r = await get<FileSearchResult>(
+        `/files/search${p}${cursor ? `&${new URLSearchParams({ cursor })}` : ''}`,
+        c.signal,
+      );
       if (ctl !== c) return;
       if (cursor && result) {
         result = {
@@ -293,7 +301,12 @@
     ready_ = null;
     error = null;
     try {
-      const r = await runJob('files_get', tenant, { source: src, time, paths: ['/' + browse], format: 'tar' }, page.signal);
+      const r = await runJob(
+        'files_get',
+        tenant,
+        { source: src, time, paths: ['/' + browse], format: 'tar' },
+        page.signal,
+      );
       if (!r) return;
       if (r.job.state !== 'ok') {
         failedJob = r.job.id;
@@ -315,8 +328,10 @@
   }
 
   const notIndexed = (xs: IndexSnap[]) => xs.filter((x) => x.state !== 'indexed');
-  const stateCls = (s: string) => (s === 'indexed' ? 'ok' : s === 'partial' || s === 'pending' ? 'warn' : s === 'failed' ? 'bad' : 'off');
-  const stateText = (x: IndexSnap) => t.search.stateAt(fmtTime(x.time), t.search.states[x.state] ?? x.state, x.reason ?? '');
+  const stateCls = (s: string) =>
+    s === 'indexed' ? 'ok' : s === 'partial' || s === 'pending' ? 'warn' : s === 'failed' ? 'bad' : 'off';
+  const stateText = (x: IndexSnap) =>
+    t.search.stateAt(fmtTime(x.time), t.search.states[x.state] ?? x.state, x.reason ?? '');
   const newest = (h: FileHit): FileVersion => h.versions[0];
   // ponytail: well-known SIDs only; domain accounts stay SIDs until the index resolves names
   const SIDS: Record<string, string> = {
@@ -356,7 +371,15 @@
   {/if}
   <div class="field grow">
     <label for="s-query">{t.search.query}</label>
-    <input id="s-query" type="search" class="mono" bind:value={query} maxlength="256" autocomplete="off" aria-describedby="s-hint" />
+    <input
+      id="s-query"
+      type="search"
+      class="mono"
+      bind:value={query}
+      maxlength="256"
+      autocomplete="off"
+      aria-describedby="s-hint"
+    />
   </div>
   {#if !fallback}
     <div class="field narrow">
@@ -370,7 +393,8 @@
     <label for="s-source">{t.search.source}</label>
     <select id="s-source" bind:value={source}>
       <option value="">{t.search.anySource}</option>
-      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option>{/each}
+      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option
+        >{/each}
     </select>
   </div>
   {#if !fallback}
@@ -388,7 +412,9 @@
   {#if busy && fallback}
     <button type="button" onclick={stop}>{t.search.cancel}</button>
   {:else}
-    <button type="submit" class="primary" disabled={fallback ? !query.trim() || !tenant : !ready}>{t.search.submit}</button>
+    <button type="submit" class="primary" disabled={fallback ? !query.trim() || !tenant : !ready}
+      >{t.search.submit}</button
+    >
   {/if}
   {#if more && !fallback}
     <div class="more" id="s-more">
@@ -396,13 +422,22 @@
         <legend>{t.search.kinds}</legend>
         <div class="row">
           {#each KINDS as k (k)}
-            <label class="inline-check"><input type="checkbox" value={k} bind:group={kinds} />{t.search.kindNames[k]}</label>
+            <label class="inline-check"
+              ><input type="checkbox" value={k} bind:group={kinds} />{t.search.kindNames[k]}</label
+            >
           {/each}
         </div>
       </fieldset>
       <div class="field">
         <label for="s-ext">{t.search.ext}</label>
-        <input id="s-ext" class="mono" bind:value={ext} placeholder="pdf, docx" autocomplete="off" aria-describedby="s-ext-hint" />
+        <input
+          id="s-ext"
+          class="mono"
+          bind:value={ext}
+          placeholder="pdf, docx"
+          autocomplete="off"
+          aria-describedby="s-ext-hint"
+        />
         <div class="hint" id="s-ext-hint">{t.search.extHint}</div>
       </div>
       <div class="field size">
@@ -456,7 +491,9 @@
     {#if jobResult.truncated}<p class="banner warn">{t.search.truncated}</p>{/if}
     {#if jobResult.unindexed > 0}<p class="banner info">{t.search.unindexed(jobResult.unindexed)}</p>{/if}
     <div class="card">
-      <p class="muted" role="status">{t.search.summary(jobResult.matches.length, jobResult.scanned, jobResult.elapsed_ms)}</p>
+      <p class="muted" role="status">
+        {t.search.summary(jobResult.matches.length, jobResult.scanned, jobResult.elapsed_ms)}
+      </p>
       <div class="table-wrap">
         <table>
           <thead>
@@ -479,7 +516,12 @@
                 <td class="mono">{m.source}</td>
                 <td>
                   {#if m.times.length > 1}
-                    <select class="auto" aria-label={t.search.version(m.path)} value={mTime(m)} onchange={(ev) => (chosenJob[k] = Number(ev.currentTarget.value))}>
+                    <select
+                      class="auto"
+                      aria-label={t.search.version(m.path)}
+                      value={mTime(m)}
+                      onchange={(ev) => (chosenJob[k] = Number(ev.currentTarget.value))}
+                    >
                       {#each m.times as tm (tm)}<option value={tm}>{fmtTime(tm)}</option>{/each}
                     </select>
                     <span class="muted">{t.search.inSnapshots(m.times.length)}</span>
@@ -492,15 +534,23 @@
                     <a class="button" href={openHref(m.source, m.path, m.kind, mTime(m))}>{t.search.open}</a>
                     {#if m.kind === 'file' && can.download(session.user)}
                       {#if ready_?.key === k}
-                        <a class="button" href={downloadUrl(ready_.token)} download={ready_.filename}>{t.files.get} {ready_.filename}</a>
+                        <a class="button" href={downloadUrl(ready_.token)} download={ready_.filename}
+                          >{t.files.get} {ready_.filename}</a
+                        >
                       {:else}
-                        <button type="button" disabled={preparing !== null} onclick={() => download(k, m.source, m.path, mTime(m))}>
+                        <button
+                          type="button"
+                          disabled={preparing !== null}
+                          onclick={() => download(k, m.source, m.path, mTime(m))}
+                        >
                           {preparing === k ? t.search.preparing : t.search.download}
                         </button>
                       {/if}
                     {/if}
                     {#if hostAgentId(m.source)}
-                      <button type="button" onclick={() => restore(m.source, m.path, mTime(m))}>{t.search.restore}</button>
+                      <button type="button" onclick={() => restore(m.source, m.path, mTime(m))}
+                        >{t.search.restore}</button
+                      >
                     {/if}
                   </div>
                 </td>
@@ -545,7 +595,8 @@
                   aria-expanded={!!expanded[hk]}
                   aria-controls="s-v-{hi}"
                   aria-label={t.search.expand(h.path)}
-                  onclick={() => (expanded[hk] = !expanded[hk])}><IconChevron class="chev{expanded[hk] ? ' open' : ''}" aria-hidden="true" /></button
+                  onclick={() => (expanded[hk] = !expanded[hk])}
+                  ><IconChevron class="chev{expanded[hk] ? ' open' : ''}" aria-hidden="true" /></button
                 >
               </td>
               <td>
@@ -558,7 +609,9 @@
               <td class="num">{h.versions.length}</td>
               <td>
                 {#if v0?.gone}<span class="chip warn">{t.search.deletedOn(fmtTime(v0.gone))}</span>{/if}
-                {#if v0 && !v0.times.length}<span class="chip plain" title={t.search.snapshotDeletedHint}>{t.search.snapshotDeleted}</span>{/if}
+                {#if v0 && !v0.times.length}<span class="chip plain" title={t.search.snapshotDeletedHint}
+                    >{t.search.snapshotDeleted}</span
+                  >{/if}
               </td>
             </tr>
             {#if expanded[hk]}
@@ -586,7 +639,9 @@
                           <td class="nowrap">{fmtTime(v.mtime)}</td>
                           <td class="nowrap">{fmtTime(v.first)}</td>
                           <td class="nowrap">
-                            {#if v.gone && vi === 0}<span class="chip warn plain">{t.search.deletedOn(fmtTime(v.gone))}</span>
+                            {#if v.gone && vi === 0}<span class="chip warn plain"
+                                >{t.search.deletedOn(fmtTime(v.gone))}</span
+                              >
                             {:else if v.gone}{fmtTime(v.gone)}
                             {:else}<span class="chip ok plain">{t.search.current}</span>{/if}
                           </td>
@@ -613,10 +668,14 @@
                           <td>
                             {#if v.times.length}
                               <div class="row">
-                                <a class="button small" href={openHref(h.source, h.browse, h.kind, timeOf(h, vi))}>{t.search.open}</a>
+                                <a class="button small" href={openHref(h.source, h.browse, h.kind, timeOf(h, vi))}
+                                  >{t.search.open}</a
+                                >
                                 {#if h.kind === 'file' && can.download(session.user)}
                                   {#if ready_?.key === vk}
-                                    <a class="button small" href={downloadUrl(ready_.token)} download={ready_.filename}>{t.files.get} {ready_.filename}</a>
+                                    <a class="button small" href={downloadUrl(ready_.token)} download={ready_.filename}
+                                      >{t.files.get} {ready_.filename}</a
+                                    >
                                   {:else}
                                     <button
                                       type="button"
@@ -629,7 +688,12 @@
                                   {/if}
                                 {/if}
                                 {#if hostAgentId(h.source)}
-                                  <button type="button" class="small" onclick={() => restore(h.source, h.browse, timeOf(h, vi))}>{t.search.restore}</button>
+                                  <button
+                                    type="button"
+                                    class="small"
+                                    onclick={() => restore(h.source, h.browse, timeOf(h, vi))}
+                                    >{t.search.restore}</button
+                                  >
                                 {/if}
                               </div>
                             {/if}
@@ -640,13 +704,21 @@
                   </table>
                   {#if marks.length}
                     <div class="strip-wrap">
-                      <span class="muted small">{t.search.strip(h.source)}: {t.search.stripSummary(marks.length, missing.length)}</span>
+                      <span class="muted small"
+                        >{t.search.strip(h.source)}: {t.search.stripSummary(marks.length, missing.length)}</span
+                      >
                       <div class="strip" aria-hidden="true">
-                        {#each [...marks].reverse() as x (x.time)}<span class="mark {stateCls(x.state)}" title={stateText(x)}></span>{/each}
+                        {#each [...marks].reverse() as x (x.time)}<span
+                            class="mark {stateCls(x.state)}"
+                            title={stateText(x)}
+                          ></span>{/each}
                       </div>
                       {#if missing.length}
                         <ul class="missing small">
-                          {#each missing.slice(0, 6) as x (x.time)}<li><span class="chip plain {stateCls(x.state)}">{t.search.states[x.state] ?? x.state}</span> {fmtTime(x.time)}{x.reason ? `: ${x.reason}` : ''}</li>{/each}
+                          {#each missing.slice(0, 6) as x (x.time)}<li>
+                              <span class="chip plain {stateCls(x.state)}">{t.search.states[x.state] ?? x.state}</span>
+                              {fmtTime(x.time)}{x.reason ? `: ${x.reason}` : ''}
+                            </li>{/each}
                           {#if missing.length > 6}<li class="muted">…</li>{/if}
                         </ul>
                       {/if}
@@ -675,7 +747,14 @@
 <p class="muted">{t.search.privacy}</p>
 
 {#if restoreOf}
-  <RestoreFiles bind:open={restoreOpen} {tenant} source={restoreOf.source} time={restoreOf.time} paths={[restoreOf.path]} {agents} />
+  <RestoreFiles
+    bind:open={restoreOpen}
+    {tenant}
+    source={restoreOf.source}
+    time={restoreOf.time}
+    paths={[restoreOf.path]}
+    {agents}
+  />
 {/if}
 
 <style>

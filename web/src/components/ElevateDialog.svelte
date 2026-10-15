@@ -66,7 +66,14 @@
       </div>
       <div class="field">
         <label for="el-reason">{t.p30.elev.reason}</label>
-        <input id="el-reason" bind:value={reason} required maxlength="200" autocomplete="off" aria-describedby="el-reason-hint" />
+        <input
+          id="el-reason"
+          bind:value={reason}
+          required
+          maxlength="200"
+          autocomplete="off"
+          aria-describedby="el-reason-hint"
+        />
         <div class="hint" id="el-reason-hint">{t.p30.elev.reasonHint}</div>
       </div>
     </div>

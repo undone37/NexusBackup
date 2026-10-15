@@ -1,4 +1,12 @@
-import type { Elevation, FreezeBanner, Impersonation, IncidentBanner, RestorePriority, StepUpState, User } from './types';
+import type {
+  Elevation,
+  FreezeBanner,
+  Impersonation,
+  IncidentBanner,
+  RestorePriority,
+  StepUpState,
+  User,
+} from './types';
 
 // The CSRF token lives in memory only (never localStorage); after a reload it is
 // recovered from GET /auth/me.

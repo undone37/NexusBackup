@@ -48,7 +48,11 @@ export function parsePluginSnapshot(name: string): { pluginId: string; sourceId:
   const parts = name.slice(7).split('-');
   const i = parts.findIndex((x) => /^\d+$/.test(x));
   if (i < 1) return null;
-  return { pluginId: parts.slice(0, i).join('-'), sourceId: Number(parts[i]), guest: parts.slice(i + 1).join('-') || null };
+  return {
+    pluginId: parts.slice(0, i).join('-'),
+    sourceId: Number(parts[i]),
+    guest: parts.slice(i + 1).join('-') || null,
+  };
 }
 
 /**

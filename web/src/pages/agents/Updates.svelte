@@ -38,7 +38,9 @@
   const writer = $derived(can.manageTenant(session.user));
   // rollouts and automatic mode are appliance-wide: not for tenant-scoped users
   const viewRollouts = $derived(
-    !!session.user && !session.user.tenant && ['admin', 'security_officer', 'operator', 'viewer'].includes(session.user.role),
+    !!session.user &&
+      !session.user.tenant &&
+      ['admin', 'security_officer', 'operator', 'viewer'].includes(session.user.role),
   );
 
   let rel: AgentReleases = $state({ recommended: null, releases: [] });
@@ -81,7 +83,10 @@
 
   const recommended = $derived(rel.releases.find((r) => r.version === rel.recommended && r.signed) ?? null);
   const signedVersions = $derived(
-    rel.releases.filter((r) => r.signed).map((r) => r.version).sort((a, b) => cmpVersion(b, a)),
+    rel.releases
+      .filter((r) => r.signed)
+      .map((r) => r.version)
+      .sort((a, b) => cmpVersion(b, a)),
   );
 
   // ---------------------------------------------------------------- releases
@@ -92,8 +97,9 @@
     (e.currentTarget as HTMLInputElement).value = '';
     if (!f) return;
     uploading = true;
-    const r = await act(postRaw<{ version: string }>('/agent-releases', f, { 'Content-Type': 'application/x-tar' }), (d) =>
-      t.agentUpd.uploaded(d.version),
+    const r = await act(
+      postRaw<{ version: string }>('/agent-releases', f, { 'Content-Type': 'application/x-tar' }),
+      (d) => t.agentUpd.uploaded(d.version),
     );
     uploading = false;
     if (r) load();
@@ -154,7 +160,14 @@
   async function saveTags(e: SubmitEvent) {
     e.preventDefault();
     if (!tagAgent) return;
-    const tags = [...new Set(tagText.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean))];
+    const tags = [
+      ...new Set(
+        tagText
+          .split(',')
+          .map((x) => x.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
     const bad = tags.find((x) => !TAG_RE.test(x));
     if (bad || tags.length > 16) {
       notify('error', t.agentUpd.tagsInvalid(bad ?? tags[16]));
@@ -262,7 +275,10 @@
   }
   // a version older than some enrolled agent needs the rollback flag
   const newest = $derived(
-    enrolled.map((a) => a.version).filter((v): v is string => !!v).sort((a, b) => cmpVersion(b, a))[0] ?? null,
+    enrolled
+      .map((a) => a.version)
+      .filter((v): v is string => !!v)
+      .sort((a, b) => cmpVersion(b, a))[0] ?? null,
   );
   const needsRollback = $derived(!!nf.version && !!newest && cmpVersion(nf.version, newest) < 0);
   const allTags = $derived([...new Set(enrolled.flatMap((a) => a.tags ?? []))].sort());
@@ -295,7 +311,14 @@
 
   // ---------------------------------------------------------------- automatic mode
   let setOpen = $state(false);
-  let sf = $state({ tenant: '', group: 0, mode: 'automatic' as 'manual' | 'automatic', canary: 1, soak: 60, windows: [] as UpdateWindow[] });
+  let sf = $state({
+    tenant: '',
+    group: 0,
+    mode: 'automatic' as 'manual' | 'automatic',
+    canary: 1,
+    soak: 60,
+    windows: [] as UpdateWindow[],
+  });
   function editSetting(s?: AgentUpdateSetting) {
     sf = s
       ? {
@@ -325,7 +348,9 @@
     }
   }
   const windowsText = (ws: UpdateWindow[]) =>
-    ws.length ? ws.map((w) => `${w.days.length ? w.days.join(',') : t.agentUpd.daily} ${w.from}-${w.to}`).join('; ') : t.agentUpd.anyTime;
+    ws.length
+      ? ws.map((w) => `${w.days.length ? w.days.join(',') : t.agentUpd.daily} ${w.from}-${w.to}`).join('; ')
+      : t.agentUpd.anyTime;
 </script>
 
 <ErrorBanner {error} />
@@ -338,7 +363,15 @@
       <button type="button" class="primary" disabled={uploading} onclick={() => fileInput?.click()}
         ><IconUpload aria-hidden="true" />{t.agentUpd.upload}</button
       >
-      <input bind:this={fileInput} type="file" accept=".tar,application/x-tar" class="visually-hidden" tabindex="-1" aria-hidden="true" onchange={upload} />
+      <input
+        bind:this={fileInput}
+        type="file"
+        accept=".tar,application/x-tar"
+        class="visually-hidden"
+        tabindex="-1"
+        aria-hidden="true"
+        onchange={upload}
+      />
     {/if}
   </div>
   {#if admin}<p class="hint">{t.agentUpd.uploadHint}</p>{/if}
@@ -365,7 +398,9 @@
               <tr>
                 <td>
                   <strong class="mono">{r.version}</strong>
-                  {#if r.version === rel.recommended && r.signed}<span class="chip accent">{t.agentUpd.recommended}</span>{/if}
+                  {#if r.version === rel.recommended && r.signed}<span class="chip accent"
+                      >{t.agentUpd.recommended}</span
+                    >{/if}
                   {#if r.protocol}<div class="muted">{t.agentUpd.protocol(r.protocol)}</div>{/if}
                 </td>
                 <td>{t.agentUpd.sources[r.source] ?? r.source}</td>
@@ -380,7 +415,9 @@
                 <td class="nowrap">{r.released ?? '—'}</td>
                 <td>{r.notes ?? ''}</td>
                 <td>
-                  <button type="button" class="small" onclick={() => showArtifacts(r)}>{t.agentUpd.artifactsN(r.artifacts.length)}</button>
+                  <button type="button" class="small" onclick={() => showArtifacts(r)}
+                    >{t.agentUpd.artifactsN(r.artifacts.length)}</button
+                  >
                 </td>
                 <td class="actions">
                   {#if admin && r.source === 'upload'}
@@ -433,7 +470,10 @@
           <tbody>
             {#each shown as a (a.id)}
               <tr>
-                <td><strong>{a.name}</strong> <div class="muted">{a.tenant}</div></td>
+                <td
+                  ><strong>{a.name}</strong>
+                  <div class="muted">{a.tenant}</div></td
+                >
                 <td>
                   <span class="mono">{a.version ?? '—'}</span>
                   {#if isOutdated(a)}<span class="chip warn">{t.agentUpd.outdated}</span>{/if}
@@ -443,7 +483,11 @@
                 <td>
                   {a.os ?? '—'}
                   <div class="muted">
-                    {[a.arch, a.install ? (t.agentUpd.installs[a.install] ?? a.install) : null, a.gui_version ? t.agentUpd.gui(a.gui_version) : null]
+                    {[
+                      a.arch,
+                      a.install ? (t.agentUpd.installs[a.install] ?? a.install) : null,
+                      a.gui_version ? t.agentUpd.gui(a.gui_version) : null,
+                    ]
                       .filter(Boolean)
                       .join(' · ')}
                   </div>
@@ -451,21 +495,34 @@
                 <td>
                   {#each a.tags ?? [] as tg (tg)}<span class="chip plain">{tg}</span>{/each}
                   {#if writer}
-                    <button type="button" class="small" aria-label={t.agentUpd.tagsTitle(a.name)} onclick={() => editTags(a)}>{t.agentUpd.editTags}</button>
+                    <button
+                      type="button"
+                      class="small"
+                      aria-label={t.agentUpd.tagsTitle(a.name)}
+                      onclick={() => editTags(a)}>{t.agentUpd.editTags}</button
+                    >
                   {/if}
                 </td>
                 <td>
                   {#if a.update_state}
-                    <span class="chip {stateCls[a.update_state] ?? 'plain'}">{t.agentUpd.updateStates[a.update_state] ?? a.update_state}</span>
+                    <span class="chip {stateCls[a.update_state] ?? 'plain'}"
+                      >{t.agentUpd.updateStates[a.update_state] ?? a.update_state}</span
+                    >
                     {#if a.update_target}<div class="muted">{t.agentUpd.target(a.update_target)}</div>{/if}
-                    {#if a.update_at}<div class="muted" title={fmtTime(a.update_at)}>{fmtAgo(a.update_at, now)}</div>{/if}
+                    {#if a.update_at}<div class="muted" title={fmtTime(a.update_at)}>
+                        {fmtAgo(a.update_at, now)}
+                      </div>{/if}
                     {#if a.update_error}<div class="err-text">{a.update_error}</div>{/if}
-                    {#if a.update_attempts && a.update_attempts > 1}<div class="muted">{t.agentUpd.attempts(a.update_attempts)}</div>{/if}
+                    {#if a.update_attempts && a.update_attempts > 1}<div class="muted">
+                        {t.agentUpd.attempts(a.update_attempts)}
+                      </div>{/if}
                   {:else}—{/if}
                 </td>
                 <td class="actions">
                   {#if admin && isOutdated(a) && recommended}
-                    <button type="button" class="small" onclick={() => updateOne(a)}>{t.agentUpd.updateTo(recommended.version)}</button>
+                    <button type="button" class="small" onclick={() => updateOne(a)}
+                      >{t.agentUpd.updateTo(recommended.version)}</button
+                    >
                   {/if}
                 </td>
               </tr>
@@ -516,7 +573,9 @@
                 </td>
                 <td>{scopeText(r.scope)}</td>
                 <td>
-                  <span class="chip {rolloutCls[r.state] ?? 'plain'}">{t.agentUpd.rolloutStates[r.state] ?? r.state}</span>
+                  <span class="chip {rolloutCls[r.state] ?? 'plain'}"
+                    >{t.agentUpd.rolloutStates[r.state] ?? r.state}</span
+                  >
                   {#if r.reason}<div class="muted">{r.reason}</div>{/if}
                 </td>
                 <td class="progress">
@@ -525,17 +584,22 @@
                   {#if t.agentUpd.counts(r.counts)}<div class="muted">{t.agentUpd.counts(r.counts)}</div>{/if}
                 </td>
                 <td>{t.agentUpd.waves[r.wave] ?? r.wave}</td>
-                <td class="nowrap" title={fmtTime(r.created)}>{t.agentUpd.createdBy(r.created_by, fmtAgo(r.created, now))}</td>
+                <td class="nowrap" title={fmtTime(r.created)}
+                  >{t.agentUpd.createdBy(r.created_by, fmtAgo(r.created, now))}</td
+                >
                 <td class="actions">
                   <button type="button" class="small" onclick={() => openDetail(r)}>{t.agentUpd.details}</button>
                   {#if admin && r.state === 'running'}
                     <button type="button" class="small" onclick={() => control(r, 'pause')}>{t.agentUpd.pause}</button>
                   {/if}
                   {#if admin && r.state === 'paused'}
-                    <button type="button" class="small" onclick={() => control(r, 'resume')}>{t.agentUpd.resume}</button>
+                    <button type="button" class="small" onclick={() => control(r, 'resume')}>{t.agentUpd.resume}</button
+                    >
                   {/if}
                   {#if admin && ['running', 'paused', 'pending_approval'].includes(r.state)}
-                    <button type="button" class="small danger" onclick={() => control(r, 'cancel')}>{t.agentUpd.cancelRollout}</button>
+                    <button type="button" class="small danger" onclick={() => control(r, 'cancel')}
+                      >{t.agentUpd.cancelRollout}</button
+                    >
                   {/if}
                 </td>
               </tr>
@@ -550,7 +614,9 @@
     <div class="card-head">
       <h2>{t.agentUpd.auto}</h2>
       {#if admin}
-        <button type="button" class="primary" onclick={() => editSetting()}><IconPlus aria-hidden="true" />{t.agentUpd.addSetting}</button>
+        <button type="button" class="primary" onclick={() => editSetting()}
+          ><IconPlus aria-hidden="true" />{t.agentUpd.addSetting}</button
+        >
       {/if}
     </div>
     <p class="hint">{t.agentUpd.autoIntro}</p>
@@ -574,7 +640,8 @@
               <tr>
                 <td>{s.tenant}</td>
                 <td>{s.group_id ? groupName(s.group_id) : t.agentUpd.wholeTenant}</td>
-                <td><span class="chip {s.mode === 'automatic' ? 'info' : 'plain'}">{t.agentUpd.modes[s.mode]}</span></td>
+                <td><span class="chip {s.mode === 'automatic' ? 'info' : 'plain'}">{t.agentUpd.modes[s.mode]}</span></td
+                >
                 <td>{windowsText(s.windows)}</td>
                 <td class="nowrap">{t.agentUpd.canaryShort(s.canary)}, {t.agentUpd.soakShort(s.soak_minutes)}</td>
                 <td class="actions">
@@ -607,7 +674,10 @@
         <tbody>
           {#each artRelease.artifacts as x (x.name)}
             <tr>
-              <td class="mono">{x.name} <div class="muted">{fmtBytes(x.size)}</div></td>
+              <td class="mono"
+                >{x.name}
+                <div class="muted">{fmtBytes(x.size)}</div></td
+              >
               <td>{x.kind}</td>
               <td class="nowrap">{x.os} {x.arch}</td>
               <td class="mono">{x.version}</td>
@@ -631,7 +701,14 @@
   <form onsubmit={saveTags}>
     <div class="field">
       <label for="upd-tags">{t.agentUpd.tagsLabel}</label>
-      <input id="upd-tags" class="mono" bind:value={tagText} autocomplete="off" spellcheck="false" aria-describedby="upd-tags-hint" />
+      <input
+        id="upd-tags"
+        class="mono"
+        bind:value={tagText}
+        autocomplete="off"
+        spellcheck="false"
+        aria-describedby="upd-tags-hint"
+      />
       <div class="hint" id="upd-tags-hint">{t.agentUpd.tagsHint}</div>
     </div>
     <div class="form-actions">
@@ -653,8 +730,11 @@
     {#if d.reason}<p class="banner warn">{d.reason}</p>{/if}
     <ProgressBar value={pct(d)} label={t.agentUpd.progressLabel(d.version)} />
     <p class="muted">
-      {t.agentUpd.progressText(d.counts)} · {t.agentUpd.canaryShort(d.canary_pct !== null ? d.canary_pct : d.canary)}{d.canary_pct !== null ? ' %' : ''},
-      {t.agentUpd.soakShort(d.soak_minutes)} · {t.agentUpd.concurrency}: {d.concurrency} · {t.agentUpd.maxFailures}: {d.max_failures} / {d.max_failure_pct} % ·
+      {t.agentUpd.progressText(d.counts)} · {t.agentUpd.canaryShort(
+        d.canary_pct !== null ? d.canary_pct : d.canary,
+      )}{d.canary_pct !== null ? ' %' : ''},
+      {t.agentUpd.soakShort(d.soak_minutes)} · {t.agentUpd.concurrency}: {d.concurrency} · {t.agentUpd.maxFailures}: {d.max_failures}
+      / {d.max_failure_pct} % ·
       {windowsText(d.windows)}
     </p>
     <div class="table-wrap">
@@ -671,13 +751,20 @@
         <tbody>
           {#each d.items as it (it.agent_id)}
             <tr>
-              <td><strong>{it.name || agentName(it.agent_id)}</strong> <div class="muted">{it.tenant}</div></td>
+              <td
+                ><strong>{it.name || agentName(it.agent_id)}</strong>
+                <div class="muted">{it.tenant}</div></td
+              >
               <td>{t.agentUpd.waves[it.wave] ?? it.wave}</td>
               <td>
                 <span class="chip {itemCls[it.state] ?? 'plain'}">{t.agentUpd.itemStates[it.state] ?? it.state}</span>
                 {#if it.attempts > 1}<span class="muted">{t.agentUpd.attempts(it.attempts)}</span>{/if}
                 {#if it.error}<div class="err-text">{it.error}</div>{/if}
-                {#if it.job_id}<div><a href={href(`/jobs/${it.job_id}`)} onclick={() => (detailOpen = false)}>{t.agentUpd.job(it.job_id)}</a></div>{/if}
+                {#if it.job_id}<div>
+                    <a href={href(`/jobs/${it.job_id}`)} onclick={() => (detailOpen = false)}
+                      >{t.agentUpd.job(it.job_id)}</a
+                    >
+                  </div>{/if}
               </td>
               <td class="mono">{t.agentUpd.fromTo(it.from_version, it.version ?? d.version)}</td>
               <td class="nowrap" title={fmtTime(it.updated)}>{fmtAgo(it.updated, now)}</td>
@@ -687,8 +774,12 @@
       </table>
     </div>
     <div class="form-actions">
-      {#if admin && d.state === 'running'}<button type="button" onclick={() => control(d, 'pause')}>{t.agentUpd.pause}</button>{/if}
-      {#if admin && d.state === 'paused'}<button type="button" onclick={() => control(d, 'resume')}>{t.agentUpd.resume}</button>{/if}
+      {#if admin && d.state === 'running'}<button type="button" onclick={() => control(d, 'pause')}
+          >{t.agentUpd.pause}</button
+        >{/if}
+      {#if admin && d.state === 'paused'}<button type="button" onclick={() => control(d, 'resume')}
+          >{t.agentUpd.resume}</button
+        >{/if}
       <button type="button" class="primary" onclick={() => (detailOpen = false)}>{t.close}</button>
     </div>
   {/if}
@@ -700,7 +791,9 @@
       <div class="field">
         <label for="ro-version">{t.agentUpd.version}</label>
         <select id="ro-version" bind:value={nf.version} required>
-          {#each signedVersions as v (v)}<option value={v}>{v}{v === rel.recommended ? ` (${t.agentUpd.recommended})` : ''}</option>{/each}
+          {#each signedVersions as v (v)}<option value={v}
+              >{v}{v === rel.recommended ? ` (${t.agentUpd.recommended})` : ''}</option
+            >{/each}
         </select>
       </div>
       <div class="field">
@@ -733,8 +826,18 @@
       {:else if nf.scopeKind === 'tag'}
         <div class="field">
           <label for="ro-tag">{t.agentUpd.scopes.tag}</label>
-          <input id="ro-tag" class="mono" list="ro-tags" bind:value={nf.tag} required pattern="[a-z0-9_.\-]{'{'}1,32{'}'}" autocomplete="off" />
-          <datalist id="ro-tags">{#each allTags as tg (tg)}<option value={tg}></option>{/each}</datalist>
+          <input
+            id="ro-tag"
+            class="mono"
+            list="ro-tags"
+            bind:value={nf.tag}
+            required
+            pattern="[a-z0-9_.\-]{'{'}1,32{'}'}"
+            autocomplete="off"
+          />
+          <datalist id="ro-tags"
+            >{#each allTags as tg (tg)}<option value={tg}></option>{/each}</datalist
+          >
         </div>
       {:else if nf.scopeKind === 'agents'}
         <div class="field">
@@ -750,8 +853,12 @@
     <fieldset class="field">
       <legend>{t.agentUpd.canaryMode}</legend>
       <p class="hint">{t.agentUpd.canaryHint}</p>
-      <label class="inline-check"><input type="radio" value="count" bind:group={nf.canaryMode} />{t.agentUpd.canaryCount}</label>
-      <label class="inline-check"><input type="radio" value="pct" bind:group={nf.canaryMode} />{t.agentUpd.canaryPct}</label>
+      <label class="inline-check"
+        ><input type="radio" value="count" bind:group={nf.canaryMode} />{t.agentUpd.canaryCount}</label
+      >
+      <label class="inline-check"
+        ><input type="radio" value="pct" bind:group={nf.canaryMode} />{t.agentUpd.canaryPct}</label
+      >
       <div class="form-grid">
         {#if nf.canaryMode === 'count'}
           <div class="field">
@@ -778,19 +885,44 @@
       </div>
       <div class="field">
         <label for="ro-maxf">{t.agentUpd.maxFailures}</label>
-        <input id="ro-maxf" type="number" min="0" max="10000" bind:value={nf.maxFailures} required aria-describedby="ro-thr-hint" />
+        <input
+          id="ro-maxf"
+          type="number"
+          min="0"
+          max="10000"
+          bind:value={nf.maxFailures}
+          required
+          aria-describedby="ro-thr-hint"
+        />
       </div>
       <div class="field">
         <label for="ro-maxp">{t.agentUpd.maxFailurePct}</label>
-        <input id="ro-maxp" type="number" min="0" max="100" bind:value={nf.maxFailurePct} required aria-describedby="ro-thr-hint" />
+        <input
+          id="ro-maxp"
+          type="number"
+          min="0"
+          max="100"
+          bind:value={nf.maxFailurePct}
+          required
+          aria-describedby="ro-thr-hint"
+        />
       </div>
     </div>
     <div class="field"><div class="hint" id="ro-thr-hint">{t.agentUpd.thresholdHint}</div></div>
 
-    <BlackoutEditor bind:windows={nf.windows} mode="span" legend={t.agentUpd.windows} hint={t.agentUpd.windowsHint} idp="ro-w" />
+    <BlackoutEditor
+      bind:windows={nf.windows}
+      mode="span"
+      legend={t.agentUpd.windows}
+      hint={t.agentUpd.windowsHint}
+      idp="ro-w"
+    />
 
     <div class="field">
-      <label class="inline-check"><input type="checkbox" bind:checked={nf.rollback} aria-describedby="ro-rb-hint" />{t.agentUpd.rollbackLabel}</label>
+      <label class="inline-check"
+        ><input type="checkbox" bind:checked={nf.rollback} aria-describedby="ro-rb-hint" />{t.agentUpd
+          .rollbackLabel}</label
+      >
       <div class="hint" id="ro-rb-hint">{t.agentUpd.rollbackHint}</div>
       {#if needsRollback && !nf.rollback}
         <p class="banner warn" role="alert">{t.agentUpd.rollbackNeeded(nf.version, newest ?? '')}</p>
@@ -834,7 +966,13 @@
         <input id="us-soak" type="number" min="0" max="10080" bind:value={sf.soak} required />
       </div>
     </div>
-    <BlackoutEditor bind:windows={sf.windows} mode="span" legend={t.agentUpd.windows} hint={t.agentUpd.windowsHint} idp="us-w" />
+    <BlackoutEditor
+      bind:windows={sf.windows}
+      mode="span"
+      legend={t.agentUpd.windows}
+      hint={t.agentUpd.windowsHint}
+      idp="us-w"
+    />
     <div class="form-actions">
       <button type="button" onclick={() => (setOpen = false)}>{t.cancel}</button>
       <button type="submit" class="primary">{t.save}</button>

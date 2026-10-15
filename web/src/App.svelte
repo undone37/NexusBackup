@@ -92,33 +92,117 @@
   const viewApprovals: Allow = (u) => can.viewQuorum(u) || can.viewOwnQuorum(u);
 
   // Routes; `nav` entries appear in the sidebar (filtered by role — the server still decides).
-  const routes: { path: string; comp: Component<any>; allow: Allow; nav?: string; section?: Section; icon?: Component<any> }[] = [
+  const routes: {
+    path: string;
+    comp: Component<any>;
+    allow: Allow;
+    nav?: string;
+    section?: Section;
+    icon?: Component<any>;
+  }[] = [
     { path: '/', comp: Dashboard, allow: always, nav: t.nav.dashboard, section: 'monitor', icon: IconDashboard },
-    { path: '/snapshots', comp: Snapshots, allow: always, nav: t.nav.snapshots, section: 'monitor', icon: IconSnapshots },
+    {
+      path: '/snapshots',
+      comp: Snapshots,
+      allow: always,
+      nav: t.nav.snapshots,
+      section: 'monitor',
+      icon: IconSnapshots,
+    },
     { path: '/search', comp: Search, allow: can.restore, nav: t.nav.search, section: 'monitor', icon: IconSearch },
     { path: '/hunt', comp: Hunt, allow: can.hunt, nav: t.nav.hunt, section: 'monitor', icon: IconHunt },
     { path: '/changes', comp: Changes, allow: can.restore, nav: t.nav.changes, section: 'monitor', icon: IconCompare },
-    { path: '/restore-tests', comp: RestoreTests, allow: always, nav: t.nav.restoreTests, section: 'monitor', icon: IconRestoreTest },
+    {
+      path: '/restore-tests',
+      comp: RestoreTests,
+      allow: always,
+      nav: t.nav.restoreTests,
+      section: 'monitor',
+      icon: IconRestoreTest,
+    },
     { path: '/storage', comp: Storage, allow: always, nav: t.nav.storage, section: 'monitor', icon: IconStorage },
     { path: '/reports', comp: Reports, allow: always, nav: t.nav.reports, section: 'monitor', icon: IconReports },
     { path: '/files', comp: Files, allow: can.restore },
     { path: '/jobs', comp: Jobs, allow: always, nav: t.nav.jobs, section: 'monitor', icon: IconJobs },
     { path: '/jobs/:id', comp: JobDetail, allow: always },
     { path: '/alerts', comp: Alerts, allow: can.viewAlerts, nav: t.nav.alerts, section: 'monitor', icon: IconAlerts },
-    { path: '/quorum', comp: Quorum, allow: viewApprovals, nav: t.nav.quorum, section: 'governance', icon: IconApprovals },
+    {
+      path: '/quorum',
+      comp: Quorum,
+      allow: viewApprovals,
+      nav: t.nav.quorum,
+      section: 'governance',
+      icon: IconApprovals,
+    },
     { path: '/cases', comp: Cases, allow: can.cases, nav: t.nav.cases, section: 'governance', icon: IconCases },
     { path: '/audit', comp: Audit, allow: can.audit, nav: t.nav.audit, section: 'governance', icon: IconAudit },
-    { path: '/tenants', comp: Tenants, allow: can.attachOffsite, nav: t.nav.tenants, section: 'config', icon: IconTenants },
-    { path: '/sources', comp: Sources, allow: can.manageTenant, nav: t.nav.sources, section: 'config', icon: IconSources },
+    {
+      path: '/tenants',
+      comp: Tenants,
+      allow: can.attachOffsite,
+      nav: t.nav.tenants,
+      section: 'config',
+      icon: IconTenants,
+    },
+    {
+      path: '/sources',
+      comp: Sources,
+      allow: can.manageTenant,
+      nav: t.nav.sources,
+      section: 'config',
+      icon: IconSources,
+    },
     { path: '/agents', comp: Agents, allow: can.manageTenant, nav: t.nav.agents, section: 'config', icon: IconAgents },
-    { path: '/replication', comp: Replication, allow: can.viewReplication, nav: t.nav.replication, section: 'config', icon: IconReplication },
-    { path: '/recovery-plans', comp: RecoveryPlans, allow: always, nav: t.nav.recoveryPlans, section: 'config', icon: IconRecovery },
-    { path: '/policies', comp: Policies, allow: can.configure, nav: t.nav.policies, section: 'config', icon: IconPolicies },
+    {
+      path: '/replication',
+      comp: Replication,
+      allow: can.viewReplication,
+      nav: t.nav.replication,
+      section: 'config',
+      icon: IconReplication,
+    },
+    {
+      path: '/recovery-plans',
+      comp: RecoveryPlans,
+      allow: always,
+      nav: t.nav.recoveryPlans,
+      section: 'config',
+      icon: IconRecovery,
+    },
+    {
+      path: '/policies',
+      comp: Policies,
+      allow: can.configure,
+      nav: t.nav.policies,
+      section: 'config',
+      icon: IconPolicies,
+    },
     { path: '/groups', comp: Groups, allow: can.manageTenant, nav: t.nav.groups, section: 'config', icon: IconGroups },
     { path: '/users', comp: Users, allow: can.manageTenant, nav: t.nav.users, section: 'config', icon: IconUsers },
-    { path: '/plugins', comp: Plugins, allow: can.viewPlugins, nav: t.nav.plugins, section: 'config', icon: IconPlugins },
-    { path: '/hardware', comp: Hardware, allow: can.viewHardware, nav: t.nav.hardware, section: 'config', icon: IconHardware },
-    { path: '/settings', comp: Settings, allow: viewSettings, nav: t.nav.settings, section: 'config', icon: IconSettings },
+    {
+      path: '/plugins',
+      comp: Plugins,
+      allow: can.viewPlugins,
+      nav: t.nav.plugins,
+      section: 'config',
+      icon: IconPlugins,
+    },
+    {
+      path: '/hardware',
+      comp: Hardware,
+      allow: can.viewHardware,
+      nav: t.nav.hardware,
+      section: 'config',
+      icon: IconHardware,
+    },
+    {
+      path: '/settings',
+      comp: Settings,
+      allow: viewSettings,
+      nav: t.nav.settings,
+      section: 'config',
+      icon: IconSettings,
+    },
     { path: '/account', comp: Account, allow: always },
   ];
   const SECTIONS: { id: Section; label: string }[] = [
@@ -174,11 +258,18 @@
   const frozen = $derived.by(() => {
     const f = session.freeze;
     if (!f) return null;
-    const parts = [f.config && t.p29.freeze.names.config, f.deletions && t.p29.freeze.names.deletions, f.restores && t.p29.freeze.names.restores].filter(
-      (x): x is string => !!x,
-    );
+    const parts = [
+      f.config && t.p29.freeze.names.config,
+      f.deletions && t.p29.freeze.names.deletions,
+      f.restores && t.p29.freeze.names.restores,
+    ].filter((x): x is string => !!x);
     const tenants = (f.tenants ?? []).map((x) =>
-      t.p29.freeze.tenantPart(x.tenant, [x.deletions && t.p29.freeze.names.deletions, x.restores && t.p29.freeze.names.restores].filter((y): y is string => !!y)),
+      t.p29.freeze.tenantPart(
+        x.tenant,
+        [x.deletions && t.p29.freeze.names.deletions, x.restores && t.p29.freeze.names.restores].filter(
+          (y): y is string => !!y,
+        ),
+      ),
     );
     return parts.length || tenants.length ? { parts, tenants } : null;
   });
@@ -195,7 +286,8 @@
       session.freeze = me.freeze ?? null;
       session.stepUp = me.step_up ?? null;
       // Phase 30: an elevation that ended (expiry, another tab) brings the standing role back
-      if ((me.elevation?.until ?? null) !== (session.elevation?.until ?? null) || me.user.role !== u.role) session.user = me.user;
+      if ((me.elevation?.until ?? null) !== (session.elevation?.until ?? null) || me.user.role !== u.role)
+        session.user = me.user;
       session.elevation = me.elevation ?? null;
     }
     // Phase 22b: restore priority (banner for everyone)
@@ -320,7 +412,9 @@
                   >
                     {#if r.icon}<r.icon aria-hidden="true" />{/if}
                     <span class="label">{r.nav}</span>
-                    {#if b}<span class="count {b.cls}"><span class="visually-hidden">(</span>{b.n}<span class="visually-hidden">)</span></span>{/if}
+                    {#if b}<span class="count {b.cls}"
+                        ><span class="visually-hidden">(</span>{b.n}<span class="visually-hidden">)</span></span
+                      >{/if}
                   </a>
                 </li>
               {/each}
@@ -329,7 +423,13 @@
         {/each}
       </nav>
       <div class="foot">
-        <button type="button" class="collapse" onclick={toggleRail} aria-label={collapsed ? t.nav.expand : t.nav.collapse} title={collapsed ? t.nav.expand : undefined}>
+        <button
+          type="button"
+          class="collapse"
+          onclick={toggleRail}
+          aria-label={collapsed ? t.nav.expand : t.nav.collapse}
+          title={collapsed ? t.nav.expand : undefined}
+        >
           {#if collapsed}<IconExpand aria-hidden="true" />{:else}<IconCollapse aria-hidden="true" />{/if}
           <span class="label">{t.nav.collapse}</span>
         </button>
@@ -337,7 +437,8 @@
     </aside>
     {#if menuOpen}
       <!-- tap outside the drawer closes it -->
-      <button type="button" class="scrim" tabindex="-1" aria-label={t.close} onclick={() => (menuOpen = false)}></button>
+      <button type="button" class="scrim" tabindex="-1" aria-label={t.close} onclick={() => (menuOpen = false)}
+      ></button>
     {/if}
 
     <div class="content">
@@ -360,9 +461,13 @@
         <span class="spacer"></span>
         {#if session.vault}
           {#if can.viewQuorum(session.user)}
-            <a class="chip accent vault-badge" href={href('/settings?tab=vault')} title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</a>
+            <a class="chip accent vault-badge" href={href('/settings?tab=vault')} title={t.vault.badgeTitle}
+              ><IconVault aria-hidden="true" />{t.vault.badge}</a
+            >
           {:else}
-            <span class="chip accent vault-badge" title={t.vault.badgeTitle}><IconVault aria-hidden="true" />{t.vault.badge}</span>
+            <span class="chip accent vault-badge" title={t.vault.badgeTitle}
+              ><IconVault aria-hidden="true" />{t.vault.badge}</span
+            >
           {/if}
         {/if}
         <a
@@ -376,21 +481,45 @@
           {#if runningJobs}<span class="dot info" aria-hidden="true">{runningJobs}</span>{/if}
         </a>
         {#if viewApprovals(session.user)}
-          <a class="icon-btn" href={href('/quorum')} aria-label={t.nav.approvalsPending(pendingApprovals)} title={t.nav.approvalsPending(pendingApprovals)}>
+          <a
+            class="icon-btn"
+            href={href('/quorum')}
+            aria-label={t.nav.approvalsPending(pendingApprovals)}
+            title={t.nav.approvalsPending(pendingApprovals)}
+          >
             <IconApprovals aria-hidden="true" />
             {#if pendingApprovals}<span class="dot warn" aria-hidden="true">{pendingApprovals}</span>{/if}
           </a>
         {/if}
         {#if can.viewAlerts(session.user)}
-          <a class="icon-btn" href={href('/alerts')} aria-label={t.nav.alertsOpen(openAlerts.length)} title={t.nav.alertsOpen(openAlerts.length)}>
+          <a
+            class="icon-btn"
+            href={href('/alerts')}
+            aria-label={t.nav.alertsOpen(openAlerts.length)}
+            title={t.nav.alertsOpen(openAlerts.length)}
+          >
             <IconAlerts aria-hidden="true" />
-            {#if openAlerts.length}<span class="dot" class:warn={!critical} aria-hidden="true">{openAlerts.length}</span>{/if}
+            {#if openAlerts.length}<span class="dot" class:warn={!critical} aria-hidden="true">{openAlerts.length}</span
+              >{/if}
           </a>
         {/if}
-        <button type="button" class="icon-btn theme-toggle" aria-label={themeLabel} title={themeLabel} onclick={() => setTheme(nextTheme(theme.choice))}>
-          {#if theme.choice === 'light'}<IconSun aria-hidden="true" />{:else if theme.choice === 'dark'}<IconMoon aria-hidden="true" />{:else}<IconSystem aria-hidden="true" />{/if}
+        <button
+          type="button"
+          class="icon-btn theme-toggle"
+          aria-label={themeLabel}
+          title={themeLabel}
+          onclick={() => setTheme(nextTheme(theme.choice))}
+        >
+          {#if theme.choice === 'light'}<IconSun aria-hidden="true" />{:else if theme.choice === 'dark'}<IconMoon
+              aria-hidden="true"
+            />{:else}<IconSystem aria-hidden="true" />{/if}
         </button>
-        <a class="whoami" href={href('/account')} title={t.account.title} aria-current={route.path === '/account' ? 'page' : undefined}>
+        <a
+          class="whoami"
+          href={href('/account')}
+          title={t.account.title}
+          aria-current={route.path === '/account' ? 'page' : undefined}
+        >
           <span class="avatar" aria-hidden="true">{session.user.name.slice(0, 2)}</span>
           <span class="who">
             <strong>{session.user.name}</strong>
@@ -398,11 +527,17 @@
           </span>
         </a>
         {#if session.user.eligible_role && !session.elevation && !session.impersonating}
-          <button type="button" class="icon-btn" onclick={() => (elevateOpen = true)} aria-label={t.p30.elev.open(t.roles[session.user.eligible_role])} title={t.p30.elev.open(t.roles[session.user.eligible_role])}
-            ><IconElevate aria-hidden="true" /></button
+          <button
+            type="button"
+            class="icon-btn"
+            onclick={() => (elevateOpen = true)}
+            aria-label={t.p30.elev.open(t.roles[session.user.eligible_role])}
+            title={t.p30.elev.open(t.roles[session.user.eligible_role])}><IconElevate aria-hidden="true" /></button
           >
         {/if}
-        <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}><IconLogout aria-hidden="true" /></button>
+        <button type="button" class="icon-btn" onclick={logout} aria-label={t.nav.logout} title={t.nav.logout}
+          ><IconLogout aria-hidden="true" /></button
+        >
       </header>
 
       {#if session.impersonating}
@@ -434,7 +569,9 @@
           <p>
             <strong>{frozen.parts.length ? t.p29.freeze.banner(frozen.parts) : t.p29.freeze.bannerTenants}</strong>
             {frozen.tenants.join(' · ')}
-            {#if can.lockdown(session.user)}<a href={href(frozen.parts.length ? '/settings?tab=incident' : '/tenants')}>{t.p29.freeze.manage}</a>{/if}
+            {#if can.lockdown(session.user)}<a href={href(frozen.parts.length ? '/settings?tab=incident' : '/tenants')}
+                >{t.p29.freeze.manage}</a
+              >{/if}
           </p>
         </div>
       {/if}
@@ -461,7 +598,13 @@
         <div class="glass priority" role="status">
           <IconLifeBuoy aria-hidden="true" />
           <p>
-            <strong>{t.priority.banner(fmtTime(session.priority.until ?? 0), session.priority.by ?? '?', session.priority.reason ?? '')}</strong>
+            <strong
+              >{t.priority.banner(
+                fmtTime(session.priority.until ?? 0),
+                session.priority.by ?? '?',
+                session.priority.reason ?? '',
+              )}</strong
+            >
             {t.priority.bannerHeld}
             {#if can.backup(session.user) && !session.user.tenant}<a href={href('/')}>{t.priority.manage}</a>{/if}
           </p>

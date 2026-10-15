@@ -45,9 +45,15 @@
   }
   onMount(() => {
     load();
-    get<Source[]>('/sources').then((s) => (sources = s)).catch(() => {});
-    get<Tenant[]>('/tenants').then((x) => (tenants = x)).catch(() => {});
-    get<Snapshot[]>('/snapshots').then((x) => (snaps = x)).catch(() => {});
+    get<Source[]>('/sources')
+      .then((s) => (sources = s))
+      .catch(() => {});
+    get<Tenant[]>('/tenants')
+      .then((x) => (tenants = x))
+      .catch(() => {});
+    get<Snapshot[]>('/snapshots')
+      .then((x) => (snaps = x))
+      .catch(() => {});
     const iv = setInterval(load, 5000);
     return () => clearInterval(iv);
   });
@@ -62,12 +68,31 @@
   }
   let open = $state(false);
   let editing: RecoveryPlan | null = $state(null);
-  let f = $state({ tenant: '', name: '', source_id: 0, node: '', storage: 'local-lvm', test_bridge: '', rpo_hours: 24, network: '', steps: [] as StepForm[] });
+  let f = $state({
+    tenant: '',
+    name: '',
+    source_id: 0,
+    node: '',
+    storage: 'local-lvm',
+    test_bridge: '',
+    rpo_hours: 24,
+    network: '',
+    steps: [] as StepForm[],
+  });
   const guestSources = $derived(
-    [...new Set(snaps.filter((s) => s.local && (!f.tenant || s.tenant === f.tenant) && /^(vm|ct)-\d+$/.test(s.source)).map((s) => s.source))].sort(),
+    [
+      ...new Set(
+        snaps
+          .filter((s) => s.local && (!f.tenant || s.tenant === f.tenant) && /^(vm|ct)-\d+$/.test(s.source))
+          .map((s) => s.source),
+      ),
+    ].sort(),
   );
   const nodes = $derived(
-    Object.keys(((sources.find((s) => s.id === Number(f.source_id))?.config as Record<string, unknown> | undefined)?.nodes as object) ?? {}),
+    Object.keys(
+      ((sources.find((s) => s.id === Number(f.source_id))?.config as Record<string, unknown> | undefined)
+        ?.nodes as object) ?? {},
+    ),
   );
   function edit(p: RecoveryPlan | null) {
     editing = p;
@@ -83,7 +108,13 @@
       network: Object.entries(p?.network_map ?? {})
         .map(([a, b]) => `${a} = ${b}`)
         .join('\n'),
-      steps: (p?.steps ?? []).map((s) => ({ source: s.source, wave: s.wave, delay: s.delay ?? 0, target: s.target ? String(s.target) : '', checks: checksForm(s.checks) })),
+      steps: (p?.steps ?? []).map((s) => ({
+        source: s.source,
+        wave: s.wave,
+        delay: s.delay ?? 0,
+        target: s.target ? String(s.target) : '',
+        checks: checksForm(s.checks),
+      })),
     };
     if (!f.steps.length) addStep();
     open = true;
@@ -120,7 +151,10 @@
         ...(String(s.target).trim() ? { target: Number(s.target) } : {}),
       })),
     };
-    const o = await act(editing ? put(`/recovery-plans/${editing.id}`, body) : post('/recovery-plans', body), editing ? t.saved : t.created);
+    const o = await act(
+      editing ? put(`/recovery-plans/${editing.id}`, body) : post('/recovery-plans', body),
+      editing ? t.saved : t.created,
+    );
     if (o) {
       open = false;
       load();
@@ -136,7 +170,8 @@
     if (await act(post(`/recovery-plans/${p.id}/readiness`), t.rplan.checkQueued, jobLink)) setTimeout(load, 4000);
   }
   async function testRun(p: RecoveryPlan) {
-    if (await act(post<{ run_id: number }>(`/recovery-plans/${p.id}/test`), (d) => t.rplan.testStarted(d.run_id))) load();
+    if (await act(post<{ run_id: number }>(`/recovery-plans/${p.id}/test`), (d) => t.rplan.testStarted(d.run_id)))
+      load();
   }
   let exOpen = $state(false);
   let exPlan: RecoveryPlan | null = $state(null);
@@ -149,7 +184,8 @@
   async function execute(e: Event) {
     e.preventDefault();
     if (!exPlan) return;
-    if (await act(post(`/recovery-plans/${exPlan.id}/execute`, { confirm: exConfirm }), t.rplan.executeRequested)) exOpen = false;
+    if (await act(post(`/recovery-plans/${exPlan.id}/execute`, { confirm: exConfirm }), t.rplan.executeRequested))
+      exOpen = false;
   }
 
   // ---- runs
@@ -171,7 +207,9 @@
 
 <div class="page-head">
   <h1>{t.rplan.title}</h1>
-  {#if writer}<button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.rplan.new}</button>{/if}
+  {#if writer}<button type="button" class="primary" onclick={() => edit(null)}
+      ><IconPlus aria-hidden="true" />{t.rplan.new}</button
+    >{/if}
   <p class="lede">{t.rplan.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -188,14 +226,22 @@
         <div>
           <h2 id="rp-{p.id}">{p.name}</h2>
           <div class="sub">
-            {#if !session.user?.tenant}{p.tenant}&nbsp;·&nbsp;{/if}{t.rplan.guests(p.steps.length)}, {t.rplan.waves(waves(p))} · {p.node} / {p.storage} · RPO {p.rpo_hours} h
+            {#if !session.user?.tenant}{p.tenant}&nbsp;·&nbsp;{/if}{t.rplan.guests(p.steps.length)}, {t.rplan.waves(
+              waves(p),
+            )} · {p.node} / {p.storage} · RPO {p.rpo_hours} h
           </div>
         </div>
         <div class="row">
           {#if runner}
-            <button type="button" class="small" onclick={() => checkNow(p)}><IconCheck aria-hidden="true" />{t.rplan.checkNow}</button>
-            <button type="button" class="small" onclick={() => testRun(p)} disabled={p.last_run?.state === 'running'}><IconPlay aria-hidden="true" />{t.rplan.testRun}</button>
-            <button type="button" class="small danger" onclick={() => openExecute(p)}><IconSiren aria-hidden="true" />{t.rplan.execute}</button>
+            <button type="button" class="small" onclick={() => checkNow(p)}
+              ><IconCheck aria-hidden="true" />{t.rplan.checkNow}</button
+            >
+            <button type="button" class="small" onclick={() => testRun(p)} disabled={p.last_run?.state === 'running'}
+              ><IconPlay aria-hidden="true" />{t.rplan.testRun}</button
+            >
+            <button type="button" class="small danger" onclick={() => openExecute(p)}
+              ><IconSiren aria-hidden="true" />{t.rplan.execute}</button
+            >
           {/if}
           <button type="button" class="small" onclick={() => showRuns(p)}>{t.rplan.runs}</button>
           {#if writer}
@@ -213,7 +259,9 @@
             <span class="chip {r.ok ? 'ok' : 'bad'}">{r.ok ? t.rplan.ready : t.rplan.notReady}</span>
             <span class="muted small" title={fmtTime(r.at)}>{t.rplan.checkedAt(fmtAgo(r.at))}</span>
             <ul class="checks">
-              {#each r.checks as c (c.name)}<li class:bad-text={!c.ok}>{c.ok ? '✓' : '✗'} <strong>{c.name}</strong>: {c.detail}</li>{/each}
+              {#each r.checks as c (c.name)}<li class:bad-text={!c.ok}>
+                  {c.ok ? '✓' : '✗'} <strong>{c.name}</strong>: {c.detail}
+                </li>{/each}
             </ul>
           {/if}
         </div>
@@ -221,15 +269,28 @@
           <h3>{t.rplan.steps}</h3>
           <ol class="plan-steps">
             {#each p.steps as s (s.source)}
-              <li><span class="chip plain">{t.rplan.wave} {s.wave}</span> <span class="mono">{s.source}</span>{#if s.delay}<span class="muted small"> +{s.delay} s</span>{/if}
-                {#if s.checks?.ports?.length || s.checks?.command?.length}<span class="muted small mono"> {[...(s.checks?.ports ?? []).map((x) => `tcp/${x}`), ...(s.checks?.command?.length ? ['command'] : [])].join(' ')}</span>{/if}</li>
+              <li>
+                <span class="chip plain">{t.rplan.wave} {s.wave}</span>
+                <span class="mono">{s.source}</span>{#if s.delay}<span class="muted small"> +{s.delay} s</span>{/if}
+                {#if s.checks?.ports?.length || s.checks?.command?.length}<span class="muted small mono">
+                    {[
+                      ...(s.checks?.ports ?? []).map((x) => `tcp/${x}`),
+                      ...(s.checks?.command?.length ? ['command'] : []),
+                    ].join(' ')}</span
+                  >{/if}
+              </li>
             {/each}
           </ol>
           <h3>{t.rplan.lastRun}</h3>
           {#if p.last_run}
-            <span class="chip {stateChip(p.last_run.state)}">{t.rplan.runStates[p.last_run.state] ?? p.last_run.state}</span>
-            {t.rplan.mode[p.last_run.mode]} · <span title={fmtTime(p.last_run.started)}>{fmtAgo(p.last_run.started)}</span>
-            {#if p.last_run.finished}<a href="/api/v1/recovery-runs/{p.last_run.id}/report" download><IconDownload aria-hidden="true" class="inline-icon" />{t.rplan.report}</a>{/if}
+            <span class="chip {stateChip(p.last_run.state)}"
+              >{t.rplan.runStates[p.last_run.state] ?? p.last_run.state}</span
+            >
+            {t.rplan.mode[p.last_run.mode]} ·
+            <span title={fmtTime(p.last_run.started)}>{fmtAgo(p.last_run.started)}</span>
+            {#if p.last_run.finished}<a href="/api/v1/recovery-runs/{p.last_run.id}/report" download
+                ><IconDownload aria-hidden="true" class="inline-icon" />{t.rplan.report}</a
+              >{/if}
           {:else}
             <span class="muted">{t.rplan.noRuns}</span>
           {/if}
@@ -257,13 +318,17 @@
       <div class="field">
         <label for="rp-source">{t.rplan.source}</label>
         <select id="rp-source" required bind:value={f.source_id}>
-          {#each pveSources.filter((s) => !f.tenant || s.tenant === f.tenant) as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+          {#each pveSources.filter((s) => !f.tenant || s.tenant === f.tenant) as s (s.id)}<option value={s.id}
+              >{s.name}</option
+            >{/each}
         </select>
       </div>
       <div class="field">
         <label for="rp-node">{t.rplan.node}</label>
         <input id="rp-node" required bind:value={f.node} list="rp-nodes" />
-        <datalist id="rp-nodes">{#each nodes as n (n)}<option value={n}></option>{/each}</datalist>
+        <datalist id="rp-nodes"
+          >{#each nodes as n (n)}<option value={n}></option>{/each}</datalist
+        >
       </div>
       <div class="field">
         <label for="rp-storage">{t.rplan.storage}</label>
@@ -271,24 +336,46 @@
       </div>
       <div class="field">
         <label for="rp-rpo">{t.rplan.rpo}</label>
-        <input id="rp-rpo" type="number" min="1" max="8760" required bind:value={f.rpo_hours} aria-describedby="rp-rpo-hint" />
+        <input
+          id="rp-rpo"
+          type="number"
+          min="1"
+          max="8760"
+          required
+          bind:value={f.rpo_hours}
+          aria-describedby="rp-rpo-hint"
+        />
         <div class="hint" id="rp-rpo-hint">{t.rplan.rpoHint}</div>
       </div>
       <div class="field">
         <label for="rp-bridge">{t.rplan.testBridge}</label>
-        <input id="rp-bridge" bind:value={f.test_bridge} placeholder={t.rtest.linksDown} aria-describedby="rp-bridge-hint" />
+        <input
+          id="rp-bridge"
+          bind:value={f.test_bridge}
+          placeholder={t.rtest.linksDown}
+          aria-describedby="rp-bridge-hint"
+        />
         <div class="hint" id="rp-bridge-hint">{t.rplan.testBridgeHint}</div>
       </div>
     </div>
     <div class="field">
-        <label for="rp-net">{t.rplan.networkMap}</label>
-        <textarea id="rp-net" class="mono" rows="3" bind:value={f.network} spellcheck="false" placeholder="vmbr0 = vmbr20" aria-describedby="rp-net-hint"></textarea>
-        <div class="hint" id="rp-net-hint">{t.rplan.networkMapHint}</div>
-      </div>
+      <label for="rp-net">{t.rplan.networkMap}</label>
+      <textarea
+        id="rp-net"
+        class="mono"
+        rows="3"
+        bind:value={f.network}
+        spellcheck="false"
+        placeholder="vmbr0 = vmbr20"
+        aria-describedby="rp-net-hint"></textarea>
+      <div class="hint" id="rp-net-hint">{t.rplan.networkMapHint}</div>
+    </div>
     <fieldset>
       <legend>{t.rplan.steps}</legend>
       <p class="hint">{t.rplan.stepsHint}</p>
-      <datalist id="rp-guests">{#each guestSources as g (g)}<option value={g}></option>{/each}</datalist>
+      <datalist id="rp-guests"
+        >{#each guestSources as g (g)}<option value={g}></option>{/each}</datalist
+      >
       <div class="table-wrap">
         <table class="steps-edit">
           <thead>
@@ -306,16 +393,56 @@
             {#each f.steps as s, i (i)}
               {@const ct = s.source.startsWith('ct-')}
               <tr>
-                <td><input aria-label={t.rtest.guest} required list="rp-guests" class="mono" bind:value={s.source} placeholder="vm-100" /></td>
+                <td
+                  ><input
+                    aria-label={t.rtest.guest}
+                    required
+                    list="rp-guests"
+                    class="mono"
+                    bind:value={s.source}
+                    placeholder="vm-100"
+                  /></td
+                >
                 <td><input aria-label={t.rplan.wave} type="number" min="1" max="20" required bind:value={s.wave} /></td>
                 <td><input aria-label={t.rplan.delay} type="number" min="0" max="3600" bind:value={s.delay} /></td>
-                <td><input aria-label={t.rtest.ports} bind:value={s.checks.ports} disabled={ct} placeholder="443" /></td>
-                <td><input aria-label={t.rtest.command} class="mono" bind:value={s.checks.command} disabled={ct} spellcheck="false" /></td>
-                <td><input aria-label={t.rplan.target} type="number" min="100" bind:value={s.target} placeholder={s.source.slice(3)} /></td>
+                <td><input aria-label={t.rtest.ports} bind:value={s.checks.ports} disabled={ct} placeholder="443" /></td
+                >
+                <td
+                  ><input
+                    aria-label={t.rtest.command}
+                    class="mono"
+                    bind:value={s.checks.command}
+                    disabled={ct}
+                    spellcheck="false"
+                  /></td
+                >
+                <td
+                  ><input
+                    aria-label={t.rplan.target}
+                    type="number"
+                    min="100"
+                    bind:value={s.target}
+                    placeholder={s.source.slice(3)}
+                  /></td
+                >
                 <td class="actions nowrap">
-                  <button type="button" class="icon" aria-label={t.rplan.up} disabled={i === 0} onclick={() => move(i, -1)}><IconUp aria-hidden="true" /></button>
-                  <button type="button" class="icon" aria-label={t.rplan.down} disabled={i === f.steps.length - 1} onclick={() => move(i, 1)}><IconDown aria-hidden="true" /></button>
-                  <button type="button" class="icon" aria-label={t.rplan.remove} onclick={() => f.steps.splice(i, 1)}><IconX aria-hidden="true" /></button>
+                  <button
+                    type="button"
+                    class="icon"
+                    aria-label={t.rplan.up}
+                    disabled={i === 0}
+                    onclick={() => move(i, -1)}><IconUp aria-hidden="true" /></button
+                  >
+                  <button
+                    type="button"
+                    class="icon"
+                    aria-label={t.rplan.down}
+                    disabled={i === f.steps.length - 1}
+                    onclick={() => move(i, 1)}><IconDown aria-hidden="true" /></button
+                  >
+                  <button type="button" class="icon" aria-label={t.rplan.remove} onclick={() => f.steps.splice(i, 1)}
+                    ><IconX aria-hidden="true" /></button
+                  >
                 </td>
               </tr>
             {/each}
@@ -342,7 +469,9 @@
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (exOpen = false)}>{t.cancel}</button>
-        <button type="submit" class="danger" disabled={exConfirm !== exPlan.name}><IconSiren aria-hidden="true" />{t.rplan.executeRequest}</button>
+        <button type="submit" class="danger" disabled={exConfirm !== exPlan.name}
+          ><IconSiren aria-hidden="true" />{t.rplan.executeRequest}</button
+        >
       </div>
     </form>
   {/if}
@@ -368,21 +497,32 @@
         <tbody>
           {#each runs as x (x.id)}
             <tr>
-              <td>{#if x.job_id}<a href={href(`/jobs/${x.job_id}`)}>{x.id}</a>{:else}{x.id}{/if}</td>
+              <td
+                >{#if x.job_id}<a href={href(`/jobs/${x.job_id}`)}>{x.id}</a>{:else}{x.id}{/if}</td
+              >
               <td>{t.rplan.mode[x.mode]}</td>
               <td><span class="chip {stateChip(x.state)}">{t.rplan.runStates[x.state] ?? x.state}</span></td>
               <td>{x.requested_by}</td>
-              <td class="nowrap">{fmtTime(x.started)}{#if x.finished}<span class="muted small"> ({fmtDuration(x.finished - x.started)})</span>{/if}</td>
+              <td class="nowrap"
+                >{fmtTime(x.started)}{#if x.finished}<span class="muted small">
+                    ({fmtDuration(x.finished - x.started)})</span
+                  >{/if}</td
+              >
               <td>
                 {#each x.results as g, gi (gi)}
                   <div class="small">
-                    {#if g.state}<span class="chip {stateChip(g.state)}">{t.rtest.states[g.state] ?? g.state}</span>{/if}
+                    {#if g.state}<span class="chip {stateChip(g.state)}">{t.rtest.states[g.state] ?? g.state}</span
+                      >{/if}
                     <span class="mono">{g.source ?? ''}</span> <span class="muted mono">{checkSummary(g.checks)}</span>
                     {#if g.error}<span class="bad-text">{g.error}</span>{/if}
                   </div>
                 {/each}
               </td>
-              <td>{#if x.finished}<a class="button small" href="/api/v1/recovery-runs/{x.id}/report" download><IconDownload aria-hidden="true" />{t.rplan.report}</a>{/if}</td>
+              <td
+                >{#if x.finished}<a class="button small" href="/api/v1/recovery-runs/{x.id}/report" download
+                    ><IconDownload aria-hidden="true" />{t.rplan.report}</a
+                  >{/if}</td
+              >
             </tr>
           {/each}
         </tbody>

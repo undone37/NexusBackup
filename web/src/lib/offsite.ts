@@ -9,7 +9,12 @@ import type { OffsiteListed } from './types';
 export const FETCH_KEEP_DAYS = 7;
 
 /** Confirms, then starts an `offsite_restore` job; its id, or null. */
-export async function fetchFromOffsite(tenant: string, source: string, time: number, target = 1): Promise<number | null> {
+export async function fetchFromOffsite(
+  tenant: string,
+  source: string,
+  time: number,
+  target = 1,
+): Promise<number | null> {
   if (!(await askConfirm(t.offsite.fetchConfirm(source, fmtTime(time), FETCH_KEEP_DAYS)))) return null;
   // Phase 30: target 2 = from the second offsite target
   const params = target === 2 ? { source, time, target } : { source, time };

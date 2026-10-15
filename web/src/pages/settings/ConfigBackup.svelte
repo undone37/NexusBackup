@@ -56,7 +56,9 @@
               ><IconPlay aria-hidden="true" />{busy ? t.settings.cfgb.running : t.settings.cfgb.run}</button
             >
             {#if st.latest}
-              <a class="button" href="/api/v1/settings/config-backup/download" download><IconDownload aria-hidden="true" />{t.settings.cfgb.download}</a>
+              <a class="button" href="/api/v1/settings/config-backup/download" download
+                ><IconDownload aria-hidden="true" />{t.settings.cfgb.download}</a
+              >
             {/if}
           </div>
         {/if}
@@ -64,12 +66,21 @@
       <dl class="kv">
         <dt>{t.settings.cfgb.lastSuccess}</dt>
         <dd>
-          {#if st.last_success}<span title={fmtTime(st.last_success)}>{fmtAgo(st.last_success)}</span>{:else}<span class="chip warn">{t.settings.cfgb.never}</span>{/if}
+          {#if st.last_success}<span title={fmtTime(st.last_success)}>{fmtAgo(st.last_success)}</span>{:else}<span
+              class="chip warn">{t.settings.cfgb.never}</span
+            >{/if}
         </dd>
         <dt>{t.settings.cfgb.latest}</dt>
-        <dd>{st.latest ? t.settings.cfgb.latestInfo(fmtBytes(st.latest.bytes), st.latest.files ?? 0, fmtAgo(st.latest.created)) : '—'}</dd>
+        <dd>
+          {st.latest
+            ? t.settings.cfgb.latestInfo(fmtBytes(st.latest.bytes), st.latest.files ?? 0, fmtAgo(st.latest.created))
+            : '—'}
+        </dd>
         <dt>{t.settings.cfgb.applianceId}</dt>
-        <dd><span class="mono">{st.appliance_id ?? '—'}</span> <span class="muted small">{t.settings.cfgb.applianceIdHint}</span></dd>
+        <dd>
+          <span class="mono">{st.appliance_id ?? '—'}</span>
+          <span class="muted small">{t.settings.cfgb.applianceIdHint}</span>
+        </dd>
       </dl>
       {#if admin && st.latest}<p class="muted small">{t.settings.cfgb.downloadHint}</p>{/if}
     </section>
@@ -94,7 +105,11 @@
                 {@const c = chip(x.last)}
                 <tr>
                   <td>{x.tenant}</td>
-                  <td>{#if c && x.last}<span class="chip {c.c}">{c.l}</span> <a href={href(`/jobs/${x.last.id}`)}>{fmtTime(x.last.finished ?? x.last.created)}</a>{:else}—{/if}</td>
+                  <td
+                    >{#if c && x.last}<span class="chip {c.c}">{c.l}</span>
+                      <a href={href(`/jobs/${x.last.id}`)}>{fmtTime(x.last.finished ?? x.last.created)}</a
+                      >{:else}—{/if}</td
+                  >
                   <td>{x.last_ok ? fmtTime(x.last_ok) : '—'}</td>
                 </tr>
               {/each}
@@ -124,7 +139,10 @@
                 {@const c = chip(r)}
                 <tr>
                   <td><span class="chip {c?.c}">{c?.l}</span></td>
-                  <td><a href={href(`/jobs/${r.id}`)}>{t.jobs.kinds[r.kind] ?? r.kind}</a>{#if r.target}{` · ${r.target}`}{/if}</td>
+                  <td
+                    ><a href={href(`/jobs/${r.id}`)}>{t.jobs.kinds[r.kind] ?? r.kind}</a
+                    >{#if r.target}{` · ${r.target}`}{/if}</td
+                  >
                   <td class="nowrap">{fmtTime(r.created)}</td>
                   <td>{r.requested_by}</td>
                 </tr>

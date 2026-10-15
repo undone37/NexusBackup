@@ -68,8 +68,12 @@
           </div>
           {#if admin}
             <div class="row">
-              {#if prev}<button type="button" class="small danger" onclick={() => retire(cur)}>{t.settings.ssh.retire}</button>{/if}
-              <button type="button" class="small" onclick={() => rotate(cur)} disabled={!!prev}><IconRotate aria-hidden="true" />{t.settings.ssh.rotate}</button>
+              {#if prev}<button type="button" class="small danger" onclick={() => retire(cur)}
+                  >{t.settings.ssh.retire}</button
+                >{/if}
+              <button type="button" class="small" onclick={() => rotate(cur)} disabled={!!prev}
+                ><IconRotate aria-hidden="true" />{t.settings.ssh.rotate}</button
+              >
             </div>
           {/if}
         </div>
@@ -83,8 +87,11 @@
             </dl>
             <div class="copyline">
               <code>{k.public_key}</code>
-              <button type="button" class="small" onclick={() => copyText(k.public_key)} aria-label="{t.users.copy}: {title} {cur.name}"
-                ><IconCopy aria-hidden="true" />{t.users.copy}</button
+              <button
+                type="button"
+                class="small"
+                onclick={() => copyText(k.public_key)}
+                aria-label="{t.users.copy}: {title} {cur.name}"><IconCopy aria-hidden="true" />{t.users.copy}</button
               >
             </div>
           </div>

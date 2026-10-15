@@ -41,10 +41,19 @@ export async function createPasskey(o: Json): Promise<Json> {
 /** navigator.credentials.get() → `{id, clientDataJSON, authenticatorData, signature}` */
 export async function getPasskey(o: Json): Promise<Json> {
   if (o.mock)
-    return { id: o.allowCredentials?.[0]?.id ?? fake(16), clientDataJSON: fake(32), authenticatorData: fake(37), signature: fake(64) };
+    return {
+      id: o.allowCredentials?.[0]?.id ?? fake(16),
+      clientDataJSON: fake(32),
+      authenticatorData: fake(37),
+      signature: fake(64),
+    };
   if (!passkeysSupported()) unsupported();
   const c = (await navigator.credentials.get({
-    publicKey: { ...o, challenge: unb64(o.challenge), allowCredentials: creds(o.allowCredentials) } as unknown as PublicKeyCredentialRequestOptions,
+    publicKey: {
+      ...o,
+      challenge: unb64(o.challenge),
+      allowCredentials: creds(o.allowCredentials),
+    } as unknown as PublicKeyCredentialRequestOptions,
   })) as PublicKeyCredential | null;
   if (!c) throw new Error(t.passkeys.cancelled);
   const r = c.response as AuthenticatorAssertionResponse;

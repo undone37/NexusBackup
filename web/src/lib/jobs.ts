@@ -73,7 +73,8 @@ export const jobLink = (o: unknown): { path: string; label: string } | null => {
 };
 
 /** The job that queued `j` (follow-up jobs: retention, offsite, file index), if any. */
-export const afterJob = (j: Job): number | null => (typeof j.params?.after_job === 'number' ? j.params.after_job : null);
+export const afterJob = (j: Job): number | null =>
+  typeof j.params?.after_job === 'number' ? j.params.after_job : null;
 
 /** Human-readable job kind (falls back to the raw kind for kinds the UI does not know yet). */
 export const kindLabel = (k: string) => t.jobs.kinds[k] ?? k;
@@ -140,4 +141,9 @@ export function logLines(log: string | null | undefined): { time: number | null;
 
 /** HH:MM:SS of a unix time, local. */
 export const clock = (s: number) =>
-  new Date(s * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  new Date(s * 1000).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });

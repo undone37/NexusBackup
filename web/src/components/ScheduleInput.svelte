@@ -70,7 +70,15 @@
       {#if f.kind === 'monthly'}
         <div class="field">
           <label for="{id}-mday">{t.runctl.monthDay}</label>
-          <input id="{id}-mday" type="number" min="1" max="31" bind:value={f.monthDay} oninput={sync} aria-describedby="{id}-mday-hint" />
+          <input
+            id="{id}-mday"
+            type="number"
+            min="1"
+            max="31"
+            bind:value={f.monthDay}
+            oninput={sync}
+            aria-describedby="{id}-mday-hint"
+          />
           <div class="hint" id="{id}-mday-hint">{t.runctl.monthDayHint}</div>
         </div>
       {/if}

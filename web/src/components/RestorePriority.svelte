@@ -22,7 +22,10 @@
     e.preventDefault();
     if (!p?.active && !(await askConfirm(t.priority.confirm(hours)))) return;
     busy = true;
-    const r = await act(put<RestorePriority>('/restore-priority', { hours: Number(hours), reason: reason.trim() }), p?.active ? t.priority.renewed : t.priority.on);
+    const r = await act(
+      put<RestorePriority>('/restore-priority', { hours: Number(hours), reason: reason.trim() }),
+      p?.active ? t.priority.renewed : t.priority.on,
+    );
     busy = false;
     if (r && !r.quorum) session.priority = r.data;
   }
@@ -37,7 +40,9 @@
 <section class="card priority-card" class:on={p?.active} aria-labelledby="dash-priority">
   <div class="card-head">
     <h2 id="dash-priority"><IconLifeBuoy aria-hidden="true" />{t.priority.title}</h2>
-    {#if p?.active}<span class="chip warn">{t.priority.active}</span>{:else}<span class="chip">{t.priority.inactive}</span>{/if}
+    {#if p?.active}<span class="chip warn">{t.priority.active}</span>{:else}<span class="chip"
+        >{t.priority.inactive}</span
+      >{/if}
   </div>
   {#if p?.active}
     <p>

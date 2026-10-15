@@ -47,7 +47,10 @@
     busy = true;
     try {
       // not act(): with approvals disabled the request is approved at once, nothing "runs shortly"
-      const o = await post<{ quorum_id: number }>('/console/unlock', { hours: Number(form.hours), reason: form.reason.trim() });
+      const o = await post<{ quorum_id: number }>('/console/unlock', {
+        hours: Number(form.hours),
+        reason: form.reason.trim(),
+      });
       const id = Number(o.quorum ? o.quorumId : o.data.quorum_id);
       notify(o.quorum ? 'pending' : 'ok', o.quorum ? t.console.requested(id) : t.console.readyDirect(id));
       form = { hours: 1, reason: '' };
@@ -109,7 +112,9 @@
           </div>
         </div>
         <p class="hint">{t.console.quorumHint}</p>
-        <div class="form-actions"><button type="submit" class="primary" disabled={busy || !form.reason.trim()}>{t.console.submit}</button></div>
+        <div class="form-actions">
+          <button type="submit" class="primary" disabled={busy || !form.reason.trim()}>{t.console.submit}</button>
+        </div>
       </form>
     </section>
   {:else}
@@ -141,7 +146,10 @@
             {#each items as u (u.id)}
               <tr>
                 <td class="num">{u.id}</td>
-                <td>{u.requested_by}<div class="muted">{fmtTime(u.created)}</div></td>
+                <td
+                  >{u.requested_by}
+                  <div class="muted">{fmtTime(u.created)}</div></td
+                >
                 <td>{t.console.hoursN(u.hours)}</td>
                 <td class="wrap">{u.reason}</td>
                 <td><span class="chip {cls[u.status] ?? ''}">{t.console.status[u.status] ?? u.status}</span></td>
@@ -171,7 +179,9 @@
     <p>{t.console.codeSteps(code.hours)}</p>
     <div class="copyline">
       <code class="secret console-code" aria-label={t.console.code}>{code.code}</code>
-      <button type="button" class="small" onclick={() => copyText(code!.code)}><IconCopy aria-hidden="true" />{t.users.copy}</button>
+      <button type="button" class="small" onclick={() => copyText(code!.code)}
+        ><IconCopy aria-hidden="true" />{t.users.copy}</button
+      >
     </div>
     <p class="muted">{t.console.expires}: {fmtTime(code.expires)}</p>
     <div class="form-actions">

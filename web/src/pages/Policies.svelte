@@ -51,7 +51,12 @@
       .catch(() => {});
   });
   async function fromTemplate(x: PolicyTemplate) {
-    if (await act(post<Policy>('/policies/templates', { tier: x.tier }), (p) => t.policies.templateCreated(p?.name ?? x.name))) load();
+    if (
+      await act(post<Policy>('/policies/templates', { tier: x.tier }), (p) =>
+        t.policies.templateCreated(p?.name ?? x.name),
+      )
+    )
+      load();
   }
   const TIERS: Tier[] = ['bronze', 'silver', 'gold'];
 
@@ -101,7 +106,13 @@
   const num = (v: unknown) => Math.max(0, Number(v) || 0);
   const simOf = (schedule: string, g: Gfs): SimInput => ({
     schedule: schedule.trim(),
-    gfs: { recent: num(g.recent), daily: num(g.daily), weekly: num(g.weekly), monthly: num(g.monthly), yearly: num(g.yearly) },
+    gfs: {
+      recent: num(g.recent),
+      daily: num(g.daily),
+      weekly: num(g.weekly),
+      monthly: num(g.monthly),
+      yearly: num(g.yearly),
+    },
   });
   const simNow = $derived(simOf(f.schedule, f.gfs));
   const simBefore = $derived.by(() => {
@@ -131,7 +142,9 @@
       tier: f.tier || null,
     };
     // A weakening change comes back as 202 {quorum_id}; act() reports it as pending.
-    const r = editing ? await act(put(`/policies/${editing.id}`, body), t.saved) : await act(post('/policies', body), t.created);
+    const r = editing
+      ? await act(put(`/policies/${editing.id}`, body), t.saved)
+      : await act(post('/policies', body), t.created);
     if (r) {
       open = false;
       load();
@@ -146,13 +159,20 @@
 
 <div class="page-head">
   <h1>{t.policies.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.policies.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}
+    ><IconPlus aria-hidden="true" />{t.policies.new}</button
+  >
   {#if templates.length}
     <Menu
       label={t.policies.fromTemplate}
       small={false}
       icon={IconLayers}
-      items={templates.map((x) => ({ label: x.name, hint: `${x.schedule} · ${x.gfs.daily}/${x.gfs.weekly}/${x.gfs.monthly}/${x.gfs.yearly}${x.offsite ? ' · offsite' : ''}`, title: t.policies.templateHint, onselect: () => fromTemplate(x) }))}
+      items={templates.map((x) => ({
+        label: x.name,
+        hint: `${x.schedule} · ${x.gfs.daily}/${x.gfs.weekly}/${x.gfs.monthly}/${x.gfs.yearly}${x.offsite ? ' · offsite' : ''}`,
+        title: t.policies.templateHint,
+        onselect: () => fromTemplate(x),
+      }))}
     />
   {/if}
   <p class="lede">{t.policies.lede}</p>
@@ -186,10 +206,12 @@
         <tbody>
           {#each items as x (x.id)}
             <tr use:rowClick={() => edit(x)}>
-              <td><strong>{x.name}</strong>{#if x.tier}<span class="chip accent">{t.tiers.names[x.tier]}</span>{/if}</td>
+              <td
+                ><strong>{x.name}</strong>{#if x.tier}<span class="chip accent">{t.tiers.names[x.tier]}</span>{/if}</td
+              >
               <td class="nowrap">
-                {#if usedBy.get(x.id)}<a href={href('/groups')}>{t.policies.groupsN(usedBy.get(x.id)!)}</a>{:else}<span class="muted"
-                    >{t.policies.unused}</span
+                {#if usedBy.get(x.id)}<a href={href('/groups')}>{t.policies.groupsN(usedBy.get(x.id)!)}</a>{:else}<span
+                    class="muted">{t.policies.unused}</span
                   >{/if}
               </td>
               <td class="mono">{x.schedule}</td>
@@ -199,8 +221,9 @@
               <td class="nowrap">{t.runctl.retryShort(x.retry?.count ?? 0, x.retry?.delay_min ?? 0)}</td>
               <td
                 class="nowrap"
-                title={(x.blackout ?? []).map((w) => `${w.days.join(',') || '*'} ${w.from}–${w.to}${w.abort ? ' (abort)' : ''}`).join('; ')}
-                >{t.runctl.blackoutShort(x.blackout?.length ?? 0)}</td
+                title={(x.blackout ?? [])
+                  .map((w) => `${w.days.join(',') || '*'} ${w.from}–${w.to}${w.abort ? ' (abort)' : ''}`)
+                  .join('; ')}>{t.runctl.blackoutShort(x.blackout?.length ?? 0)}</td
               >
               <td class="nowrap">{t.runctl.slaShort(x.sla_minutes)}</td>
               <td class="nowrap"
@@ -209,7 +232,9 @@
                   t.cons.levels[x.require_consistency?.level ?? 'crash'],
                 )}</td
               >
-              <td class="mono" title={[...(x.file_filters?.exclude ?? []), ...(x.file_filters?.exclude_regex ?? [])].join('  ')}
+              <td
+                class="mono"
+                title={[...(x.file_filters?.exclude ?? []), ...(x.file_filters?.exclude_regex ?? [])].join('  ')}
                 >{(x.file_filters?.exclude?.length ?? 0) + (x.file_filters?.exclude_regex?.length ?? 0) || '—'}</td
               >
               <td class="actions">
@@ -249,7 +274,15 @@
       <legend>{t.policies.gfs}</legend>
       <div class="field">
         <label for="p-recent">{t.policies.recent}</label>
-        <input id="p-recent" class="narrow" type="number" min="0" max="8760" bind:value={f.gfs.recent} aria-describedby="p-recent-hint" />
+        <input
+          id="p-recent"
+          class="narrow"
+          type="number"
+          min="0"
+          max="8760"
+          bind:value={f.gfs.recent}
+          aria-describedby="p-recent-hint"
+        />
         <div class="hint" id="p-recent-hint">{t.policies.recentHint}</div>
       </div>
       <div class="form-grid">

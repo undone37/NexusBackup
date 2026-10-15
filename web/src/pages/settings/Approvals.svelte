@@ -50,7 +50,9 @@
     </div>
     <p>{settings.enabled ? t.quorum.enabledText : t.quorum.disabledText}</p>
     <p class="muted">{t.quorum.approvers(settings.possible_approvers)} {t.quorum.toggleHint}</p>
-    {#if settings.few_approvers}<p class="banner warn" role="status">{t.access.fewApprovers(settings.possible_approvers)}</p>{/if}
+    {#if settings.few_approvers}<p class="banner warn" role="status">
+        {t.access.fewApprovers(settings.possible_approvers)}
+      </p>{/if}
     {#if settings.pending_disable}
       <p class="banner pending">
         <span>{t.quorum.disablePending(settings.pending_disable)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
@@ -70,7 +72,16 @@
       <fieldset disabled={!isAdmin} class="plain">
         <div class="field">
           <label for="q-keep-days">{t.sp.keep.maxDays}</label>
-          <input id="q-keep-days" class="narrow" type="number" min="1" max="3650" bind:value={keepDays} required aria-describedby="q-keep-hint" />
+          <input
+            id="q-keep-days"
+            class="narrow"
+            type="number"
+            min="1"
+            max="3650"
+            bind:value={keepDays}
+            required
+            aria-describedby="q-keep-hint"
+          />
           <div class="hint" id="q-keep-hint">{t.sp.keep.maxDaysHint}</div>
         </div>
         {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}

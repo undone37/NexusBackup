@@ -28,7 +28,8 @@
       });
   });
   const csv = $derived(`${API}/usage${qs({ month, format: 'csv' })}`);
-  const pair = (avg: number | null, peak: number | null) => (avg === null ? '—' : `${fmtBytes(avg)} / ${fmtBytes(peak)}`);
+  const pair = (avg: number | null, peak: number | null) =>
+    avg === null ? '—' : `${fmtBytes(avg)} / ${fmtBytes(peak)}`;
 </script>
 
 <section class="card" aria-labelledby="usage-h">

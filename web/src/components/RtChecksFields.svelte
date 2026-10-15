@@ -10,23 +10,51 @@
 <div class="form-grid">
   <div class="field">
     <label for="{id}-boot">{t.rtest.bootTimeout}</label>
-    <input id="{id}-boot" type="number" min="30" max="3600" placeholder="600" bind:value={value.boot} aria-describedby="{id}-boot-hint" />
+    <input
+      id="{id}-boot"
+      type="number"
+      min="30"
+      max="3600"
+      placeholder="600"
+      bind:value={value.boot}
+      aria-describedby="{id}-boot-hint"
+    />
     <div class="hint" id="{id}-boot-hint">{t.rtest.bootTimeoutHint}</div>
   </div>
   {#if !ct}
     <div class="field">
       <label for="{id}-ports">{t.rtest.ports}</label>
-      <input id="{id}-ports" bind:value={value.ports} placeholder="22, 443" disabled={!value.agent} aria-describedby="{id}-ports-hint" />
+      <input
+        id="{id}-ports"
+        bind:value={value.ports}
+        placeholder="22, 443"
+        disabled={!value.agent}
+        aria-describedby="{id}-ports-hint"
+      />
       <div class="hint" id="{id}-ports-hint">{t.rtest.portsHint}</div>
     </div>
     <div class="field">
       <label for="{id}-cmd">{t.rtest.command}</label>
-      <input id="{id}-cmd" class="mono" bind:value={value.command} spellcheck="false" disabled={!value.agent} aria-describedby="{id}-cmd-hint" />
+      <input
+        id="{id}-cmd"
+        class="mono"
+        bind:value={value.command}
+        spellcheck="false"
+        disabled={!value.agent}
+        aria-describedby="{id}-cmd-hint"
+      />
       <div class="hint" id="{id}-cmd-hint">{t.rtest.commandHint}</div>
     </div>
     <div class="field">
       <label for="{id}-exit">{t.rtest.expectExit}</label>
-      <input id="{id}-exit" type="number" min="-1" max="255" bind:value={value.expect} disabled={!value.agent || !value.command.trim()} />
+      <input
+        id="{id}-exit"
+        type="number"
+        min="-1"
+        max="255"
+        bind:value={value.expect}
+        disabled={!value.agent || !value.command.trim()}
+      />
     </div>
   {/if}
 </div>

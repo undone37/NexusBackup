@@ -52,7 +52,9 @@ export function fmtPct(r: number | null | undefined, digits = 1): string {
 
 /** 4.217 -> "4.2×" */
 export function fmtRatio(x: number | null | undefined): string {
-  return x === null || x === undefined || !Number.isFinite(x) ? '—' : `${x < 10 ? x.toFixed(x < 2 ? 2 : 1) : Math.round(x)}×`;
+  return x === null || x === undefined || !Number.isFinite(x)
+    ? '—'
+    : `${x < 10 ? x.toFixed(x < 2 ? 2 : 1) : Math.round(x)}×`;
 }
 
 /** Bytes per second as decimal megabytes: "412 MB/s", "3.4 MB/s". */
@@ -109,7 +111,12 @@ export function fmtDuration(s: number | null | undefined): string {
 }
 
 const dayFmt = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
-const dayLong = new Intl.DateTimeFormat(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+const dayLong = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  month: 'short',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
 /** "2026-10-10" -> "Oct 10" (`long`: "Sat, Oct 10"); days are UTC calendar days. */
 export function fmtDay(day: string, long = false): string {
   const d = new Date(`${day}T00:00:00Z`);

@@ -82,7 +82,15 @@
         <h2 id="org-title">{t.sp.login.title}</h2>
         <div class="field">
           <label for="l-org">{t.sp.login.field}</label>
-          <input id="l-org" bind:value={org} required autocomplete="email" autocapitalize="none" spellcheck="false" aria-describedby="l-org-hint" />
+          <input
+            id="l-org"
+            bind:value={org}
+            required
+            autocomplete="email"
+            autocapitalize="none"
+            spellcheck="false"
+            aria-describedby="l-org-hint"
+          />
           <div class="hint" id="l-org-hint">{t.sp.login.hint}</div>
         </div>
         <button type="submit"><IconKey aria-hidden="true" />{t.sp.login.submit}</button>
@@ -92,16 +100,27 @@
       <div class="brand"><Logo />{t.app}</div>
       <h1 id="login-title">{t.login.title}</h1>
       <p class="lede">{oidc?.enabled ? t.login.lede : t.login.ledeLocal}</p>
-      {#if banner}<div class="banner info login-banner" role="note" aria-label={t.access.bannerLabel}>{banner}</div>{/if}
+      {#if banner}<div class="banner info login-banner" role="note" aria-label={t.access.bannerLabel}>
+          {banner}
+        </div>{/if}
       {#if oidcError}<div class="banner error" role="alert">{t.login.oidcError(oidcError)}</div>{/if}
       {#if error}<div class="banner error" role="alert">{error}</div>{/if}
       {#if oidc?.enabled}
-        <a class="button sso" href="{API}/auth/oidc/start?next={encodeURIComponent(next)}"><IconKey aria-hidden="true" />{oidc.label || t.login.title}</a>
+        <a class="button sso" href="{API}/auth/oidc/start?next={encodeURIComponent(next)}"
+          ><IconKey aria-hidden="true" />{oidc.label || t.login.title}</a
+        >
         <div class="or">{t.login.or}</div>
       {/if}
       <div class="field">
         <label for="l-name">{t.login.name}</label>
-        <input id="l-name" bind:value={name} autocomplete="username" required autocapitalize="none" spellcheck="false" />
+        <input
+          id="l-name"
+          bind:value={name}
+          autocomplete="username"
+          required
+          autocapitalize="none"
+          spellcheck="false"
+        />
       </div>
       <div class="field">
         <label for="l-pw">{t.login.password}</label>

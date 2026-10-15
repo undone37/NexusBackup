@@ -25,7 +25,9 @@
   {#if open}
     <header>
       <h2 id="{id}-title">{title}</h2>
-      <button type="button" class="icon" aria-label={t.close} onclick={() => (open = false)}><IconX aria-hidden="true" /></button>
+      <button type="button" class="icon" aria-label={t.close} onclick={() => (open = false)}
+        ><IconX aria-hidden="true" /></button
+      >
     </header>
     <div class="body">
       {@render children()}

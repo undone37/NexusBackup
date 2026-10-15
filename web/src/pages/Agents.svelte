@@ -133,7 +133,11 @@
   }
 
   async function enroll(a: Agent) {
-    const r = await act(post<{ id: number }>(`/agents/${encodeURIComponent(a.id)}/enroll`), (d) => t.snap.jobStarted(d.id), jobLink);
+    const r = await act(
+      post<{ id: number }>(`/agents/${encodeURIComponent(a.id)}/enroll`),
+      (d) => t.snap.jobStarted(d.id),
+      jobLink,
+    );
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
 
@@ -238,102 +242,118 @@
 </div>
 
 <div id="{tabsId}-panel" role="tabpanel" aria-labelledby="{tabsId}-tab-{tab}">
-{#if tab === 'fleet'}
-  <Fleet {tenants} />
-{:else if tab === 'updates'}
-  <Updates {tenants} />
-{:else}
-<ErrorBanner {error} />
-
-<div class="card">
-  {#if !loaded}
-    <p class="muted" aria-busy="true">{t.loading}</p>
-  {:else if items.length === 0}
-    <p class="empty">{t.none}</p>
+  {#if tab === 'fleet'}
+    <Fleet {tenants} />
+  {:else if tab === 'updates'}
+    <Updates {tenants} />
   {:else}
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{t.name}</th>
-            <th scope="col">{t.tenant}</th>
-            <th scope="col">{t.agents.status}</th>
-            <th scope="col">{t.ep.column}</th>
-            <th scope="col">{t.agents.version} / {t.agents.os}</th>
-            <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each items as a (a.id)}
-            {@const st = agentStatus(a, now)}
-            <tr use:rowClick={st === 'enrolled' ? () => endpoint(a) : null}>
-              <td>
-                <strong>{a.name}</strong>
-                <div class="muted mono small">{a.host}:{a.port}</div>
-                <div class="muted mono small">{a.id}</div>
-              </td>
-              <td>{a.tenant}</td>
-              <td>
-                <span class="chip {statusCls[st]}">{t.agents.statuses[st]}</span>
-                {#if st === 'enrolled' && hasToken(a)}
-                  <div class="muted small">{t.agents.tokenUntil(fmtTime(a.token_expires))}</div>
-                {:else if st === 'pending'}
-                  <div class="muted small">{t.agents.expires}: {fmtTime(a.token_expires)}</div>
-                {/if}
-                {#if a.cert_expires}<div class="muted small" title={a.cert_sha256 ? `SHA-256 ${a.cert_sha256}` : undefined}>
-                    {t.agents.certUntil(fmtTime(a.cert_expires))}
-                  </div>{/if}
-                {#if a.cert_renewal_pending}<div><span class="chip info">{t.agents.renewalPending}</span></div>{/if}
-              </td>
-              <td>
-                {#if st === 'enrolled'}
-                  {#if a.reachable === true}
-                    <span class="chip ok" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}>{t.ep.reachable}</span>
-                  {:else if a.reachable === false}
-                    <span class="chip warn" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}>{t.ep.unreachable}</span>
-                  {:else}
-                    <span class="chip info">{t.ep.neverPolled}</span>
-                  {/if}
-                  {#if a.via === 'edge'}<span class="chip info">{t.ep.viaEdge}</span>{/if}
-                {/if}
-                <div class="muted small" title={fmtTime(a.last_seen)}>{t.agents.lastSeen}: {fmtAgo(a.last_seen, now)}</div>
-                {#if st === 'enrolled'}
-                  {#if a.power?.on_battery}
-                    <div class="muted small">{t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}</div>
-                  {/if}
-                  {#if a.power?.metered}<div class="muted small">{t.ep.metered}{a.power.network_name ? ` (${a.power.network_name})` : ''}</div>{/if}
-                  {#if pendingRequest(a)}
-                    <div><span class="chip info">{t.ep.requested(fmtAgo(a.last_request!.received, now))}</span></div>
-                  {:else if a.last_request?.refused && now - a.last_request.received < 3600}
-                    <div class="muted small">{t.ep.requestRefused(a.last_request.refused)}</div>
-                  {/if}
-                  {#if a.missed_at}<div class="muted small">{t.ep.missed(fmtTime(a.missed_at))}</div>{/if}
-                {/if}
-                {#if limitText(a) !== t.agents.limitsNone}<div class="muted small">{t.agents.limits}: {limitText(a)}</div>{/if}
-              </td>
-              <td>
-                <span class="mono">{a.version ?? '—'}</span>
-                {#if a.os}<div class="muted small">{a.os}</div>{/if}
-              </td>
-              <td class="actions">
-                <!-- the main action visible, everything else in the menu -->
-                {#if st === 'enrolled'}
-                  <button type="button" class="small" onclick={() => endpoint(a)}>{t.ep.button}</button>
-                {:else if hasToken(a)}
-                  <button type="button" class="small primary" onclick={() => enroll(a)}>{t.agents.enroll}</button>
-                {:else}
-                  <button type="button" class="small" onclick={() => newToken(a)}>{t.agents.newToken}</button>
-                {/if}
-                <Menu label={t.agents.more} ariaLabel={t.agents.moreLabel(a.name)} items={agentActions(a, st)} />
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+    <ErrorBanner {error} />
+
+    <div class="card">
+      {#if !loaded}
+        <p class="muted" aria-busy="true">{t.loading}</p>
+      {:else if items.length === 0}
+        <p class="empty">{t.none}</p>
+      {:else}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">{t.name}</th>
+                <th scope="col">{t.tenant}</th>
+                <th scope="col">{t.agents.status}</th>
+                <th scope="col">{t.ep.column}</th>
+                <th scope="col">{t.agents.version} / {t.agents.os}</th>
+                <th scope="col"><span class="visually-hidden">{t.actions}</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each items as a (a.id)}
+                {@const st = agentStatus(a, now)}
+                <tr use:rowClick={st === 'enrolled' ? () => endpoint(a) : null}>
+                  <td>
+                    <strong>{a.name}</strong>
+                    <div class="muted mono small">{a.host}:{a.port}</div>
+                    <div class="muted mono small">{a.id}</div>
+                  </td>
+                  <td>{a.tenant}</td>
+                  <td>
+                    <span class="chip {statusCls[st]}">{t.agents.statuses[st]}</span>
+                    {#if st === 'enrolled' && hasToken(a)}
+                      <div class="muted small">{t.agents.tokenUntil(fmtTime(a.token_expires))}</div>
+                    {:else if st === 'pending'}
+                      <div class="muted small">{t.agents.expires}: {fmtTime(a.token_expires)}</div>
+                    {/if}
+                    {#if a.cert_expires}<div
+                        class="muted small"
+                        title={a.cert_sha256 ? `SHA-256 ${a.cert_sha256}` : undefined}
+                      >
+                        {t.agents.certUntil(fmtTime(a.cert_expires))}
+                      </div>{/if}
+                    {#if a.cert_renewal_pending}<div><span class="chip info">{t.agents.renewalPending}</span></div>{/if}
+                  </td>
+                  <td>
+                    {#if st === 'enrolled'}
+                      {#if a.reachable === true}
+                        <span class="chip ok" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}>{t.ep.reachable}</span
+                        >
+                      {:else if a.reachable === false}
+                        <span class="chip warn" title={t.ep.lastPoll(fmtTime(a.last_poll ?? null))}
+                          >{t.ep.unreachable}</span
+                        >
+                      {:else}
+                        <span class="chip info">{t.ep.neverPolled}</span>
+                      {/if}
+                      {#if a.via === 'edge'}<span class="chip info">{t.ep.viaEdge}</span>{/if}
+                    {/if}
+                    <div class="muted small" title={fmtTime(a.last_seen)}>
+                      {t.agents.lastSeen}: {fmtAgo(a.last_seen, now)}
+                    </div>
+                    {#if st === 'enrolled'}
+                      {#if a.power?.on_battery}
+                        <div class="muted small">
+                          {t.ep.onBattery(a.power.battery_percent != null ? String(a.power.battery_percent) : '')}
+                        </div>
+                      {/if}
+                      {#if a.power?.metered}<div class="muted small">
+                          {t.ep.metered}{a.power.network_name ? ` (${a.power.network_name})` : ''}
+                        </div>{/if}
+                      {#if pendingRequest(a)}
+                        <div>
+                          <span class="chip info">{t.ep.requested(fmtAgo(a.last_request!.received, now))}</span>
+                        </div>
+                      {:else if a.last_request?.refused && now - a.last_request.received < 3600}
+                        <div class="muted small">{t.ep.requestRefused(a.last_request.refused)}</div>
+                      {/if}
+                      {#if a.missed_at}<div class="muted small">{t.ep.missed(fmtTime(a.missed_at))}</div>{/if}
+                    {/if}
+                    {#if limitText(a) !== t.agents.limitsNone}<div class="muted small">
+                        {t.agents.limits}: {limitText(a)}
+                      </div>{/if}
+                  </td>
+                  <td>
+                    <span class="mono">{a.version ?? '—'}</span>
+                    {#if a.os}<div class="muted small">{a.os}</div>{/if}
+                  </td>
+                  <td class="actions">
+                    <!-- the main action visible, everything else in the menu -->
+                    {#if st === 'enrolled'}
+                      <button type="button" class="small" onclick={() => endpoint(a)}>{t.ep.button}</button>
+                    {:else if hasToken(a)}
+                      <button type="button" class="small primary" onclick={() => enroll(a)}>{t.agents.enroll}</button>
+                    {:else}
+                      <button type="button" class="small" onclick={() => newToken(a)}>{t.agents.newToken}</button>
+                    {/if}
+                    <Menu label={t.agents.more} ariaLabel={t.agents.moreLabel(a.name)} items={agentActions(a, st)} />
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     </div>
   {/if}
-</div>
-{/if}
 </div>
 
 <AgentsRescue bind:this={rescue} agents={items} />
@@ -398,12 +418,28 @@
     <div class="form-grid">
       <div class="field">
         <label for="l-bw">{t.agents.bwlimit}</label>
-        <input id="l-bw" type="number" min="0" step="0.0625" bind:value={lim.mib} required aria-describedby="l-bw-hint" />
+        <input
+          id="l-bw"
+          type="number"
+          min="0"
+          step="0.0625"
+          bind:value={lim.mib}
+          required
+          aria-describedby="l-bw-hint"
+        />
         <div class="hint" id="l-bw-hint">{t.agents.bwlimitHint}</div>
       </div>
       <div class="field">
         <label for="l-nice">{t.agents.nice}</label>
-        <input id="l-nice" type="number" min="0" max="19" bind:value={lim.nice} required aria-describedby="l-nice-hint" />
+        <input
+          id="l-nice"
+          type="number"
+          min="0"
+          max="19"
+          bind:value={lim.nice}
+          required
+          aria-describedby="l-nice-hint"
+        />
         <div class="hint" id="l-nice-hint">{t.agents.niceHint}</div>
       </div>
     </div>

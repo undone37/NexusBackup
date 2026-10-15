@@ -27,8 +27,12 @@
 </script>
 
 {#snippet body()}
-  <span class="k-label">{#if Icon}<Icon aria-hidden="true" />{/if}{label}</span>
-  <span class="k-value">{value}{#if unit}<small>{unit}</small>{/if}</span>
+  <span class="k-label"
+    >{#if Icon}<Icon aria-hidden="true" />{/if}{label}</span
+  >
+  <span class="k-value"
+    >{value}{#if unit}<small>{unit}</small>{/if}</span
+  >
   {#if meter !== null}
     <svg class="meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true">
       <rect class="meter-track" width="100" height="6" rx="3" />

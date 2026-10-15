@@ -63,7 +63,16 @@
   function keys(e: KeyboardEvent) {
     const i = tabs.findIndex((x) => x.id === tab?.id);
     const n = tabs.length;
-    const j = e.key === 'ArrowRight' ? (i + 1) % n : e.key === 'ArrowLeft' ? (i + n - 1) % n : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : -1;
+    const j =
+      e.key === 'ArrowRight'
+        ? (i + 1) % n
+        : e.key === 'ArrowLeft'
+          ? (i + n - 1) % n
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? n - 1
+              : -1;
     if (j < 0) return;
     e.preventDefault();
     select(tabs[j].id);
@@ -82,7 +91,13 @@
   <p class="lede">{t.settings.lede}</p>
 </div>
 
-<div class="tabs" role="tablist" aria-label={t.settings.title} tabindex="-1" onkeydown={(e) => (sessionStorage.setItem('nexus.tabFocus', '1'), keys(e))}>
+<div
+  class="tabs"
+  role="tablist"
+  aria-label={t.settings.title}
+  tabindex="-1"
+  onkeydown={(e) => (sessionStorage.setItem('nexus.tabFocus', '1'), keys(e))}
+>
   {#each tabs as x (x.id)}
     <button
       type="button"

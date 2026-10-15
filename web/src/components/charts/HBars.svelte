@@ -29,12 +29,21 @@
       {@const y = i * ROW + 6}
       <text class="label" x="0" y={y + 13}>{it.label}</text>
       <rect class="hbar-track" x={LABEL} {y} width={bw} height="16" rx="4" />
-      <rect class="hbar {tone}" x={LABEL} {y} width={Math.max(it.value ? 4 : 0, (it.value / max) * bw)} height="16" rx="4" />
+      <rect
+        class="hbar {tone}"
+        x={LABEL}
+        {y}
+        width={Math.max(it.value ? 4 : 0, (it.value / max) * bw)}
+        height="16"
+        rx="4"
+      />
       <text class="value" x={w} y={y + 13} text-anchor="end">{fmt(it.value)}</text>
     {/each}
   </svg>
   <table class="visually-hidden">
     <caption>{title}</caption>
-    <tbody>{#each items as it, i (i)}<tr><th scope="row">{it.label}</th><td>{fmt(it.value)}</td></tr>{/each}</tbody>
+    <tbody
+      >{#each items as it, i (i)}<tr><th scope="row">{it.label}</th><td>{fmt(it.value)}</td></tr>{/each}</tbody
+    >
   </table>
 </div>

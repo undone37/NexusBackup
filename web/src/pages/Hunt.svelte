@@ -36,13 +36,16 @@
   let ctl: AbortController | null = null;
   onDestroy(() => ctl?.abort());
 
-  const sources = $derived([...new Set(snaps.filter((s) => s.tenant === tenant && s.local).map((s) => s.source))].sort());
+  const sources = $derived(
+    [...new Set(snaps.filter((s) => s.tenant === tenant && s.local).map((s) => s.source))].sort(),
+  );
   const key = (m: HuntMatch) => `${m.source}\0${m.path}\0${m.sha256}`;
   const timeOf = (m: HuntMatch) => chosen[key(m)] ?? m.times[0];
   const parent = (p: string) => '/' + p.split('/').slice(0, -1).join('/');
   const tree = (src: string) => /^(host|share|nas|plugin)-/.test(src);
-  const day = (d: string, end: boolean) => (d ? Math.floor(new Date(`${d}T00:00:00`).getTime() / 1000) + (end ? 86399 : 0) : undefined);
-  const hits = (j: Job) => ((j.result as unknown as HuntResult | null)?.matches?.length ?? null);
+  const day = (d: string, end: boolean) =>
+    d ? Math.floor(new Date(`${d}T00:00:00`).getTime() / 1000) + (end ? 86399 : 0) : undefined;
+  const hits = (j: Job) => (j.result as unknown as HuntResult | null)?.matches?.length ?? null;
 
   async function loadHunts() {
     try {
@@ -141,7 +144,9 @@
     holdOpen = true;
   }
   const openHref = (m: HuntMatch) =>
-    href('/files' + qs({ tenant: shownJob?.tenant ?? tenant, source: m.source, time: timeOf(m), path: parent(m.path) }));
+    href(
+      '/files' + qs({ tenant: shownJob?.tenant ?? tenant, source: m.source, time: timeOf(m), path: parent(m.path) }),
+    );
 </script>
 
 <div class="page-head">
@@ -184,7 +189,9 @@
     <label for="h-to">{t.threat.to}</label>
     <input id="h-to" type="date" bind:value={to} />
   </div>
-  <button type="submit" class="primary" disabled={busy || !tenant}><IconHunt aria-hidden="true" />{t.threat.start}</button>
+  <button type="submit" class="primary" disabled={busy || !tenant}
+    ><IconHunt aria-hidden="true" />{t.threat.start}</button
+  >
 </form>
 
 <ErrorBanner {error} />
@@ -220,13 +227,19 @@
               <td class="mono" title={m.sha256}>{m.sha256.slice(0, 16)}…</td>
               <td>{m.lists.join(', ')}</td>
               <td>
-                {#if agents.find((a) => `host-${a.id}` === m.source)}{agents.find((a) => `host-${a.id}` === m.source)!.name}
+                {#if agents.find((a) => `host-${a.id}` === m.source)}{agents.find((a) => `host-${a.id}` === m.source)!
+                    .name}
                   <div class="muted small mono">{m.source}</div>
                 {:else}<span class="mono">{m.source}</span>{/if}
               </td>
               <td>
                 {#if m.times.length > 1}
-                  <select class="auto" aria-label={t.threat.version(m.path)} value={timeOf(m)} onchange={(ev) => (chosen[k] = Number(ev.currentTarget.value))}>
+                  <select
+                    class="auto"
+                    aria-label={t.threat.version(m.path)}
+                    value={timeOf(m)}
+                    onchange={(ev) => (chosen[k] = Number(ev.currentTarget.value))}
+                  >
                     {#each m.times as tm (tm)}<option value={tm}>{fmtTime(tm)}</option>{/each}
                   </select>
                   <span class="muted">{t.threat.inSnapshots(m.times.length)}</span>
@@ -275,17 +288,24 @@
           {#each hunts as j (j.id)}
             {@const n = hits(j)}
             <!-- a finished hunt opens its results here, a running one its job -->
-            <tr use:rowClick={() => (j.state === 'ok' ? navigate('/hunt' + qs({ job: j.id })) : navigate(`/jobs/${j.id}`))}>
+            <tr
+              use:rowClick={() =>
+                j.state === 'ok' ? navigate('/hunt' + qs({ job: j.id })) : navigate(`/jobs/${j.id}`)}
+            >
               <td class="nowrap"><a href={href(`/jobs/${j.id}`)}>{fmtTime(j.created)}</a></td>
               <td>{j.tenant}</td>
               <td>
-                {#if j.state === 'ok' && n !== null}<span class="chip {n ? 'bad' : 'ok'}">{n ? t.threat.hits(n) : t.threat.clean}</span>
+                {#if j.state === 'ok' && n !== null}<span class="chip {n ? 'bad' : 'ok'}"
+                    >{n ? t.threat.hits(n) : t.threat.clean}</span
+                  >
                 {:else}<span class="chip plain">{t.jobs.states?.[j.state] ?? j.state}</span>{/if}
               </td>
               <td>{Array.isArray(j.params.lists) ? (j.params.lists as string[]).join(', ') : t.threat.allLists}</td>
               <td>
                 {#if j.state === 'ok'}
-                  <button type="button" class="small" onclick={() => navigate('/hunt' + qs({ job: j.id }))}>{t.threat.show}</button>
+                  <button type="button" class="small" onclick={() => navigate('/hunt' + qs({ job: j.id }))}
+                    >{t.threat.show}</button
+                  >
                 {/if}
               </td>
             </tr>
@@ -297,8 +317,20 @@
 </section>
 
 {#if restoreOf}
-  <RestoreFiles bind:open={restoreOpen} tenant={shownJob?.tenant ?? tenant} source={restoreOf.source} time={restoreOf.time} paths={[restoreOf.path]} {agents} />
+  <RestoreFiles
+    bind:open={restoreOpen}
+    tenant={shownJob?.tenant ?? tenant}
+    source={restoreOf.source}
+    time={restoreOf.time}
+    paths={[restoreOf.path]}
+    {agents}
+  />
 {/if}
 {#if holdOf}
-  <HoldDialog bind:open={holdOpen} target={holdOf} reason={t.threat.holdReason(holdOf.path)} ondone={() => (holdOpen = false)} />
+  <HoldDialog
+    bind:open={holdOpen}
+    target={holdOf}
+    reason={t.threat.holdReason(holdOf.path)}
+    ondone={() => (holdOpen = false)}
+  />
 {/if}

@@ -17,8 +17,7 @@
     bind:value={include}
     spellcheck="false"
     placeholder={share ? '/projects/a' : '/home\n/etc'}
-    aria-describedby="{id}-incl-hint"
-  ></textarea>
+    aria-describedby="{id}-incl-hint"></textarea>
   <div class="hint" id="{id}-incl-hint">{share ? t.sources.includeShareHint : t.sources.includeHint}</div>
 </div>
 <div class="field">
@@ -28,7 +27,6 @@
     bind:value={regex}
     spellcheck="false"
     placeholder={'\\.bak$\n/cache(/|$)'}
-    aria-describedby="{id}-rx-hint"
-  ></textarea>
+    aria-describedby="{id}-rx-hint"></textarea>
   <div class="hint" id="{id}-rx-hint">{t.sources.regexHint}</div>
 </div>

@@ -28,12 +28,17 @@
 
 <section class="card span-12" aria-labelledby="c-ct">
   <div class="card-head">
-    <div><h2 id="c-ct">{t.p29.fullRead.dashTitle}</h2><div class="sub">{t.p29.fullRead.dashSub}</div></div>
+    <div>
+      <h2 id="c-ct">{t.p29.fullRead.dashTitle}</h2>
+      <div class="sub">{t.p29.fullRead.dashSub}</div>
+    </div>
     <div class="chips">
       <span class="chip ok">{t.p29.fullRead.verified}: {summary.verified}</span>
       <span class="chip {summary.drift ? 'bad' : 'plain'}">{t.p29.fullRead.drift}: {summary.drift}</span>
       <span class="chip {summary.never ? 'warn' : 'plain'}">{t.p29.fullRead.never}: {summary.never}</span>
-      {#if summary.oldest_verified}<span class="muted small">{t.p29.fullRead.oldest(fmtAgo(summary.oldest_verified))}</span>{/if}
+      {#if summary.oldest_verified}<span class="muted small"
+          >{t.p29.fullRead.oldest(fmtAgo(summary.oldest_verified))}</span
+        >{/if}
     </div>
   </div>
   {#if !sorted.length}
@@ -57,19 +62,36 @@
             {@const res = r.result ?? 'never'}
             <tr>
               <td>
-                <a class="mono" href={href(`/snapshots?tenant=${encodeURIComponent(r.tenant)}&source=${encodeURIComponent(r.source)}`)}>{r.source}</a>
+                <a
+                  class="mono"
+                  href={href(
+                    `/snapshots?tenant=${encodeURIComponent(r.tenant)}&source=${encodeURIComponent(r.source)}`,
+                  )}>{r.source}</a
+                >
                 {#if r.result === 'drift' && r.details?.examples?.length}
-                  <div class="muted small mono" title={r.details.examples.join('\n')}>{r.details.examples.slice(0, 2).join(', ')}</div>
+                  <div class="muted small mono" title={r.details.examples.join('\n')}>
+                    {r.details.examples.slice(0, 2).join(', ')}
+                  </div>
                 {/if}
               </td>
               {#if !session.user?.tenant}<td>{r.tenant}</td>{/if}
-              <td class="nowrap" title={r.last_at ? fmtTime(r.last_at) : ''}>{r.last_at ? fmtAgo(r.last_at) : t.ago.never}</td>
+              <td class="nowrap" title={r.last_at ? fmtTime(r.last_at) : ''}
+                >{r.last_at ? fmtAgo(r.last_at) : t.ago.never}</td
+              >
               <td>
                 <span class="chip {cls[res]}">{t.p29.fullRead.results[res]}</span>
-                {#if r.result === 'drift' && r.last_clean_at}<div class="muted small">{t.p29.fullRead.lastClean(fmtAgo(r.last_clean_at))}</div>{/if}
+                {#if r.result === 'drift' && r.last_clean_at}<div class="muted small">
+                    {t.p29.fullRead.lastClean(fmtAgo(r.last_clean_at))}
+                  </div>{/if}
               </td>
               <td>{tracker(r)}</td>
-              <td class="num">{r.unreported ? t.p29.fullRead.unreportedOf(r.unreported, fmtBytes(r.unreported_bytes ?? 0)) : r.result ? '0' : '—'}</td>
+              <td class="num"
+                >{r.unreported
+                  ? t.p29.fullRead.unreportedOf(r.unreported, fmtBytes(r.unreported_bytes ?? 0))
+                  : r.result
+                    ? '0'
+                    : '—'}</td
+              >
               <td class="nowrap">{r.next_due ? fmtTime(r.next_due) : '—'}</td>
             </tr>
           {/each}

@@ -798,7 +798,13 @@ export interface FullRead {
   changed: number | null;
   unreported: number | null;
   unreported_bytes: number | null;
-  details: { tracker?: string; examples?: string[]; compared?: number; baseline?: number | null; [k: string]: unknown } | null;
+  details: {
+    tracker?: string;
+    examples?: string[];
+    compared?: number;
+    baseline?: number | null;
+    [k: string]: unknown;
+  } | null;
   last_clean_at: number | null;
 }
 
@@ -1115,7 +1121,14 @@ export interface Job {
   /** live progress of a running job (scheduler, docs/control-plane.md "Live progress"); null otherwise */
   progress?: JobProgress | null;
   /** GET /jobs/{id}: the jobs it queued (params.after_job) */
-  followups?: { id: number; kind: JobKind; state: JobState; created: number; started: number | null; finished: number | null }[];
+  followups?: {
+    id: number;
+    kind: JobKind;
+    state: JobState;
+    created: number;
+    started: number | null;
+    finished: number | null;
+  }[];
 }
 
 /** Aggregated `progress {json}` lines of the connector (crates/scheduler/src/progress.rs). */
@@ -1141,7 +1154,8 @@ export interface JobProgress {
   /** bytes/s over about the last 10 s */
   rate?: number | null;
   /** queued jobs: why they wait (scheduler `start_jobs`), with the blocking job or the slot count */
-  waiting?: 'firewall' | 'slots' | 'background' | 'restore_priority' | 'offsite_window' | 'scan_first' | 'scan_back' | 'busy';
+  waiting?:
+    'firewall' | 'slots' | 'background' | 'restore_priority' | 'offsite_window' | 'scan_first' | 'scan_back' | 'busy';
   job?: number;
   slots?: number;
   /** entries counted so far / per second (parts without bytes: file index, agent scans) */
@@ -1152,7 +1166,15 @@ export interface JobProgress {
   elapsed?: number;
   updated?: number;
   /** items in flight when several run at once (parallel guests) */
-  active?: { item?: string | null; label?: string | null; item_index?: number | null; part?: string | null; done?: number | null; total?: number | null; percent?: number | null }[];
+  active?: {
+    item?: string | null;
+    label?: string | null;
+    item_index?: number | null;
+    part?: string | null;
+    done?: number | null;
+    total?: number | null;
+    percent?: number | null;
+  }[];
 }
 
 export interface Snapshot {
@@ -1344,7 +1366,14 @@ export interface SourceTrend {
 /** Plugin snapshot metadata (protocol v1.6 `SnapshotMeta`); known keys are shown. */
 export interface SnapshotMeta {
   /** point-in-time restore range: unix seconds and positions (PostgreSQL LSNs; `unit: "binlog"` = MySQL/MariaDB `file:position`, Phase 23b) */
-  recoverable?: { from_time: number; to_time: number; from_lsn: string; to_lsn: string; timeline?: number; unit?: string };
+  recoverable?: {
+    from_time: number;
+    to_time: number;
+    from_lsn: string;
+    to_lsn: string;
+    timeline?: number;
+    unit?: string;
+  };
   /** Phase 22b: VM identity of a `vm-` snapshot; `changed` = the VMID was reused (new chain) */
   identity?: {
     vmgenid: string | null;
@@ -1507,7 +1536,12 @@ export interface CaseInfo {
   items: number;
   held: number;
   job_state: string | null;
-  snapshot_list?: { source: string; time: number; items: number; hold: { id: number; state: string; reason: string } | null }[];
+  snapshot_list?: {
+    source: string;
+    time: number;
+    items: number;
+    hold: { id: number; state: string; reason: string } | null;
+  }[];
   matches?: { source: string; path: string; kind: string; size: number; mtime: number; times: number[] }[] | null;
 }
 
@@ -1535,7 +1569,15 @@ export interface AuditEntry {
 
 /** Setting `forwarding` (GET/PUT /settings/forwarding); header values are write-only (null = stored). */
 export interface ForwardingSettings {
-  syslog: { enabled: boolean; host: string; port: number; ca_pem: string | null; pin_sha256: string | null; app_name: string; facility: number } | null;
+  syslog: {
+    enabled: boolean;
+    host: string;
+    port: number;
+    ca_pem: string | null;
+    pin_sha256: string | null;
+    app_name: string;
+    facility: number;
+  } | null;
   https: {
     enabled: boolean;
     url: string;
@@ -1919,7 +1961,13 @@ export interface Dashboard {
   /** Phase 25: the newest restore test result per guest within the window */
   /** Phase 29: full reads (change-tracking check) */
   full_reads?: { sources: number; verified: number; drift: number; never: number; oldest_verified: number | null };
-  restore_tests?: { tested: number; passed: number; failed: number; last: number | null; failing: { tenant: string; source: string; finished: number }[] };
+  restore_tests?: {
+    tested: number;
+    passed: number;
+    failed: number;
+    last: number | null;
+    failing: { tenant: string; source: string; finished: number }[];
+  };
 }
 
 /** GET /auth/oidc (no session). */
@@ -2118,7 +2166,13 @@ export interface StorageGrowth {
 export interface Storage {
   generated: number;
   totals: StorageSum & { snapshots_all: number; used: number; growth: StorageGrowth };
-  tenants: (StorageSum & { tenant: string; quota_bytes: number | null; used: number | null; quota_used: number | null; growth: StorageGrowth })[];
+  tenants: (StorageSum & {
+    tenant: string;
+    quota_bytes: number | null;
+    used: number | null;
+    quota_used: number | null;
+    growth: StorageGrowth;
+  })[];
   groups: (StorageSum & { tenant: string; group_id: number | null; group: string | null; sources: number })[];
   per_day: { day: string; used: number; logical: number }[];
 }
@@ -2299,7 +2353,15 @@ export interface HwSmart {
   critical_warning: number | null;
   available_spare: number | null;
   self_test: HwSelfTest | null;
-  attributes: { id: number | null; name: string; value: number | null; worst: number | null; thresh: number | null; raw: string | number; failing: boolean }[];
+  attributes: {
+    id: number | null;
+    name: string;
+    value: number | null;
+    worst: number | null;
+    thresh: number | null;
+    raw: string | number;
+    failing: boolean;
+  }[];
   error: string | null;
   standby: boolean;
   checked: number;
@@ -2343,7 +2405,13 @@ export interface HwArray {
   action: 'recover' | 'resync' | 'reshape' | 'check' | 'repair' | null;
   progress: number | null;
   finish_minutes: number | null;
-  members: { disk: string | null; dev: string | null; serial: string | null; state: HwMemberState; slot: number | null }[];
+  members: {
+    disk: string | null;
+    dev: string | null;
+    serial: string | null;
+    state: HwMemberState;
+    slot: number | null;
+  }[];
   mounts: string[];
   fs: { type: string; uuid: string; size: number | null; used: number | null } | null;
   issues: HwIssue[];
@@ -2367,7 +2435,13 @@ export interface Hardware {
   smart_scanned: number | null;
   tools: { smartctl: boolean; mdadm: boolean };
   store: { path: string; array: string | null; array_uuid: string | null; mounted: boolean; empty: boolean | null };
-  summary: { state: 'ok' | 'warning' | 'critical' | 'unknown'; disks: number; arrays: number; warnings: number; critical: number };
+  summary: {
+    state: 'ok' | 'warning' | 'critical' | 'unknown';
+    disks: number;
+    arrays: number;
+    warnings: number;
+    critical: number;
+  };
   disks: HwDisk[];
   arrays: HwArray[];
   ops: HwOp[];
@@ -2391,7 +2465,15 @@ export interface Simulation {
     newest: number | null;
   };
   /** null: no measured backups in scope */
-  estimate: { sources: number; samples: number; compression: number; full: number; delta: number; stored: number; stored_peak: number } | null;
+  estimate: {
+    sources: number;
+    samples: number;
+    compression: number;
+    full: number;
+    delta: number;
+    stored: number;
+    stored_peak: number;
+  } | null;
 }
 
 /** Phase 23a: GET /usage?month=YYYY-MM (billing). */

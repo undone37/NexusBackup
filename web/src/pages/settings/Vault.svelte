@@ -35,7 +35,8 @@
   function detail(id: (typeof CHECKS)[number]): string {
     const c = v?.checks;
     if (!c) return '';
-    if (id === 'no_local_tenants' && c.no_local_tenants.tenants.length) return t.vault.localTenants(c.no_local_tenants.tenants);
+    if (id === 'no_local_tenants' && c.no_local_tenants.tenants.length)
+      return t.vault.localTenants(c.no_local_tenants.tenants);
     if (id === 'no_peers' && c.no_peers.peers) return t.vault.peers(c.no_peers.peers);
     if (id === 'web_restricted' && c.web_restricted.allow.length) return c.web_restricted.allow.join(', ');
     return '';
@@ -59,15 +60,22 @@
       <ul class="checklist">
         {#each CHECKS as id (id)}
           {@const d = detail(id)}
-          <li><Check on={v.checks[id].ok} /> {t.vault.checkNames[id]}{#if d}&nbsp;<span class="muted">— {d}</span>{/if}</li>
+          <li>
+            <Check on={v.checks[id].ok} />
+            {t.vault.checkNames[id]}{#if d}&nbsp;<span class="muted">— {d}</span>{/if}
+          </li>
         {/each}
       </ul>
       {#if v.pending_enable}
-        <p class="banner pending"><span>{t.vault.enablePending(v.pending_enable)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+        <p class="banner pending">
+          <span>{t.vault.enablePending(v.pending_enable)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+        </p>
       {:else if isAdmin}
         {#if !v.ready}<p class="muted">{t.vault.notReady}</p>{/if}
         <div class="form-actions">
-          <button type="button" class="primary" disabled={!v.ready} onclick={() => request(true)}>{t.vault.enable}</button>
+          <button type="button" class="primary" disabled={!v.ready} onclick={() => request(true)}
+            >{t.vault.enable}</button
+          >
         </div>
       {/if}
     {/if}
@@ -77,7 +85,9 @@
       {#if v.approved_disable}
         <p class="banner warn" role="status">{t.vault.disableApproved(v.approved_disable)}</p>
       {:else if v.pending_disable}
-        <p class="banner pending"><span>{t.vault.disablePending(v.pending_disable)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+        <p class="banner pending">
+          <span>{t.vault.disablePending(v.pending_disable)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+        </p>
       {:else if isAdmin}
         <div class="form-actions">
           <button type="button" class="danger" onclick={() => request(false)}>{t.vault.disable}</button>

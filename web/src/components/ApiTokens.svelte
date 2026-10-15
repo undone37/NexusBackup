@@ -52,7 +52,9 @@
     const pw = f.password;
     const second = local ? secondFactor(f.totp) : Promise.resolve('');
     const r = await act(
-      second.then((totp) => post<ApiToken>('/auth/tokens', local ? { ...body, current_password: pw, current_totp: totp } : body)),
+      second.then((totp) =>
+        post<ApiToken>('/auth/tokens', local ? { ...body, current_password: pw, current_totp: totp } : body),
+      ),
       t.tokens.created,
     );
     f.password = '';
@@ -70,13 +72,19 @@
   }
 
   const expiry = (x: ApiToken) =>
-    x.expires < now() ? { cls: 'bad', text: t.tokens.expired } : x.expires - now() < 7 * 86400 ? { cls: 'warn', text: fmtTime(x.expires) } : { cls: '', text: fmtTime(x.expires) };
+    x.expires < now()
+      ? { cls: 'bad', text: t.tokens.expired }
+      : x.expires - now() < 7 * 86400
+        ? { cls: 'warn', text: fmtTime(x.expires) }
+        : { cls: '', text: fmtTime(x.expires) };
 </script>
 
 <section class="card" aria-labelledby="{id}-h">
   <div class="card-head">
     <h2 id="{id}-h">{all ? t.tokens.allTitle : t.tokens.title}</h2>
-    {#if !all}<button type="button" class="small" onclick={startCreate}><IconPlus aria-hidden="true" />{t.tokens.new}</button>{/if}
+    {#if !all}<button type="button" class="small" onclick={startCreate}
+        ><IconPlus aria-hidden="true" />{t.tokens.new}</button
+      >{/if}
   </div>
   <p class="muted">{all ? t.tokens.allIntro : t.tokens.intro}</p>
   <ErrorBanner {error} />
@@ -105,8 +113,12 @@
               <td><strong>{x.name}</strong> <code class="muted">nxt_{x.prefix}_…</code></td>
               <td><span class="chip {x.scope === 'operator' ? 'accent' : ''}">{t.tokens.scopes[x.scope]}</span></td>
               <td class="nowrap"><span class={ex.cls ? `chip ${ex.cls}` : ''}>{ex.text}</span></td>
-              <td class="nowrap">{fmtAgo(x.last_used)}{#if x.last_ip}<span class="muted">{` · ${x.last_ip}`}</span>{/if}</td>
-              <td class="actions"><button type="button" class="small danger" onclick={() => revoke(x)}>{t.tokens.revoke}</button></td>
+              <td class="nowrap"
+                >{fmtAgo(x.last_used)}{#if x.last_ip}<span class="muted">{` · ${x.last_ip}`}</span>{/if}</td
+              >
+              <td class="actions"
+                ><button type="button" class="small danger" onclick={() => revoke(x)}>{t.tokens.revoke}</button></td
+              >
             </tr>
           {/each}
         </tbody>
@@ -119,7 +131,16 @@
   <form onsubmit={create}>
     <div class="field">
       <label for="{id}-name">{t.name}</label>
-      <input id="{id}-name" bind:value={f.name} required maxlength="64" pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'} placeholder="monitoring" autocomplete="off" spellcheck="false" />
+      <input
+        id="{id}-name"
+        bind:value={f.name}
+        required
+        maxlength="64"
+        pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'}
+        placeholder="monitoring"
+        autocomplete="off"
+        spellcheck="false"
+      />
     </div>
     <div class="form-grid">
       <div class="field">
@@ -148,7 +169,15 @@
           </div>
           <div class="field">
             <label for="{id}-totp">{t.users.currentTotp}</label>
-            <input id="{id}-totp" bind:value={f.totp} inputmode="numeric" pattern={'[0-9]{6}'} maxlength="6" autocomplete="one-time-code" aria-describedby="{id}-totp-hint" />
+            <input
+              id="{id}-totp"
+              bind:value={f.totp}
+              inputmode="numeric"
+              pattern={'[0-9]{6}'}
+              maxlength="6"
+              autocomplete="one-time-code"
+              aria-describedby="{id}-totp-hint"
+            />
             <div class="hint" id="{id}-totp-hint">{t.passkeys.totpOrPasskey}</div>
           </div>
         </div>
@@ -168,12 +197,18 @@
     <p class="banner warn">{t.tokens.shownOnce}</p>
     <div class="copyline">
       <code class="secret">{created.token}</code>
-      <button type="button" class="small" onclick={() => copyText(created!.token!)} aria-label="{t.users.copy}: {created.name}"
-        ><IconCopy aria-hidden="true" />{t.users.copy}</button
+      <button
+        type="button"
+        class="small"
+        onclick={() => copyText(created!.token!)}
+        aria-label="{t.users.copy}: {created.name}"><IconCopy aria-hidden="true" />{t.users.copy}</button
       >
     </div>
     <p class="muted">{t.tokens.usage}</p>
-    <pre class="mono usage">curl -H "Authorization: Bearer {created.token.slice(0, 13)}…" https://{location.host}/api/v1/dashboard</pre>
+    <pre class="mono usage">curl -H "Authorization: Bearer {created.token.slice(
+        0,
+        13,
+      )}…" https://{location.host}/api/v1/dashboard</pre>
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (shownOpen = false)}>{t.close}</button>
     </div>

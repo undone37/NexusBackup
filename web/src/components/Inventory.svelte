@@ -61,7 +61,9 @@
   <div class="row">
     <span class="muted">{inv.refreshed ? t.groups.refreshed(fmtAgo(inv.refreshed)) : t.inventory.never}</span>
     {#if can.backup(session.user)}
-      <button type="button" class="small" disabled={busy} onclick={refresh}>{busy ? t.groups.refreshing : t.groups.refresh}</button>
+      <button type="button" class="small" disabled={busy} onclick={refresh}
+        >{busy ? t.groups.refreshing : t.groups.refresh}</button
+      >
     {/if}
     {#if failedJob}<a href={href(`/jobs/${failedJob}`)}>{t.jobs.detail(failedJob)}</a>{/if}
   </div>
@@ -85,7 +87,10 @@
               <td class="mono">{g.guest}</td>
               <td>{g.name}</td>
               <td>{g.kind || '—'}</td>
-              <td>{#each g.tags as x (x)}<span class="chip plain mono">{x}</span> {/each}</td>
+              <td
+                >{#each g.tags as x (x)}<span class="chip plain mono">{x}</span>
+                {/each}</td
+              >
               <td>
                 {#if g.gone !== null}
                   <span title={fmtTime(g.gone)}>{t.inventory.gone(fmtAgo(g.gone))}</span>

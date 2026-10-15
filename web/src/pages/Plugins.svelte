@@ -195,7 +195,12 @@
         <dt>{t.plugins.endpoints}</dt>
         <dd class="mono">
           {#each k.endpoints ?? [] as ep, i (i)}
-            <div>{ep.proto ?? 'tcp'} {ep.host}{ep.port ? `:${ep.port}` : ''}{ep.default_port ? ` (${ep.default_port})` : ''}{ep.default_host ? ` — ${t.plugins.defaultHost(ep.default_host)}` : ''}</div>
+            <div>
+              {ep.proto ?? 'tcp'}
+              {ep.host}{ep.port ? `:${ep.port}` : ''}{ep.default_port ? ` (${ep.default_port})` : ''}{ep.default_host
+                ? ` — ${t.plugins.defaultHost(ep.default_host)}`
+                : ''}
+            </div>
           {:else}{t.plugins.noEndpoints}{/each}
         </dd>
         <dt>{t.plugins.guests}</dt>
@@ -286,7 +291,9 @@
                 <td>
                   <span class="chip {stateCls[v.state] ?? ''}">{t.plugins.states[v.state] ?? v.state}</span>
                   {#if v.quorum_id && (v.state === 'pending' || v.state === 'removing')}
-                    <div class="muted"><a href={href(`/quorum?id=${v.quorum_id}`)}>{t.plugins.pendingQuorum(v.quorum_id)}</a></div>
+                    <div class="muted">
+                      <a href={href(`/quorum?id=${v.quorum_id}`)}>{t.plugins.pendingQuorum(v.quorum_id)}</a>
+                    </div>
                   {/if}
                   {#if v.error}<div class="chip bad" title={v.error}>{v.error.slice(0, 80)}</div>{/if}
                 </td>
@@ -296,7 +303,10 @@
                 <td class="mono">{v.signer || '—'}</td>
                 <td class="mono" title={v.sha256}>{short(v.sha256)}</td>
                 <td class="num">{fmtBytes(v.size)}</td>
-                <td class="nowrap">{v.uploaded_by}<div class="muted">{fmtTime(v.uploaded_at)}</div></td>
+                <td class="nowrap"
+                  >{v.uploaded_by}
+                  <div class="muted">{fmtTime(v.uploaded_at)}</div></td
+                >
                 <td class="nowrap">{fmtTime(v.installed_at)}</td>
                 <td class="actions">
                   <button type="button" class="small" onclick={() => showDetails(v)}>{t.plugins.details}</button>
@@ -343,7 +353,10 @@
                 {#if k.builtin}<span class="chip info">{t.plugins.builtin}</span>{/if}
                 {#if k.name}<span class="mono">{k.name}</span>{/if}
               </td>
-              <td>{#if k.added_by}{k.added_by}<div class="muted">{fmtTime(k.added_at)}</div>{:else}—{/if}</td>
+              <td
+                >{#if k.added_by}{k.added_by}
+                  <div class="muted">{fmtTime(k.added_at)}</div>{:else}—{/if}</td
+              >
               <td>{k.approved_by ?? '—'}</td>
               {#if admin}
                 <td class="actions">
@@ -382,8 +395,7 @@
         spellcheck="false"
         autocomplete="off"
         aria-invalid={sig !== '' && !sigOk}
-        aria-describedby="pi-sig-hint"
-      ></textarea>
+        aria-describedby="pi-sig-hint"></textarea>
       <div class="hint" class:bad={sig !== '' && !sigOk} id="pi-sig-hint">
         {sig !== '' && !sigOk ? t.plugins.signatureInvalid : t.plugins.signatureHint}
       </div>
@@ -436,8 +448,7 @@
         required
         spellcheck="false"
         placeholder={'-----BEGIN PUBLIC KEY-----\n…\n-----END PUBLIC KEY-----'}
-        aria-describedby="pk-key-hint"
-      ></textarea>
+        aria-describedby="pk-key-hint"></textarea>
       <div class="hint" id="pk-key-hint">{t.plugins.publicKeyHint}</div>
     </div>
     <div class="form-actions">

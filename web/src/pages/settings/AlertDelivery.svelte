@@ -117,7 +117,11 @@
         : null,
       rules: saved.rules,
       reminder_hours: Number(f.reminder),
-      retention_days: { info: Number(f.retention.info), warning: Number(f.retention.warning), critical: Number(f.retention.critical) },
+      retention_days: {
+        info: Number(f.retention.info),
+        warning: Number(f.retention.warning),
+        critical: Number(f.retention.critical),
+      },
     });
   }
 
@@ -243,7 +247,9 @@
           ? {
               url,
               headers: Object.fromEntries(
-                r.headers.filter((h) => h.name.trim()).map((h) => [h.name.trim(), h.value ? h.value : h.stored ? null : '']),
+                r.headers
+                  .filter((h) => h.name.trim())
+                  .map((h) => [h.name.trim(), h.value ? h.value : h.stored ? null : '']),
               ),
               template: r.template.trim() || null,
             }
@@ -254,19 +260,35 @@
     const rules = [...saved.rules];
     if (editing === null) rules.push(rule);
     else rules[editing] = rule;
-    if (await store({ smtp: savedSmtp(), rules, reminder_hours: saved.reminder_hours, retention_days: saved.retention_days })) open = false;
+    if (
+      await store({
+        smtp: savedSmtp(),
+        rules,
+        reminder_hours: saved.reminder_hours,
+        retention_days: saved.retention_days,
+      })
+    )
+      open = false;
   }
 
   async function remove(i: number) {
     if (!saved || !(await askConfirm(t.settings.al.deleteConfirm(saved.rules[i].name)))) return;
     const rules = saved.rules.filter((_, j) => j !== i);
-    await store({ smtp: savedSmtp(), rules, reminder_hours: saved.reminder_hours, retention_days: saved.retention_days });
+    await store({
+      smtp: savedSmtp(),
+      rules,
+      reminder_hours: saved.reminder_hours,
+      retention_days: saved.retention_days,
+    });
   }
 
   async function test(name: string) {
     testing = name;
     try {
-      results[name] = (await post<Record<string, string>>('/settings/alerts/test', { rule: name })).data as Record<string, string>;
+      results[name] = (await post<Record<string, string>>('/settings/alerts/test', { rule: name })).data as Record<
+        string,
+        string
+      >;
     } catch (e) {
       notify('error', errText(e));
     }
@@ -283,7 +305,9 @@
     [
       x.channels.email.length ? `${t.settings.al.channel('email')} (${x.channels.email.length})` : '',
       x.channels.webhook ? `${t.settings.al.channel('webhook')} ${new URL(x.channels.webhook.url).host}` : '',
-      x.channels.psa ? `${t.settings.al.psaVendors[x.channels.psa.vendor] ?? x.channels.psa.vendor} ${new URL(x.channels.psa.url).host}` : '',
+      x.channels.psa
+        ? `${t.settings.al.psaVendors[x.channels.psa.vendor] ?? x.channels.psa.vendor} ${new URL(x.channels.psa.url).host}`
+        : '',
     ]
       .filter(Boolean)
       .join(' · ') || t.settings.al.noChannel;
@@ -300,7 +324,9 @@
     <section class="card" aria-labelledby="{id}-rules">
       <div class="card-head">
         <h2 id="{id}-rules">{t.settings.al.rules}</h2>
-        {#if admin}<button type="button" class="small" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.settings.al.addRule}</button>{/if}
+        {#if admin}<button type="button" class="small" onclick={() => edit(null)}
+            ><IconPlus aria-hidden="true" />{t.settings.al.addRule}</button
+          >{/if}
       </div>
       {#if saved.rules.length === 0}
         <p class="empty">{t.settings.al.noRules}</p>
@@ -323,11 +349,29 @@
                   <td>{channels(x)}</td>
                   <td class="actions">
                     {#if admin}
-                      <button type="button" class="small" onclick={() => test(x.name)} disabled={testing !== null} title={t.settings.al.testIntro}
-                        aria-label={t.settings.al.testRule(x.name)}><IconSend aria-hidden="true" />{testing === x.name ? t.settings.testing : t.settings.test}</button
+                      <button
+                        type="button"
+                        class="small"
+                        onclick={() => test(x.name)}
+                        disabled={testing !== null}
+                        title={t.settings.al.testIntro}
+                        aria-label={t.settings.al.testRule(x.name)}
+                        ><IconSend aria-hidden="true" />{testing === x.name
+                          ? t.settings.testing
+                          : t.settings.test}</button
                       >
-                      <button type="button" class="small" onclick={() => edit(i)} aria-label={t.settings.al.editRule(x.name)}>{t.edit}</button>
-                      <button type="button" class="small danger" onclick={() => remove(i)} aria-label={t.settings.al.deleteRule(x.name)}>{t.delete}</button>
+                      <button
+                        type="button"
+                        class="small"
+                        onclick={() => edit(i)}
+                        aria-label={t.settings.al.editRule(x.name)}>{t.edit}</button
+                      >
+                      <button
+                        type="button"
+                        class="small danger"
+                        onclick={() => remove(i)}
+                        aria-label={t.settings.al.deleteRule(x.name)}>{t.delete}</button
+                      >
                     {/if}
                   </td>
                 </tr>
@@ -364,7 +408,9 @@
               </div>
             </div>
             <div class="field">
-              <label class="inline-check"><input type="checkbox" bind:checked={f.starttls} />{t.settings.al.starttls}</label>
+              <label class="inline-check"
+                ><input type="checkbox" bind:checked={f.starttls} />{t.settings.al.starttls}</label
+              >
             </div>
             <div class="form-grid">
               <div class="field">
@@ -373,7 +419,13 @@
               </div>
               <div class="field">
                 <label for="{id}-pw">{t.settings.al.password}</label>
-                <input id="{id}-pw" type="password" bind:value={f.password} autocomplete="new-password" aria-describedby="{id}-pw-hint" />
+                <input
+                  id="{id}-pw"
+                  type="password"
+                  bind:value={f.password}
+                  autocomplete="new-password"
+                  aria-describedby="{id}-pw-hint"
+                />
                 <div class="hint" id="{id}-pw-hint">{passwordSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
               </div>
             </div>
@@ -385,7 +437,15 @@
           <div class="form-grid">
             <div class="field">
               <label for="{id}-rem">{t.settings.al.reminder}</label>
-              <input id="{id}-rem" type="number" min="0" max="720" bind:value={f.reminder} required aria-describedby="{id}-rem-hint" />
+              <input
+                id="{id}-rem"
+                type="number"
+                min="0"
+                max="720"
+                bind:value={f.reminder}
+                required
+                aria-describedby="{id}-rem-hint"
+              />
               <div class="hint" id="{id}-rem-hint">{t.settings.al.reminderHint}</div>
             </div>
             {#each SEVS as s (s)}
@@ -409,7 +469,14 @@
     <div class="form-grid">
       <div class="field">
         <label for="{id}-rn">{t.settings.al.ruleName}</label>
-        <input id="{id}-rn" bind:value={r.name} required maxlength="64" pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'} aria-describedby="{id}-rn-hint" />
+        <input
+          id="{id}-rn"
+          bind:value={r.name}
+          required
+          maxlength="64"
+          pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'}
+          aria-describedby="{id}-rn-hint"
+        />
         <div class="hint" id="{id}-rn-hint">{t.settings.al.ruleNameHint}</div>
       </div>
       <div class="field">
@@ -443,32 +510,67 @@
       <legend>{t.settings.al.channels}</legend>
       <div class="field">
         <label for="{id}-re">{t.settings.al.email}</label>
-        <textarea id="{id}-re" bind:value={r.email} rows="2" spellcheck="false" aria-describedby="{id}-re-hint"></textarea>
+        <textarea id="{id}-re" bind:value={r.email} rows="2" spellcheck="false" aria-describedby="{id}-re-hint"
+        ></textarea>
         <div class="hint" id="{id}-re-hint">{t.settings.al.emailHint}</div>
       </div>
       <div class="field">
         <label for="{id}-ru">{t.settings.al.webhookUrl}</label>
-        <input id="{id}-ru" type="url" class="mono" bind:value={r.url} placeholder="https://hooks.example.com/…" autocomplete="off" spellcheck="false" aria-describedby="{id}-ru-hint" />
+        <input
+          id="{id}-ru"
+          type="url"
+          class="mono"
+          bind:value={r.url}
+          placeholder="https://hooks.example.com/…"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="{id}-ru-hint"
+        />
         <div class="hint" id="{id}-ru-hint">{t.settings.al.webhookHint}</div>
       </div>
       {#if r.url.trim()}
         <div class="field">
           <div class="card-head">
             <span class="field-label">{t.settings.al.headers}</span>
-            <button type="button" class="small" onclick={() => r.headers.push({ name: '', value: '', stored: false })}><IconPlus aria-hidden="true" />{t.settings.al.addHeader}</button>
+            <button type="button" class="small" onclick={() => r.headers.push({ name: '', value: '', stored: false })}
+              ><IconPlus aria-hidden="true" />{t.settings.al.addHeader}</button
+            >
           </div>
           <p class="hint">{t.settings.al.headersHint}</p>
           {#each r.headers as h, i (i)}
             <div class="header-row">
-              <input aria-label={t.settings.al.headerName} class="mono" bind:value={h.name} placeholder="Authorization" spellcheck="false" />
-              <input aria-label={t.settings.al.headerValue} type="password" bind:value={h.value} placeholder={h.stored ? t.writeOnlyKeep : ''} autocomplete="new-password" />
-              <button type="button" class="icon" aria-label={t.settings.al.removeHeader(h.name)} onclick={() => r.headers.splice(i, 1)}><IconX aria-hidden="true" /></button>
+              <input
+                aria-label={t.settings.al.headerName}
+                class="mono"
+                bind:value={h.name}
+                placeholder="Authorization"
+                spellcheck="false"
+              />
+              <input
+                aria-label={t.settings.al.headerValue}
+                type="password"
+                bind:value={h.value}
+                placeholder={h.stored ? t.writeOnlyKeep : ''}
+                autocomplete="new-password"
+              />
+              <button
+                type="button"
+                class="icon"
+                aria-label={t.settings.al.removeHeader(h.name)}
+                onclick={() => r.headers.splice(i, 1)}><IconX aria-hidden="true" /></button
+              >
             </div>
           {/each}
         </div>
         <div class="field">
           <label for="{id}-rt">{t.settings.al.template}</label>
-          <textarea id="{id}-rt" class="mono" bind:value={r.template} rows="6" spellcheck="false" aria-describedby="{id}-rt-hint"></textarea>
+          <textarea
+            id="{id}-rt"
+            class="mono"
+            bind:value={r.template}
+            rows="6"
+            spellcheck="false"
+            aria-describedby="{id}-rt-hint"></textarea>
           <div class="hint" id="{id}-rt-hint">{t.settings.al.templateHint(FIELDS)}</div>
           <div class="row">
             <span class="muted">{t.settings.al.templateExamples}:</span>
@@ -495,19 +597,44 @@
         {@const v = r.psa.vendor}
         <div class="field">
           <label for="{id}-pu">{t.settings.al.psaUrl}</label>
-          <input id="{id}-pu" type="url" class="mono" bind:value={r.psa.url} required autocomplete="off" spellcheck="false" placeholder={t.settings.al.psaUrlHint[v]} />
+          <input
+            id="{id}-pu"
+            type="url"
+            class="mono"
+            bind:value={r.psa.url}
+            required
+            autocomplete="off"
+            spellcheck="false"
+            placeholder={t.settings.al.psaUrlHint[v]}
+          />
         </div>
         {#if v === 'halopsa'}
           <div class="field">
             <label for="{id}-pt">{t.settings.al.psaTokenUrl}</label>
-            <input id="{id}-pt" type="url" class="mono" bind:value={r.psa.token_url} required autocomplete="off" spellcheck="false" placeholder="https://yourcompany.halopsa.com/auth/token" />
+            <input
+              id="{id}-pt"
+              type="url"
+              class="mono"
+              bind:value={r.psa.token_url}
+              required
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="https://yourcompany.halopsa.com/auth/token"
+            />
           </div>
         {/if}
         <div class="form-grid">
           {#if v !== 'autotask'}
             <div class="field">
               <label for="{id}-pc">{t.settings.al.psaClientId}</label>
-              <input id="{id}-pc" bind:value={r.psa.client_id} required autocomplete="off" spellcheck="false" aria-describedby="{id}-pc-hint" />
+              <input
+                id="{id}-pc"
+                bind:value={r.psa.client_id}
+                required
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="{id}-pc-hint"
+              />
               <div class="hint" id="{id}-pc-hint">{t.settings.al.psaClientIdHint[v]}</div>
             </div>
           {/if}
@@ -519,13 +646,26 @@
           {/if}
           <div class="field">
             <label for="{id}-ps">{t.settings.al.psaSecret[v]}</label>
-            <input id="{id}-ps" type="password" bind:value={r.psa.secret} required={!r.psa.secretSet} autocomplete="new-password" aria-describedby="{id}-ps-hint" />
+            <input
+              id="{id}-ps"
+              type="password"
+              bind:value={r.psa.secret}
+              required={!r.psa.secretSet}
+              autocomplete="new-password"
+              aria-describedby="{id}-ps-hint"
+            />
             <div class="hint" id="{id}-ps-hint">{r.psa.secretSet ? t.writeOnlyKeep : t.writeOnlyHint}</div>
           </div>
           {#if v !== 'autotask'}
             <div class="field">
               <label for="{id}-pco">{t.settings.al.psaCompany[v]}</label>
-              <input id="{id}-pco" bind:value={r.psa.company} required={v === 'connectwise'} autocomplete="off" spellcheck="false" />
+              <input
+                id="{id}-pco"
+                bind:value={r.psa.company}
+                required={v === 'connectwise'}
+                autocomplete="off"
+                spellcheck="false"
+              />
             </div>
           {/if}
           {#if v === 'autotask'}
@@ -536,7 +676,13 @@
           {/if}
           <div class="field">
             <label for="{id}-pa">{t.settings.al.psaAccount[v]}</label>
-            <input id="{id}-pa" bind:value={r.psa.account} required={v !== 'halopsa'} autocomplete="off" spellcheck="false" />
+            <input
+              id="{id}-pa"
+              bind:value={r.psa.account}
+              required={v !== 'halopsa'}
+              autocomplete="off"
+              spellcheck="false"
+            />
           </div>
           <div class="field">
             <label for="{id}-pb">{t.settings.al.psaBoard[v]}</label>
@@ -544,7 +690,13 @@
           </div>
           <div class="field">
             <label for="{id}-pcl">{t.settings.al.psaClosed}</label>
-            <input id="{id}-pcl" bind:value={r.psa.closed_status} autocomplete="off" spellcheck="false" aria-describedby="{id}-pcl-hint" />
+            <input
+              id="{id}-pcl"
+              bind:value={r.psa.closed_status}
+              autocomplete="off"
+              spellcheck="false"
+              aria-describedby="{id}-pcl-hint"
+            />
             <div class="hint" id="{id}-pcl-hint">{t.settings.al.psaClosedHint[v]}</div>
           </div>
         </div>

@@ -35,11 +35,26 @@
 </script>
 
 <div class="chart ring-wrap">
-  <svg class="plot" viewBox="0 0 {size} {size}" width={size} height={size} role="img" aria-label="{title}: {big} {small}">
+  <svg
+    class="plot"
+    viewBox="0 0 {size} {size}"
+    width={size}
+    height={size}
+    role="img"
+    aria-label="{title}: {big} {small}"
+  >
     <circle class="ring-track" cx={size / 2} cy={size / 2} {r} stroke-width={sw} />
     <g transform="rotate(-90 {size / 2} {size / 2})">
       {#each arcs as a, i (i)}
-        <circle class="arc {a.cls}" cx={size / 2} cy={size / 2} {r} stroke-width={sw} stroke-dasharray={a.dash} stroke-dashoffset={a.offset} />
+        <circle
+          class="arc {a.cls}"
+          cx={size / 2}
+          cy={size / 2}
+          {r}
+          stroke-width={sw}
+          stroke-dasharray={a.dash}
+          stroke-dashoffset={a.offset}
+        />
       {/each}
     </g>
     <text class="big" x={size / 2} y={size / 2 + (small ? 4 : 9)} text-anchor="middle">{big}</text>

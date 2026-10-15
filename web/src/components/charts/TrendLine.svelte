@@ -10,7 +10,13 @@
     forecastDays,
     title,
     height = 230,
-  }: { data: { day: string; used: number }[]; total: number; forecastDays: number | null; title: string; height?: number } = $props();
+  }: {
+    data: { day: string; used: number }[];
+    total: number;
+    forecastDays: number | null;
+    title: string;
+    height?: number;
+  } = $props();
 
   const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
   let w = $state(640);
@@ -25,7 +31,9 @@
   const fEnd = $derived(last + slope * ext);
   const span = $derived(Math.max(1, n - 1 + ext));
   // axis in one binary unit
-  const unit = $derived(Math.max(0, Math.min(UNITS.length - 1, Math.floor(Math.log(Math.max(total, last, 1)) / Math.log(1024)))));
+  const unit = $derived(
+    Math.max(0, Math.min(UNITS.length - 1, Math.floor(Math.log(Math.max(total, last, 1)) / Math.log(1024)))),
+  );
   const div = $derived(1024 ** unit);
   const max = $derived(niceMax((Math.max(total, last, fEnd) * 1.04) / div) * div);
   const x = (i: number) => M.l + (i / span) * iw;
@@ -69,7 +77,8 @@
     {/if}
     {#if total > 0}
       <line class="limit" x1={M.l} x2={w - M.r} y1={y(total)} y2={y(total)} />
-      <text class="limit-label" x={w - M.r} y={y(total) - 6} text-anchor="end">{t.dash.capTotal} {fmtBytes(total)}</text>
+      <text class="limit-label" x={w - M.r} y={y(total) - 6} text-anchor="end">{t.dash.capTotal} {fmtBytes(total)}</text
+      >
     {/if}
     <line class="baseline" x1={M.l} x2={w - M.r} y1={M.t + ih + 0.5} y2={M.t + ih + 0.5} />
     <g class="axis">
@@ -88,7 +97,9 @@
     <div class="tooltip" style:left="{Math.min(Math.max(x(hover), 90), w - 90)}px" style:top="{y(data[hover].used)}px">
       <strong>{fmtDay(data[hover].day, true)}</strong>
       <div class="tt-row"><span class="swatch c1"></span>{t.dash.capUsed}<b>{fmtBytes(data[hover].used)}</b></div>
-      {#if total > 0}<div class="tt-row"><span class="swatch limit"></span>{t.dash.capTotal}<b>{fmtPct(data[hover].used / total)}</b></div>{/if}
+      {#if total > 0}<div class="tt-row">
+          <span class="swatch limit"></span>{t.dash.capTotal}<b>{fmtPct(data[hover].used / total)}</b>
+        </div>{/if}
     </div>
   {/if}
   <ul class="legend">

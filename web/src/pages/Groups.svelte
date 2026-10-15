@@ -11,7 +11,18 @@
   import { t } from '../lib/i18n';
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds } from '../lib/plugins';
-  import type { Agent, Group, GroupMode, IndexRules, Inventory, Plugin, PluginGuest, Policy, Source, Tenant } from '../lib/types';
+  import type {
+    Agent,
+    Group,
+    GroupMode,
+    IndexRules,
+    Inventory,
+    Plugin,
+    PluginGuest,
+    Policy,
+    Source,
+    Tenant,
+  } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import BackupNow from '../components/BackupNow.svelte';
@@ -126,7 +137,10 @@
       return null;
     }
     if (all.length) out['*'] = all;
-    for (const line of f.disksPer.split('\n').map((l) => l.trim()).filter(Boolean)) {
+    for (const line of f.disksPer
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)) {
       const m = /^(\d+)\s*:\s*(.+)$/.exec(line);
       const disks = m ? diskList(m[2]) : [];
       if (!m || !disks.length || disks.some((d) => !DISK_RE.test(d))) {
@@ -144,7 +158,9 @@
   const invSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
     if (!s) return null;
-    return s.kind === 'pve' || s.kind === 'truenas' || (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list) ? s : null;
+    return s.kind === 'pve' || s.kind === 'truenas' || (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list)
+      ? s
+      : null;
   });
   let inv = $state<Inventory | null>(null);
   let invBusy = $state(false);
@@ -225,7 +241,9 @@
   /** Loaded guests of the selected source plus already selected ids that were not listed. */
   const guestChoices = $derived.by(() => {
     const listed = guestList && guestList.source === Number(f.source_id) ? guestList.guests : [];
-    const extra = f.datasets.filter((g) => !listed.some((x) => x.id === g)).map((id) => ({ id, title: id }) as PluginGuest);
+    const extra = f.datasets
+      .filter((g) => !listed.some((x) => x.id === g))
+      .map((id) => ({ id, title: id }) as PluginGuest);
     return [...listed, ...extra];
   });
 
@@ -279,9 +297,27 @@
   let indexFiles = $state(true);
   // Phase 31b: search scope rules (GET/PUT /groups/{id}/index-rules); new groups start with the defaults
   const DEFAULT_EXCLUDES = [
-    '/$Recycle.Bin', '/Windows', '/Program Files', '/Program Files (x86)', '/ProgramData', '/System Volume Information',
-    '/Users/*/AppData', '/Recovery', '/proc', '/sys', '/dev', '/run', '/tmp', '/usr', '/lib', '/lib64', '/boot',
-    '/var/cache', '/var/tmp', '/var/lib/docker', '/var/lib/containerd',
+    '/$Recycle.Bin',
+    '/Windows',
+    '/Program Files',
+    '/Program Files (x86)',
+    '/ProgramData',
+    '/System Volume Information',
+    '/Users/*/AppData',
+    '/Recovery',
+    '/proc',
+    '/sys',
+    '/dev',
+    '/run',
+    '/tmp',
+    '/usr',
+    '/lib',
+    '/lib64',
+    '/boot',
+    '/var/cache',
+    '/var/tmp',
+    '/var/lib/docker',
+    '/var/lib/containerd',
   ];
   let rules: IndexRules | null = $state(null);
   let scope = $state({ defaults: true, include: '', exclude: '' });
@@ -296,10 +332,15 @@
       /* no rules shown: the defaults apply */
     }
   }
-  const ruleLines = (v: string) => v.split('\n').map((l) => l.trim()).filter(Boolean);
+  const ruleLines = (v: string) =>
+    v
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
   // absolute, / separators, no empty or relative components; * only inside a component
   const RULE_RE = /^(\/[^/\\\x00-\x1f]+)+$/;
-  const ruleOk = (r: string) => RULE_RE.test(r) && !r.split('/').some((c) => c === '.' || c === '..') && r.length <= 1024;
+  const ruleOk = (r: string) =>
+    RULE_RE.test(r) && !r.split('/').some((c) => c === '.' || c === '..') && r.length <= 1024;
   /** The rules from the form, or null after telling the user what is wrong. */
   function scopeBody(): { defaults: boolean; include: string[]; exclude: string[] } | null {
     const include = ruleLines(scope.include);
@@ -317,7 +358,9 @@
   }
   const sameRules = (a: { defaults: boolean; include: string[]; exclude: string[] }, b: IndexRules | null) =>
     b
-      ? a.defaults === b.defaults && a.include.join('\n') === b.include.join('\n') && a.exclude.join('\n') === b.exclude.join('\n')
+      ? a.defaults === b.defaults &&
+        a.include.join('\n') === b.include.join('\n') &&
+        a.exclude.join('\n') === b.exclude.join('\n')
       : a.defaults && !a.include.length && !a.exclude.length;
   // Phase 28: scheduled YARA scan (PUT /groups/{id}/threat-scan) and file hashes (PUT /groups/{id}/file-hashes)
   let scanMode: 'off' | 'daily' | 'custom' = $state('off');
@@ -328,7 +371,8 @@
   // Phase 29: full read (change-tracking check), PUT /groups/{id}/full-read; '' = the default
   let fullRead = $state('');
   const fullReadDefault = $derived((editing as Group | null)?.full_read_default ?? (pveSource ? 90 : 30));
-  const scanSchedule = () => (scanMode === 'off' ? null : scanMode === 'daily' ? `daily ${scanAt}` : scanCustom.trim() || null);
+  const scanSchedule = () =>
+    scanMode === 'off' ? null : scanMode === 'daily' ? `daily ${scanAt}` : scanCustom.trim() || null;
   // Another source: the selected guests/datasets belonged to the old one.
   let lastSource = 0;
   $effect(() => {
@@ -363,7 +407,10 @@
     } else if (nasSource) {
       guests = f.datasets.filter((d) => nasSource.config.datasets.includes(d));
     } else {
-      guests = f.guests.split(/[\s,]+/).filter(Boolean).map(Number);
+      guests = f.guests
+        .split(/[\s,]+/)
+        .filter(Boolean)
+        .map(Number);
       if (guests.some((g) => !Number.isInteger(g) || Number(g) < 100)) {
         notify('error', t.groups.guests);
         return;
@@ -395,18 +442,27 @@
       const id = editing?.id ?? (r.data as Partial<Group>).id;
       const was = editing ? !!editing.index_files : ((r.data as Partial<Group>).index_files ?? false);
       if (pveSource && id && !r.quorum && indexFiles !== was)
-        await act(put(`/groups/${id}/index-files`, { enabled: indexFiles }), indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff);
+        await act(
+          put(`/groups/${id}/index-files`, { enabled: indexFiles }),
+          indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff,
+        );
       if (scopeNew && id && !r.quorum && !sameRules(scopeNew, rules))
         await act(put(`/groups/${id}/index-rules`, scopeNew), t.groups.scopeSaved);
       const sched = scanSchedule();
-      const budget = String(scanBudget ?? "").trim() ? Number(scanBudget) : null;
+      const budget = String(scanBudget ?? '').trim() ? Number(scanBudget) : null;
       if (id && (sched !== (editing?.scan_schedule ?? null) || budget !== (editing?.scan_budget_min ?? null))) {
-        const sr = await act(put<{ rules: boolean }>(`/groups/${id}/threat-scan`, { schedule: sched, budget_min: budget }), t.groups.scanSaved);
+        const sr = await act(
+          put<{ rules: boolean }>(`/groups/${id}/threat-scan`, { schedule: sched, budget_min: budget }),
+          t.groups.scanSaved,
+        );
         if (sr && sched && sr.data?.rules === false) notify('info', t.groups.scanNoRules);
       }
       if (id && fileHashes !== !!editing?.file_hashes)
-        await act(put(`/groups/${id}/file-hashes`, { enabled: fileHashes }), fileHashes ? t.groups.fileHashesOn : t.groups.fileHashesOff);
-      const days = String(fullRead ?? "").trim() === "" ? null : Number(fullRead);
+        await act(
+          put(`/groups/${id}/file-hashes`, { enabled: fileHashes }),
+          fileHashes ? t.groups.fileHashesOn : t.groups.fileHashesOff,
+        );
+      const days = String(fullRead ?? '').trim() === '' ? null : Number(fullRead);
       if (id && !pluginSource && days !== (editing?.full_read_days ?? null))
         await act(put(`/groups/${id}/full-read`, { days }), t.p29.fullRead.saved);
       open = false;
@@ -419,7 +475,10 @@
   let pauseOpen = $state(false);
   let target: Group | null = $state(null);
   async function pause(u: number | null) {
-    if (target && (await act(post(`/groups/${target.id}/pause`, u === null ? {} : { until: u }), t.runctl.pausedDone))) {
+    if (
+      target &&
+      (await act(post(`/groups/${target.id}/pause`, u === null ? {} : { until: u }), t.runctl.pausedDone))
+    ) {
       pauseOpen = false;
       load();
     }
@@ -448,7 +507,8 @@
 
 <div class="page-head">
   <h1>{t.groups.title}</h1>
-  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.groups.new}</button>
+  <button type="button" class="primary" onclick={() => edit(null)}><IconPlus aria-hidden="true" />{t.groups.new}</button
+  >
   <p class="lede">{t.groups.lede}</p>
 </div>
 <ErrorBanner {error} />
@@ -478,7 +538,9 @@
               <td
                 ><strong>{x.name}</strong>
                 {#if isPaused(x.paused_until)}<span class="chip warn"
-                    >{x.paused_until === -1 ? t.runctl.pausedForever : t.runctl.pausedUntil(fmtTime(x.paused_until))}</span
+                    >{x.paused_until === -1
+                      ? t.runctl.pausedForever
+                      : t.runctl.pausedUntil(fmtTime(x.paused_until))}</span
                   >{/if}
                 {#if isPaused(x.maintenance_until)}<span class="chip warn">{t.runctl.inMaintenance}</span>{/if}
                 {#if x.blackout_active}<span class="chip plain">{t.runctl.blackoutNow}</span>{/if}
@@ -489,7 +551,10 @@
                 {:else if x.full_read_days}<span class="chip plain">{t.p29.fullRead.chip(x.full_read_days)}</span>{/if}
                 {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}
                 {#if diskCount(x) || (x.parallel_guests ?? 1) > 1}<div class="muted">
-                    {[diskCount(x) ? t.groups.disksShort(diskCount(x)) : '', (x.parallel_guests ?? 1) > 1 ? t.groups.parallelShort(x.parallel_guests) : '']
+                    {[
+                      diskCount(x) ? t.groups.disksShort(diskCount(x)) : '',
+                      (x.parallel_guests ?? 1) > 1 ? t.groups.parallelShort(x.parallel_guests) : '',
+                    ]
                       .filter(Boolean)
                       .join(' · ')}
                   </div>{/if}</td
@@ -498,8 +563,11 @@
               <td>{sourceName(x.source_id)}</td>
               <td>{policyName(x.policy_id)}</td>
               <td class="mono"
-                >{#if x.mode && x.mode !== 'explicit'}{t.groups.auto(x.mode, x.selector.join(', '))}{#if x.exclude.length}<span
-                      class="muted"> · {t.groups.except(x.exclude.join(', '))}</span
+                >{#if x.mode && x.mode !== 'explicit'}{t.groups.auto(
+                    x.mode,
+                    x.selector.join(', '),
+                  )}{#if x.exclude.length}<span class="muted">
+                      · {t.groups.except(x.exclude.join(', '))}</span
                     >{/if}{:else}{x.guests.length
                     ? x.guests.map(guestText).join(', ')
                     : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}{/if}</td
@@ -563,13 +631,17 @@
       <div class="field">
         <label for="g-pol">{t.groups.policy}</label>
         <select id="g-pol" bind:value={f.policy_id} required>
-          {#each policies as p (p.id)}<option value={p.id}>{p.name} ({p.schedule}){p.tier ? ` · ${t.tiers.names[p.tier]}` : ''}</option>{/each}
+          {#each policies as p (p.id)}<option value={p.id}
+              >{p.name} ({p.schedule}){p.tier ? ` · ${t.tiers.names[p.tier]}` : ''}</option
+            >{/each}
         </select>
       </div>
       <div class="field">
         <label for="g-tz">{t.runctl.timezone}</label>
         <input id="g-tz" list="g-tz-list" bind:value={f.timezone} required aria-describedby="g-tz-hint" />
-        <datalist id="g-tz-list">{#each zones as z (z)}<option value={z}></option>{/each}</datalist>
+        <datalist id="g-tz-list"
+          >{#each zones as z (z)}<option value={z}></option>{/each}</datalist
+        >
         <div class="hint" id="g-tz-hint">{t.runctl.timezoneHint}</div>
       </div>
     </div>
@@ -578,7 +650,9 @@
         <legend>{t.groups.mode}</legend>
         <div class="row">
           {#each MODES as m (m)}
-            <label class="inline-check"><input type="radio" name="g-mode" value={m} bind:group={f.mode} />{t.groups.modes[m]}</label>
+            <label class="inline-check"
+              ><input type="radio" name="g-mode" value={m} bind:group={f.mode} />{t.groups.modes[m]}</label
+            >
           {/each}
         </div>
         <p class="hint">{t.groups.modeHint[f.mode]}</p>
@@ -622,9 +696,8 @@
         <p class="hint">{t.groups.excludeHint}</p>
         {#each matched as g (g.guest)}
           <label class="inline-check"
-            ><input type="checkbox" value={g.guest} bind:group={f.exclude} /><span class="mono">{g.guest}</span>{#if g.name !== g.guest}<span
-                >{g.name}</span
-              >{/if}</label
+            ><input type="checkbox" value={g.guest} bind:group={f.exclude} /><span class="mono">{g.guest}</span
+            >{#if g.name !== g.guest}<span>{g.name}</span>{/if}</label
           >
         {/each}
         <p class="muted" role="status">{t.groups.preview(protectedNow, matched.length - protectedNow)}</p>
@@ -695,12 +768,22 @@
       {#if scanMode !== 'off'}
         <div class="field">
           <label for="g-scan-budget">{t.groups.scanBudget}</label>
-          <input id="g-scan-budget" type="number" min="1" max="1440" bind:value={scanBudget} aria-describedby="g-scan-budget-hint" />
+          <input
+            id="g-scan-budget"
+            type="number"
+            min="1"
+            max="1440"
+            bind:value={scanBudget}
+            aria-describedby="g-scan-budget-hint"
+          />
           <p class="hint" id="g-scan-budget-hint">{t.groups.scanBudgetHint}</p>
         </div>
       {/if}
       <div class="field">
-        <label class="inline-check"><input type="checkbox" bind:checked={fileHashes} aria-describedby="g-hash-hint" />{t.groups.fileHashes}</label>
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={fileHashes} aria-describedby="g-hash-hint" />{t.groups
+            .fileHashes}</label
+        >
         <p class="hint" id="g-hash-hint">{t.groups.fileHashesHint}</p>
       </div>
     </fieldset>
@@ -729,9 +812,8 @@
         <div class="row">
           {#each [true, false] as on (on)}
             <label class="inline-check"
-              ><input type="radio" name="g-idx" value={on} bind:group={indexFiles} aria-describedby="g-idx-hint" />{t.groups.indexFilesModes[
-                on ? 'on' : 'off'
-              ]}</label
+              ><input type="radio" name="g-idx" value={on} bind:group={indexFiles} aria-describedby="g-idx-hint" />{t
+                .groups.indexFilesModes[on ? 'on' : 'off']}</label
             >
           {/each}
         </div>
@@ -741,20 +823,32 @@
         <legend>{t.groups.disks}</legend>
         <div class="field">
           <label for="g-disks">{t.groups.excludeDisks}</label>
-          <input id="g-disks" class="mono" bind:value={f.disksAll} placeholder="scsi1, virtio2" aria-describedby="g-disks-hint" />
+          <input
+            id="g-disks"
+            class="mono"
+            bind:value={f.disksAll}
+            placeholder="scsi1, virtio2"
+            aria-describedby="g-disks-hint"
+          />
           <div class="hint" id="g-disks-hint">{t.groups.excludeDisksHint}</div>
         </div>
         <div class="field">
           <label for="g-disks-per">{t.groups.excludeDisksPer}</label>
-          <textarea id="g-disks-per" class="mono" bind:value={f.disksPer} spellcheck="false" placeholder={t.groups.excludeDisksPerHint}
-          ></textarea>
+          <textarea
+            id="g-disks-per"
+            class="mono"
+            bind:value={f.disksPer}
+            spellcheck="false"
+            placeholder={t.groups.excludeDisksPerHint}></textarea>
         </div>
         <div class="field">
           <span class="muted">{t.groups.restoreMode}</span>
           <div class="row">
             {#each ['placeholder', 'omit'] as m (m)}
               <label class="inline-check"
-                ><input type="radio" name="g-dmode" value={m} bind:group={f.disksMode} />{t.groups.restoreModes[m]}</label
+                ><input type="radio" name="g-dmode" value={m} bind:group={f.disksMode} />{t.groups.restoreModes[
+                  m
+                ]}</label
               >
             {/each}
           </div>
@@ -765,26 +859,53 @@
       <legend>{t.groups.scope}</legend>
       <p class="hint">{t.groups.scopeHint}</p>
       <label class="inline-check"
-        ><input type="checkbox" bind:checked={scope.defaults} disabled={!canWrite} aria-describedby="g-scope-defaults" />{t.groups.scopeDefaults}</label
+        ><input
+          type="checkbox"
+          bind:checked={scope.defaults}
+          disabled={!canWrite}
+          aria-describedby="g-scope-defaults"
+        />{t.groups.scopeDefaults}</label
       >
-      <p class="hint mono" id="g-scope-defaults">{t.groups.scopeDefaultList((rules?.default_excludes ?? DEFAULT_EXCLUDES).join(', '))}</p>
+      <p class="hint mono" id="g-scope-defaults">
+        {t.groups.scopeDefaultList((rules?.default_excludes ?? DEFAULT_EXCLUDES).join(', '))}
+      </p>
       <div class="form-grid">
         <div class="field">
           <label for="g-scope-inc">{t.groups.scopeInclude}</label>
-          <textarea id="g-scope-inc" class="mono" rows="3" bind:value={scope.include} readonly={!canWrite} spellcheck="false" placeholder="/var/log"
-          ></textarea>
+          <textarea
+            id="g-scope-inc"
+            class="mono"
+            rows="3"
+            bind:value={scope.include}
+            readonly={!canWrite}
+            spellcheck="false"
+            placeholder="/var/log"></textarea>
         </div>
         <div class="field">
           <label for="g-scope-exc">{t.groups.scopeExclude}</label>
-          <textarea id="g-scope-exc" class="mono" rows="3" bind:value={scope.exclude} readonly={!canWrite} spellcheck="false" placeholder="/data/tmp"
-          ></textarea>
+          <textarea
+            id="g-scope-exc"
+            class="mono"
+            rows="3"
+            bind:value={scope.exclude}
+            readonly={!canWrite}
+            spellcheck="false"
+            placeholder="/data/tmp"></textarea>
         </div>
       </div>
     </fieldset>
     {#if parallelSource}
       <div class="field">
         <label for="g-par">{t.groups.parallel}</label>
-        <input id="g-par" type="number" min="1" max="8" bind:value={f.parallel} required aria-describedby="g-par-hint" />
+        <input
+          id="g-par"
+          type="number"
+          min="1"
+          max="8"
+          bind:value={f.parallel}
+          required
+          aria-describedby="g-par-hint"
+        />
         <div class="hint" id="g-par-hint">{t.groups.parallelHint}</div>
       </div>
     {/if}

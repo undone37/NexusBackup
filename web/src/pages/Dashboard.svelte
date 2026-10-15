@@ -78,11 +78,18 @@
   const usedShare = $derived(cap && cap.total > 0 ? cap.used / cap.total : null);
   let kinds: Map<string, KindInfo> = $state(new Map());
   // plugin kinds by their plugin name (e.g. "PostgreSQL"), else the generic label
-  const kindName = (k: string) => t.dash.kinds[k] ?? kinds.get(k)?.plugin.name ?? (k.startsWith('plugin') ? t.dash.kinds.plugin : k);
+  const kindName = (k: string) =>
+    t.dash.kinds[k] ?? kinds.get(k)?.plugin.name ?? (k.startsWith('plugin') ? t.dash.kinds.plugin : k);
   const worstKind = kindName;
   // only what needs action; healthy objects are counted in the protection chart
   const attention = $derived(pr?.worst.filter((w) => w.sla !== 'ok' && w.sla !== 'deactivated') ?? []);
-  const slaCls: Record<string, string> = { ok: 'ok', breach: 'bad', never: 'warn', paused: 'plain', deactivated: 'plain' };
+  const slaCls: Record<string, string> = {
+    ok: 'ok',
+    breach: 'bad',
+    never: 'warn',
+    paused: 'plain',
+    deactivated: 'plain',
+  };
   // Phase 17f: deactivated tenants (no backups on purpose: never a breach)
   const offTenants = $derived(pr?.deactivated_tenants ?? []);
   const toneOf = (bad: boolean, warn: boolean): '' | 'bad' | 'warn' => (bad ? 'bad' : warn ? 'warn' : '');
@@ -126,7 +133,11 @@
     }
     try {
       let plugins: Plugin[];
-      [agents, sources, plugins] = await Promise.all([get<Agent[]>('/agents'), get<Source[]>('/sources'), get<Plugin[]>('/plugins')]);
+      [agents, sources, plugins] = await Promise.all([
+        get<Agent[]>('/agents'),
+        get<Source[]>('/sources'),
+        get<Plugin[]>('/plugins'),
+      ]);
       kinds = pluginKinds(plugins);
     } catch {
       /* agent names / source kinds are cosmetic here */
@@ -144,7 +155,10 @@
   // ---- hardware health (16a; GET /hardware, appliance-wide roles only)
   let hwSum = $state<Hardware['summary'] | null>(null);
   async function loadHw() {
-    if (can.viewHardware(session.user)) hwSum = await get<Hardware>('/hardware').then((h) => h.summary).catch(() => hwSum);
+    if (can.viewHardware(session.user))
+      hwSum = await get<Hardware>('/hardware')
+        .then((h) => h.summary)
+        .catch(() => hwSum);
   }
   const hwTone = (s: Hardware['summary']): '' | 'ok' | 'warn' | 'bad' =>
     s.state === 'critical' ? 'bad' : s.state === 'warning' ? 'warn' : s.state === 'ok' ? 'ok' : '';
@@ -176,7 +190,9 @@
         for (const g of auto.filter((x) => x.source_id === sid))
           m.set(
             g.id,
-            inv.guests.filter((x) => x.gone === null && x.groups.includes(g.name)).map((x) => (pve ? Number(x.guest) : x.guest)),
+            inv.guests
+              .filter((x) => x.gone === null && x.groups.includes(g.name))
+              .map((x) => (pve ? Number(x.guest) : x.guest)),
           );
       } catch {
         /* shown without guests */
@@ -271,7 +287,6 @@
   }
   const statusCls = { ok: 'ok', stale: 'bad', missing: 'bad', paused: 'plain', deactivated: 'plain' };
 
-
   let bnOpen = $state(false);
   let bnGroup: Group | null = $state(null);
   function backupNow(g: Group) {
@@ -312,17 +327,26 @@
 {/if}
 {#if approvals?.recommend && !dismissed && can.configure(session.user)}
   <div class="banner warn approvals-banner" role="status">
-    <span>{t.dash.approvalsBanner(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
+    <span
+      >{t.dash.approvalsBanner(approvals.possible_approvers)}
+      <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span
+    >
     <button type="button" class="small" onclick={dismiss}>{t.dash.dismiss}</button>
   </div>
 {/if}
 {#if approvals?.few_approvers && can.decideQuorum(session.user)}
   <div class="banner warn few-approvers" role="status">
-    <span>{t.access.fewApprovers(approvals.possible_approvers)} <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span>
+    <span
+      >{t.access.fewApprovers(approvals.possible_approvers)}
+      <a href={href('/settings?tab=approvals')}>{t.dash.approvalsLink}</a></span
+    >
   </div>
 {/if}
 {#if offTenants.length}
-  <p class="banner" role="status">{t.tdis.dashBanner(offTenants)}{#if session.user?.role === 'admin'} <a href={href('/tenants')}>{t.tenants.title}</a>{/if}</p>
+  <p class="banner" role="status">
+    {t.tdis.dashBanner(offTenants)}{#if session.user?.role === 'admin'}
+      <a href={href('/tenants')}>{t.tenants.title}</a>{/if}
+  </p>
 {/if}
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
@@ -377,7 +401,10 @@
       value={cap.forecast_full_days === null ? t.dash.kForecastNone : t.dash.kForecastDays(cap.forecast_full_days)}
       sub={t.dash.kForecastSub}
       href={href('/storage')}
-      tone={toneOf(cap.forecast_full_days !== null && cap.forecast_full_days < 30, cap.forecast_full_days !== null && cap.forecast_full_days < 90)}
+      tone={toneOf(
+        cap.forecast_full_days !== null && cap.forecast_full_days < 30,
+        cap.forecast_full_days !== null && cap.forecast_full_days < 90,
+      )}
     />
     <KpiTile
       icon={IconCloud}
@@ -392,7 +419,8 @@
       icon={IconLock}
       label={t.dash.kLock}
       value={fmtPct(os.lock_coverage)}
-      sub={t.dash.kVerify(fmtAgo(os.last_verify)) + (os.verify_failed ? ` · ${os.verify_failed} ${t.dash.failed_.toLowerCase()}` : '')}
+      sub={t.dash.kVerify(fmtAgo(os.last_verify)) +
+        (os.verify_failed ? ` · ${os.verify_failed} ${t.dash.failed_.toLowerCase()}` : '')}
       meter={os.lock_coverage}
       tone={toneOf(os.verify_failed > 0, os.lock_coverage !== null && os.lock_coverage < 1)}
       href={href('/storage')}
@@ -429,13 +457,21 @@
   <div class="dash-grid">
     <section class="card span-8" aria-labelledby="c-jobs">
       <div class="card-head">
-        <div><h2 id="c-jobs">{t.dash.jobsChart}</h2><div class="sub">{t.dash.jobsChartSub}</div></div>
+        <div>
+          <h2 id="c-jobs">{t.dash.jobsChart}</h2>
+          <div class="sub">{t.dash.jobsChartSub}</div>
+        </div>
         <a href={href('/jobs')}>{t.nav.jobs}</a>
       </div>
       <StackedBars data={jb.per_day} title={t.dash.jobsChart} />
     </section>
     <section class="card span-4" aria-labelledby="c-prot">
-      <div class="card-head"><div><h2 id="c-prot">{t.dash.protChart}</h2><div class="sub">{t.dash.protChartSub}</div></div></div>
+      <div class="card-head">
+        <div>
+          <h2 id="c-prot">{t.dash.protChart}</h2>
+          <div class="sub">{t.dash.protChartSub}</div>
+        </div>
+      </div>
       <Ring
         title={t.dash.protChart}
         big={fmtPct(pr.objects ? pr.sla_ok / pr.objects : null, 0)}
@@ -451,14 +487,22 @@
 
     <section class="card span-8" aria-labelledby="c-cap">
       <div class="card-head">
-        <div><h2 id="c-cap">{t.dash.capChart}</h2><div class="sub">{t.dash.capChartSub}</div></div>
-        {#if cap.forecast_full_days !== null}<span class="chip {cap.forecast_full_days < 90 ? 'warn' : 'plain'}">{t.dash.capFullIn(t.dash.kForecastDays(cap.forecast_full_days))}</span>{/if}
+        <div>
+          <h2 id="c-cap">{t.dash.capChart}</h2>
+          <div class="sub">{t.dash.capChartSub}</div>
+        </div>
+        {#if cap.forecast_full_days !== null}<span class="chip {cap.forecast_full_days < 90 ? 'warn' : 'plain'}"
+            >{t.dash.capFullIn(t.dash.kForecastDays(cap.forecast_full_days))}</span
+          >{/if}
       </div>
       <TrendLine data={cap.per_day} total={cap.total} forecastDays={cap.forecast_full_days} title={t.dash.capChart} />
     </section>
     <section class="card span-4" aria-labelledby="c-red">
       <div class="card-head">
-        <div><h2 id="c-red">{t.dash.redChart}</h2><div class="sub">{t.dash.redChartSub}</div></div>
+        <div>
+          <h2 id="c-red">{t.dash.redChart}</h2>
+          <div class="sub">{t.dash.redChartSub}</div>
+        </div>
         <a href={href('/storage')}>{t.nav.storage}</a>
       </div>
       <Ring
@@ -472,22 +516,46 @@
         ]}
       />
       <dl class="factors">
-        <div><dt>{t.dash.logical}</dt><dd>{fmtBytes(cap.logical)}</dd></div>
-        <div><dt>{t.dash.dedup}</dt><dd>{fmtRatio(cap.dedup)}</dd></div>
-        <div><dt>{t.dash.compression}</dt><dd>{fmtRatio(cap.compression)}</dd></div>
+        <div>
+          <dt>{t.dash.logical}</dt>
+          <dd>{fmtBytes(cap.logical)}</dd>
+        </div>
+        <div>
+          <dt>{t.dash.dedup}</dt>
+          <dd>{fmtRatio(cap.dedup)}</dd>
+        </div>
+        <div>
+          <dt>{t.dash.compression}</dt>
+          <dd>{fmtRatio(cap.compression)}</dd>
+        </div>
       </dl>
     </section>
 
     <section class="card span-4" aria-labelledby="c-fail">
-      <div class="card-head"><div><h2 id="c-fail">{t.dash.failChart}</h2><div class="sub">{t.dash.failChartSub(days)}</div></div></div>
+      <div class="card-head">
+        <div>
+          <h2 id="c-fail">{t.dash.failChart}</h2>
+          <div class="sub">{t.dash.failChartSub(days)}</div>
+        </div>
+      </div>
       {#if jb.failed_by_kind.some((f) => f.failed > 0)}
-        <HBars title={t.dash.failChart} items={jb.failed_by_kind.filter((f) => f.failed > 0).map((f) => ({ label: kindName(f.kind), value: f.failed }))} />
+        <HBars
+          title={t.dash.failChart}
+          items={jb.failed_by_kind
+            .filter((f) => f.failed > 0)
+            .map((f) => ({ label: kindName(f.kind), value: f.failed }))}
+        />
       {:else}
         <p class="empty">{t.dash.noFailures}</p>
       {/if}
     </section>
     <section class="card span-8" aria-labelledby="c-worst">
-      <div class="card-head"><div><h2 id="c-worst">{t.dash.worst}</h2><div class="sub">{t.dash.worstSub}</div></div></div>
+      <div class="card-head">
+        <div>
+          <h2 id="c-worst">{t.dash.worst}</h2>
+          <div class="sub">{t.dash.worstSub}</div>
+        </div>
+      </div>
       {#if attention.length === 0}
         <p class="empty">{t.dash.allGood}</p>
       {:else}
@@ -506,7 +574,10 @@
             <tbody>
               {#each attention as w (`${w.tenant}/${w.source}`)}
                 <tr>
-                  <td>{w.name}<div class="muted mono">{w.source}</div></td>
+                  <td
+                    >{w.name}
+                    <div class="muted mono">{w.source}</div></td
+                  >
                   {#if !session.user?.tenant}<td>{w.tenant}</td>{/if}
                   <td>{worstKind(w.kind)}</td>
                   <td class="nowrap" title={fmtTime(w.last_ok)}>
@@ -541,7 +612,9 @@
               <tbody>
                 {#each notCovered.slice(0, NOT_COVERED_SHOWN) as o, i (i)}
                   <tr>
-                    <td>{o.name}{#if o.guest && o.guest !== o.name}<div class="muted mono">{o.guest}</div>{/if}</td>
+                    <td
+                      >{o.name}{#if o.guest && o.guest !== o.name}<div class="muted mono">{o.guest}</div>{/if}</td
+                    >
                     {#if !session.user?.tenant}<td>{o.tenant}</td>{/if}
                     <td>{kindName(o.kind)}</td>
                     <td>{o.source}</td>
@@ -550,7 +623,9 @@
               </tbody>
             </table>
           </div>
-          {#if (pr?.unprotected ?? 0) > NOT_COVERED_SHOWN}<p class="muted">{t.dash.notInGroupMore((pr?.unprotected ?? 0) - NOT_COVERED_SHOWN)}</p>{/if}
+          {#if (pr?.unprotected ?? 0) > NOT_COVERED_SHOWN}<p class="muted">
+              {t.dash.notInGroupMore((pr?.unprotected ?? 0) - NOT_COVERED_SHOWN)}
+            </p>{/if}
           {#if can.configure(session.user)}<p><a href={href('/groups')}>{t.dash.openGroups}</a></p>{/if}
         </details>
       </section>
@@ -607,11 +682,23 @@
                     <Check on={ver} title={ver ? `${t.dash.verified}: ${fmtTime(ver.verified)}` : ''} />
                     <span class="muted">{ver ? fmtAgo(ver.time) : ''}</span>
                   </td>
-                  <td>{#if s}<ConsistencyBadge level={s.consistency} />{/if}</td>
-                  <td><span class="chip {statusCls[st]}">{st === 'paused' ? t.runctl.paused : st === 'deactivated' ? t.tdis.deactivated : t.dash[st]}</span></td>
+                  <td
+                    >{#if s}<ConsistencyBadge level={s.consistency} />{/if}</td
+                  >
+                  <td
+                    ><span class="chip {statusCls[st]}"
+                      >{st === 'paused'
+                        ? t.runctl.paused
+                        : st === 'deactivated'
+                          ? t.tdis.deactivated
+                          : t.dash[st]}</span
+                    ></td
+                  >
                   {#if can.backup(session.user) && i === 0}
                     <td class="actions" rowspan={guestsOf(g).length}>
-                      <button type="button" class="small" onclick={() => backupNow(g)}><IconPlay aria-hidden="true" />{t.dash.runBackup}</button>
+                      <button type="button" class="small" onclick={() => backupNow(g)}
+                        ><IconPlay aria-hidden="true" />{t.dash.runBackup}</button
+                      >
                     </td>
                   {/if}
                 </tr>
@@ -645,27 +732,27 @@
       {/if}
     </section>
     {#if showAlerts}<section class="card" aria-labelledby="oa">
-      <h2 id="oa">{t.dash.openAlerts} <a href={href('/alerts')} class="muted">{t.nav.alerts}</a></h2>
-      {#if alerts.length === 0}
-        <p class="empty">{t.none}</p>
-      {:else}
-        <table>
-          <tbody>
-            {#each alerts.slice(0, 6) as a (a.id)}
-              <tr>
-                <td>
-                  <span class="chip {a.severity === 'critical' ? 'bad' : a.severity === 'warning' ? 'warn' : 'info'}"
-                    >{a.severity}</span
-                  >
-                </td>
-                <td>{a.message}</td>
-                <td class="nowrap muted">{fmtAgo(a.ts)}</td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </section>{/if}
+        <h2 id="oa">{t.dash.openAlerts} <a href={href('/alerts')} class="muted">{t.nav.alerts}</a></h2>
+        {#if alerts.length === 0}
+          <p class="empty">{t.none}</p>
+        {:else}
+          <table>
+            <tbody>
+              {#each alerts.slice(0, 6) as a (a.id)}
+                <tr>
+                  <td>
+                    <span class="chip {a.severity === 'critical' ? 'bad' : a.severity === 'warning' ? 'warn' : 'info'}"
+                      >{a.severity}</span
+                    >
+                  </td>
+                  <td>{a.message}</td>
+                  <td class="nowrap muted">{fmtAgo(a.ts)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </section>{/if}
   </div>
 {/if}
 

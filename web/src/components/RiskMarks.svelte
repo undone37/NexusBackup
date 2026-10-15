@@ -47,14 +47,21 @@
           <tbody>
             {#each marks as m (m.user_id)}
               <tr>
-                <td><strong>{m.user}</strong>{#if m.tenant}<div class="muted">{m.tenant}</div>{/if}</td>
+                <td
+                  ><strong>{m.user}</strong>{#if m.tenant}<div class="muted">{m.tenant}</div>{/if}</td
+                >
                 <td>{t.roles[m.role] ?? m.role}</td>
                 <td>{m.reason}</td>
                 <td class="nowrap" title={fmtTime(m.since)}>{fmtAgo(m.since)}</td>
                 <td class="nowrap">{fmtTime(m.until)}</td>
                 <td class="actions">
                   {#if m.user_id !== session.user?.id}
-                    <button type="button" class="small" onclick={() => clear(m)} aria-label={t.p29.risk.clearLabel(m.user)}>{t.p29.risk.clear}</button>
+                    <button
+                      type="button"
+                      class="small"
+                      onclick={() => clear(m)}
+                      aria-label={t.p29.risk.clearLabel(m.user)}>{t.p29.risk.clear}</button
+                    >
                   {/if}
                 </td>
               </tr>

@@ -9,7 +9,13 @@
     hint,
     submit,
     onsubmit,
-  }: { open?: boolean; title: string; hint: string; submit: string; onsubmit: (until: number | null) => void } = $props();
+  }: {
+    open?: boolean;
+    title: string;
+    hint: string;
+    submit: string;
+    onsubmit: (until: number | null) => void;
+  } = $props();
 
   const CHOICES = [1, 3, 7, 14, 30];
   let days: number | 0 = $state(1);

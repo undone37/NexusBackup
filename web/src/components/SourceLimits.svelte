@@ -16,19 +16,41 @@
     {#if pve}
       <div class="field">
         <label for="lim-par">{t.limits.maxParallel}</label>
-        <input id="lim-par" type="number" min="1" max="8" placeholder={t.limits.noCap} bind:value={form.max_parallel} aria-describedby="lim-par-hint" />
+        <input
+          id="lim-par"
+          type="number"
+          min="1"
+          max="8"
+          placeholder={t.limits.noCap}
+          bind:value={form.max_parallel}
+          aria-describedby="lim-par-hint"
+        />
         <div class="hint" id="lim-par-hint">{t.limits.maxParallelHint}</div>
       </div>
       <div class="field">
         <label for="lim-caps">{t.limits.storageCaps}</label>
-        <textarea id="lim-caps" class="mono" rows="2" spellcheck="false" placeholder={'ceph-ssd=2'} bind:value={form.caps} aria-describedby="lim-caps-hint"
-        ></textarea>
+        <textarea
+          id="lim-caps"
+          class="mono"
+          rows="2"
+          spellcheck="false"
+          placeholder={'ceph-ssd=2'}
+          bind:value={form.caps}
+          aria-describedby="lim-caps-hint"></textarea>
         <div class="hint" id="lim-caps-hint">{t.limits.storageCapsHint}</div>
       </div>
     {/if}
     <div class="field">
       <label for="lim-rate">{t.limits.rate}</label>
-      <input id="lim-rate" type="number" min="0.01" step="any" placeholder={t.limits.unlimited} bind:value={form.rate} aria-describedby="lim-rate-hint" />
+      <input
+        id="lim-rate"
+        type="number"
+        min="0.01"
+        step="any"
+        placeholder={t.limits.unlimited}
+        bind:value={form.rate}
+        aria-describedby="lim-rate-hint"
+      />
       <div class="hint" id="lim-rate-hint">{t.limits.rateHint}</div>
     </div>
     {#if form.windows.length}
@@ -40,7 +62,13 @@
       </div>
     {/if}
   </div>
-  <BlackoutEditor bind:windows={form.windows} mode="limit" idp="lim-w" legend={t.limits.windows} hint={t.limits.windowsHint} />
+  <BlackoutEditor
+    bind:windows={form.windows}
+    mode="limit"
+    idp="lim-w"
+    legend={t.limits.windows}
+    hint={t.limits.windowsHint}
+  />
 </fieldset>
 
 <style>

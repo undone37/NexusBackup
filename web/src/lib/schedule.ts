@@ -37,7 +37,14 @@ function dayList(s: string): string[] | null {
 
 /** Parses a schedule string into the builder form, or null if invalid. */
 export function parseSchedule(s: string): SchedForm | null {
-  const base: SchedForm = { kind: 'daily', every: 1, hour: 1, minute: 0, days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], monthDay: 1 };
+  const base: SchedForm = {
+    kind: 'daily',
+    every: 1,
+    hour: 1,
+    minute: 0,
+    days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'],
+    monthDay: 1,
+  };
   const p = s.split(' ');
   const hm = (t: string) => {
     const m = HHMM.exec(t);
@@ -47,7 +54,8 @@ export function parseSchedule(s: string): SchedForm | null {
     const t = hm(p[1]);
     return t && { ...base, kind: 'daily', ...t };
   }
-  if (p[0] === 'hourly' && p.length === 2) return MM.test(p[1]) ? { ...base, kind: 'hours', every: 1, minute: Number(p[1]) } : null;
+  if (p[0] === 'hourly' && p.length === 2)
+    return MM.test(p[1]) ? { ...base, kind: 'hours', every: 1, minute: Number(p[1]) } : null;
   if (p[0] === 'every' && p.length === 2 && /^\d{1,2}m$/.test(p[1])) {
     const n = Number(p[1].slice(0, -1));
     return EVERY_MIN.includes(n) ? { ...base, kind: 'minutes', every: n, minute: 0 } : null;
@@ -132,12 +140,21 @@ const formats = new Map<string, Intl.DateTimeFormat>();
 function local(t: number, tz: string): { day: number; mins: number } {
   let f = formats.get(tz);
   if (!f) {
-    f = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    });
     formats.set(tz, f);
   }
   const parts = f.formatToParts(new Date(t * 1000));
   const get = (k: string) => parts.find((p) => p.type === k)?.value ?? '';
-  return { day: DAYS.indexOf(get('weekday') as (typeof DAYS)[number]), mins: Number(get('hour')) * 60 + Number(get('minute')) };
+  return {
+    day: DAYS.indexOf(get('weekday') as (typeof DAYS)[number]),
+    mins: Number(get('hour')) * 60 + Number(get('minute')),
+  };
 }
 
 /** Whether one of the windows is active at `t` in `tz` (wall-clock approximation; the scheduler decides). */
@@ -165,7 +182,8 @@ export function timeZones(): string[] {
 }
 
 /** `paused_until` / `maintenance_until`: active now? (-1 = indefinitely) */
-export const isPaused = (until: number | null | undefined, t = Date.now() / 1000) => until === -1 || (!!until && until > t);
+export const isPaused = (until: number | null | undefined, t = Date.now() / 1000) =>
+  until === -1 || (!!until && until > t);
 
 /** Allowed bytes per second at `t` (0 = paused, Infinity = unlimited): pause > lowest active limit > base. */
 export function allowanceAt(windows: RateWindow[], base: number | null | undefined, tz: string, t: number): number {
@@ -182,15 +200,24 @@ export function bandwidthWeaker(
   from = Date.now() / 1000,
 ): boolean {
   for (let t = from; t < from + 7 * 86400; t += 900)
-    if (allowanceAt(next.windows, next.base, next.tz, t) > allowanceAt(prev.windows, prev.base, prev.tz, t)) return true;
+    if (allowanceAt(next.windows, next.base, next.tz, t) > allowanceAt(prev.windows, prev.base, prev.tz, t))
+      return true;
   return false;
 }
 
 /** Inside the sync window (none = always). */
-export const syncOpen = (spans: Span[], tz: string, t = Date.now() / 1000) => !spans.length || blackoutActive(spans, tz, t);
+export const syncOpen = (spans: Span[], tz: string, t = Date.now() / 1000) =>
+  !spans.length || blackoutActive(spans, tz, t);
 
 /** Sampled like {@link bandwidthWeaker}: is `next` open somewhere `prev` is closed? */
-export function syncWidened(prev: Span[], prevTz: string, next: Span[], nextTz: string, from = Date.now() / 1000): boolean {
-  for (let t = from; t < from + 7 * 86400; t += 900) if (syncOpen(next, nextTz, t) && !syncOpen(prev, prevTz, t)) return true;
+export function syncWidened(
+  prev: Span[],
+  prevTz: string,
+  next: Span[],
+  nextTz: string,
+  from = Date.now() / 1000,
+): boolean {
+  for (let t = from; t < from + 7 * 86400; t += 900)
+    if (syncOpen(next, nextTz, t) && !syncOpen(prev, prevTz, t)) return true;
   return false;
 }

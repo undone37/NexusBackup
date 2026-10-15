@@ -41,7 +41,10 @@
     <h2 id="acc-h" class="visually-hidden">{t.access.account}</h2>
     <dl class="kv">
       <dt>{t.name}</dt>
-      <dd><strong>{u.name}</strong>{#if u.auth === 'oidc'} <span class="chip accent">{t.users.sso}</span>{/if}</dd>
+      <dd>
+        <strong>{u.name}</strong>{#if u.auth === 'oidc'}
+          <span class="chip accent">{t.users.sso}</span>{/if}
+      </dd>
       <dt>{t.users.role}</dt>
       <dd>{t.roles[u.role] ?? u.role}</dd>
       <dt>{t.tenant}</dt>

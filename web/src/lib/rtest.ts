@@ -41,6 +41,8 @@ export function toChecks(f: ChecksForm, ct: boolean): RtChecks {
 }
 
 /** One line per check for tables: ✓/✗ name. */
-export const checkSummary = (cs: RtCheck[] | null | undefined) => (cs ?? []).map((c) => `${c.ok ? '✓' : '✗'} ${c.name}`).join('  ');
+export const checkSummary = (cs: RtCheck[] | null | undefined) =>
+  (cs ?? []).map((c) => `${c.ok ? '✓' : '✗'} ${c.name}`).join('  ');
 
-export const stateChip = (s: string) => (s === 'passed' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' ? 'info' : 'plain');
+export const stateChip = (s: string) =>
+  s === 'passed' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' ? 'info' : 'plain';

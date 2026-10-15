@@ -71,7 +71,9 @@
                     <ProgressBar size="s" value={pct(j)} label={t.jobs.progress} />
                   {:else}
                     <!-- no figures from this kind of job: how long it runs -->
-                    <span class="muted small">{t.dash.runningFor(fmtDuration(Math.max(0, Date.now() / 1000 - (j.started ?? j.created))))}</span>
+                    <span class="muted small"
+                      >{t.dash.runningFor(fmtDuration(Math.max(0, Date.now() / 1000 - (j.started ?? j.created))))}</span
+                    >
                   {/if}
                 </td>
                 <td class="num nowrap tabular">

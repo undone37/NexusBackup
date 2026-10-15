@@ -16,7 +16,11 @@
     <path d="M20 180V100l60 60V60l60 60V20l40 40" stroke-linecap="round" stroke-linejoin="round" />
     <path d="M20 100l60-40 60 60 40-60M80 160l60-40" stroke-linecap="round" opacity="0.6" />
     <g fill="currentColor" stroke="none">
-      <circle cx="20" cy="180" r="3" /><circle cx="20" cy="100" r="3" /><circle cx="80" cy="160" r="3" /><circle cx="80" cy="60" r="3" />
+      <circle cx="20" cy="180" r="3" /><circle cx="20" cy="100" r="3" /><circle cx="80" cy="160" r="3" /><circle
+        cx="80"
+        cy="60"
+        r="3"
+      />
       <circle cx="140" cy="120" r="3" /><circle cx="140" cy="20" r="4.5" /><circle cx="180" cy="60" r="3" />
     </g>
   </svg>

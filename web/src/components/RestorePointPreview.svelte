@@ -21,7 +21,13 @@
     policyId = null,
     tenant = null,
     height = 170,
-  }: { input: SimInput; before?: SimInput | null; policyId?: number | null; tenant?: string | null; height?: number } = $props();
+  }: {
+    input: SimInput;
+    before?: SimInput | null;
+    policyId?: number | null;
+    tenant?: string | null;
+    height?: number;
+  } = $props();
 
   let sim = $state<Simulation | null>(null);
   let old = $state<Simulation | null>(null);
@@ -79,7 +85,14 @@
     <p class="muted" aria-busy="true">{t.loading}</p>
   {:else}
     <div class="chart" bind:clientWidth={w}>
-      <svg class="plot" width={w} {height} viewBox="0 0 {w} {height}" role="img" aria-label={t.sp.sim.chart(sim.final.points, sim.days)}>
+      <svg
+        class="plot"
+        width={w}
+        {height}
+        viewBox="0 0 {w} {height}"
+        role="img"
+        aria-label={t.sp.sim.chart(sim.final.points, sim.days)}
+      >
         <g class="grid axis">
           {#each ticks as v (v)}
             <line x1={M.l} x2={w - M.r} y1={y(v)} y2={y(v)} />
@@ -99,7 +112,8 @@
       <dt>{t.sp.sim.points}</dt>
       <dd>
         <strong>{sim.final.points}</strong>
-        {#if old && old.final.points !== sim.final.points}<span class="muted">({t.sp.sim.was(old.final.points)})</span>{/if}
+        {#if old && old.final.points !== sim.final.points}<span class="muted">({t.sp.sim.was(old.final.points)})</span
+          >{/if}
         <span class="muted">{classes(sim)}</span>
       </dd>
       <dt>{t.sp.sim.oldest}</dt>
@@ -108,8 +122,12 @@
       <dd>
         {#if sim.estimate}
           <strong>≈ {fmtBytes(sim.estimate.stored)}</strong>
-          {#if old?.estimate && old.estimate.stored !== sim.estimate.stored}<span class="muted">({t.sp.sim.was(fmtBytes(old.estimate.stored))})</span>{/if}
-          <div class="hint">{t.sp.sim.storedHow(fmtBytes(sim.estimate.full), fmtBytes(sim.estimate.delta), sim.estimate.sources)}</div>
+          {#if old?.estimate && old.estimate.stored !== sim.estimate.stored}<span class="muted"
+              >({t.sp.sim.was(fmtBytes(old.estimate.stored))})</span
+            >{/if}
+          <div class="hint">
+            {t.sp.sim.storedHow(fmtBytes(sim.estimate.full), fmtBytes(sim.estimate.delta), sim.estimate.sources)}
+          </div>
         {:else}
           <span class="muted">{t.sp.sim.noStats}</span>
         {/if}

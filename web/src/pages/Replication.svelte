@@ -92,7 +92,10 @@
   async function savePeer(e: SubmitEvent) {
     e.preventDefault();
     const r = await act(
-      post<{ peer: ReplicationPeer; code: string; primary_cert_sha256?: string | null }>('/replication/peers', { name: pf.name.trim(), tenants: pf.tenants }),
+      post<{ peer: ReplicationPeer; code: string; primary_cert_sha256?: string | null }>('/replication/peers', {
+        name: pf.name.trim(),
+        tenants: pf.tenants,
+      }),
       t.created,
     );
     if (!r) return;
@@ -128,7 +131,19 @@
     mbps: '',
   });
   function newSource() {
-    sf = { name: '', url: '', code: '', fingerprint: '', tenants: '', schedule: 'daily 02:00', daily: 14, weekly: 4, monthly: 6, yearly: 2, mbps: '' };
+    sf = {
+      name: '',
+      url: '',
+      code: '',
+      fingerprint: '',
+      tenants: '',
+      schedule: 'daily 02:00',
+      daily: 14,
+      weekly: 4,
+      monthly: 6,
+      yearly: 2,
+      mbps: '',
+    };
     srcOpen = true;
   }
   async function saveSource(e: SubmitEvent) {
@@ -143,7 +158,12 @@
         .map((x) => x.trim())
         .filter(Boolean),
       schedule: sf.schedule.trim(),
-      gfs: { daily: Number(sf.daily), weekly: Number(sf.weekly), monthly: Number(sf.monthly), yearly: Number(sf.yearly) },
+      gfs: {
+        daily: Number(sf.daily),
+        weekly: Number(sf.weekly),
+        monthly: Number(sf.monthly),
+        yearly: Number(sf.yearly),
+      },
       bwlimit: sf.mbps ? Math.round(Number(sf.mbps) * 1e6) : null,
     };
     if (await act(post('/replication/sources', body), t.created)) {
@@ -198,14 +218,21 @@
     if (!o || !winOpen) return false;
     const tz = o.timezone ?? 'UTC';
     return (
-      bandwidthWeaker({ windows: o.windows ?? [], base: o.bwlimit, tz }, { windows: wf.windows, base: wfBase, tz: wf.tz }) ||
-      syncWidened(o.sync_window ?? [], tz, wf.sync, wf.tz)
+      bandwidthWeaker(
+        { windows: o.windows ?? [], base: o.bwlimit, tz },
+        { windows: wf.windows, base: wfBase, tz: wf.tz },
+      ) || syncWidened(o.sync_window ?? [], tz, wf.sync, wf.tz)
     );
   });
   async function saveWindows(e: SubmitEvent) {
     e.preventDefault();
     if (!wf.windows.every(validRateWindow) || !wf.sync.every(validWindow)) return;
-    const body = { windows: $state.snapshot(wf.windows), sync_window: $state.snapshot(wf.sync), timezone: wf.tz, bwlimit: wfBase };
+    const body = {
+      windows: $state.snapshot(wf.windows),
+      sync_window: $state.snapshot(wf.sync),
+      timezone: wf.tz,
+      bwlimit: wfBase,
+    };
     if (await act(put(`/replication/sources/${wf.id}`, body), t.saved)) {
       winOpen = false;
       load();
@@ -224,9 +251,16 @@
   function sourceActions(s: ReplicationSource): MenuItem[] {
     const out: MenuItem[] = [];
     if (can.closeVault(session.user))
-      out.push(closed(s) ? { label: t.repl.reopen, onselect: () => reopen(s) } : { label: t.repl.closeVault, onselect: () => closeVault(s) });
+      out.push(
+        closed(s)
+          ? { label: t.repl.reopen, onselect: () => reopen(s) }
+          : { label: t.repl.closeVault, onselect: () => closeVault(s) },
+      );
     if (admin) {
-      out.push({ label: t.repl.schedule, onselect: () => setSchedule(s) }, { label: t.repl.windows, onselect: () => editWindows(s) });
+      out.push(
+        { label: t.repl.schedule, onselect: () => setSchedule(s) },
+        { label: t.repl.windows, onselect: () => editWindows(s) },
+      );
       if (s.state !== 'enrolled') out.push({ label: t.repl.newCode, onselect: () => newCode(s) });
       out.push({ label: t.delete, onselect: () => removeSource(s) });
     }
@@ -277,7 +311,10 @@
         <tbody>
           {#each peers as p (p.id)}
             <tr>
-              <td><strong>{p.name}</strong> <div class="muted mono">{p.id}</div></td>
+              <td
+                ><strong>{p.name}</strong>
+                <div class="muted mono">{p.id}</div></td
+              >
               <td>{p.tenants.join(', ')}</td>
               <td>
                 <span class="chip {stateCls[p.state] ?? ''}">{t.repl.states[p.state] ?? p.state}</span>
@@ -291,7 +328,10 @@
               <td class="mono">
                 {p.keyd_fingerprint ?? '—'}
                 {#if p.state === 'enrolled'}
-                  {#if p.post_quantum}<span class="chip accent" title={t.p30.pq.hint}>{t.p30.pq.chip}</span>{:else}<span class="chip" title={t.p30.pq.peerLegacyHint}>{t.p30.pq.legacy}</span>{/if}
+                  {#if p.post_quantum}<span class="chip accent" title={t.p30.pq.hint}>{t.p30.pq.chip}</span>{:else}<span
+                      class="chip"
+                      title={t.p30.pq.peerLegacyHint}>{t.p30.pq.legacy}</span
+                    >{/if}
                 {/if}
               </td>
               <td class="mono" title={p.cert_sha256 ?? ''}>{shortFp(p.cert_sha256)}</td>
@@ -340,7 +380,10 @@
           {#each sources as s (s.id)}
             <tr>
               <td><strong>{s.name}</strong></td>
-              <td class="mono">{s.url}<div class="muted" title={s.cert_pin}>{shortFp(s.cert_pin)}</div></td>
+              <td class="mono"
+                >{s.url}
+                <div class="muted" title={s.cert_pin}>{shortFp(s.cert_pin)}</div></td
+              >
               <td>
                 <span class="chip {stateCls[s.state] ?? ''}">{t.repl.states[s.state] ?? s.state}</span>
                 {#if closed(s)}
@@ -365,13 +408,21 @@
               </td>
               <td>
                 {#each syncing[s.id] ?? [] as j (j.id)}
-                  <div><a class="chip info" href={href(`/jobs/${j.id}`)}>{j.state === 'running' ? t.repl.syncRunning(j.tenant, j.id) : t.repl.syncQueued(j.tenant, j.id)}</a></div>
+                  <div>
+                    <a class="chip info" href={href(`/jobs/${j.id}`)}
+                      >{j.state === 'running'
+                        ? t.repl.syncRunning(j.tenant, j.id)
+                        : t.repl.syncQueued(j.tenant, j.id)}</a
+                    >
+                  </div>
                 {/each}
                 {#each s.tenants as tn (tn)}
                   {@const st = s.status?.[tn]}
                   <div>
                     <strong>{tn}</strong>:
-                    {#if st?.last_ok}<span title={fmtTime(st.last_ok)}>{fmtAgo(st.last_ok, now)}</span>{:else}<span class="muted">{t.repl.never}</span>{/if}
+                    {#if st?.last_ok}<span title={fmtTime(st.last_ok)}>{fmtAgo(st.last_ok, now)}</span>{:else}<span
+                        class="muted">{t.repl.never}</span
+                      >{/if}
                     {#if st?.last_error && (st.last_error_at ?? 0) > (st.last_ok ?? 0)}
                       <div class="chip bad" title={st.last_error}>{t.repl.error}: {st.last_error.slice(0, 80)}</div>
                     {/if}
@@ -381,9 +432,15 @@
               <td class="mono">{s.keyd_fingerprint ?? '—'}</td>
               <td class="actions">
                 {#if s.state === 'enrolled' && !closed(s) && syncOpen(s.sync_window ?? [], s.timezone ?? 'UTC', now) && can.syncReplication(session.user)}
-                  <button type="button" class="small" disabled={!!syncing[s.id]?.length} onclick={() => syncNow(s)}>{t.repl.syncNow}</button>
+                  <button type="button" class="small" disabled={!!syncing[s.id]?.length} onclick={() => syncNow(s)}
+                    >{t.repl.syncNow}</button
+                  >
                 {/if}
-                {#if sourceActions(s).length}<Menu label={t.agents.more} ariaLabel={t.repl.moreLabel(s.name)} items={sourceActions(s)} />{/if}
+                {#if sourceActions(s).length}<Menu
+                    label={t.agents.more}
+                    ariaLabel={t.repl.moreLabel(s.name)}
+                    items={sourceActions(s)}
+                  />{/if}
               </td>
             </tr>
           {/each}
@@ -491,8 +548,20 @@
 <Modal bind:open={winOpen} title={t.repl.windowsTitle(wf.name)} wide>
   <form onsubmit={saveWindows}>
     <p class="hint">{t.windows.gatedHint}</p>
-    <BlackoutEditor bind:windows={wf.sync} mode="span" idp="w-sync" legend={t.windows.syncWindow} hint={t.windows.syncWindowHint} />
-    <BlackoutEditor bind:windows={wf.windows} mode="rate" idp="w-bw" legend={t.windows.bandwidth} hint={t.windows.bandwidthHint} />
+    <BlackoutEditor
+      bind:windows={wf.sync}
+      mode="span"
+      idp="w-sync"
+      legend={t.windows.syncWindow}
+      hint={t.windows.syncWindowHint}
+    />
+    <BlackoutEditor
+      bind:windows={wf.windows}
+      mode="rate"
+      idp="w-bw"
+      legend={t.windows.bandwidth}
+      hint={t.windows.bandwidthHint}
+    />
     <div class="form-grid">
       <div class="field">
         <label for="w-tz">{t.windows.timezone}</label>

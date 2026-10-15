@@ -28,8 +28,11 @@
     {#if onisolateNet || onisolatePath}
       <p>
         {t.p29.infected.isolated}
-        {#if onisolateNet}<button type="button" class="small" onclick={onisolateNet}>{t.p29.infected.isolateNet}</button>{/if}
-        {#if onisolatePath}<button type="button" class="small" onclick={onisolatePath}>{t.p29.infected.isolatePath}</button>{/if}
+        {#if onisolateNet}<button type="button" class="small" onclick={onisolateNet}>{t.p29.infected.isolateNet}</button
+          >{/if}
+        {#if onisolatePath}<button type="button" class="small" onclick={onisolatePath}
+            >{t.p29.infected.isolatePath}</button
+          >{/if}
       </p>
     {/if}
   </div>

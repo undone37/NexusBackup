@@ -23,9 +23,9 @@
       ? { days: [], from: '08:00', to: '18:00', action: 'pause' }
       : mode === 'limit'
         ? { days: [], from: '08:00', to: '18:00', action: 'limit', rate_bytes: 50e6 }
-      : mode === 'span'
-        ? { days: [], from: '22:00', to: '06:00' }
-        : { days: [], from: '08:00', to: '18:00', abort: false };
+        : mode === 'span'
+          ? { days: [], from: '22:00', to: '06:00' }
+          : { days: [], from: '08:00', to: '18:00', abort: false };
   const add = () => (windows = [...windows, fresh()]);
   const remove = (i: number) => (windows = windows.filter((_, j) => j !== i));
   // rates are edited in MB/s, stored in bytes per second
@@ -62,7 +62,15 @@
         {#if mode === 'limit'}
           <div class="field">
             <label for="{idp}-rate-{i}">{t.windows.rate}</label>
-            <input id="{idp}-rate-{i}" type="number" min="0.01" step="any" required value={mbps(w)} oninput={(e) => setRate(w, e.currentTarget.value)} />
+            <input
+              id="{idp}-rate-{i}"
+              type="number"
+              min="0.01"
+              step="any"
+              required
+              value={mbps(w)}
+              oninput={(e) => setRate(w, e.currentTarget.value)}
+            />
           </div>
         {:else if mode === 'rate'}
           <div class="field">
@@ -75,7 +83,15 @@
           {#if w.action === 'limit'}
             <div class="field">
               <label for="{idp}-rate-{i}">{t.windows.rate}</label>
-              <input id="{idp}-rate-{i}" type="number" min="0.01" step="any" required value={mbps(w)} oninput={(e) => setRate(w, e.currentTarget.value)} />
+              <input
+                id="{idp}-rate-{i}"
+                type="number"
+                min="0.01"
+                step="any"
+                required
+                value={mbps(w)}
+                oninput={(e) => setRate(w, e.currentTarget.value)}
+              />
             </div>
           {/if}
         {/if}
@@ -86,7 +102,9 @@
         {:else}
           <span></span>
         {/if}
-        <button type="button" class="small icon-text" onclick={() => remove(i)}><IconX aria-hidden="true" />{t.runctl.removeWindow}</button>
+        <button type="button" class="small icon-text" onclick={() => remove(i)}
+          ><IconX aria-hidden="true" />{t.runctl.removeWindow}</button
+        >
       </div>
     </div>
   {/each}

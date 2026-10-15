@@ -30,10 +30,13 @@
     busy = true;
     error = null;
     try {
-      const r = await post<{ name: string; totp_uri: string; totp_secret: string; passkey_required?: boolean }>('/auth/activate/begin', {
-        name: name.trim(),
-        code: code.trim(),
-      });
+      const r = await post<{ name: string; totp_uri: string; totp_secret: string; passkey_required?: boolean }>(
+        '/auth/activate/begin',
+        {
+          name: name.trim(),
+          code: code.trim(),
+        },
+      );
       enroll = { totp_uri: r.data.totp_uri ?? '', totp_secret: r.data.totp_secret ?? '' };
       passkeyRequired = !!r.data.passkey_required;
       passkey = null;
@@ -76,7 +79,13 @@
     error = null;
     try {
       const pk = passkey ? { passkey, passkey_name: passkeyName.trim() } : {};
-      await post('/auth/activate/complete', { name: name.trim(), code: code.trim(), password, totp: totp.trim(), ...pk });
+      await post('/auth/activate/complete', {
+        name: name.trim(),
+        code: code.trim(),
+        password,
+        totp: totp.trim(),
+        ...pk,
+      });
       withPasskey = !!passkey;
       passkey = null;
       password = repeat = code = totp = '';
@@ -96,112 +105,137 @@
 <div class="login">
   <AuthHero />
   <div class="pane">
-  <div class="card" aria-labelledby="act-title">
-    <div class="brand"><Logo />{t.app}</div>
-    <h1 id="act-title">{t.activate.title}</h1>
-    {#if step < 4}
-      <ol class="steps">
-        {#each steps as s, i (s)}
-          <li aria-current={step === i + 1 ? 'step' : undefined}>{s}</li>
-        {/each}
-      </ol>
-    {/if}
-    {#if error}<div class="banner error" role="alert">{error}</div>{/if}
+    <div class="card" aria-labelledby="act-title">
+      <div class="brand"><Logo />{t.app}</div>
+      <h1 id="act-title">{t.activate.title}</h1>
+      {#if step < 4}
+        <ol class="steps">
+          {#each steps as s, i (s)}
+            <li aria-current={step === i + 1 ? 'step' : undefined}>{s}</li>
+          {/each}
+        </ol>
+      {/if}
+      {#if error}<div class="banner error" role="alert">{error}</div>{/if}
 
-    {#if step === 1}
-      <p class="muted">{t.activate.intro}</p>
-      <form onsubmit={begin}>
-        <div class="field">
-          <label for="a-name">{t.activate.name}</label>
-          <input id="a-name" bind:value={name} autocomplete="username" required autocapitalize="none" spellcheck="false" />
-        </div>
-        <div class="field">
-          <label for="a-code">{t.activate.code}</label>
-          <input
-            id="a-code"
-            bind:value={code}
-            autocomplete="off"
-            required
-            autocapitalize="characters"
-            spellcheck="false"
-            aria-describedby="a-code-hint"
-          />
-          <div class="hint" id="a-code-hint">{t.activate.codeHint}</div>
-        </div>
-        <button class="primary" type="submit" disabled={busy}>{busy ? t.activate.checking : t.activate.next}</button>
-      </form>
-    {:else if step === 2}
-      <form onsubmit={choosePassword}>
-        <input type="text" class="visually-hidden" value={name} autocomplete="username" readonly tabindex="-1" aria-hidden="true" />
-        <div class="field">
-          <label for="a-pw">{t.activate.password}</label>
-          <input
-            id="a-pw"
-            type="password"
-            bind:value={password}
-            minlength="12"
-            required
-            autocomplete="new-password"
-            aria-describedby="a-pw-hint"
-          />
-          <div class="hint" id="a-pw-hint">{t.activate.passwordHint}</div>
-        </div>
-        <div class="field">
-          <label for="a-pw2">{t.activate.passwordRepeat}</label>
-          <input id="a-pw2" type="password" bind:value={repeat} minlength="12" required autocomplete="new-password" />
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="primary">{t.activate.next}</button>
-        </div>
-      </form>
-    {:else if step === 3 && enroll}
-      <form onsubmit={complete}>
-        <p>{t.activate.scan}</p>
-        <div class="qr-box">
-          <Qr text={enroll.totp_uri} label="{t.activate.stepAuth} {name}" />
+      {#if step === 1}
+        <p class="muted">{t.activate.intro}</p>
+        <form onsubmit={begin}>
           <div class="field">
-            <span class="muted">{t.activate.secret}</span>
-            <code class="secret">{enroll.totp_secret}</code>
+            <label for="a-name">{t.activate.name}</label>
+            <input
+              id="a-name"
+              bind:value={name}
+              autocomplete="username"
+              required
+              autocapitalize="none"
+              spellcheck="false"
+            />
           </div>
-        </div>
-        <div class="field">
-          <label for="a-totp">{t.activate.totp}</label>
+          <div class="field">
+            <label for="a-code">{t.activate.code}</label>
+            <input
+              id="a-code"
+              bind:value={code}
+              autocomplete="off"
+              required
+              autocapitalize="characters"
+              spellcheck="false"
+              aria-describedby="a-code-hint"
+            />
+            <div class="hint" id="a-code-hint">{t.activate.codeHint}</div>
+          </div>
+          <button class="primary" type="submit" disabled={busy}>{busy ? t.activate.checking : t.activate.next}</button>
+        </form>
+      {:else if step === 2}
+        <form onsubmit={choosePassword}>
           <input
-            id="a-totp"
-            bind:value={totp}
-            inputmode="numeric"
-            autocomplete="one-time-code"
-            pattern={'[0-9]{6}'}
-            maxlength="6"
-            required
-            aria-describedby="a-totp-hint"
+            type="text"
+            class="visually-hidden"
+            value={name}
+            autocomplete="username"
+            readonly
+            tabindex="-1"
+            aria-hidden="true"
           />
-          <div class="hint" id="a-totp-hint">{t.activate.totpHint}</div>
-        </div>
-        {#if passkeyRequired || passkeysSupported()}
-          <fieldset class="passkey-step">
-            <legend>{t.passkeys.activateTitle}</legend>
-            <p class={passkeyRequired ? 'banner info' : 'muted'}>{passkeyRequired ? t.passkeys.activateRequired : t.passkeys.activateOptional}</p>
-            {#if passkey}
-              <p class="banner ok" role="status">{t.passkeys.activateReady}</p>
-            {:else}
-              <div class="field">
-                <label for="a-pk-name">{t.passkeys.nameLabel}</label>
-                <input id="a-pk-name" bind:value={passkeyName} maxlength="64" placeholder={t.passkeys.namePlaceholder} autocomplete="off" />
-              </div>
-              <button type="button" onclick={registerPasskey} disabled={busy}>{t.passkeys.activateRegister}</button>
-            {/if}
-          </fieldset>
-        {/if}
-        <div class="form-actions">
-          <button type="button" onclick={() => (step = 2)}>{t.activate.back}</button>
-          <button class="primary" type="submit" disabled={busy}>{busy ? t.activate.finishing : t.activate.finish}</button>
-        </div>
-      </form>
-    {:else}
-      <p class="banner ok" role="status">{withPasskey ? t.passkeys.doneWithPasskey : t.activate.done}</p>
-      <p><a href={href('/')}>{t.activate.toLogin}</a></p>
-    {/if}
+          <div class="field">
+            <label for="a-pw">{t.activate.password}</label>
+            <input
+              id="a-pw"
+              type="password"
+              bind:value={password}
+              minlength="12"
+              required
+              autocomplete="new-password"
+              aria-describedby="a-pw-hint"
+            />
+            <div class="hint" id="a-pw-hint">{t.activate.passwordHint}</div>
+          </div>
+          <div class="field">
+            <label for="a-pw2">{t.activate.passwordRepeat}</label>
+            <input id="a-pw2" type="password" bind:value={repeat} minlength="12" required autocomplete="new-password" />
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="primary">{t.activate.next}</button>
+          </div>
+        </form>
+      {:else if step === 3 && enroll}
+        <form onsubmit={complete}>
+          <p>{t.activate.scan}</p>
+          <div class="qr-box">
+            <Qr text={enroll.totp_uri} label="{t.activate.stepAuth} {name}" />
+            <div class="field">
+              <span class="muted">{t.activate.secret}</span>
+              <code class="secret">{enroll.totp_secret}</code>
+            </div>
+          </div>
+          <div class="field">
+            <label for="a-totp">{t.activate.totp}</label>
+            <input
+              id="a-totp"
+              bind:value={totp}
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              pattern={'[0-9]{6}'}
+              maxlength="6"
+              required
+              aria-describedby="a-totp-hint"
+            />
+            <div class="hint" id="a-totp-hint">{t.activate.totpHint}</div>
+          </div>
+          {#if passkeyRequired || passkeysSupported()}
+            <fieldset class="passkey-step">
+              <legend>{t.passkeys.activateTitle}</legend>
+              <p class={passkeyRequired ? 'banner info' : 'muted'}>
+                {passkeyRequired ? t.passkeys.activateRequired : t.passkeys.activateOptional}
+              </p>
+              {#if passkey}
+                <p class="banner ok" role="status">{t.passkeys.activateReady}</p>
+              {:else}
+                <div class="field">
+                  <label for="a-pk-name">{t.passkeys.nameLabel}</label>
+                  <input
+                    id="a-pk-name"
+                    bind:value={passkeyName}
+                    maxlength="64"
+                    placeholder={t.passkeys.namePlaceholder}
+                    autocomplete="off"
+                  />
+                </div>
+                <button type="button" onclick={registerPasskey} disabled={busy}>{t.passkeys.activateRegister}</button>
+              {/if}
+            </fieldset>
+          {/if}
+          <div class="form-actions">
+            <button type="button" onclick={() => (step = 2)}>{t.activate.back}</button>
+            <button class="primary" type="submit" disabled={busy}
+              >{busy ? t.activate.finishing : t.activate.finish}</button
+            >
+          </div>
+        </form>
+      {:else}
+        <p class="banner ok" role="status">{withPasskey ? t.passkeys.doneWithPasskey : t.activate.done}</p>
+        <p><a href={href('/')}>{t.activate.toLogin}</a></p>
+      {/if}
+    </div>
   </div>
-</div>
 </div>

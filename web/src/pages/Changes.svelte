@@ -126,7 +126,8 @@
     <label for="c-source">{t.changes.source}</label>
     <select id="c-source" bind:value={source} onchange={pickSource} required>
       <option value="" disabled>—</option>
-      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option>{/each}
+      {#each sources as s (s)}<option value={s}>{sourceLabel.get(s) ? `${sourceLabel.get(s)} · ${s}` : s}</option
+        >{/each}
     </select>
   </div>
   <div class="field">
@@ -187,10 +188,12 @@
                 <a href={openHref(x.path, x.change === 'deleted' ? (result.base ?? 0) : result.time)}>{x.path}</a>
               </td>
               <td class="num nowrap">
-                {#if x.change === 'changed' && x.old_size !== x.size}{fmtBytes(x.old_size ?? 0)} → {/if}{fmtBytes(x.size)}
+                {#if x.change === 'changed' && x.old_size !== x.size}{fmtBytes(x.old_size ?? 0)} →
+                {/if}{fmtBytes(x.size)}
               </td>
               <td class="nowrap">
-                {#if x.change === 'changed' && x.old_mtime !== x.mtime}{fmtTime(x.old_mtime ?? 0)} → {/if}{fmtTime(x.mtime)}
+                {#if x.change === 'changed' && x.old_mtime !== x.mtime}{fmtTime(x.old_mtime ?? 0)} →
+                {/if}{fmtTime(x.mtime)}
               </td>
             </tr>
           {:else}
@@ -201,9 +204,17 @@
     </div>
     {#if (result.total ?? 0) > PAGE}
       <div class="form-actions">
-        <span class="muted">{t.changes.range(offset + 1, Math.min(offset + PAGE, result.total ?? 0), result.total ?? 0)}</span>
-        <button type="button" disabled={offset === 0} onclick={() => compare(undefined, Math.max(0, offset - PAGE))}>{t.changes.prev}</button>
-        <button type="button" disabled={offset + PAGE >= (result.total ?? 0)} onclick={() => compare(undefined, offset + PAGE)}>{t.changes.next}</button>
+        <span class="muted"
+          >{t.changes.range(offset + 1, Math.min(offset + PAGE, result.total ?? 0), result.total ?? 0)}</span
+        >
+        <button type="button" disabled={offset === 0} onclick={() => compare(undefined, Math.max(0, offset - PAGE))}
+          >{t.changes.prev}</button
+        >
+        <button
+          type="button"
+          disabled={offset + PAGE >= (result.total ?? 0)}
+          onclick={() => compare(undefined, offset + PAGE)}>{t.changes.next}</button
+        >
       </div>
     {/if}
   </div>

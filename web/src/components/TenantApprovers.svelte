@@ -32,7 +32,10 @@
   async function setEnabled(enabled: boolean) {
     if (!(await askConfirm(enabled ? t.tappr.enableConfirm(tenant) : t.tappr.disableConfirm))) return;
     busy = true;
-    const r = await act(put(`/tenants/${encodeURIComponent(tenant)}/approvers`, { enabled }), enabled ? t.tappr.enabled : t.saved);
+    const r = await act(
+      put(`/tenants/${encodeURIComponent(tenant)}/approvers`, { enabled }),
+      enabled ? t.tappr.enabled : t.saved,
+    );
     busy = false;
     if (r) load();
   }
@@ -68,7 +71,12 @@
     {#if can.tenantApprovers(session.user)}
       <div class="form-actions">
         {#if !v.enabled}
-          <button type="button" class="primary" disabled={busy || v.approvers.length === 0} onclick={() => setEnabled(true)}>{t.tappr.enable}</button>
+          <button
+            type="button"
+            class="primary"
+            disabled={busy || v.approvers.length === 0}
+            onclick={() => setEnabled(true)}>{t.tappr.enable}</button
+          >
         {:else if !v.disable_request}
           <button type="button" disabled={busy} onclick={() => setEnabled(false)}>{t.tappr.disable}</button>
         {/if}

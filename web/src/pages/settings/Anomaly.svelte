@@ -62,7 +62,9 @@
     <form onsubmit={save}>
       <fieldset disabled={!isAdmin}>
         <div class="field">
-          <label class="inline-check"><input type="checkbox" bind:checked={form.enabled} />{t.storage.anomaly.enabled}</label>
+          <label class="inline-check"
+            ><input type="checkbox" bind:checked={form.enabled} />{t.storage.anomaly.enabled}</label
+          >
         </div>
         <div class="form-grid">
           <div class="field">
@@ -80,7 +82,8 @@
         </div>
         <div class="field">
           <label for="an-notes">{t.storage.anomaly.notes}</label>
-          <textarea id="an-notes" class="mono" rows="4" bind:value={form.notes} aria-describedby="an-notes-hint"></textarea>
+          <textarea id="an-notes" class="mono" rows="4" bind:value={form.notes} aria-describedby="an-notes-hint"
+          ></textarea>
           <div class="hint" id="an-notes-hint">{t.storage.anomaly.notesHint}</div>
         </div>
       </fieldset>

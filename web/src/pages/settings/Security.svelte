@@ -47,11 +47,23 @@
 
   async function saveSession(e: SubmitEvent) {
     e.preventDefault();
-    if (await act(put('/settings/session', { idle_min: Number(sess.idle_min), absolute_h: Number(sess.absolute_h) }), t.saved)) load();
+    if (
+      await act(
+        put('/settings/session', { idle_min: Number(sess.idle_min), absolute_h: Number(sess.absolute_h) }),
+        t.saved,
+      )
+    )
+      load();
   }
   async function savePasskeys(e: SubmitEvent) {
     e.preventDefault();
-    if (await act(put('/settings/passkeys', { require_privileged: pkf.require_privileged, rp_id: pkf.rp_id.trim() }), t.saved)) load();
+    if (
+      await act(
+        put('/settings/passkeys', { require_privileged: pkf.require_privileged, rp_id: pkf.rp_id.trim() }),
+        t.saved,
+      )
+    )
+      load();
   }
   async function saveDormant(e: SubmitEvent) {
     e.preventDefault();
@@ -88,11 +100,15 @@
     <section class="card settings-section" aria-labelledby="sec-pk">
       <div class="card-head">
         <h2 id="sec-pk">{t.passkeys.settingsTitle}</h2>
-        <span class="chip {pk.policy.require_privileged ? 'ok' : ''}">{pk.policy.require_privileged ? t.passkeys.on : t.passkeys.off}</span>
+        <span class="chip {pk.policy.require_privileged ? 'ok' : ''}"
+          >{pk.policy.require_privileged ? t.passkeys.on : t.passkeys.off}</span
+        >
       </div>
       <p>{t.passkeys.settingsHint}</p>
       {#if pk.pending}
-        <p class="banner pending"><span>{t.passkeys.pending(pk.pending)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+        <p class="banner pending">
+          <span>{t.passkeys.pending(pk.pending)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+        </p>
       {/if}
       {#if pk.without_passkey.length}
         <p class="banner {pk.policy.require_privileged ? 'warn' : 'info'}">{t.passkeys.without(pk.without_passkey)}</p>
@@ -102,11 +118,20 @@
       <form onsubmit={savePasskeys}>
         <fieldset disabled={!isAdmin}>
           <div class="field">
-            <label class="inline-check"><input type="checkbox" bind:checked={pkf.require_privileged} />{t.passkeys.require}</label>
+            <label class="inline-check"
+              ><input type="checkbox" bind:checked={pkf.require_privileged} />{t.passkeys.require}</label
+            >
           </div>
           <div class="field">
             <label for="sec-rp">{t.passkeys.rpId}</label>
-            <input id="sec-rp" bind:value={pkf.rp_id} placeholder={pk.rp_id ?? ''} autocapitalize="none" spellcheck="false" aria-describedby="sec-rp-hint" />
+            <input
+              id="sec-rp"
+              bind:value={pkf.rp_id}
+              placeholder={pk.rp_id ?? ''}
+              autocapitalize="none"
+              spellcheck="false"
+              aria-describedby="sec-rp-hint"
+            />
             <div class="hint" id="sec-rp-hint">{t.passkeys.rpIdHint(pk.rp_id)}</div>
           </div>
         </fieldset>
@@ -119,7 +144,9 @@
     <div class="card-head"><h2 id="sec-sess">{t.access.timeouts}</h2></div>
     <p>{t.access.timeoutsHint}</p>
     {#if cur.pending.session}
-      <p class="banner pending"><span>{t.access.pending(cur.pending.session)} <a href={href('/quorum')}>{t.nav.quorum}</a></span></p>
+      <p class="banner pending">
+        <span>{t.access.pending(cur.pending.session)} <a href={href('/quorum')}>{t.nav.quorum}</a></span>
+      </p>
     {/if}
     <form onsubmit={saveSession}>
       <fieldset disabled={!isAdmin}>
@@ -141,7 +168,9 @@
   <section class="card settings-section" aria-labelledby="sec-elev">
     <div class="card-head">
       <h2 id="sec-elev">{t.p30.elev.settingsTitle}</h2>
-      <span class="chip {cur.elevation.settings.approval ? 'ok' : 'plain'}">{cur.elevation.settings.approval ? t.p30.elev.withApproval : t.p30.elev.withoutApproval}</span>
+      <span class="chip {cur.elevation.settings.approval ? 'ok' : 'plain'}"
+        >{cur.elevation.settings.approval ? t.p30.elev.withApproval : t.p30.elev.withoutApproval}</span
+      >
       {#if cur.elevation.pending}<span class="chip warn">{t.quorumPending(cur.elevation.pending)}</span>{/if}
     </div>
     <p>{t.p30.elev.settingsHint(cur.elevation.min_minutes, cur.elevation.max_minutes)}</p>
@@ -174,7 +203,9 @@
   <section class="card settings-section" aria-labelledby="sec-dek">
     <div class="card-head">
       <h2 id="sec-dek">{t.access.dekRotation}</h2>
-      <span class="chip {cur.dek_rotation_days ? 'ok' : 'warn'}">{cur.dek_rotation_days ? `${cur.dek_rotation_days} d` : t.quorum.off}</span>
+      <span class="chip {cur.dek_rotation_days ? 'ok' : 'warn'}"
+        >{cur.dek_rotation_days ? `${cur.dek_rotation_days} d` : t.quorum.off}</span
+      >
     </div>
     <p>{t.access.dekRotationHint}</p>
     <form onsubmit={saveDek}>
@@ -191,7 +222,9 @@
   <section class="card settings-section" aria-labelledby="sec-dormant">
     <div class="card-head">
       <h2 id="sec-dormant">{t.access.dormant}</h2>
-      <span class="chip {cur.dormant_days ? 'ok' : 'warn'}">{cur.dormant_days ? `${cur.dormant_days} d` : t.quorum.off}</span>
+      <span class="chip {cur.dormant_days ? 'ok' : 'warn'}"
+        >{cur.dormant_days ? `${cur.dormant_days} d` : t.quorum.off}</span
+      >
     </div>
     <p>{t.access.dormantHint}</p>
     <form onsubmit={saveDormant}>

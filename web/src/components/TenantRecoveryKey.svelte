@@ -89,9 +89,14 @@
     <p class="banner warn" role="alert">{t.tkey.once}</p>
     <div class="copyline">
       <code class="secret tkey-code" aria-label={t.tkey.button}>{shown.key}</code>
-      <button type="button" class="small" onclick={() => copyText(shown!.key)}><IconCopy aria-hidden="true" />{t.users.copy}</button>
+      <button type="button" class="small" onclick={() => copyText(shown!.key)}
+        ><IconCopy aria-hidden="true" />{t.users.copy}</button
+      >
     </div>
-    <p class="muted">{t.tkey.kid}: <span class="mono">{shown.kid}</span>{#if shown.replaced} · {t.tkey.replaced(shown.replaced)}{/if}</p>
+    <p class="muted">
+      {t.tkey.kid}: <span class="mono">{shown.kid}</span>{#if shown.replaced}
+        · {t.tkey.replaced(shown.replaced)}{/if}
+    </p>
     <p class="hint">{t.tkey.steps}</p>
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (open = false)}>{t.close}</button>
@@ -117,7 +122,10 @@
         {/if}
       </div>
       {#if admin}
-        <p class="hint">{t.tkey.quorumHint}{#if info.key} {t.tkey.replaceHint}{/if}</p>
+        <p class="hint">
+          {t.tkey.quorumHint}{#if info.key}
+            {t.tkey.replaceHint}{/if}
+        </p>
         <div class="form-actions">
           <button type="button" class="primary" disabled={busy || openReq} onclick={request}>
             {info.key ? t.tkey.replace : t.tkey.generate}
@@ -144,7 +152,10 @@
               {#each info.requests as r (r.id)}
                 <tr>
                   <td class="num">{r.id}</td>
-                  <td>{r.requested_by}<div class="muted">{fmtTime(r.created)}</div></td>
+                  <td
+                    >{r.requested_by}
+                    <div class="muted">{fmtTime(r.created)}</div></td
+                  >
                   <td><span class="chip {cls[r.status] ?? ''}">{t.tkey.status[r.status] ?? r.status}</span></td>
                   <td>{r.decided_by ?? '—'}</td>
                   <td>{r.status === 'approved' && r.show_until ? fmtTime(r.show_until) : '—'}</td>

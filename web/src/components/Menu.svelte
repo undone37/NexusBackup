@@ -109,7 +109,9 @@
   {#each items as it, i (i)}
     <button type="button" role="menuitem" tabindex="-1" title={it.title} onclick={() => choose(it)}>
       {#if it.icon}<it.icon aria-hidden="true" />{/if}
-      <span>{it.label}{#if it.hint}<small>{it.hint}</small>{/if}</span>
+      <span
+        >{it.label}{#if it.hint}<small>{it.hint}</small>{/if}</span
+      >
     </button>
   {/each}
 </div>

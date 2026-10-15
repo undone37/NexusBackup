@@ -10,7 +10,11 @@
   import Modal from './Modal.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
 
-  let { open = $bindable(false), agent, onsaved }: { open?: boolean; agent: Agent | null; onsaved: () => void } = $props();
+  let {
+    open = $bindable(false),
+    agent,
+    onsaved,
+  }: { open?: boolean; agent: Agent | null; onsaved: () => void } = $props();
 
   const isAdmin = $derived(session.user?.role === 'admin');
   let pol: AgentUiPolicy = $state({ accent: '', header: '', hide_backup_now: false, hide_tray: false });
@@ -24,9 +28,19 @@
   $effect(() => {
     if (!open || !agent) return;
     const p = agent.ui_policy as Partial<AgentUiPolicy>;
-    pol = { accent: p.accent ?? '', header: p.header ?? '', hide_backup_now: !!p.hide_backup_now, hide_tray: !!p.hide_tray };
+    pol = {
+      accent: p.accent ?? '',
+      header: p.header ?? '',
+      hide_backup_now: !!p.hide_backup_now,
+      hide_tray: !!p.hide_tray,
+    };
     const l = agent.laptop as Partial<AgentLaptop>;
-    lap = { min_battery: l.min_battery ?? 0, skip_metered: !!l.skip_metered, run_missed: !!l.run_missed, retry_hours: l.retry_hours ?? 0 };
+    lap = {
+      min_battery: l.min_battery ?? 0,
+      skip_metered: !!l.skip_metered,
+      run_missed: !!l.run_missed,
+      retry_hours: l.retry_hours ?? 0,
+    };
     sessions = [];
     sessErr = null;
     edgeId = agent.edge_id ?? '';
@@ -77,7 +91,15 @@
         <div class="form-grid">
           <div class="field">
             <label for="ep-accent">{t.ep.accent}</label>
-            <input id="ep-accent" class="mono" bind:value={pol.accent} maxlength="7" pattern={'#[0-9a-fA-F]{6}'} placeholder="#0a7f5a" aria-describedby="ep-accent-hint" />
+            <input
+              id="ep-accent"
+              class="mono"
+              bind:value={pol.accent}
+              maxlength="7"
+              pattern={'#[0-9a-fA-F]{6}'}
+              placeholder="#0a7f5a"
+              aria-describedby="ep-accent-hint"
+            />
             <div class="hint" id="ep-accent-hint">{t.ep.accentHint}</div>
           </div>
           <div class="field">
@@ -86,7 +108,9 @@
             <div class="hint" id="ep-header-hint">{t.ep.headerHint}</div>
           </div>
         </div>
-        <label class="inline-check"><input type="checkbox" bind:checked={pol.hide_backup_now} />{t.ep.hideBackupNow}</label>
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={pol.hide_backup_now} />{t.ep.hideBackupNow}</label
+        >
         <label class="inline-check"><input type="checkbox" bind:checked={pol.hide_tray} />{t.ep.hideTray}</label>
       </fieldset>
       <p class="muted">
@@ -103,12 +127,26 @@
       <div class="form-grid">
         <div class="field">
           <label for="ep-bat">{t.ep.minBattery}</label>
-          <input id="ep-bat" type="number" min="0" max="100" bind:value={lap.min_battery} aria-describedby="ep-bat-hint" />
+          <input
+            id="ep-bat"
+            type="number"
+            min="0"
+            max="100"
+            bind:value={lap.min_battery}
+            aria-describedby="ep-bat-hint"
+          />
           <div class="hint" id="ep-bat-hint">{t.ep.minBatteryHint}</div>
         </div>
         <div class="field">
           <label for="ep-retry">{t.ep.retryHours}</label>
-          <input id="ep-retry" type="number" min="0" max="336" bind:value={lap.retry_hours} disabled={!lap.run_missed} />
+          <input
+            id="ep-retry"
+            type="number"
+            min="0"
+            max="336"
+            bind:value={lap.retry_hours}
+            disabled={!lap.run_missed}
+          />
         </div>
       </div>
       <label class="inline-check"><input type="checkbox" bind:checked={lap.skip_metered} />{t.ep.skipMetered}</label>

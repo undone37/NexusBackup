@@ -41,7 +41,10 @@ export function limitsConfig(f: LimitsForm, pve: boolean): Record<string, unknow
       out.max_parallel = n;
     }
     const caps: Record<string, number> = {};
-    for (const l of f.caps.split('\n').map((x) => x.trim()).filter(Boolean)) {
+    for (const l of f.caps
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean)) {
       const m = /^([A-Za-z0-9._-]{1,64})\s*=\s*(\d)$/.exec(l);
       if (!m || Number(m[2]) < 1 || Number(m[2]) > 8) return 'storage_caps';
       caps[m[1]] = Number(m[2]);
@@ -56,7 +59,13 @@ export function limitsConfig(f: LimitsForm, pve: boolean): Record<string, unknow
   }
   if (f.windows.length) {
     if (!f.windows.every((w) => w.action === 'limit' && validRateWindow(w))) return 'read_limit';
-    rl.windows = f.windows.map((w) => ({ days: w.days, from: w.from, to: w.to, action: 'limit', rate_bytes: w.rate_bytes! }));
+    rl.windows = f.windows.map((w) => ({
+      days: w.days,
+      from: w.from,
+      to: w.to,
+      action: 'limit',
+      rate_bytes: w.rate_bytes!,
+    }));
   }
   if (rl.bwlimit || rl.windows) {
     rl.timezone = f.tz || 'UTC';

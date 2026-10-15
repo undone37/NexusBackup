@@ -42,7 +42,9 @@
     tenants = await get<Tenant[]>('/tenants').catch(() => []);
     timer = setInterval(() => {
       // follow a running search
-      const busy = caseId ? one?.job_state === 'queued' || one?.job_state === 'running' : cases.some((c) => c.job_state === 'queued' || c.job_state === 'running');
+      const busy = caseId
+        ? one?.job_state === 'queued' || one?.job_state === 'running'
+        : cases.some((c) => c.job_state === 'queued' || c.job_state === 'running');
       if (busy) load();
     }, 3000);
   });
@@ -53,23 +55,53 @@
   });
 
   const searchState = (c: CaseInfo) =>
-    c.job_state === 'queued' || c.job_state === 'running' ? t.cases.searching : c.searched_at ? fmtAgo(c.searched_at) : t.cases.neverSearched;
+    c.job_state === 'queued' || c.job_state === 'running'
+      ? t.cases.searching
+      : c.searched_at
+        ? fmtAgo(c.searched_at)
+        : t.cases.neverSearched;
 
   // ---- new case
   let newOpen = $state(false);
   let busy = $state(false);
-  let f = $state({ tenant: '', name: '', description: '', query: '', prefix: 'plugin-m365-', from: '', to: '', cs: false });
+  let f = $state({
+    tenant: '',
+    name: '',
+    description: '',
+    query: '',
+    prefix: 'plugin-m365-',
+    from: '',
+    to: '',
+    cs: false,
+  });
   function openNew() {
-    f = { tenant: tenants[0]?.name ?? '', name: '', description: '', query: '', prefix: 'plugin-m365-', from: '', to: '', cs: false };
+    f = {
+      tenant: tenants[0]?.name ?? '',
+      name: '',
+      description: '',
+      query: '',
+      prefix: 'plugin-m365-',
+      from: '',
+      to: '',
+      cs: false,
+    };
     newOpen = true;
   }
-  const day = (d: string, end: boolean) => (d ? Math.floor(new Date(`${d}T00:00:00Z`).getTime() / 1000) + (end ? 86399 : 0) : undefined);
+  const day = (d: string, end: boolean) =>
+    d ? Math.floor(new Date(`${d}T00:00:00Z`).getTime() / 1000) + (end ? 86399 : 0) : undefined;
   async function create(e: SubmitEvent) {
     e.preventDefault();
     busy = true;
-    const criteria = { query: f.query.trim(), source_prefix: f.prefix, from: day(f.from, false), to: day(f.to, true), case_sensitive: f.cs };
-    const r = await act(post<CaseInfo>('/cases', { tenant: f.tenant, name: f.name.trim(), description: f.description, criteria }), () =>
-      t.cases.created(f.name.trim()),
+    const criteria = {
+      query: f.query.trim(),
+      source_prefix: f.prefix,
+      from: day(f.from, false),
+      to: day(f.to, true),
+      case_sensitive: f.cs,
+    };
+    const r = await act(
+      post<CaseInfo>('/cases', { tenant: f.tenant, name: f.name.trim(), description: f.description, criteria }),
+      () => t.cases.created(f.name.trim()),
     );
     busy = false;
     if (r && !r.quorum) {
@@ -87,7 +119,9 @@
   async function hold(e: SubmitEvent) {
     e.preventDefault();
     if (!one) return;
-    const r = await act(post<{ held: number }>(`/cases/${one.id}/hold`, { reason: holdReason.trim() }), (d) => t.cases.holdDone(d.held));
+    const r = await act(post<{ held: number }>(`/cases/${one.id}/hold`, { reason: holdReason.trim() }), (d) =>
+      t.cases.holdDone(d.held),
+    );
     if (r) {
       holdOpen = false;
       load();
@@ -101,8 +135,9 @@
     e.preventDefault();
     if (!one) return;
     const body = { format, ...(mailFormat ? { mail_format: mailFormat } : {}) };
-    const r = await act(post<{ jobs: { id: number; source: string; time: number }[] }>(`/cases/${one.id}/export`, body), (d) =>
-      t.cases.exportDone(d.jobs.length),
+    const r = await act(
+      post<{ jobs: { id: number; source: string; time: number }[] }>(`/cases/${one.id}/export`, body),
+      (d) => t.cases.exportDone(d.jobs.length),
     );
     if (r && !r.quorum) {
       exportJobs = r.data.jobs;
@@ -147,10 +182,15 @@
       <dd>{t.cases.prefixes[one.criteria.source_prefix ?? ''] ?? one.criteria.source_prefix}</dd>
       {#if one.criteria.from || one.criteria.to}
         <dt>{t.cases.from} / {t.cases.to}</dt>
-        <dd>{one.criteria.from ? fmtTime(one.criteria.from) : '—'} / {one.criteria.to ? fmtTime(one.criteria.to) : '—'}</dd>
+        <dd>
+          {one.criteria.from ? fmtTime(one.criteria.from) : '—'} / {one.criteria.to ? fmtTime(one.criteria.to) : '—'}
+        </dd>
       {/if}
       <dt>{t.cases.searched}</dt>
-      <dd>{searchState(one)}{#if one.last_job} · <a href={href(`/jobs/${one.last_job}`)}>#{one.last_job}</a>{/if}</dd>
+      <dd>
+        {searchState(one)}{#if one.last_job}
+          · <a href={href(`/jobs/${one.last_job}`)}>#{one.last_job}</a>{/if}
+      </dd>
       <dt>{t.cases.snapshots}</dt>
       <dd>{one.snapshots} · {t.cases.items}: {one.items} · {t.cases.held}: {one.held}</dd>
     </dl>
@@ -158,16 +198,26 @@
     <p class="muted small">{t.cases.privacy}</p>
     {#if one.state === 'open'}
       <div class="form-actions">
-        <button type="button" onclick={searchAgain} disabled={one.job_state === 'queued' || one.job_state === 'running'}>{t.cases.searchAgain}</button>
-        {#if officer}<button type="button" onclick={() => ((holdReason = ''), (holdOpen = true))} disabled={!one.snapshots}><IconGavel aria-hidden="true" />{t.cases.hold}</button>{/if}
-        {#if mayExport}<button type="button" onclick={() => (expOpen = true)} disabled={!one.snapshots}><IconDownload aria-hidden="true" />{t.cases.export}</button>{/if}
+        <button type="button" onclick={searchAgain} disabled={one.job_state === 'queued' || one.job_state === 'running'}
+          >{t.cases.searchAgain}</button
+        >
+        {#if officer}<button
+            type="button"
+            onclick={() => ((holdReason = ''), (holdOpen = true))}
+            disabled={!one.snapshots}><IconGavel aria-hidden="true" />{t.cases.hold}</button
+          >{/if}
+        {#if mayExport}<button type="button" onclick={() => (expOpen = true)} disabled={!one.snapshots}
+            ><IconDownload aria-hidden="true" />{t.cases.export}</button
+          >{/if}
         <button type="button" class="danger" onclick={close}>{t.cases.close}</button>
       </div>
     {/if}
     {#if exportJobs.length}
       <h3>{t.cases.exportJobs}</h3>
       <ul>
-        {#each exportJobs as j (j.id)}<li><a href={href(`/jobs/${j.id}`)}>#{j.id}</a> <span class="mono">{j.source}</span> · {fmtTime(j.time)}</li>{/each}
+        {#each exportJobs as j (j.id)}<li>
+            <a href={href(`/jobs/${j.id}`)}>#{j.id}</a> <span class="mono">{j.source}</span> · {fmtTime(j.time)}
+          </li>{/each}
       </ul>
     {/if}
   </section>
@@ -187,10 +237,16 @@
         <tbody>
           {#each one.snapshot_list ?? [] as s (s.source + s.time)}
             <tr>
-              <td class="mono"><a href={href('/snapshots' + qs({ tenant: one.tenant, source: s.source }))}>{s.source}</a></td>
+              <td class="mono"
+                ><a href={href('/snapshots' + qs({ tenant: one.tenant, source: s.source }))}>{s.source}</a></td
+              >
               <td>{fmtTime(s.time)}</td>
               <td class="num">{s.items}</td>
-              <td>{#if s.hold}<span class="chip {s.hold.state === 'active' ? 'accent' : ''}" title={s.hold.reason}>{s.hold.state}</span>{:else}<span class="muted">{t.cases.noHold}</span>{/if}</td>
+              <td
+                >{#if s.hold}<span class="chip {s.hold.state === 'active' ? 'accent' : ''}" title={s.hold.reason}
+                    >{s.hold.state}</span
+                  >{:else}<span class="muted">{t.cases.noHold}</span>{/if}</td
+              >
             </tr>
           {:else}
             <tr><td colspan="4" class="empty">{t.none}</td></tr>
@@ -249,14 +305,18 @@
           <tbody>
             {#each cases as c (c.id)}
               <tr>
-                <td><strong>{c.name}</strong>{#if c.description}<div class="muted small">{c.description}</div>{/if}</td>
+                <td
+                  ><strong>{c.name}</strong>{#if c.description}<div class="muted small">{c.description}</div>{/if}</td
+                >
                 <td>{c.tenant}</td>
                 <td><span class="chip {c.state === 'open' ? 'ok' : ''}">{t.cases.state[c.state]}</span></td>
                 <td class="num">{c.snapshots}</td>
                 <td class="num">{c.items}</td>
                 <td class="num">{c.held}</td>
                 <td>{searchState(c)}</td>
-                <td class="actions"><a class="button small" href={href('/cases' + qs({ id: c.id }))}>{t.cases.open}</a></td>
+                <td class="actions"
+                  ><a class="button small" href={href('/cases' + qs({ id: c.id }))}>{t.cases.open}</a></td
+                >
               </tr>
             {/each}
           </tbody>
@@ -277,7 +337,14 @@
       </div>
       <div class="field">
         <label for="{id}-n">{t.cases.name}</label>
-        <input id="{id}-n" bind:value={f.name} required maxlength="64" pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'} aria-describedby="{id}-n-hint" />
+        <input
+          id="{id}-n"
+          bind:value={f.name}
+          required
+          maxlength="64"
+          pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'}
+          aria-describedby="{id}-n-hint"
+        />
         <div class="hint" id="{id}-n-hint">{t.cases.nameHint}</div>
       </div>
     </div>
@@ -287,7 +354,16 @@
     </div>
     <div class="field">
       <label for="{id}-q">{t.cases.query}</label>
-      <input id="{id}-q" class="mono" bind:value={f.query} required maxlength="256" autocomplete="off" spellcheck="false" aria-describedby="{id}-q-hint" />
+      <input
+        id="{id}-q"
+        class="mono"
+        bind:value={f.query}
+        required
+        maxlength="256"
+        autocomplete="off"
+        spellcheck="false"
+        aria-describedby="{id}-q-hint"
+      />
       <div class="hint" id="{id}-q-hint">{t.cases.queryHint}</div>
     </div>
     <div class="form-grid">
@@ -309,7 +385,9 @@
     <label class="inline-check"><input type="checkbox" bind:checked={f.cs} />{t.cases.caseSensitive}</label>
     <div class="form-actions">
       <button type="button" onclick={() => (newOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy || !f.tenant || !f.name.trim() || !f.query.trim()}>{t.cases.create}</button>
+      <button type="submit" class="primary" disabled={busy || !f.tenant || !f.name.trim() || !f.query.trim()}
+        >{t.cases.create}</button
+      >
     </div>
   </form>
 </Modal>

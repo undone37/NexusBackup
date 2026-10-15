@@ -55,7 +55,13 @@
   });
 
   const shown = $derived(items.filter((q) => !onlyPending || q.state === 'pending'));
-  const stateCls: Record<string, string> = { pending: 'warn', approved: 'ok', executed: 'ok', rejected: 'bad', expired: '' };
+  const stateCls: Record<string, string> = {
+    pending: 'warn',
+    approved: 'ok',
+    executed: 'ok',
+    rejected: 'bad',
+    expired: '',
+  };
 
   /** Flattens nested objects to dotted keys so a policy's gfs.daily etc. diff line by line. */
   function flat(v: unknown, prefix = '', out: Record<string, unknown> = {}): Record<string, unknown> {
@@ -71,27 +77,42 @@
     if (!old || typeof old !== 'object') return null;
     const a = flat(old);
     const b = flat(next);
-    return Object.keys(b).map((k) => ({ k, before: a[k], after: b[k], changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]) }));
+    return Object.keys(b).map((k) => ({
+      k,
+      before: a[k],
+      after: b[k],
+      changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]),
+    }));
   }
   const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(q.params ?? {}));
   const humanize = (a: string) => t.quorum.actions[a] ?? a.replace(/[_.]/g, ' ');
   // Phase 23a: a retention-weakening policy change shows its restore point preview (old dashed)
   const simOf = (p: Record<string, unknown> | undefined): SimInput | null =>
-    p && typeof p.schedule === 'string' && p.gfs && typeof p.gfs === 'object' ? { schedule: p.schedule, gfs: p.gfs as SimInput['gfs'] } : null;
+    p && typeof p.schedule === 'string' && p.gfs && typeof p.gfs === 'object'
+      ? { schedule: p.schedule, gfs: p.gfs as SimInput['gfs'] }
+      : null;
 
   // Phase 33: this tenant admin's open decision on a request (its tenant requires its own approval)
   const myTenant = (q: QuorumRequest) =>
-    can.decideTenantSide(session.user) ? (q.tenant_approvals ?? []).find((x) => x.tenant === session.user?.tenant && !x.decision) : undefined;
+    can.decideTenantSide(session.user)
+      ? (q.tenant_approvals ?? []).find((x) => x.tenant === session.user?.tenant && !x.decision)
+      : undefined;
 
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
     // approving executes an irreversible or weakening action: never on a single misclick;
     // a tenant's refusal is final, so it is confirmed as well
-    if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by)))) return;
-    if (verb === 'reject' && myTenant(q) && !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action))))) return;
+    if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by))))
+      return;
+    if (verb === 'reject' && myTenant(q) && !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action)))))
+      return;
     const ok = await act(
       post<{ activation?: Activation; state?: string; waiting_for?: string[] }>(`/quorum/${q.id}/${verb}`),
       (d) =>
-        verb === 'reject' ? t.quorum.rejected : d.state === 'pending' && d.waiting_for?.length ? t.quorum.waitingFor(d.waiting_for.join(', ')) : t.quorum.approved,
+        verb === 'reject'
+          ? t.quorum.rejected
+          : d.state === 'pending' && d.waiting_for?.length
+            ? t.quorum.waitingFor(d.waiting_for.join(', '))
+            : t.quorum.approved,
     );
     // approving a privileged account's activation releases the second half of its code to the approver
     const a = ok && !ok.quorum ? ok.data.activation : undefined;
@@ -107,7 +128,11 @@
 
   async function runGc(g: GcPending) {
     if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
-    const ok = await act(post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }), (d) => t.quorum.gcQueued(d.job_id), (d) => jobLink({ id: d.job_id }));
+    const ok = await act(
+      post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }),
+      (d) => t.quorum.gcQueued(d.job_id),
+      (d) => jobLink({ id: d.job_id }),
+    );
     if (ok) load();
   }
 </script>
@@ -151,7 +176,9 @@
               <td>{g.reason}</td>
               <td class="nowrap">{fmtTime(g.created)}</td>
               <td class="actions">
-                {#if isAdmin}<button type="button" class="small danger" onclick={() => runGc(g)}>{t.quorum.gcRun}</button>{/if}
+                {#if isAdmin}<button type="button" class="small danger" onclick={() => runGc(g)}
+                    >{t.quorum.gcRun}</button
+                  >{/if}
               </td>
             </tr>
           {/each}
@@ -248,7 +275,11 @@
       {#if q.action === 'policy.update' && q.state === 'pending'}
         {@const now = simOf(q.params)}
         {#if now}
-          <RestorePointPreview input={now} before={simOf(q.params?.old as Record<string, unknown> | undefined)} policyId={Number(q.params?.id) || null} />
+          <RestorePointPreview
+            input={now}
+            before={simOf(q.params?.old as Record<string, unknown> | undefined)}
+            policyId={Number(q.params?.id) || null}
+          />
         {/if}
       {/if}
       {#if q.state === 'pending' && myTenant(q) && !own}

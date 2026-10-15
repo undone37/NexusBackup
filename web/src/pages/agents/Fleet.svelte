@@ -50,21 +50,50 @@
     groups.filter((g) => g.tenant === tenant && sources.find((s) => s.id === g.source_id)?.kind === 'linux');
 
   const fleetState = (f: Fleet) =>
-    f.revoked ? 'revoked' : f.expires <= now ? 'expired' : f.max_uses !== null && f.uses >= f.max_uses ? 'used' : 'active';
+    f.revoked
+      ? 'revoked'
+      : f.expires <= now
+        ? 'expired'
+        : f.max_uses !== null && f.uses >= f.max_uses
+          ? 'used'
+          : 'active';
   const stateCls: Record<string, string> = { active: 'ok', revoked: 'muted', expired: 'warn', used: 'warn' };
   const candCls: Record<string, string> = { awaiting: 'info', accepted: 'ok', rejected: 'muted' };
 
   // Create
   let open = $state(false);
-  let f = $state({ name: '', tenant: '', days: 14, maxUses: '' as string | number, port: 7444, ranges: '', auto: false, group: '', rules: '' });
+  let f = $state({
+    name: '',
+    tenant: '',
+    days: 14,
+    maxUses: '' as string | number,
+    port: 7444,
+    ranges: '',
+    auto: false,
+    group: '',
+    rules: '',
+  });
   function create() {
-    f = { name: '', tenant: tenants[0]?.name ?? '', days: 14, maxUses: '', port: 7444, ranges: '', auto: false, group: '', rules: '' };
+    f = {
+      name: '',
+      tenant: tenants[0]?.name ?? '',
+      days: 14,
+      maxUses: '',
+      port: 7444,
+      ranges: '',
+      auto: false,
+      group: '',
+      rules: '',
+    };
     open = true;
   }
   async function save(e: SubmitEvent) {
     e.preventDefault();
     const rules: { pattern: string; group: string }[] = [];
-    for (const l of f.rules.split('\n').map((x) => x.trim()).filter(Boolean)) {
+    for (const l of f.rules
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean)) {
       const [pattern, group] = l.split('=').map((x) => x?.trim());
       if (!pattern || !group || l.split('=').length !== 2) {
         notify('error', t.fleet.rulesInvalid(l));
@@ -79,7 +108,10 @@
       max_uses: f.maxUses === '' || f.maxUses === null ? null : Number(f.maxUses),
       auto_accept: f.auto,
       port: Number(f.port),
-      ranges: f.ranges.split('\n').map((x) => x.trim()).filter(Boolean),
+      ranges: f.ranges
+        .split('\n')
+        .map((x) => x.trim())
+        .filter(Boolean),
       group: f.group || null,
       group_rules: rules,
     };
@@ -105,12 +137,21 @@
     if (await act(del(`/fleets/${encodeURIComponent(x.id)}`), t.saved)) load();
   }
   async function scan(x: Fleet) {
-    const r = await act(post<{ id: number }>(`/fleets/${encodeURIComponent(x.id)}/scan`), (d) => t.snap.jobStarted(d.id), jobLink);
+    const r = await act(
+      post<{ id: number }>(`/fleets/${encodeURIComponent(x.id)}/scan`),
+      (d) => t.snap.jobStarted(d.id),
+      jobLink,
+    );
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function accept(c: FleetCandidate) {
     if (!(await askConfirm(t.fleet.acceptConfirm(c.hostname, c.host, c.tenant)))) return;
-    if (await act(post<{ agent_id: string; job: number }>(`/fleet/candidates/${c.id}/accept`), (d) => t.fleet.accepted(d.agent_id))) load();
+    if (
+      await act(post<{ agent_id: string; job: number }>(`/fleet/candidates/${c.id}/accept`), (d) =>
+        t.fleet.accepted(d.agent_id),
+      )
+    )
+      load();
   }
   async function reject(c: FleetCandidate) {
     if (!(await askConfirm(t.fleet.rejectConfirm(c.hostname)))) return;
@@ -126,7 +167,9 @@
   }
   async function submitBulk(e: SubmitEvent) {
     e.preventDefault();
-    const r = await act(post<{ created: number; agents: Agent[]; csv: string }>('/agents/bulk', { csv }), (d) => t.fleet.bulkResult(d.created));
+    const r = await act(post<{ created: number; agents: Agent[]; csv: string }>('/agents/bulk', { csv }), (d) =>
+      t.fleet.bulkResult(d.created),
+    );
     if (r && !r.quorum) bulk = r.data;
   }
   function download() {
@@ -173,7 +216,10 @@
             {#each fleets as x (x.id)}
               {@const st = fleetState(x)}
               <tr>
-                <td><strong>{x.name}</strong> <div class="muted mono">{x.id}</div></td>
+                <td
+                  ><strong>{x.name}</strong>
+                  <div class="muted mono">{x.id}</div></td
+                >
                 <td>{x.tenant}</td>
                 <td>
                   <span class="chip {stateCls[st]}">{t.fleet.states[st]}</span>
@@ -181,7 +227,10 @@
                 </td>
                 <td class="nowrap">{fmtTime(x.expires)}</td>
                 <td>{t.fleet.usesOf(x.uses, x.max_uses)}</td>
-                <td class="mono">{#each x.ranges as r (r)}<div>{r}</div>{:else}—{/each}<div class="muted">:{x.port}</div></td>
+                <td class="mono"
+                  >{#each x.ranges as r (r)}<div>{r}</div>{:else}—{/each}
+                  <div class="muted">:{x.port}</div></td
+                >
                 <td>
                   {x.group ?? '—'}
                   {#each x.group_rules as r (r.pattern)}<div class="muted mono">{r.pattern} = {r.group}</div>{/each}
@@ -190,7 +239,9 @@
                 <td>{x.awaiting}</td>
                 <td class="actions">
                   {#if st === 'active'}
-                    <button type="button" class="small" disabled={x.ranges.length === 0} onclick={() => scan(x)}>{t.fleet.scan}</button>
+                    <button type="button" class="small" disabled={x.ranges.length === 0} onclick={() => scan(x)}
+                      >{t.fleet.scan}</button
+                    >
                   {/if}
                   {#if !x.revoked}
                     <button type="button" class="small danger" onclick={() => revoke(x)}>{t.fleet.revoke}</button>
@@ -234,7 +285,10 @@
             <tr>
               <td><strong>{c.hostname}</strong></td>
               <td class="mono">{c.host}:{c.port}</td>
-              <td>{c.os} <div class="muted mono">{c.version}</div></td>
+              <td
+                >{c.os}
+                <div class="muted mono">{c.version}</div></td
+              >
               <td>{c.fleet}</td>
               <td>{c.tenant}</td>
               <td class="nowrap" title={fmtTime(c.first_seen)}>{fmtAgo(c.last_seen, now)}</td>
@@ -340,12 +394,24 @@
     </div>
     <div class="field">
       <label for="f-ranges">{t.fleet.ranges}</label>
-      <textarea id="f-ranges" class="mono" bind:value={f.ranges} rows="3" spellcheck="false" aria-describedby="f-ranges-hint"></textarea>
+      <textarea
+        id="f-ranges"
+        class="mono"
+        bind:value={f.ranges}
+        rows="3"
+        spellcheck="false"
+        aria-describedby="f-ranges-hint"></textarea>
       <div class="hint" id="f-ranges-hint">{t.fleet.rangesHint}</div>
     </div>
     <div class="field">
       <label for="f-rules">{t.fleet.rules}</label>
-      <textarea id="f-rules" class="mono" bind:value={f.rules} rows="3" spellcheck="false" aria-describedby="f-rules-hint"></textarea>
+      <textarea
+        id="f-rules"
+        class="mono"
+        bind:value={f.rules}
+        rows="3"
+        spellcheck="false"
+        aria-describedby="f-rules-hint"></textarea>
       <div class="hint" id="f-rules-hint">{t.fleet.rulesHint}</div>
     </div>
     <div class="field">

@@ -93,7 +93,9 @@
         <p class="muted" aria-busy="true" aria-live="polite">{t.settings.diag.states[latest.state]}…</p>
       {:else}
         <p class="muted small" aria-live="polite">
-          <span title={fmtTime(latest.finished)}>{t.settings.diag.lastRun(fmtAgo(latest.finished ?? latest.created), latest.by)}</span>
+          <span title={fmtTime(latest.finished)}
+            >{t.settings.diag.lastRun(fmtAgo(latest.finished ?? latest.created), latest.by)}</span
+          >
           · {t.settings.diag.summary(count('pass'), count('warn'), count('fail'))}
         </p>
         {#if blocks}<p class="banner warn" role="status">{t.settings.diag.blocksUpdates}</p>{/if}
@@ -111,12 +113,25 @@
             <tbody>
               {#each checks as c (c.id)}
                 <tr>
-                  <td><span class="chip {stCls[c.status] ?? ''}">{t.settings.diag.statuses[c.status] ?? c.status}</span></td>
-                  <td>{c.title}<div class="muted small mono">{c.id}</div></td>
+                  <td
+                    ><span class="chip {stCls[c.status] ?? ''}">{t.settings.diag.statuses[c.status] ?? c.status}</span
+                    ></td
+                  >
+                  <td
+                    >{c.title}
+                    <div class="muted small mono">{c.id}</div></td
+                  >
                   <td class="detail">{c.detail}</td>
-                  <td class="nowrap">{c.status === 'warn' || c.status === 'fail' ? t.settings.diag.severities[c.severity] : '—'}</td>
+                  <td class="nowrap"
+                    >{c.status === 'warn' || c.status === 'fail' ? t.settings.diag.severities[c.severity] : '—'}</td
+                  >
                   <td class="actions">
-                    <a class="button small" href={manualUrl(c.manual)} target="_blank" rel="noopener noreferrer" aria-label={t.settings.diag.helpLabel(c.title)}
+                    <a
+                      class="button small"
+                      href={manualUrl(c.manual)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={t.settings.diag.helpLabel(c.title)}
                       ><IconHelp aria-hidden="true" />{t.settings.diag.help}</a
                     >
                   </td>
@@ -133,7 +148,10 @@
         <h2 id="diag-posture-h">{t.settings.diag.posture}</h2>
         {#if posture.length}
           <span class="chip {posture.some((c) => c.status === 'warn') ? 'warn' : 'ok'}"
-            >{t.settings.diag.postureSummary(posture.filter((c) => c.status === 'pass').length, posture.filter((c) => c.status === 'warn').length)}</span
+            >{t.settings.diag.postureSummary(
+              posture.filter((c) => c.status === 'pass').length,
+              posture.filter((c) => c.status === 'warn').length,
+            )}</span
           >
         {/if}
       </div>
@@ -146,8 +164,12 @@
             <li>
               <span class="chip {stCls[c.status] ?? ''}">{t.settings.diag.statuses[c.status] ?? c.status}</span>
               <span><strong>{postureTitle(c.title)}</strong> <span class="muted small">— {c.detail}</span></span>
-              <a class="button small" href={manualUrl(c.manual)} target="_blank" rel="noopener noreferrer" aria-label={t.settings.diag.helpLabel(c.title)}
-                ><IconHelp aria-hidden="true" />{t.settings.diag.help}</a
+              <a
+                class="button small"
+                href={manualUrl(c.manual)}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={t.settings.diag.helpLabel(c.title)}><IconHelp aria-hidden="true" />{t.settings.diag.help}</a
               >
             </li>
           {/each}
@@ -177,7 +199,9 @@
           </div>
           {#if !range}<p class="banner warn" role="alert">{t.settings.diag.rangeInvalid}</p>{/if}
           <div class="form-actions">
-            <button type="submit" class="primary" disabled={!range || runs.some(busy)}><IconPackage aria-hidden="true" />{t.settings.diag.create}</button>
+            <button type="submit" class="primary" disabled={!range || runs.some(busy)}
+              ><IconPackage aria-hidden="true" />{t.settings.diag.create}</button
+            >
           </div>
         </form>
         <h3>{t.settings.diag.bundles}</h3>
@@ -198,13 +222,18 @@
               <tbody>
                 {#each bundles as b (b.id)}
                   <tr>
-                    <td><span class="chip {runCls[b.state] ?? ''}">{t.settings.diag.states[b.state] ?? b.state}</span>{#if b.error}<div class="muted small">{b.error}</div>{/if}</td>
+                    <td
+                      ><span class="chip {runCls[b.state] ?? ''}">{t.settings.diag.states[b.state] ?? b.state}</span
+                      >{#if b.error}<div class="muted small">{b.error}</div>{/if}</td
+                    >
                     <td class="nowrap">{fmtTime(b.since)} – {fmtTime(b.until)}</td>
                     <td class="nowrap">{b.bundle ? fmtBytes(b.bundle.bytes) : '—'}</td>
                     <td class="nowrap">{b.bundle && b.expires ? fmtTime(b.expires) : '—'}</td>
                     <td class="actions">
                       {#if b.bundle}
-                        <a class="button small" href={b.bundle.url} download><IconDownload aria-hidden="true" />{t.settings.diag.download}</a>
+                        <a class="button small" href={b.bundle.url} download
+                          ><IconDownload aria-hidden="true" />{t.settings.diag.download}</a
+                        >
                       {/if}
                     </td>
                   </tr>
