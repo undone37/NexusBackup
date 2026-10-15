@@ -761,7 +761,22 @@ Goal (maintainer): every running task explains itself, states visible everywhere
 
 ## Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15)
 Scope: plan.md Phase 34 (clean code, crate docs, AGENTS.md, issue forms, versioned pre-commit hooks, CI path
-filters and caching, release workflow, dependency updates). Not started.
+filters and caching, release workflow, dependency updates). In progress (2026-10-15):
+- [x] 34a: workspace lints (unsafe_op_in_unsafe_fn, undocumented_unsafe_blocks, dbg_macro, todo, semicolons, redundant
+  closures, inline format args), clippy --fix applied; SAFETY comments on all 134 unsafe blocks (Linux + Windows
+  target), one unsound block fixed (plugin-sdk open_parent: unchecked dup); dead code removed (5 functions, the
+  Locator opener seam); one is_disk_key in pve; prettier (pinned, width 120) over all web code
+- [x] 34b: rustdoc clean and a CI gate; #![warn(missing_docs)] with every public item documented in the library
+  crates chunkstore, keyd, retention, nbd, webtls, nftsync, edge, reports, agent-proto, agent-ui-proto,
+  index-proto, plugin-proto, plugin-sdk (with examples), plugin-host, plugin-manager; docs/README.md index
+- [x] 34c: AGENTS.md (replaces AGENT.MD)
+- [x] 34d: .githooks (pre-commit: fmt, prettier, emojis, secrets; pre-push: clippy, svelte-check, prove), issue
+  forms, PR template, SECURITY.md, Dependabot; CI: per-area jobs, main-only push, no CI on tags, kept target/,
+  cargo-nextest (all binaries in parallel), container suites in a `testbox` job, weekly full run; release notes
+  from the commits, asset check after the ISO
+- [ ] First CI run with nextest; Dependabot PRs: fastcdc 5 (same cut points as 3.2.1 on 64 MiB, API change:
+  upgrade by hand with a pinned cut-point test), zstd 0.14, TypeScript 7 (svelte-check compatibility)
+- [ ] Not done: perlcritic (not installed, ask), missing_docs for the binary crates (by decision: module docs only)
 
 ## Release 0.1.0-alpha (2026-10-15)
 - [x] Tag `v0.1.0-alpha` on ff968dc (CI green on main); release workflow started
