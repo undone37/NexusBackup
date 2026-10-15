@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Checks for the commits being pushed (a few minutes at most): clippy, svelte-check and the
+# PVE plugin tests, each only when its part of the tree changed. The full test suite stays in CI.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+. .githooks/lib.sh
+
+zero=0000000000000000000000000000000000000000
+files=()
+while read -r _ local_sha _ remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue # branch deletion
+	if [ "$remote_sha" = "$zero" ]; then
+		base=$(git merge-base "$local_sha" origin/main 2>/dev/null || git rev-list --max-parents=0 "$local_sha" | tail -1)
+	else
+		base=$remote_sha
+	fi
+	mapfile -t -O "${#files[@]}" files < <(git diff --name-only "$base" "$local_sha")
+done
+[ ${#files[@]} -gt 0 ] || exit 0
+
+if has '(\.rs|Cargo\.(toml|lock))$' "${files[@]}"; then
+	step "cargo clippy"
+	cargo clippy --all-targets --quiet -- -D warnings || fail "clippy found problems"
+fi
+if has '^web/' "${files[@]}"; then
+	step "svelte-check, prettier"
+	(cd web && npm run --silent check >/dev/null) || fail "(cd web && npm run check)"
+	prettier --check --log-level warn . || fail "run: (cd web && npm run format)"
+fi
+if has '^pve-plugin/' "${files[@]}"; then
+	step "prove pve-plugin/t"
+	prove -Q pve-plugin/t || fail "pve-plugin tests failed"
+fi

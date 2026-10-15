@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Fast checks on the staged files (seconds). The slower ones run in pre-push.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+. .githooks/lib.sh
+
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR)
+[ ${#files[@]} -gt 0 ] || exit 0
+
+if has '\.rs$' "${files[@]}"; then
+	step "cargo fmt --check"
+	cargo fmt --all --check >/dev/null || fail "run: cargo fmt --all"
+fi
+
+mapfile -t web < <(printf '%s\n' "${files[@]}" | sed -n 's|^web/||p' |
+	grep -E '\.(svelte|ts|js|mjs|css|json|html)$' | grep -v '^package-lock\.json$' || true)
+if [ ${#web[@]} -gt 0 ]; then
+	step "prettier --check (${#web[@]} files)"
+	prettier --check --log-level warn "${web[@]}" || fail "run: (cd web && npm run format)"
+fi
+
+# lines this commit adds: no emojis (house rule), no secrets
+added=$(git diff --cached -U0 --diff-filter=ACMR -- . ':!*.png' ':!*.jpg' ':!*.ico' ':!web/package-lock.json' |
+	grep -E '^\+[^+]' || true)
+if printf '%s' "$added" | perl -CS -ne 'exit 1 if /[\x{1F000}-\x{1FAFF}\x{2600}-\x{26FF}\x{2B50}\x{2B55}\x{FE0F}]/'; then :; else
+	fail "emoji in the added lines (no emojis in code, docs, test data or commits)"
+fi
+if printf '%s' "$added" | grep -Eq -- '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{40,}|AKIA[0-9A-Z]{16}'; then
+	fail "a private key or token in the added lines; secrets stay outside the repo (test keys: --no-verify)"
+fi
