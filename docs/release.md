@@ -88,8 +88,14 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    - creates an SPDX SBOM with syft (container), attaches it to the digest as an OCI
      referrer (oras) and uploads it with `release-metadata.json` (digest, commit,
      base image digest, pinned key hashes; no provenance attestation) to a
-     **draft** GitHub release,
+     **draft** GitHub release whose notes list the commits since the previous tag,
+   - then, in the same workflow, scans the image for CVEs (`cve`) and builds the agent packages (`packages`),
    - **does not sign.**
+
+   When it succeeded, `iso.yml` builds the installer ISO and the rescue ISO, and its `assets` job checks that every
+   file of the release is attached (ISOs with checksums, SBOM, metadata, CVE report, SHA256SUMS, .deb/.rpm/.msi, the
+   agent release tar). Sign only after that job is green. A tag does not run `ci.yml`: tag a commit that passed CI on
+   main.
 2. Sign the digest from the draft/job summary with the offline key:
    ```sh
    # key machine with registry access:

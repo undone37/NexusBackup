@@ -83,3 +83,30 @@ jobs:
           sha256sum "$iso" > "$iso.sha256"
           cp manifest.txt rescue-manifest.txt
           gh release upload "$TAG" "$iso" "$iso.sha256" rescue-manifest.txt --clobber
+
+  # every file the maintainer signs and publishes, before the draft is handed over
+  assets:
+    needs: [iso, rescue]
+    runs-on: self-hosted
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: All release assets attached
+        run: |
+          v=${TAG#v}
+          have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          missing=0
+          for want in "nexusbackup-$v-x86_64.iso" "nexusbackup-$v-x86_64.iso.sha256" 'nexus-rescue-.*\.iso' \
+                      sbom.spdx.json release-metadata.json cve-report.txt SHA256SUMS \
+                      'nexus-agent_.*_amd64\.deb' 'nexus-agent_.*_arm64\.deb' 'nexus-agent-.*\.x86_64\.rpm' \
+                      'nexus-agent-.*\.aarch64\.rpm' 'nexus-agent-.*-x64\.msi' 'nexus-agent-release-.*\.tar'; do
+            if grep -Eqx -- "$want" <<<"$have"; then echo "ok       $want"; else echo "MISSING  $want"; missing=1; fi
+          done
+          {
+            echo "### $TAG assets"
+            echo '```'; echo "$have"; echo '```'
+            [ $missing = 0 ] && echo "Complete: ready for release/sign.sh (docs/release.md)." || echo "**Assets missing**, see the job log."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $missing
+

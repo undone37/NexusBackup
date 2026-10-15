@@ -31,6 +31,7 @@ jobs:
       image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/checkout@v7
+        with: { fetch-depth: 0 } # release notes: the commits since the previous tag
 
       - name: Release constants
         run: grep -E '^[A-Z_][A-Z0-9_]*=' release/config.env >> "$GITHUB_ENV"
@@ -171,7 +172,18 @@ jobs:
           \`\`\`
 
           Then publish this draft. See docs/release.md.
+
+          The installer ISO and the rescue ISO follow from the iso workflow; its \`assets\` job checks that every
+          file of the release is attached.
           EOF
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            echo
+            echo "## Changes since ${prev:-the first commit}"
+            echo
+            # subjects only, long ones cut (the body of a release is limited to 125,000 characters)
+            git log --no-merges --format='- %s' ${prev:+"$prev.."}"$GITHUB_REF_NAME" | cut -c1-160 | head -c 100000
+          } >> notes.md
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" \
             --notes-file notes.md out/sbom.spdx.json out/release-metadata.json
           {
