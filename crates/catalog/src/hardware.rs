@@ -7,7 +7,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Directory of nexus-disks: status.json, ops.json (0644), req-<id>.json (web-api).
+/// Directory of nexus-disks: status.json, ops.json (0644), `req-<id>.json` (web-api).
 pub const DIR: &str = "/var/lib/nexus/disks";
 /// Hotter than this (°C) is a warning: spinning disks / SSDs and NVMe.
 pub const HDD_TEMP_MAX: i64 = 55;

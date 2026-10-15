@@ -267,7 +267,7 @@ pub struct CreateArray {
     confirm: String,
 }
 
-/// POST /hardware/arrays {role: data, level, disks: [serials], confirm}: the data array
+/// `POST /hardware/arrays {role: data, level, disks: [serials], confirm}`: the data array
 /// (mdadm + XFS, mounted as the store). Only from empty disks, only while the store is empty.
 pub async fn create_array(State(st): State<St>, ctx: Ctx, J(r): J<CreateArray>) -> ApiResult<Response> {
     require(&ctx, ADMIN)?;

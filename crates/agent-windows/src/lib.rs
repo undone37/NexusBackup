@@ -5,7 +5,7 @@
 //! The platform-independent modules (path/name mapping, metadata mapping, USN record
 //! parsing and the cache decision, restore confinement, the generic walk, VSS writer
 //! reporting, update installation) build and are unit-tested on Linux; the Win32 /
-//! COM code in [`win`] only builds for Windows (`x86_64-pc-windows-gnu`, cross-compiled
+//! COM code in `win` only builds for Windows (`x86_64-pc-windows-gnu`, cross-compiled
 //! by `build.sh`).
 
 pub mod confine;

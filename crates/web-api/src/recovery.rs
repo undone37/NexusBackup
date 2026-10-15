@@ -3,7 +3,7 @@
 //!
 //! - `GET /restore-tests?tenant=&source=&limit=`: results, newest first (every role, own tenant).
 //! - manual test: `POST /jobs {kind: "restore_test", params: {source, time, node,
-//!   storage, bridge?, checks?}}` ([`check_test`]); not for tenant users.
+//!   storage, bridge?, checks?}}` (`check_test`); not for tenant users.
 //! - `GET /restore-tests/schedules`, `PUT|DELETE /restore-tests/schedules/{group_id}
 //!   {every_days, node, storage, bridge?, checks?}`: per PVE group (admins, tenant admins).
 //! - `GET|POST /recovery-plans`, `PUT|DELETE /recovery-plans/{id}` (admins, tenant

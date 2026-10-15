@@ -75,6 +75,8 @@ jobs:
           if [ "${used:-0}" -gt 80 ]; then echo "target/ is ${used} GiB: cleaning"; cargo clean; fi
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo doc --no-deps --workspace
+        env: { RUSTDOCFLAGS: -D warnings }
   test:
     needs: [changes, lint]
     if: needs.changes.outputs.rust == 'true'

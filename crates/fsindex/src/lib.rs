@@ -7,7 +7,7 @@
 //! `ntfs`), FAT12/16/32 (crate `fatfs`), exFAT, XFS and single-device btrfs
 //! (own parsers). Other file systems and containers (multi-device btrfs, ReFS,
 //! BitLocker, LUKS, striped / RAID-5 dynamic volumes, Storage Spaces, ZFS, md
-//! RAID, LVM cache/VDO) are reported per volume as "not indexed: <reason>"; the
+//! RAID, LVM cache/VDO) are reported per volume as "not indexed: `<reason>`"; the
 //! micro-VM stays the fallback for ZFS and multi-device btrfs.
 //!
 //! Guest file systems are untrusted input. The parsers run in the helper

@@ -341,7 +341,7 @@ impl<P: Platform> Agent<P> {
 
 /// Linux: the IPC socket (`/run/nexus-agent/ui.sock`, owner root, group
 /// [`ui::SOCKET_GROUP`] if it exists, mode 0660; the run directory must allow
-/// traversal: 0711). One thread per connection, at most [`MAX_UI_CONNECTIONS`].
+/// traversal: 0711). One thread per connection, at most `MAX_UI_CONNECTIONS`.
 #[cfg(unix)]
 pub mod unix {
     use super::*;

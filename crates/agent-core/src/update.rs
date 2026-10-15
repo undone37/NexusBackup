@@ -7,7 +7,7 @@
 //! `cosign generate-key-pair`; lab builds pin `release/testkey/TEST-cosign.pub`).
 //!
 //! The version the appliance claims is not covered by the signature, so the agent
-//! reads the version embedded in the signed binary itself ([`VERSION_MARKER`]) and
+//! reads the version embedded in the signed binary itself (`VERSION_MARKER`) and
 //! refuses anything that is not strictly newer (no downgrade / replay of an older
 //! signed build). Each agent embeds its own marker
 //! (`concat!("\0NEXUS-AGENT-VERSION=", env!("CARGO_PKG_VERSION"), "\0")`).

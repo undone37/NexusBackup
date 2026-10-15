@@ -2,7 +2,7 @@
 //! backup", manual/14). The bundle is sealed so that the appliance can create
 //! it without the recovery key and only the recovery key opens it:
 //!
-//! - keyd derives an X25519 key pair from the KEK ([`config_secret`]); the
+//! - keyd derives an X25519 key pair from the KEK (`config_secret`); the
 //!   public key and the already wrapped `kek.recovery` are published next to the
 //!   socket ([`publish`]) for the root helper `nexus-config-backup`;
 //! - the helper seals a random bundle key to that public key (anonymous box, as
@@ -21,7 +21,7 @@
 //! Paths are relative to `/` (never absolute, no `..`).
 //!
 //! Phase 30 (ADR-014): keyd publishes a hybrid public key (X25519 | ML-KEM-768,
-//! the ML-KEM seed derived from the same KEK-derived secret, [`PQ_CONTEXT`]) and
+//! the ML-KEM seed derived from the same KEK-derived secret, `PQ_CONTEXT`) and
 //! bundles are `NXCFGB2\0` with the bundle key in a hybrid box (`crate::hybrid`,
 //! label `config-bundle`); the layout is otherwise v1's. v1 bundles still open.
 

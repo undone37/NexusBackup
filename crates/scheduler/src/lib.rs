@@ -58,7 +58,7 @@
 //!
 //! Job params beyond the contract: `source_id` may be given for `backup {vmid}`,
 //! restores and file jobs; without it the source is found via the tenant's
-//! groups (or the tenant's only source). Restores take the options of [`restore`]
+//! groups (or the tenant's only source). Restores take the options of `restore`
 //! (`name`, `name_prefix`, `pool`, `start`, `link_down`; `replace` via approval).
 //! `files_get` writes `<downloads>/<download_token>.<format>` (token set by the
 //! web-api). Structured results go into `jobs.result` (see [`Scheduler::finish`]).

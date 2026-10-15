@@ -11,7 +11,7 @@
 //! directory's listing has a complete read set and can be taken over unread in
 //! the next snapshot (Phase 31c, as NTFS). Hostile input: every offset and
 //! count is checked, B+trees are depth- and size-bounded, a directory is read
-//! up to [`MAX_DIR`] bytes, directories are entered once.
+//! up to `MAX_DIR` bytes, directories are entered once.
 
 use crate::disk::Vol;
 use crate::walk::Out;

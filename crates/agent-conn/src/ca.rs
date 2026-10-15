@@ -6,7 +6,7 @@
 //! ca.key / ca.pem   ECDSA P-256 CA (path length 0), 20 years
 //! client.key / client.pem   CN=nexus-appliance:<appliance-id>, EKU clientAuth, 10 years
 //! ```
-//! Agent certificates: CN=nexus-agent:<agent-id>, EKU serverAuth, 10 years; the
+//! Agent certificates: `CN=nexus-agent:<agent-id>`, EKU serverAuth, 10 years; the
 //! CSR only contributes its (signature-checked) public key, every other field
 //! is chosen here.
 

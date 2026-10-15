@@ -2,7 +2,7 @@
 //! reading PVE/QEMU exports and their dirty bitmaps, and (Phase 30, in-place
 //! rollback) writing to a writable export. Transport-agnostic: works over a
 //! Unix socket or the stdio of an `ssh` process.
-//! Spec: https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md
+//! Spec: <https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md>
 
 pub mod server;
 

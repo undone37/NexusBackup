@@ -1,4 +1,4 @@
-//! "Back up now, keep until <date>" (Phase 23a, web-api `keep.rs`): after a
+//! "Back up now, keep until `<date>`" (Phase 23a, web-api `keep.rs`): after a
 //! `backup` / `plugin_backup` job with `keep_until` finished ok, every snapshot
 //! it wrote (its `nexus-stats` lines) gets its store lock extended to that date.
 //! Locks only grow (`Store::extend_lock`); audited `snapshot.keep_until`.

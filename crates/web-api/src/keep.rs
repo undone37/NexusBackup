@@ -1,4 +1,4 @@
-//! "Back up now, keep until <date>" (Phase 23a, Veeam comparison row 11):
+//! "Back up now, keep until `<date>`" (Phase 23a, Veeam comparison row 11):
 //! `backup` / `plugin_backup` jobs take `keep_until` (unix seconds). After the
 //! job finished ok the scheduler extends the store lock of every snapshot it
 //! wrote to that date (`chunkstore::Store::extend_lock`, scheduler `keep.rs`):

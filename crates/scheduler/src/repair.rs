@@ -2,14 +2,14 @@
 //! with repair"; the store side is chunkstore::health).
 //!
 //! - `verify`: chunks that fail (corrupt or missing) go on the tenant's bad-chunk
-//!   list ([`after_verify`]); the job's stdout carries `{"health": …}` with the
+//!   list (`after_verify`); the job's stdout carries `{"health": …}` with the
 //!   damaged snapshots. New backups store such chunks again and do not build on a
 //!   damaged base (the connectors check `Store::is_damaged`).
 //! - `chunk_repair` (admin, or queued after a verify that found new damage when a
 //!   repair source exists): `nexus-offsite repair` and/or `nexus-replica repair`
 //!   (replicated tenants, while the source is open) fetch the sealed chunks by id
 //!   and store them after full verification; a final store step reports `health`.
-//! - [`Scheduler::health_bookkeeping`]: `snapshots.damaged` (v32), audit
+//! - `Scheduler::health_bookkeeping`: `snapshots.damaged` (v32), audit
 //!   `snapshot.damaged` / `snapshot.repaired`, critical alert
 //!   `snapshot_damaged:<tenant>` listing the affected snapshots (resolved when none
 //!   is left).

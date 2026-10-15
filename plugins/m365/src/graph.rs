@@ -83,7 +83,7 @@ pub struct Stats {
 }
 
 pub struct Settings {
-    /// `https://graph.microsoft.com` (or the configured host[:port])
+    /// `https://graph.microsoft.com` (or the configured `host[:port]`)
     pub graph_origin: String,
     /// token endpoint `https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token`
     pub token_url: String,
