@@ -774,12 +774,17 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
   forms, PR template, SECURITY.md, Dependabot; CI: per-area jobs, main-only push, no CI on tags, kept target/,
   cargo-nextest (all binaries in parallel), container suites in a `testbox` job, weekly full run; release notes
   from the commits, asset check after the ISO
-- [ ] First CI run with nextest; Dependabot PRs: fastcdc 5 (same cut points as 3.2.1 on 64 MiB, API change:
-  upgrade by hand with a pinned cut-point test), zstd 0.14, TypeScript 7 (svelte-check compatibility)
+- [x] First CI run with nextest (6b1dbddd): test job about 5 min (was about 31), testbox about 15 min
+- [x] Dependabot: fastcdc 5 by hand (crates/chunkstore/tests/cut_points.rs pins the cut points; identical under
+  3.2.1 and 5.0.0), zstd 0.14 (drop-in); TypeScript 7 not possible yet (svelte-check 4.7.6 peer ^5 || ^6),
+  major updates ignored in dependabot.yml; PRs #1, #3, #4 closed as superseded
+- [ ] Dependabot PR #2 (serde_json, tokio-util minor): CI rerun, merge when green
 - [ ] Not done: perlcritic (not installed, ask), missing_docs for the binary crates (by decision: module docs only)
 
 ## Release 0.1.0-alpha (2026-10-15)
-- [x] Tag `v0.1.0-alpha` on ff968dc (CI green on main); release workflow started
+- [x] Tag `v0.1.0-alpha` on 6b1dbddd (CI green on main; moved from ff968dc after the runner fixes: SBOM bind
+  mount under SELinux, git/gh on the runner, package check line, CVE gate report-only for pre-releases)
+- [x] Release workflow 38769757069: image, cve, packages green (57 min)
 - [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
