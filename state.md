@@ -755,8 +755,14 @@ Goal (maintainer): every running task explains itself, states visible everywhere
 ## TPM state on restores (2026-10-15)
 - [x] Restore tests and instant recovery import the backed-up `tpmstate0` (`import-from` of its IR volume, plugin
   feature `copy`) instead of a fresh vTPM; TPM VMs are no longer refused for instant recovery
-- [ ] Lab 12 on VM 101 (restore test with the imported TPM state)
+- [x] Lab 12 on VM 101 (PVE host): full 459 s, incremental 29 s; restore test passed with the imported TPM state
+  (`drive-tpmstate0-backup` served once, "backed-up state copied to local storage", guest agent after 146 s)
+- [ ] Instant recovery (with disk move) of a TPM VM in the lab
 
 ## Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15)
 Scope: plan.md Phase 34 (clean code, crate docs, AGENTS.md, issue forms, versioned pre-commit hooks, CI path
 filters and caching, release workflow, dependency updates). Not started.
+
+## Release 0.1.0-alpha (2026-10-15)
+- [x] Tag `v0.1.0-alpha` on ff968dc (CI green on main); release workflow started
+- [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
