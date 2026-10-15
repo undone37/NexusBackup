@@ -298,8 +298,10 @@ Steps (`nexus-pve <cfg> instant-recover <vmid> <time> <node> <target> <storage> 
    drive is recreated as `<storage>:cloudinit`; ISO CD-ROMs are kept; NIC MACs are dropped (PVE assigns
    new ones), `--link-down` adds `link_down=1` to every NIC; `vmgenid` (root-only via the API) and a
    UUID-only `smbios1` are dropped so PVE generates new ones; `meta`, `lock`, `parent`, `onboot`,
-   `unusedN`, snapshot sections and the description are dropped. Templates and VMs with
-   `tpmstate0` (swtpm needs a local raw image) are refused.
+   `unusedN`, snapshot sections and the description are dropped. Templates are refused. `tpmstate0`
+   becomes `<target_storage>:0,import-from=<its IR volume>`: swtpm needs a local raw image, so PVE copies the
+   backed-up state (qemu-img convert through the overlay, plugin feature `copy`) while it creates the VM; the
+   appliance serves that device until the VM exists and then deletes the IR volume.
 2. Appliance refuses an existing target vmid, pushes the catalog (the plugin sizes overlays from it).
 3. Per device the appliance keeps one idle `ir-serve <target> <archive> <device>` SSH session; it reads
    `listening`, then waits for `accepted`, hands that session to an NBD server thread

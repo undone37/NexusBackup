@@ -575,8 +575,11 @@ sub volume_snapshot_delete {
     die "volume snapshots are not supported on NexusBackup storage\n";
 }
 
+# 'copy' of an IR overlay only: a recovered VM's TPM state is created with import-from
+# (qemu-img convert reads the overlay and its NBD backing), swtpm needs a local raw image.
 sub volume_has_feature {
-    return 0;
+    my ($class, $scfg, $feature, $storeid, $volname, $snapname, $running, $opts) = @_;
+    return ($feature eq 'copy' && !$snapname && parse_ir_volname($volname)) ? 1 : 0;
 }
 
 # ---------------------------------------------------------------------------

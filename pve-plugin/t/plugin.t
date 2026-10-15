@@ -578,6 +578,10 @@ $PVE::Storage::Custom::NexusBackupPlugin::IRRUNDIR = '/run/nexusbackup/ir';
         ok(!eval { $P->parse_volname($bad); 1 }, "parse_volname rejects '$bad'");
     }
     is_deeply([$P->path($scfg, $vol, 'nexus')], [$overlay, '903', 'images'], 'path of ir volume');
+    ok($P->volume_has_feature($scfg, 'copy', 'nexus', $vol, undef, 0), 'ir volume can be copied (TPM import-from)');
+    ok(!$P->volume_has_feature($scfg, 'copy', 'nexus', $vol, 'snap', 0), 'no copy of a snapshot');
+    ok(!$P->volume_has_feature($scfg, $_, 'nexus', $vol, undef, 0), "no $_") for qw(clone snapshot template);
+    ok(!$P->volume_has_feature($scfg, 'copy', 'nexus', 'backup/nexus-100-1760000000', undef, 0), 'no copy of an archive');
     my $isize = $P->volume_size_info($scfg, taint('nexus'), taint($vol));
     is($isize, 6144, 'ir size from catalog');
     ok(!Scalar::Util::tainted($isize), 'ir size untainted (PVE passes it to lvcreate)');

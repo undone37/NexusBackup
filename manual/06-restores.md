@@ -305,7 +305,9 @@ disk to the target storage and drops the overlay. In the lab the VM ran about 4.
 
 Limits:
 
-- VMs with a TPM state (`tpmstate0`) and templates are refused.
+- Templates are refused.
+- A TPM state (`tpmstate0`, 4 MiB) is not served over the network: Proxmox VE copies the backed-up state to the
+  target storage while it creates the VM. BitLocker and Windows Hello keep working.
 - Guest writes accumulate on the node's root file system until the disk move finishes. Keep enough free
   space there.
 - The VM gets new NIC MAC addresses and a new `vmgenid`. If the original VM still runs on the same network,
@@ -390,7 +392,7 @@ Requirements and limits:
 
 - The QEMU guest agent must be installed and enabled in the VM (option **QEMU Guest Agent** in Proxmox VE), or
   untick **QEMU guest agent must answer** (then only "running" is checked; ports and commands need the agent).
-- VMs with a TPM state and templates cannot be booted from the backup (as for instant recovery).
+- Templates cannot be booted from the backup (as for instant recovery).
 - A container test needs space for the whole container on the target storage while it runs.
 - Many guests in a schedule run one after another; plan the interval so that one round fits.
 
@@ -398,10 +400,10 @@ Requirements and limits:
 > by unit and integration tests against a simulated Proxmox VE. A run on the PVE lab is a lab step
 > (`lab/e2e/m5-api.sh restore-test`), not yet done; Windows guests (port probe with `netstat`) are untested.
 
-**VMs with a vTPM** (Windows 11, Windows Server with Secure Boot and BitLocker): the test VM boots with a **fresh
-vTPM**, because the TPM state cannot be served over the network like the disks. Boot, guest agent and port checks
-work; anything sealed to the original TPM (BitLocker without its recovery key, Windows Hello) is not available in the
-test. Instant recovery of such VMs is refused; use a full restore, which restores the TPM state.
+**VMs with a vTPM** (Windows 11, Windows Server with Secure Boot and BitLocker): the test VM gets the **backed-up
+TPM state**. The disks are served over the network, but swtpm needs a local file, so Proxmox VE copies the 4 MiB
+state to the target storage while it creates the test VM. Anything sealed to the TPM (BitLocker, Windows Hello)
+works as in the original. Full restores, instant recovery and rollbacks restore the TPM state too.
 
 ## Browse files and download them (tar or zip)
 

@@ -159,7 +159,7 @@ The PVE API token lacks `SDN.Use` on the bridge's zone. Grant `PVESDNUser` on `/
 storage.
 
 **Instant recovery refused.**
-The VM has a TPM state (`tpmstate0`) or is a template. Use **Restore → Full restore to a new VM / container**.
+The VM is a template. Use **Restore → Full restore to a new VM / container**.
 
 **A plugin restore is missing from the Restore menu.**
 The menu offers only the restores that apply to this kind of snapshot. PostgreSQL, for example, offers the dump
