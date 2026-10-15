@@ -13,6 +13,10 @@ updates:
     open-pull-requests-limit: 3
     groups:
       npm-minor: { update-types: [minor, patch] }
+    ignore:
+      # svelte-check 4.7 accepts only TypeScript 5 or 6 (peer dependency); drop when it supports 7
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
