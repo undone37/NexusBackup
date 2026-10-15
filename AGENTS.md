@@ -61,7 +61,7 @@ the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`).
 
 ## Conventions
 
-- **Rust:** `anyhow` with `.context("...")` at boundaries, `thiserror` only where callers match on errors. Unit tests
+- **Rust:** `anyhow` errors with `.context("...")` naming what failed (no `thiserror` in the tree). Unit tests
   in the same file (`#[cfg(test)] mod tests`), integration tests in `crates/<crate>/tests/`. Doc comments on public
   items say what and why, not how. Mark deliberate simplifications with a comment naming the limit.
 - **Connectors** are separate binaries started by the scheduler with a JSON config file; they print progress lines
