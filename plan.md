@@ -1018,7 +1018,7 @@ without help, and the GitHub side runs with as little manual work and runner loa
   - **issues:** issue forms (bug, feature request, lab result), labels, a private security policy (`SECURITY.md`,
     private vulnerability reporting), PR template with the gate checklist;
   - **pre-commit hooks:** a versioned hook script (`.githooks/`, enabled with `git config core.hooksPath`) that runs
-    the fast gates (fmt, clippy on changed crates, `svelte-check` when web/ changed, `prove` when pve-plugin/
+    the fast gates (fmt, clippy on changed crates, `svelte-check` and `prettier --check` (via `npx prettier`, allowed 2026-10-15) when web/ changed, `prove` when pve-plugin/
     changed, no secrets / emojis in the diff); documented in AGENTS.md; no pre-commit framework download;
   - **CI:** path filters so a docs-only push does not run Rust tests; cached cargo and npm directories on the
     self-hosted runner; test parallelism limited so the runner (16 GiB) does not run out of memory again; jobs
