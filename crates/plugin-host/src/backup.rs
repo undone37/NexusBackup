@@ -185,7 +185,7 @@ impl Chunker {
 
     fn cut(&self) -> usize {
         let rest = &self.buf[self.start..];
-        fastcdc::v2020::FastCDC::new(rest, CDC_MIN, CDC_AVG, CDC_MAX)
+        fastcdc::v2020::FastCDC::new(rest, CDC_MIN as usize, CDC_AVG as usize, CDC_MAX as usize)
             .next()
             .map_or(rest.len(), |c| c.length)
     }

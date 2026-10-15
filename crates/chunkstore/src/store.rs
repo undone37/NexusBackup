@@ -815,7 +815,7 @@ impl Store {
     }
 
     fn store_file_inner(&self, r: impl Read) -> io::Result<FileStats> {
-        let mut cdc = fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX);
+        let mut cdc = fastcdc::v2020::StreamCDC::new(r, CDC_MIN as usize, CDC_AVG as usize, CDC_MAX as usize);
         let mut next = || cdc.next().transpose().map_err(io::Error::other);
         let mut lens = Vec::new();
         let ids = match (next()?, next()?) {

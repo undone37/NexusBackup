@@ -244,7 +244,7 @@ pub fn chunk_reader(loc: &mut Locator, idx: u32, r: impl io::Read, spool: bool) 
     let mut chunks = vec![];
     let mut total = 0u64;
     let mut sha = hashing().then(<sha2::Sha256 as sha2::Digest>::new);
-    for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN, CDC_AVG, CDC_MAX) {
+    for c in fastcdc::v2020::StreamCDC::new(r, CDC_MIN as usize, CDC_AVG as usize, CDC_MAX as usize) {
         let c = c.map_err(io::Error::other)?;
         let h = *blake3::hash(&c.data).as_bytes();
         if let Some(s) = sha.as_mut() {
