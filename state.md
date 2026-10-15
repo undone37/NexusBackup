@@ -609,7 +609,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   NTFS `$INDEX_ROOT` with a huge index record size, an ext4 superblock whose block count made `ext4-view` allocate
   25 GB of block group descriptors (file system larger than its volume); `/etc/fstab` is read only up to 64 KiB
 - [ ] 31c open: btrfs / FAT / exFAT hashes, owner search filter (web-api + UI), SID/uid names, GPT dynamic disks
-  checked against Windows, micro-VM restore from dynamic volumes, lab run of the new walkers on real guests
+  checked against Windows, micro-VM restore from dynamic volumes, lab run of XFS / btrfs / LVM thin / LDM on real guests
+- [x] Lab 10/11 (2026-10-15, merged main, Windows Server VM 101): C: from the SYSTEM hive, owners on the NTFS system
+  volume (1,225 security descriptors, all 390,926 entries owned; web-api dropped them from search hits: fixed),
+  file index 33.9 s first / 15.5 s next (78,202 of 94,230 directories taken over), full backup 388 s, incremental
+  25 s, restore test passed (130 s boot; one earlier attempt timed out at 900 s while the host was loaded, rerun ok)
 
 
 ## Phase 32 — Throughput: more at once (2026-10-14)
