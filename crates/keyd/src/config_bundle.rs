@@ -35,6 +35,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use zeroize::Zeroizing;
 
+/// magic of v1 bundles: the bundle key in an X25519-only sealed box (written for a 32-byte public key)
 pub const MAGIC: &[u8; 8] = b"NXCFGB1\0";
 /// Phase 30: the bundle key in a hybrid (X25519 + ML-KEM-768) box
 pub const MAGIC2: &[u8; 8] = b"NXCFGB2\0";
@@ -42,25 +43,36 @@ const PQ_CONTEXT: &str = "NexusBackup 2026 config-backup ml-kem-768 v1";
 const LABEL: &[u8] = b"config-bundle";
 /// published next to the keyd socket (0644): the X25519 public key and `kek.recovery`
 pub const PUB_FILE: &str = "config-backup.pub";
+/// file name of the KEK escrow blob, in the keyd dir and published next to [`PUB_FILE`]
 pub const KEK_RECOVERY_FILE: &str = "kek.recovery";
 /// bundles larger than this are refused when opened
 pub const MAX_BUNDLE: usize = 2 << 30;
 const CONTEXT: &str = "NexusBackup 2026 config-backup x25519 v1";
 
+/// One file or directory in a bundle, restored with its owner and mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    /// relative to `/` (see [`valid_path`])
     pub path: String,
+    /// a directory (no data) instead of a file
     pub dir: bool,
+    /// permission bits (`st_mode & 0o7777`)
     pub mode: u32,
+    /// owner user name (not uid: uids may differ on the restored appliance), at most 255 bytes
     pub user: String,
+    /// owner group name, at most 255 bytes
     pub group: String,
+    /// file content; empty for directories
     pub data: Vec<u8>,
 }
 
+/// A bundle decrypted with the recovery key ([`open`]).
 pub struct Opened {
+    /// the clear JSON header written by the helper (same bytes as [`header`] returns)
     pub header: Vec<u8>,
     /// `kek.recovery` of the appliance that made the bundle
     pub kek_recovery: Vec<u8>,
+    /// files and directories in the order they were sealed
     pub entries: Vec<Entry>,
 }
 

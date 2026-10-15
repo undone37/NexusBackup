@@ -26,13 +26,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
+/// Chunk size of fixed-size (block device) indexes: 4 MiB.
 pub const IMAGE_CHUNK_SIZE: usize = 4 << 20;
+/// Content-defined chunking (FastCDC) of file data: minimum chunk size, bytes.
 pub const CDC_MIN: u32 = 128 << 10;
+/// FastCDC average chunk size, bytes.
 pub const CDC_AVG: u32 = 512 << 10;
+/// FastCDC maximum chunk size, bytes.
 pub const CDC_MAX: u32 = 4 << 20;
 /// Longest backup duration `stats_line` reports (`secs`): 7 days.
 pub const STATS_MAX_SECS: u64 = 7 * 86_400;
 
+/// Tunables of a [`Store`], fixed at [`Store::open`].
 pub struct Options {
     /// Lock every new snapshot gets (plan: 14 days).
     pub min_lock_secs: u64,
@@ -61,46 +66,77 @@ impl Default for Options {
     }
 }
 
+/// Chunk list of one stored object (a disk image or a file tree), sealed as
+/// `snapshots/<source>/<time>/<name>.idx`. Variant order is part of the format.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Index {
     /// Block device: chunk N covers offset `N * chunk_size`.
     Fixed {
+        /// bytes per chunk (the last chunk may be shorter)
         chunk_size: u32,
+        /// image size, bytes
         size: u64,
+        /// chunk ids in offset order
         chunks: Vec<ChunkId>,
     },
     /// File tree.
-    Dynamic { entries: Vec<FileEntry> },
+    Dynamic {
+        /// one entry per file
+        entries: Vec<FileEntry>,
+    },
     /// Host file tree with full metadata (agents, docs/agent-protocol.md). Appended
     /// last: postcard encodes the variant index, so older indexes still decode.
-    Tree { entries: Vec<TreeEntry> },
+    Tree {
+        /// one entry per path
+        entries: Vec<TreeEntry>,
+    },
 }
 
+/// Type of a [`TreeEntry`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum TreeKind {
+    /// Regular file.
     File,
+    /// Directory.
     Dir,
+    /// Symbolic link (`link_target` holds the target).
     Symlink,
+    /// Further name of an inode stored earlier in the tree (`link_target` holds that path; no chunks).
     Hardlink,
+    /// Block or character device (`rdev`).
     Device,
+    /// Named pipe.
     Fifo,
+    /// Unix socket.
     Socket,
 }
 
+/// One entry of an [`Index::Tree`]: path, POSIX metadata and chunk list.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TreeEntry {
     /// relative to the backed-up root, raw bytes
     pub path: Vec<u8>,
+    /// entry type
     pub kind: TreeKind,
+    /// POSIX mode bits (`st_mode`)
     pub mode: u32,
+    /// numeric owner user id
     pub uid: u32,
+    /// numeric owner group id
     pub gid: u32,
+    /// plain bytes (0 for directories and hardlinks)
     pub size: u64,
+    /// modification time, nanoseconds since the unix epoch
     pub mtime_ns: i64,
+    /// inode change time, nanoseconds since the unix epoch
     pub ctime_ns: i64,
+    /// inode number on the source (change detection, hardlinks)
     pub inode: u64,
+    /// device number of device nodes
     pub rdev: u64,
+    /// symlink target, or for a hardlink the path of the first name (raw bytes)
     pub link_target: Option<Vec<u8>>,
+    /// extended attributes as (name, value), raw bytes
     pub xattrs: Vec<(Vec<u8>, Vec<u8>)>,
     /// keyed chunk IDs (the appliance maps the agent's plain hashes)
     pub chunks: Vec<ChunkId>,
@@ -108,12 +144,18 @@ pub struct TreeEntry {
     pub inconsistent: bool,
 }
 
+/// One file of an [`Index::Dynamic`] tree.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct FileEntry {
+    /// path relative to the backed-up root, `/`-separated
     pub path: String,
+    /// POSIX mode bits
     pub mode: u32,
+    /// plain bytes
     pub size: u64,
+    /// modification time, unix seconds
     pub mtime: i64,
+    /// chunk ids of the content, in order
     pub chunks: Vec<ChunkId>,
 }
 
@@ -127,6 +169,7 @@ impl Index {
         }
     }
 
+    /// All chunk ids the index references, in order (duplicates included).
     pub fn chunk_ids(&self) -> Vec<&ChunkId> {
         match self {
             Index::Fixed { chunks, .. } => chunks.iter().collect(),
@@ -137,23 +180,33 @@ impl Index {
 }
 
 // ponytail: offsite/verify status live in the catalog, not in the immutable manifest.
+/// Commit record of a snapshot (`snapshots/<source>/<time>/manifest`, sealed,
+/// written last): which indexes exist and how long the snapshot is locked.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Manifest {
+    /// tenant of the keyring that wrote it
     pub tenant: String,
+    /// source name (a guest, agent, share, ...)
     pub source: String,
+    /// snapshot time, unix seconds (also the directory name)
     pub time: u64,
+    /// index names (`<name>.idx` files) in the snapshot
     pub indexes: Vec<String>,
+    /// compliance clock time (unix seconds) before which the snapshot cannot be deleted;
+    /// only ever extended
     pub lock_until: u64,
 }
 
 /// Result of `Store::store_file_stats`.
 #[derive(Debug, Default)]
 pub struct FileStats {
+    /// chunk ids of the stream, in order
     pub chunks: Vec<ChunkId>,
     /// bytes read from the stream
     pub size: u64,
     /// chunks (and their plain bytes) that were not in the store before
     pub new_chunks: usize,
+    /// plain bytes of the new chunks
     pub new_bytes: u64,
     /// sealed (compressed + encrypted) bytes written for those new chunks
     pub new_stored: u64,
@@ -164,6 +217,7 @@ pub struct FileStats {
 /// the difference before/after a snapshot is that snapshot's new data.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Written {
+    /// number of new chunks
     pub chunks: u64,
     /// plain bytes of the new chunks
     pub plain: u64,
@@ -172,6 +226,7 @@ pub struct Written {
 }
 
 impl Written {
+    /// Difference to an earlier reading of the same handle (`self - before`).
     pub fn since(self, before: Written) -> Written {
         Written {
             chunks: self.chunks - before.chunks,
@@ -181,18 +236,27 @@ impl Written {
     }
 }
 
+/// Result of a [`Store::gc`] run.
 #[derive(Debug, Default)]
 pub struct GcStats {
+    /// chunk files scanned
     pub total: usize,
+    /// distinct chunks referenced by committed snapshots
     pub marked: usize,
+    /// unreferenced chunks deleted
     pub deleted: usize,
+    /// unreferenced chunks kept because they are younger than `gc_grace_secs`
     pub kept_grace: usize,
 }
 
+/// Result of [`Store::verify`].
 #[derive(Debug, Default)]
 pub struct VerifyReport {
+    /// chunk files selected and fully re-read
     pub checked: usize,
+    /// selected chunks that failed decryption or the hash check
     pub corrupt: Vec<ChunkId>,
+    /// chunks referenced by a snapshot but without a file
     pub missing: Vec<ChunkId>,
 }
 
@@ -206,10 +270,13 @@ pub struct ImageReader<'a> {
 }
 
 impl ImageReader<'_> {
+    /// Image size, bytes.
     pub fn size(&self) -> u64 {
         self.size
     }
 
+    /// Fills `buf` from image offset `off` (bytes). Fails with `InvalidInput` when
+    /// the range ends beyond the image, or on an unreadable chunk.
     pub fn read_at(&mut self, off: u64, buf: &mut [u8]) -> io::Result<()> {
         if off.checked_add(buf.len() as u64).is_none_or(|e| e > self.size) {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "read beyond image end"));
@@ -231,6 +298,7 @@ impl ImageReader<'_> {
     }
 }
 
+/// Streaming `Read` over a chunk list ([`Store::chunk_reader`]).
 pub struct ChunkReader<'a> {
     store: &'a Store,
     ids: &'a [ChunkId],
@@ -256,6 +324,8 @@ impl Read for ChunkReader<'_> {
     }
 }
 
+/// One tenant's chunk store at `root` (layout in the module doc). Thread-safe;
+/// open one per tenant and process.
 pub struct Store {
     root: PathBuf,
     keys: Keyring,
@@ -366,6 +436,8 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 impl Store {
+    /// Opens (creates if needed) the store at `root`. Fails if `keys` is not the
+    /// keyring the store was created with (`keycheck`).
     pub fn open(root: impl Into<PathBuf>, keys: Keyring, opts: Options) -> io::Result<Self> {
         let root = root.into();
         fs::create_dir_all(root.join("chunks"))?;
@@ -418,6 +490,7 @@ impl Store {
         crate::pipeline::run(self, self.workers, produce)
     }
 
+    /// The tenant keyring of this store.
     pub fn keys(&self) -> &Keyring {
         &self.keys
     }
@@ -428,11 +501,13 @@ impl Store {
         postcard::from_bytes(&self.keys.open(ctx.as_bytes(), sealed)?.1).map_err(invalid_ser)
     }
 
+    /// Decodes a sealed index file `name` of `source/time` (offsite copies).
     pub fn decode_index(&self, source: &str, time: u64, name: &str, sealed: &[u8]) -> io::Result<Index> {
         let ctx = format!("index:{source}/{time}/{name}");
         postcard::from_bytes(&self.keys.open(ctx.as_bytes(), sealed)?.1).map_err(invalid_ser)
     }
 
+    /// Current compliance clock time, unix seconds (retention locks).
     pub fn compliance_now(&self) -> io::Result<u64> {
         self.clock.now()
     }
@@ -562,6 +637,7 @@ impl Store {
         Ok(true)
     }
 
+    /// Whether the chunk file exists (no verification).
     pub fn has_chunk(&self, id: &ChunkId) -> bool {
         self.chunk_path(id).exists()
     }
@@ -574,6 +650,7 @@ impl Store {
         Self::touch(&self.chunk_path(id))
     }
 
+    /// Random-access reader over a fixed index; fails for other index kinds.
     pub fn image_reader<'a>(&'a self, index: &'a Index) -> io::Result<ImageReader<'a>> {
         let Index::Fixed {
             chunk_size,
@@ -592,6 +669,7 @@ impl Store {
         })
     }
 
+    /// Reads, decrypts and verifies one chunk.
     pub fn read_chunk(&self, id: &ChunkId) -> io::Result<Vec<u8>> {
         self.keys.open_chunk(id, &fs::read(self.chunk_path(id))?)
     }
@@ -772,6 +850,7 @@ impl Store {
         Ok(s)
     }
 
+    /// Writes the plaintext of `ids` to `w` in order (each chunk verified).
     pub fn write_chunks<'a>(&self, ids: impl IntoIterator<Item = &'a ChunkId>, mut w: impl Write) -> io::Result<()> {
         for id in ids {
             w.write_all(&self.read_chunk(id)?)?;
@@ -816,6 +895,7 @@ impl Store {
         self.file_hashes.lock().unwrap().get_or_insert_with(HashMap::new);
     }
 
+    /// Whether [`Self::enable_file_hashes`] was called on this handle.
     pub fn file_hashes_enabled(&self) -> bool {
         self.file_hashes.lock().unwrap().is_some()
     }
@@ -994,6 +1074,7 @@ impl Store {
         Ok(m)
     }
 
+    /// Loads and opens the manifest of `source/time`.
     pub fn load_manifest(&self, source: &str, time: u64) -> io::Result<Manifest> {
         check_name(source)?;
         let ctx = format!("manifest:{source}/{time}");
@@ -1001,6 +1082,7 @@ impl Store {
         postcard::from_bytes(&self.keys.open(ctx.as_bytes(), &blob)?.1).map_err(invalid_ser)
     }
 
+    /// Loads and opens index `name` of the snapshot `m`.
     pub fn load_index(&self, m: &Manifest, name: &str) -> io::Result<Index> {
         check_name(name)?;
         let ctx = format!("index:{}/{}/{name}", m.source, m.time);

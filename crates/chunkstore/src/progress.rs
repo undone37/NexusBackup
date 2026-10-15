@@ -22,13 +22,16 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
+/// Prefix of a machine progress line on stderr.
 pub const PREFIX: &str = "progress ";
 
 /// Minimum time between two lines of one [`Meter`].
 pub const EVERY: Duration = Duration::from_secs(2);
 
+/// One `progress {json}` line: the current state of an item / part (all fields optional).
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct Line {
+    /// item key (`vm-101`, agent or share id), set from the thread's item context
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
     /// display name (guest name, agent name)
@@ -37,19 +40,25 @@ pub struct Line {
     /// 1-based
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_index: Option<u32>,
+    /// number of items of the job
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<u32>,
+    /// current part of the item (disk, `tar`, `chunks`, ...)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
     /// 1-based
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part_index: Option<u32>,
+    /// number of parts of the item
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<u32>,
+    /// bytes of the part done so far
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<u64>,
+    /// bytes of the part in total, if known
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<u64>,
+    /// entries of the part done so far (parts without a byte total)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entries: Option<u64>,
     /// estimated `entries` of the part (a percentage without byte totals; may be off)
@@ -66,6 +75,7 @@ impl Line {
         serde_json::from_str(l.strip_prefix(PREFIX)?.trim_end()).ok()
     }
 
+    /// The machine line `progress {json}` with its trailing newline.
     pub fn render(&self) -> String {
         format!("{PREFIX}{}\n", serde_json::to_string(self).unwrap_or_default())
     }
@@ -154,11 +164,13 @@ pub fn item(item: &str, label: Option<&str>, index: u32, items: u32) -> ItemGuar
     ItemGuard { ok: false }
 }
 
+/// Guard of [`item`]: prints the item's `end` line on drop.
 pub struct ItemGuard {
     ok: bool,
 }
 
 impl ItemGuard {
+    /// Marks the item as succeeded (`end: ok` instead of `failed`).
     pub fn ok(&mut self) {
         self.ok = true;
     }
@@ -192,6 +204,8 @@ pub struct Meter {
 }
 
 impl Meter {
+    /// Starts part `part` (`part_index` 1-based of `parts`; `total` bytes if known)
+    /// and prints its first line.
     pub fn new(part: &str, part_index: u32, parts: u32, total: Option<u64>) -> Meter {
         let m = Meter {
             line: Line {
@@ -222,6 +236,7 @@ impl Meter {
         self.tick();
     }
 
+    /// Sets the byte total once known (e.g. after the size was probed).
     pub fn set_total(&mut self, total: u64) {
         self.line.total = Some(total);
     }
@@ -233,6 +248,7 @@ impl Meter {
         }
     }
 
+    /// Prints the final line of the part (regardless of [`EVERY`]).
     pub fn finish(&mut self) {
         self.line.print();
     }
@@ -245,7 +261,9 @@ impl Meter {
 
 /// A reader whose bytes count into a [`Meter`] (streams without a known size).
 pub struct Reader<R> {
+    /// wrapped reader
     pub inner: R,
+    /// meter that counts the bytes read
     pub meter: Meter,
 }
 

@@ -3,17 +3,25 @@
 //! A snapshot may be daily, weekly, monthly and yearly at once; the union is kept.
 //! `recent` (hours) keeps *every* snapshot of the last N hours before the newest
 //! one (frequent WAL-only database runs), on top of the period classes.
+
+#![warn(missing_docs)]
+
 // ponytail: periods are computed in UTC; a per-appliance time zone when customers notice.
 
 use std::collections::BTreeMap;
 
+/// GFS retention policy: how many periods of each class to keep. 0 disables a class.
 #[derive(Clone, Copy, Debug)]
 pub struct Gfs {
     /// keep all snapshots of the last N hours (counted back from the newest snapshot)
     pub recent: u32,
+    /// keep the last snapshot of each of the last N days that have a snapshot (UTC days)
     pub daily: u32,
+    /// keep the last snapshot of each of the last N weeks that have one (weeks start Monday, UTC)
     pub weekly: u32,
+    /// keep the last snapshot of each of the last N calendar months that have one (UTC)
     pub monthly: u32,
+    /// keep the last snapshot of each of the last N calendar years that have one (UTC)
     pub yearly: u32,
 }
 
@@ -29,12 +37,18 @@ impl Default for Gfs {
     }
 }
 
+/// Retention class a kept snapshot holds; one snapshot can hold several. Ordered from shortest to longest lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
+    /// within the last `recent` hours before the newest snapshot
     Recent,
+    /// last snapshot of its UTC day
     Daily,
+    /// last snapshot of its week (Monday to Sunday, UTC)
     Weekly,
+    /// last snapshot of its calendar month
     Monthly,
+    /// last snapshot of its calendar year
     Yearly,
 }
 

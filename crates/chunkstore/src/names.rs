@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 
+/// File name of the sealed name index in the snapshot directory.
 pub const FILE: &str = "names";
 
 /// SHA-256 of a regular file's content (IOC hash hunt, Phase 28).
@@ -40,9 +41,11 @@ pub const EMPTY_SHA256: Sha256 = [
 pub struct NameIndex {
     /// paths relative to the snapshot root, `/`-separated, NUL-terminated each
     pub paths: String,
+    /// bytes, per entry
     pub size: Vec<u64>,
     /// seconds
     pub mtime: Vec<i64>,
+    /// per entry, one of the `KIND_*` constants
     pub kind: Vec<u8>,
     /// v2: `(entry index, SHA-256)` of regular files, ascending by index;
     /// empty = no hashes recorded (written as v1)
@@ -85,9 +88,13 @@ struct V3 {
     owner: Vec<u32>,
 }
 
+/// Regular file (`NameIndex::kind`).
 pub const KIND_FILE: u8 = 0;
+/// Directory.
 pub const KIND_DIR: u8 = 1;
+/// Symbolic link.
 pub const KIND_SYMLINK: u8 = 2;
+/// Anything else (device, fifo, socket, hardlink).
 pub const KIND_OTHER: u8 = 3;
 
 /// A path as the index stores it: no leading `/`, NUL as U+FFFD.
@@ -100,6 +107,7 @@ pub fn normalise(path: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Display name of a `KIND_*` value (`file`, `dir`, `symlink`, `other`).
 pub fn kind_name(k: u8) -> &'static str {
     match k {
         KIND_FILE => "file",
@@ -115,10 +123,12 @@ const STREAMS_DIR: &str = ".nexus-streams";
 const STREAMS_INDEX: &str = "streams";
 
 impl NameIndex {
+    /// Number of entries.
     pub fn len(&self) -> usize {
         self.size.len()
     }
 
+    /// Whether the index has no entries.
     pub fn is_empty(&self) -> bool {
         self.size.is_empty()
     }
@@ -155,6 +165,7 @@ impl NameIndex {
             .map(|k| &self.sha256[k].1)
     }
 
+    /// Whether any SHA-256 is recorded (decides v2 over v1).
     pub fn has_hashes(&self) -> bool {
         !self.sha256.is_empty()
     }
@@ -173,6 +184,7 @@ impl NameIndex {
         self.owners.get(o.checked_sub(1)?).map(String::as_str)
     }
 
+    /// Whether owners are recorded (decides v3).
     pub fn has_owners(&self) -> bool {
         !self.owner.is_empty()
     }

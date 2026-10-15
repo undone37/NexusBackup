@@ -273,6 +273,7 @@ pub fn estimate(c: &Connection, policy_id: Option<i64>, scope: Option<&str>) -> 
     })))
 }
 
+/// Columns of the `storage` report.
 pub const STORAGE_COLUMNS: &[&str] = &[
     "level",
     "tenant",

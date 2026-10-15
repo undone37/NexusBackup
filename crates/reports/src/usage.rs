@@ -17,6 +17,7 @@ use crate::rusqlite::{self, params, Connection};
 use crate::{day, Cell, Kind, Table};
 use serde_json::{json, Value};
 
+/// Columns of the `usage` report.
 pub const USAGE_COLUMNS: &[&str] = &[
     "period_start",
     "period_end",

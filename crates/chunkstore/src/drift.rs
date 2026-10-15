@@ -20,6 +20,7 @@ use std::collections::HashMap;
 /// paths / offsets listed in a result
 pub const MAX_EXAMPLES: usize = 10;
 
+/// Result of one full read compared against the previous snapshot (see the module doc).
 #[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct Drift {
     /// "dirty-bitmap", "metadata-cache", "usn", "zfs-diff" or "none"
@@ -32,12 +33,14 @@ pub struct Drift {
     pub changed: u64,
     /// of those, not reported by the tracker
     pub unreported: u64,
+    /// plain bytes of the unreported changes
     pub unreported_bytes: u64,
     /// paths, or `<device>@<offset>` for disk chunks
     pub examples: Vec<String>,
 }
 
 impl Drift {
+    /// Empty result for `tracker`; the connector fills the counters while reading.
     pub fn new(tracker: &str, baseline: Option<u64>) -> Drift {
         Drift {
             tracker: tracker.into(),

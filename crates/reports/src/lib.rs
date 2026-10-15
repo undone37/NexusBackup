@@ -19,6 +19,8 @@
 //! integers. Text cells starting with `=` `+` `-` `@` (or tab / CR) get a leading
 //! `'` so spreadsheets do not evaluate them (CSV injection).
 
+#![warn(missing_docs)]
+
 use catalog::rusqlite::{self, Connection};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -32,19 +34,27 @@ const DAY: i64 = 86400;
 /// Rows of each report in the mail body (all rows are in the attachment).
 pub const MAIL_ROWS: usize = 20;
 
+/// Report type; serialized lowercase (`protection`, `failed`, ...), also the CSV path segment.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
+    /// Per protected object: last good backup, RPO status, copies (current state).
     Protection,
+    /// Failed jobs that finished in the range, with the first error line.
     Failed,
+    /// RPO breaches and `sla_missed` alerts in the range.
     Sla,
+    /// Storage per tenant and group (current state).
     Storage,
+    /// Usage per tenant over the range (billing).
     Usage,
 }
 
 impl Kind {
+    /// Every report type.
     pub const ALL: [Kind; 5] = [Kind::Protection, Kind::Failed, Kind::Sla, Kind::Storage, Kind::Usage];
 
+    /// Lowercase name as in the URL, the setting and the attachment name.
     pub fn name(self) -> &'static str {
         match self {
             Kind::Protection => "protection",
@@ -55,10 +65,12 @@ impl Kind {
         }
     }
 
+    /// Inverse of [`Kind::name`]; `None` for an unknown name.
     pub fn parse(s: &str) -> Option<Kind> {
         Kind::ALL.into_iter().find(|k| k.name() == s)
     }
 
+    /// Human-readable title for mails and the UI.
     pub fn title(self) -> &'static str {
         match self {
             Kind::Protection => "Protection status",
@@ -75,27 +87,35 @@ impl Kind {
     }
 }
 
+/// One table cell; [`Display`](std::fmt::Display) gives its CSV / HTML text.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cell {
+    /// Free text (formula-like text is neutralised in the CSV).
     Text(String),
+    /// Integer, also used for byte counts and ids.
     Int(i64),
     /// ratio, rounded to 3 decimals
     Ratio(f64),
     /// unix time, written as ISO 8601 UTC
     Time(i64),
+    /// No value (an empty CSV field).
     Empty,
 }
 
 impl Cell {
+    /// A [`Cell::Text`] from anything string-like.
     pub fn text(s: impl Into<String>) -> Cell {
         Cell::Text(s.into())
     }
+    /// [`Cell::Time`] of a unix time, or [`Cell::Empty`] for `None`.
     pub fn opt_time(t: Option<i64>) -> Cell {
         t.map_or(Cell::Empty, Cell::Time)
     }
+    /// [`Cell::Int`], or [`Cell::Empty`] for `None`.
     pub fn opt_int(n: Option<i64>) -> Cell {
         n.map_or(Cell::Empty, Cell::Int)
     }
+    /// [`Cell::Ratio`], or [`Cell::Empty`] for `None`.
     pub fn opt_ratio(r: Option<f64>) -> Cell {
         r.map_or(Cell::Empty, Cell::Ratio)
     }
@@ -120,8 +140,11 @@ impl std::fmt::Display for Cell {
 /// One report: column names and rows (each row has one cell per column).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Table {
+    /// Report type the table was generated for.
     pub kind: Kind,
+    /// Column names (the CSV header), one of the `*_COLUMNS` constants.
     pub columns: &'static [&'static str],
+    /// Data rows; each has `columns.len()` cells.
     pub rows: Vec<Vec<Cell>>,
 }
 
@@ -259,6 +282,7 @@ fn job_target(c: &Connection, p: &serde_json::Value) -> rusqlite::Result<String>
     Ok(String::new())
 }
 
+/// Columns of the `failed` report.
 pub const FAILED_COLUMNS: &[&str] = &[
     "job", "tenant", "kind", "target", "created", "finished", "attempt", "error",
 ];
@@ -310,19 +334,25 @@ fn failed(c: &Connection, scope: Option<&str>, from: i64, to: i64) -> rusqlite::
 
 /// Catalog setting: JSON array of [`Scheduled`] (written by `PUT /settings/reports`).
 pub const SETTING: &str = "reports";
+/// Most scheduled reports the setting may hold (checked by the web-api).
 pub const MAX_SCHEDULED: usize = 32;
+/// Most recipients of one scheduled report.
 pub const MAX_RECIPIENTS: usize = 16;
 
 /// A report mailed on a schedule (weekdays or monthly form, in `timezone`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Scheduled {
+    /// Unique name (see [`valid_name`]); prefix of the attachment names.
     pub name: String,
+    /// Reports in the mail, each type at most once.
     pub types: Vec<Kind>,
     /// `Mon 07:00`, `Mon,Thu 07:00`, `daily 07:00` or `monthly 1 07:00`
     pub schedule: String,
+    /// IANA time zone the schedule is evaluated in (default `UTC`).
     #[serde(default = "utc")]
     pub timezone: String,
+    /// Mail addresses; 1 to [`MAX_RECIPIENTS`].
     pub recipients: Vec<String>,
     /// only this tenant's data (None = all tenants)
     #[serde(default)]
@@ -390,6 +420,7 @@ impl Scheduled {
     }
 }
 
+/// The scheduled reports from the [`SETTING`]; empty when unset or not valid JSON.
 pub fn load_scheduled(c: &Connection) -> rusqlite::Result<Vec<Scheduled>> {
     Ok(catalog::setting(c, SETTING)?
         .and_then(|v| serde_json::from_str(&v).ok())
@@ -398,14 +429,19 @@ pub fn load_scheduled(c: &Connection) -> rusqlite::Result<Vec<Scheduled>> {
 
 /// A composed scheduled report: subject, bodies and the CSV attachments.
 pub struct Mail {
+    /// Mail subject (appliance host, report name, first and last day).
     pub subject: String,
+    /// Inline-styled HTML body with the first [`MAIL_ROWS`] rows of each table.
     pub html: String,
+    /// Plain-text alternative: row counts and attachment names.
     pub text: String,
     /// (file name, CSV)
     pub attachments: Vec<(String, String)>,
+    /// Total data rows over all tables (for the job result).
     pub rows: usize,
 }
 
+/// HTML-escapes `& < > " '` for text and attribute values.
 pub fn escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for ch in s.chars() {

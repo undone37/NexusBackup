@@ -20,14 +20,18 @@ const BAD_LIST: &str = "badchunks";
 /// One snapshot that references bad chunks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Damaged {
+    /// snapshot source name
     pub source: String,
+    /// snapshot time (unix seconds)
     pub time: u64,
     /// distinct bad chunks it references
     pub chunks: usize,
 }
 
+/// Outcome of [`Store::repair_from`].
 #[derive(Debug, Default, PartialEq)]
 pub struct Repair {
+    /// bad chunks restored from the repair source (verified copy written)
     pub repaired: usize,
     /// no copy at the repair source, or the copy failed verification
     pub unavailable: usize,

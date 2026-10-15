@@ -4,6 +4,8 @@
 //! Unix socket or the stdio of an `ssh` process.
 //! Spec: <https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md>
 
+#![warn(missing_docs)]
+
 pub mod server;
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -47,6 +49,8 @@ fn proto(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, format!("nbd: {}", msg.into()))
 }
 
+/// NBD client connection over a reader/writer pair (socket halves or an `ssh` process's stdout/stdin).
+/// Created by [`Client::connect`] / [`Client::connect_opt`], which run the handshake and select the export.
 pub struct Client<R, W> {
     r: R,
     w: W,
@@ -161,6 +165,7 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(c)
     }
 
+    /// Export size in bytes, as announced by the server.
     pub fn size(&self) -> u64 {
         self.size
     }
@@ -170,6 +175,8 @@ impl<R: Read, W: Write> Client<R, W> {
         self.tflags & TFLAG_READ_ONLY != 0
     }
 
+    /// Id the server assigned to meta context `name` (for example `qemu:dirty-bitmap:...`); `None` if it was not
+    /// requested or the server did not acknowledge it.
     pub fn context_id(&self, name: &str) -> Option<u32> {
         self.contexts.iter().find(|(n, _)| n == name).map(|(_, id)| *id)
     }
@@ -580,6 +587,7 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(out)
     }
 
+    /// Sends `NBD_CMD_DISC` and drops the connection. The server sends no reply.
     pub fn disconnect(mut self) -> io::Result<()> {
         self.request(CMD_DISC, 0, 0)?;
         Ok(())

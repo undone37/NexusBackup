@@ -35,6 +35,8 @@ pub fn step(prev: f64, elapsed: f64, sys: f64, slew: f64) -> f64 {
     }
 }
 
+/// Tamper-resistant time source of one store (state file `<root>/clock`); see the module doc.
+/// Open it with [`ComplianceClock::shared`] so one process keeps one instance per file.
 pub struct ComplianceClock {
     path: PathBuf,
     slew: f64,

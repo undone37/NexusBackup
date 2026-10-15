@@ -12,6 +12,8 @@
 //! DR: new machine + `kek.recovery` + `tenants/` + recovery key -> `recover()`.
 //! Tenant-level DR: tenant recovery key + `tenant-escrow.*` -> `tenant_key::open` / `install`.
 
+#![warn(missing_docs)]
+
 use chunkstore::crypto::{generate_key, hex, parse_hex, unwrap_key, wrap_key};
 use chunkstore::store::write_atomic;
 use chunkstore::Keyring;
@@ -26,6 +28,7 @@ pub mod config_bundle;
 pub mod hybrid;
 pub mod tenant_key;
 
+/// A 32-byte key (KEK, DEK, recovery key) that is wiped from memory on drop.
 pub type Key = Zeroizing<[u8; 32]>;
 
 fn err(kind: io::ErrorKind, msg: impl Into<String>) -> io::Error {
@@ -54,6 +57,8 @@ pub fn format_recovery_key(k: &[u8; 32]) -> String {
     (0..16).map(|i| &h[i * 4..i * 4 + 4]).collect::<Vec<_>>().join("-")
 }
 
+/// Inverse of [`format_recovery_key`]: 64 hex digits, case and separators (dashes, spaces) ignored.
+/// Error `InvalidInput` for anything else.
 pub fn parse_recovery_key(s: &str) -> io::Result<Key> {
     let h: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     parse_hex(&h.to_ascii_lowercase())
@@ -132,6 +137,8 @@ fn add_dek(dir: &Path, tenant: &str, v: u32) -> io::Result<u32> {
     Ok(v)
 }
 
+/// Creates a tenant with DEK version 1 (wrapped under the KEK) and returns that version.
+/// Error `AlreadyExists` if the tenant has a DEK already; `InvalidInput` for a bad tenant name.
 pub fn create_tenant(dir: &Path, tenant: &str) -> io::Result<u32> {
     if !versions(dir, tenant)?.is_empty() {
         return Err(err(io::ErrorKind::AlreadyExists, format!("tenant {tenant} exists")));
@@ -178,6 +185,9 @@ pub fn request_dek_age(socket: &Path, tenant: &str) -> io::Result<(u32, i64)> {
     Ok((v.parse().map_err(|_| bad())?, ts.parse().map_err(|_| bad())?))
 }
 
+/// All DEK versions of a tenant, oldest first, unwrapped with the KEK. Reads the keyd dir directly
+/// (keyd itself, offline DR tools); other processes ask keyd over the socket.
+/// Error `NotFound` for an unknown tenant.
 pub fn tenant_deks(dir: &Path, tenant: &str) -> io::Result<Vec<(u32, Key)>> {
     let kek = unseal(dir)?;
     let td = tenant_dir(dir, tenant)?;

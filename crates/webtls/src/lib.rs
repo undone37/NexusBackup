@@ -19,6 +19,8 @@
 //!
 //! The answer is written to `result.json` with the request's `id`.
 
+#![warn(missing_docs)]
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -31,16 +33,23 @@ use std::path::{Path, PathBuf};
 use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::{FromDer, X509Certificate};
 
+/// holds the identity (`cert.pem`, `key.pem`), the imported `web.pem` (+ `.prev`) and `pending/` (the key of an open CSR)
 pub const TLS_DIR: &str = "/etc/nexus/tls";
+/// request/result exchange with the web-api, plus the public copies of the pending CSR
 pub const REQ_DIR: &str = "/var/lib/nexus/tls";
 /// Largest accepted chain (PEM bytes) and request file.
 pub const MAX_CHAIN: usize = 64 * 1024;
+/// most certificates accepted in an imported chain
 pub const MAX_CERTS: usize = 8;
+/// most names (CN included) a CSR may ask for
 pub const MAX_SANS: usize = 32;
 
+/// The two directories nexus-tls works in; [`Default`] gives [`TLS_DIR`] and [`REQ_DIR`], tests use temp dirs.
 #[derive(Clone, Debug)]
 pub struct Paths {
+    /// certificate directory ([`TLS_DIR`])
     pub tls: PathBuf,
+    /// request directory ([`REQ_DIR`])
     pub req: PathBuf,
 }
 
@@ -62,15 +71,18 @@ impl Paths {
     pub fn web(&self) -> PathBuf {
         self.tls.join("web.pem")
     }
+    /// imported chain + key that `install` replaced (target of `revert`)
     pub fn prev(&self) -> PathBuf {
         self.tls.join("web.pem.prev")
     }
     fn pending(&self) -> PathBuf {
         self.tls.join("pending")
     }
+    /// request written by the web-api, removed by [`process`]
     pub fn request(&self) -> PathBuf {
         self.req.join("request.json")
     }
+    /// answer to the last request, written by [`process`]
     pub fn result(&self) -> PathBuf {
         self.req.join("result.json")
     }
@@ -78,6 +90,7 @@ impl Paths {
     pub fn csr(&self) -> PathBuf {
         self.req.join("csr.pem")
     }
+    /// [`Pending`] of the outstanding CSR as JSON (public copy for the UI)
     pub fn pending_info(&self) -> PathBuf {
         self.req.join("pending.json")
     }
@@ -88,18 +101,25 @@ impl Paths {
 /// What the UI shows per certificate.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CertInfo {
+    /// subject DN as text (`CN=..., O=...`)
     pub subject: String,
+    /// issuer DN as text (`CN=..., O=...`)
     pub issuer: String,
     /// DNS names (lower case) and IP addresses
     pub sans: Vec<String>,
+    /// start of validity, unix time (seconds)
     pub not_before: i64,
+    /// end of validity, unix time (seconds)
     pub not_after: i64,
     /// SHA-256 of the DER, upper case and colon separated (what browsers show)
     pub sha256: String,
+    /// subject equals issuer and the certificate verifies with its own key
     pub self_signed: bool,
+    /// basicConstraints CA flag set
     pub ca: bool,
 }
 
+/// SHA-256 of `der`, upper case hex with colons (the format browsers show).
 pub fn fingerprint(der: &[u8]) -> String {
     Sha256::digest(der)
         .iter()
@@ -164,6 +184,7 @@ fn info_of(der: &[u8], c: &X509Certificate) -> CertInfo {
     }
 }
 
+/// [`CertInfo`] of one DER certificate; error if it does not parse or has trailing data.
 pub fn info(der: &[u8]) -> Result<CertInfo> {
     Ok(info_of(der, &parse(der)?))
 }
@@ -214,8 +235,11 @@ pub fn covers(san: &str, name: &str) -> bool {
 /// What a CSR asked for (kept until the matching chain is installed).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Pending {
+    /// common name, normalized by [`check_name`]
     pub cn: String,
+    /// every requested name, CN first, normalized and deduplicated; the chain must cover all of them
     pub sans: Vec<String>,
+    /// when the CSR was made, unix time (seconds)
     pub created: i64,
 }
 
@@ -263,9 +287,11 @@ pub fn make_csr(cn: &str, sans: &[String]) -> Result<(String, String, Pending)> 
 /// A chain that passed [`validate`].
 #[derive(Debug)]
 pub struct Valid {
+    /// [`CertInfo`] per certificate, leaf first
     pub chain: Vec<CertInfo>,
     /// the certificates, re-encoded (leaf first)
     pub pem: String,
+    /// non-fatal findings shown after the install (for example: expires within 30 days)
     pub warnings: Vec<String>,
 }
 
@@ -384,6 +410,7 @@ fn pem_block(label: &str, der: &[u8]) -> String {
 
 // ---------------------------------------------------------------- operations
 
+/// Current unix time in seconds (0 if the clock is before 1970).
 pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -490,15 +517,21 @@ pub fn revert(p: &Paths) -> Result<Value> {
     Ok(json!({"active": if prev.is_some() { "imported" } else { "self_signed" }}))
 }
 
+/// `request.json` as the web-api writes it; unknown fields are refused.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    /// echoed in `result.json` so the web-api matches the answer to its request
     pub id: String,
+    /// `csr`, `install` or `revert`
     pub op: String,
+    /// `csr`: common name
     #[serde(default)]
     pub cn: String,
+    /// `csr`: further names (DNS or IP)
     #[serde(default)]
     pub sans: Vec<String>,
+    /// `install`: the signed chain, PEM, leaf first
     #[serde(default)]
     pub chain_pem: String,
 }

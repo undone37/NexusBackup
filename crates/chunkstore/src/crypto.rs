@@ -13,16 +13,19 @@ use std::collections::HashMap;
 use std::io;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+/// Keyed BLAKE3 hash of a chunk's plaintext (tenant- and key-version-specific).
 pub type ChunkId = [u8; 32];
 
 const MAGIC: &[u8; 4] = b"NXB1";
 const HEADER: usize = 4 + 1 + 4 + 24;
 const FLAG_ZSTD: u8 = 1;
 
+/// Lowercase hex form of a chunk id (64 characters; chunk file names, logs).
 pub fn hex(id: &ChunkId) -> String {
     id.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Inverse of [`hex`]: `None` unless exactly 64 hex digits.
 pub fn parse_hex(s: &str) -> Option<ChunkId> {
     if s.len() != 64 {
         return None;
@@ -61,6 +64,8 @@ pub fn wrap_key(kek: &[u8; 32], key: &[u8; 32], label: &str) -> Vec<u8> {
     [nonce.as_slice(), &ct].concat()
 }
 
+/// Inverse of [`wrap_key`]; `label` must match. Fails on a wrong key, label,
+/// length or tampered blob.
 pub fn unwrap_key(kek: &[u8; 32], wrapped: &[u8], label: &str) -> io::Result<[u8; 32]> {
     if wrapped.len() != 24 + 32 + 16 {
         return Err(invalid("wrapped key has wrong length"));
@@ -107,6 +112,7 @@ pub struct Keyring {
 }
 
 impl Keyring {
+    /// Keyring of `tenant` from its `(version, DEK)` pairs. Panics on an empty list.
     pub fn new(tenant: &str, deks: &[(u32, [u8; 32])]) -> Self {
         assert!(!deks.is_empty(), "keyring needs at least one DEK");
         Keyring {
@@ -116,6 +122,7 @@ impl Keyring {
         }
     }
 
+    /// Tenant name, bound into every blob's AAD.
     pub fn tenant(&self) -> &str {
         &self.tenant
     }
@@ -132,6 +139,7 @@ impl Keyring {
         (sealed.len() >= HEADER && &sealed[..4] == MAGIC).then(|| u32::from_le_bytes(sealed[5..9].try_into().unwrap()))
     }
 
+    /// Chunk id of `data` under the current key version.
     pub fn chunk_id(&self, data: &[u8]) -> ChunkId {
         self.chunk_id_v(self.current, data).unwrap()
     }
@@ -144,6 +152,8 @@ impl Keyring {
         [header, self.tenant.as_bytes(), b"\0", ctx].concat()
     }
 
+    /// Compresses (zstd, only if smaller) and encrypts `plain` under the current
+    /// key version; `ctx` (index name, chunk id, ...) must be given again to [`Self::open`].
     pub fn seal(&self, ctx: &[u8], plain: &[u8]) -> Vec<u8> {
         let z = zstd::bulk::compress(plain, 3).expect("zstd compress");
         let (flags, body) = if z.len() < plain.len() {
@@ -196,6 +206,7 @@ impl Keyring {
         Ok((version, plain))
     }
 
+    /// Seals chunk data with its id as context (see [`Self::open_chunk`]).
     pub fn seal_chunk(&self, id: &ChunkId, data: &[u8]) -> Vec<u8> {
         self.seal(id, data)
     }

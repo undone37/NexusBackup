@@ -121,6 +121,8 @@ pub struct MetaReader {
 }
 
 impl MetaReader {
+    /// Reader of the store at `root`; `keys` is checked only by [`Self::check_keys`]
+    /// and when opening a file.
     pub fn new(root: impl Into<PathBuf>, keys: Keyring) -> MetaReader {
         MetaReader {
             root: root.into(),
@@ -128,6 +130,7 @@ impl MetaReader {
         }
     }
 
+    /// The tenant keyring this reader opens files with.
     pub fn keys(&self) -> &Keyring {
         &self.keys
     }
@@ -141,10 +144,12 @@ impl MetaReader {
             .map_err(|_| invalid("keyring does not match this store"))
     }
 
+    /// (source, time) of every committed snapshot (as [`Store::snapshot_keys`]).
     pub fn snapshot_keys(&self) -> io::Result<Vec<(String, u64)>> {
         keys_of(&self.root)
     }
 
+    /// Whether the snapshot has a name index; false for an invalid source name.
     pub fn has_names(&self, source: &str, time: u64) -> bool {
         check_source(source).is_ok() && snap_dir(&self.root, source, time).join(names::FILE).exists()
     }
@@ -159,6 +164,7 @@ impl MetaReader {
         }
     }
 
+    /// The opened side file, `None` if the snapshot has none (as [`Store::read_snap_file`]).
     pub fn read_snap_file(&self, source: &str, time: u64, name: &str) -> io::Result<Option<Vec<u8>>> {
         read_side(&self.root, &self.keys, source, time, name)
     }

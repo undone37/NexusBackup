@@ -1,5 +1,7 @@
 //! NexusBackup chunk store: dedup -> compress -> encrypt, forever-full snapshots.
 
+#![warn(missing_docs)]
+
 pub mod clock;
 pub mod crypto;
 pub mod drift;

@@ -19,27 +19,34 @@ use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// Written by nexus-nft-sync (root), read by the web-api; JSON of [`Status`].
 pub const STATUS_FILE: &str = "/run/nexus-nft-status/status.json";
 /// Most blocked attempts reported (the sets hold at most 256 each).
 pub const MAX_DROPS: usize = 200;
 
+/// Content of [`STATUS_FILE`]: the effective firewall sets and recent blocked inbound attempts.
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 pub struct Status {
     /// when it was taken (unix seconds)
     pub ts: i64,
     /// set name → elements as nft prints them (`10.0.0.0/8`, `192.0.2.1 . tcp . 22`)
     pub sets: BTreeMap<String, Vec<String>>,
+    /// blocked inbound attempts, newest first, at most [`MAX_DROPS`]
     pub drops: Vec<Drop>,
 }
 
 /// A blocked inbound attempt (per source, protocol and port).
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Drop {
+    /// source address
     pub src: String,
+    /// `tcp` or `udp`
     pub proto: String,
+    /// destination port
     pub port: u16,
     /// approximate (from the element's remaining timeout)
     pub last_seen: i64,
+    /// blocked packets counted for this element while it was in the set
     pub packets: u64,
 }
 

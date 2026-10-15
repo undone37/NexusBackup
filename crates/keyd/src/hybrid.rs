@@ -31,8 +31,11 @@ use rand::RngCore;
 use std::io;
 use zeroize::Zeroizing;
 
+/// prefix of a hybrid sealed box: `MAGIC | X25519 ephemeral public (32) | ML-KEM ciphertext | nonce | AEAD`
 pub const MAGIC: &[u8; 8] = b"NXHYB2\0\0";
+/// ML-KEM-768 encapsulation key length in bytes (FIPS 203)
 pub const MLKEM_PUBLIC_LEN: usize = 1184;
+/// ML-KEM-768 ciphertext length in bytes (FIPS 203)
 pub const MLKEM_CT_LEN: usize = 1088;
 /// X25519 public + ML-KEM-768 encapsulation key
 pub const PUBLIC_LEN: usize = 32 + MLKEM_PUBLIC_LEN;
@@ -47,11 +50,14 @@ pub fn is_hybrid(blob: &[u8]) -> bool {
 /// A recipient's public key.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Public {
+    /// X25519 public key
     pub x25519: [u8; 32],
+    /// ML-KEM-768 encapsulation key, [`MLKEM_PUBLIC_LEN`] bytes
     pub mlkem: Vec<u8>,
 }
 
 impl Public {
+    /// `X25519 public | ML-KEM-768 encapsulation key`, [`PUBLIC_LEN`] bytes; inverse of [`Public::from_bytes`].
     pub fn to_bytes(&self) -> Vec<u8> {
         [&self.x25519[..], &self.mlkem].concat()
     }
@@ -98,6 +104,7 @@ impl Secret {
         }
     }
 
+    /// The public key that [`seal`] encrypts to for this secret.
     pub fn public(&self) -> Public {
         Public {
             x25519: MontgomeryPoint::mul_base_clamped(*self.x25519).to_bytes(),

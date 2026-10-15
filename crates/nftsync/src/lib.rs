@@ -34,6 +34,8 @@
 //! port numbers and the fixed service ids from the unprivileged file; the nft
 //! script is built from parsed values only, so no text from the file reaches nft.
 
+#![warn(missing_docs)]
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,16 +48,21 @@ use std::process::{Command, Stdio};
 pub mod status;
 pub use status::STATUS_FILE;
 
+/// Allow-list the scheduler writes (unprivileged) and nexus-nft-sync reads; JSON of [`Allowed`].
 pub const ALLOWED_FILE: &str = "/run/nexus-nft/allowed.json";
+/// nft family and name of the table whose sets this tool replaces (os/nftables.conf).
 pub const TABLE: &str = "inet nexus";
 /// Upper bound of endpoints accepted from the file.
 pub const MAX_ENDPOINTS: usize = 4096;
 const MAX_FILE: u64 = 1 << 20;
 
+/// Transport protocol of an endpoint; lower case in JSON and in nft.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum Proto {
+    /// TCP
     Tcp,
+    /// UDP
     Udp,
 }
 
@@ -68,17 +75,23 @@ impl Proto {
     }
 }
 
+/// One outbound destination: an element `addr . proto . port` of the allow sets.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
+    /// resolved address (no names: the root side resolves nothing); unspecified, multicast, loopback and broadcast are refused
     pub addr: IpAddr,
+    /// transport protocol
     pub proto: Proto,
+    /// destination port; 0 is refused
     pub port: u16,
 }
 
+/// Content of [`ALLOWED_FILE`]. Read with [`Allowed::parse`] / [`Allowed::load`], which validate it.
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Allowed {
+    /// destinations of no role (or of a role without an interface): `allowed_out_v4/v6`
     pub endpoints: Vec<Endpoint>,
     /// inbound rules per service id; `None` = not managed
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,12 +104,14 @@ pub struct Allowed {
 /// Roles whose destinations can be bound to an interface (catalog::network egress).
 pub const ROLES: &[&str] = &["data", "offsite", "replication"];
 
+/// The destinations of one role ([`ROLES`]) and the interface they are bound to.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct RoleTargets {
     /// the interface they must leave through; `None` = any (the role has no interface)
     #[serde(default)]
     pub iface: Option<String>,
+    /// destinations of the role; at most [`MAX_ENDPOINTS`] over the whole file
     pub endpoints: Vec<Endpoint>,
 }
 
@@ -115,7 +130,9 @@ pub const INBOUND_SERVICES: &[&str] = &["web", "icmp"];
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InboundRule {
+    /// `false` = nobody may connect (both sets empty)
     pub enabled: bool,
+    /// CIDRs or bare addresses (see [`parse_cidr`]), at most [`MAX_ALLOW`]
     pub allow: Vec<String>,
 }
 
@@ -190,6 +207,8 @@ fn usable(a: &IpAddr) -> bool {
 }
 
 impl Allowed {
+    /// Parses and validates `allowed.json`: endpoint count, known roles and inbound services, interface names,
+    /// usable addresses, ports and CIDRs. Any violation fails the whole file (nothing is applied).
     pub fn parse(bytes: &[u8]) -> Result<Allowed> {
         let a: Allowed = serde_json::from_slice(bytes).context("allowed.json")?;
         let n = a.endpoints.len() + a.roles.values().map(|r| r.endpoints.len()).sum::<usize>();

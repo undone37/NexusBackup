@@ -18,6 +18,8 @@
 //! the normal agent protocol over their own TLS session: the edge holds no key that
 //! could read it, logs only connection metadata and never payload.
 
+#![warn(missing_docs)]
+
 use agent_core::config::{ensure_dir, write_atomic};
 use agent_core::tls::{certs_from_pem, common_name, fingerprint};
 use agent_proto::edge::{self as proto, EdgeHealth, EdgeLimits, EdgeMsg, MAX_CONTROL_FRAME, MAX_PUBLIC_FRAME};
@@ -45,6 +47,7 @@ use tokio::time::timeout;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 
+/// Version of this build (Cargo package version), reported in [`EdgeHealth`].
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Embedded in every build: the signed update's real version (same marker format as
 /// the agents, `agent_core::update::embedded_version`).
@@ -54,12 +57,19 @@ pub static VERSION_MARKER: &[u8] = concat!("\0NEXUS-AGENT-VERSION=", env!("CARGO
 #[used]
 pub static EDGE_MARKER: &[u8] = b"\0NEXUS-EDGE-BINARY\0";
 
+/// default state directory (`--state`), see [`Files`]
 pub const DEFAULT_STATE: &str = "/var/lib/nexus-edge";
+/// default directory of the release public keys that verify pushed updates (`--release-keys`)
 pub const DEFAULT_RELEASE_KEYS: &str = "/usr/share/nexus-edge/release-keys";
+/// default limit of new public-port connections per source IP and minute (checked before TLS)
 pub const PER_IP_PER_MIN: u32 = 60;
+/// default limit of new public-port connections per agent certificate and minute
 pub const PER_AGENT_PER_MIN: u32 = 120;
+/// default limit of concurrent public-port connections in total
 pub const MAX_CONNECTIONS: u32 = 1024;
+/// new control-port connections per source IP and minute (not configurable)
 pub const CONTROL_PER_IP_PER_MIN: u32 = 30;
+/// rejected enrollment proofs before enrollment locks until the next `nexus-edge init`
 pub const MAX_FAILED_PROOFS: u32 = 5;
 const HANDSHAKE: Duration = Duration::from_secs(10);
 const PING: Duration = Duration::from_secs(30);
@@ -72,13 +82,16 @@ const TAP_MAX: usize = 1 << 20;
 /// Files below the state directory (0700, owned by the service user).
 #[derive(Clone, Debug)]
 pub struct Files {
+    /// the state directory ([`DEFAULT_STATE`] unless `--state`)
     pub dir: PathBuf,
 }
 
 impl Files {
+    /// edge private key (PEM, 0600), created by [`identity`]
     pub fn key(&self) -> PathBuf {
         self.dir.join("edge.key")
     }
+    /// self-signed edge certificate (PEM); agents and the appliance pin its SHA-256
     pub fn cert(&self) -> PathBuf {
         self.dir.join("edge.crt")
     }
@@ -94,6 +107,7 @@ impl Files {
     pub fn config(&self) -> PathBuf {
         self.dir.join("config.bin")
     }
+    /// count of rejected enrollment proofs (see [`MAX_FAILED_PROOFS`]), removed by `init` and on enrollment
     pub fn failures(&self) -> PathBuf {
         self.dir.join("enroll.failures")
     }
@@ -103,6 +117,7 @@ impl Files {
     }
 }
 
+/// The rustls crypto provider (ring) used for both listeners.
 pub fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
@@ -390,11 +405,14 @@ struct Pushed {
 
 type Pending = HashMap<[u8; 16], (String, oneshot::Sender<TlsStream<TcpStream>>)>;
 
+/// The running edge: identity, enrollment state, the pushed configuration, connected agents and counters.
+/// Created by [`Edge::open`], served by [`Edge::run`].
 pub struct Edge {
     files: Files,
     release_keys: PathBuf,
     key_pem: String,
     cert_pem: String,
+    /// SHA-256 of the edge certificate, as peers pin it
     pub cert_sha256: String,
     started: Instant,
     control_tls: RwLock<Arc<ServerConfig>>,
@@ -517,6 +535,7 @@ impl Edge {
         l.push_back(format!("{} {}", agent_core::server::utc(now), msg.as_ref()));
     }
 
+    /// Version, uptime, connected agents and counters, sent to the appliance in `Wait` answers.
     pub fn health(&self) -> EdgeHealth {
         let mut online: Vec<String> = self
             .agents

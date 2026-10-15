@@ -15,12 +15,17 @@ pub fn rpo(schedule: &str) -> i64 {
     catalog::schedule::Schedule::parse(schedule).map_or(DAY, |s| s.period())
 }
 
+/// A protected object: one guest / host / dataset / share / plugin guest, merged over all groups that back it up.
 pub struct Object {
+    /// Tenant that owns the object.
     pub tenant: String,
     /// snapshot sources that count for this object (PVE: `vm-` and `ct-`)
     pub sources: Vec<String>,
+    /// Display name (`<source> guest <vmid>`, `<source> (<agent>)`, `<source> <dataset>`, ...).
     pub name: String,
+    /// Source kind (`pve`, `linux`, `truenas`, `nfs`, `smb`, `plugin:<kind>`).
     pub kind: String,
+    /// Recovery point objective in seconds: the shortest schedule period of its groups.
     pub rpo: i64,
     /// every group of the object is paused (or its source in maintenance, Phase 13b)
     pub paused: bool,
@@ -158,10 +163,13 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
 
 /// An object with its SLA state now.
 pub struct Status {
+    /// The object assessed.
     pub obj: Object,
     /// the source that has snapshots (else the first one)
     pub source: String,
+    /// Unix time of the newest snapshot of any of its sources (`None` = never backed up).
     pub last_ok: Option<i64>,
+    /// Seconds since `last_ok` (never negative).
     pub age: Option<i64>,
     /// `ok`, `breach`, `never` (no backup yet), `paused` (overdue, but paused on purpose)
     /// or `deactivated` (the tenant is deactivated)
@@ -229,6 +237,7 @@ fn consistency(
     .collect()
 }
 
+/// Columns of the `protection` report.
 pub const PROTECTION_COLUMNS: &[&str] = &[
     "tenant",
     "groups",
@@ -245,6 +254,7 @@ pub const PROTECTION_COLUMNS: &[&str] = &[
     "consistency",
 ];
 
+/// The `protection` report: one row per protected object, state as of `now`.
 pub fn table(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result<Table> {
     let st = assess(c, scope, now)?;
     let since = st.iter().filter_map(|s| s.last_ok).min().unwrap_or(now) - DAY;
@@ -299,6 +309,7 @@ pub fn table(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Result<
     })
 }
 
+/// Columns of the `sla` report.
 pub const SLA_COLUMNS: &[&str] = &[
     "type",
     "tenant",
