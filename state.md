@@ -751,3 +751,12 @@ Goal (maintainer): every running task explains itself, states visible everywhere
 - [x] Replication: queued / running syncs per tenant with job links, Sync now greyed out while one runs,
   15 s refresh; offsite uploads log per-snapshot progress
 - [ ] Not reviewed in depth: Plugins, Hardware (already live), Quorum, Search pages
+
+## TPM state on restores (2026-10-15)
+- [x] Restore tests and instant recovery import the backed-up `tpmstate0` (`import-from` of its IR volume, plugin
+  feature `copy`) instead of a fresh vTPM; TPM VMs are no longer refused for instant recovery
+- [ ] Lab 12 on VM 101 (restore test with the imported TPM state)
+
+## Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15)
+Scope: plan.md Phase 34 (clean code, crate docs, AGENTS.md, issue forms, versioned pre-commit hooks, CI path
+filters and caching, release workflow, dependency updates). Not started.

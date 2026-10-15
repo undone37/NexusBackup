@@ -990,6 +990,46 @@ T70–T75. Decisions and deviations:
   6 decided: no VDDK in the image; HTTPS datastore reads + `QueryChangedDiskAreas` first, nbdkit with a
   customer-supplied VDDK later if needed; scheduled after the spike ran in a vSphere lab).
 
+### Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15 by user request)
+
+Goal: the code base reads as if one careful team wrote it, a new contributor (human or agent) finds their way in
+without help, and the GitHub side runs with as little manual work and runner load as possible. No new features.
+
+- **34a Clean code:**
+  - one pass per crate: dead code, duplicated helpers (for example the two `is_disk_key` in `pve::ir` and
+    `pve::rollback`), `#[allow(...)]` that are no longer needed, long functions split where that makes them easier to
+    read, consistent error context;
+  - lints: workspace `[lints]` table (clippy pedantic subset that fits the code, `unsafe_code` denied outside the
+    crates that need it, `missing_docs` on public items of library crates);
+  - the same for the web UI (`svelte-check` strict, no unused exports) and the Perl plugin (`perlcritic` at a level
+    agreed on first, no new dependency without asking).
+- **34b Documentation:**
+  - every crate gets a crate-level doc comment (purpose, entry points, links to docs/), every public item a doc
+    comment; `cargo doc --no-deps` without warnings becomes a CI gate;
+  - `docs/` gets an index (what each document is for, which ones are history such as comparisons and plans);
+  - stale statements in docs/ and manual/ found while doing so are fixed.
+- **34c AGENTS.md:** replaces AGENT.MD, written for coding agents:
+  - layout and where to start, build/test commands with their run times, which gates must pass before a commit;
+  - house rules (no emojis, no `pkill -f`, ask before installing software, no `npx` for tools not in
+    `web/node_modules/.bin`, `cargo fmt --all` before committing, lab rules: which VMs may be touched);
+  - conventions (error handling, logging, tests next to the code, state.md updates, commit message style);
+  - safety: secrets never in the repo, lab credentials outside the repo, the runner VM is not touched.
+- **34d GitHub workflow:**
+  - **issues:** issue forms (bug, feature request, lab result), labels, a private security policy (`SECURITY.md`,
+    private vulnerability reporting), PR template with the gate checklist;
+  - **pre-commit hooks:** a versioned hook script (`.githooks/`, enabled with `git config core.hooksPath`) that runs
+    the fast gates (fmt, clippy on changed crates, `svelte-check` when web/ changed, `prove` when pve-plugin/
+    changed, no secrets / emojis in the diff); documented in AGENTS.md; no pre-commit framework download;
+  - **CI:** path filters so a docs-only push does not run Rust tests; cached cargo and npm directories on the
+    self-hosted runner; test parallelism limited so the runner (16 GiB) does not run out of memory again; jobs
+    split so fmt/clippy fail fast before the long tests; a scheduled weekly run of the slow tests;
+  - **release workflow:** one tag starts image, SBOM, CVE scan, packages, ISO and rescue ISO in a defined order;
+    the draft release notes are generated from the commits since the last tag; a check that every expected asset is
+    attached before the maintainer signs; documented in docs/release.md;
+  - **Dependabot** (or a scheduled `cargo update` / `npm outdated` report) for Cargo, npm and GitHub Actions.
+- **Verification:** all gates green in CI on the self-hosted runner, a docs-only push skips the heavy jobs, a test tag
+  on a fork-like branch produces a complete draft release.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
