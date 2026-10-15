@@ -181,12 +181,12 @@ fn survives_kill_9() {
             .env("CHUNKSTORE_CRASH_DIR", d.path())
             .spawn()
             .unwrap();
-        // wait for this round's first commit (slow CI runners need more than a fixed delay), then kill
-        // at a varying point of a later write
+        // wait for two commits of this round (a fixed delay is too short on a busy runner, and two per round
+        // make the snapshot count below deterministic), then kill at a varying point of a later write
         let progress = d.path().join("progress");
         let before = std::fs::metadata(&progress).map_or(0, |m| m.len());
         let start = std::time::Instant::now();
-        while std::fs::metadata(&progress).map_or(0, |m| m.len()) <= before {
+        while std::fs::metadata(&progress).map_or(0, |m| m.len()) < before + 2 {
             assert!(
                 start.elapsed() < Duration::from_secs(60),
                 "child made no progress in round {round}"

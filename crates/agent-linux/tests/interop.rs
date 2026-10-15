@@ -430,7 +430,16 @@ fn endpoint_status_poll_and_request() {
     let mut ui = agent_ui_proto::Client::connect(paths.ui_socket()).unwrap();
     assert!(ui.request_backup().is_err(), "not enrolled yet");
     let e = enroll::enroll(&ca, "127.0.0.1", port, &agent_proto::token_digest(TOKEN), ID, T).unwrap();
-    std::thread::sleep(Duration::from_millis(200));
+    // the agent switches to mTLS after the enrollment session ends: wait for it (a busy CI runner needs longer
+    // than a fixed delay)
+    let start = std::time::Instant::now();
+    while !ui.status().unwrap().enrolled {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "agent did not switch to mTLS"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let req = ui.request_backup().unwrap();
     assert!(matches!(ui.request_backup(), Err(agent_ui_proto::Error::Refused(m)) if m.contains("try again")));
