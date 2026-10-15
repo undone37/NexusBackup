@@ -73,6 +73,7 @@ impl Ca {
     pub fn load_or_create(dir: &Path) -> Result<Ca> {
         fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         let lock = File::create(dir.join(".ca.lock"))?;
+        // SAFETY: `lock` is an open File owned by this frame; flock only takes an advisory lock on its fd.
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(std::io::Error::last_os_error()).context("lock CA dir");
         }

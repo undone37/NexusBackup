@@ -154,6 +154,7 @@ fn lookup_uid(name: &str) -> Option<u32> {
     let c = std::ffi::CString::new(name).ok()?;
     // SAFETY: getpwnam returns NULL or a pointer to static storage; single-threaded use.
     let pw = unsafe { libc::getpwnam(c.as_ptr()) };
+    // SAFETY: `pw` is non-null and points to getpwnam's static entry, not overwritten since the call above.
     (!pw.is_null()).then(|| unsafe { (*pw).pw_uid })
 }
 
@@ -161,6 +162,7 @@ fn lookup_gid(name: &str) -> Option<u32> {
     let c = std::ffi::CString::new(name).ok()?;
     // SAFETY: as above.
     let gr = unsafe { libc::getgrnam(c.as_ptr()) };
+    // SAFETY: `gr` is non-null and points to getgrnam's static entry, not overwritten since the call above.
     (!gr.is_null()).then(|| unsafe { (*gr).gr_gid })
 }
 
@@ -766,6 +768,7 @@ impl Setup {
     pub fn open(paths: Paths, runner: Box<dyn Runner>, dry_run: bool, strict_owners: bool) -> Result<Setup> {
         // chown to the service users only as root; missing users are fatal on the real appliance
         let owner = Owner {
+            // SAFETY: geteuid has no preconditions and cannot fail.
             chown: unsafe { libc::geteuid() } == 0,
             strict: strict_owners,
         };

@@ -16,6 +16,7 @@ fn keyd(dir: &Path) -> (String, PathBuf) {
     let rk = keyd::init(dir).unwrap();
     let sock = dir.join("k.sock");
     let l = UnixListener::bind(&sock).unwrap();
+    // SAFETY: getuid has no preconditions and cannot fail.
     let (dir, me) = (dir.to_owned(), unsafe { libc::getuid() });
     std::thread::spawn(move || keyd::serve(l, &dir, me));
     (rk, sock)
@@ -136,6 +137,7 @@ fn rekey_after_config_restore() {
     keyd::recover(&kc, &rk).unwrap();
     let sock_c = kc.join("k.sock");
     let l = UnixListener::bind(&sock_c).unwrap();
+    // SAFETY: getuid has no preconditions and cannot fail.
     let (dir, me) = (kc.clone(), unsafe { libc::getuid() });
     std::thread::spawn(move || keyd::serve(l, &dir, me));
     let (ok, out) = run(&config(root, "c", &sock_c, &box_), &["rekey"]);

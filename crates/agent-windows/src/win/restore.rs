@@ -350,7 +350,7 @@ impl RestoreFs for WinFs {
                 let h = self.open_in(d, &name, sys::DELETE)?;
                 sys::delete_by_handle(&h)?;
                 drop(h);
-                sys::create_dir(&d.path.join(&name))?
+                sys::create_dir(&d.path.join(&name))?;
             }
             Existing::Missing => sys::create_dir(&d.path.join(&name))?,
         }

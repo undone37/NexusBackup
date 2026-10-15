@@ -81,6 +81,8 @@ struct NetPortAttr {
 
 /// Landlock ABI of the running kernel (0 = unavailable or disabled).
 pub fn abi() -> u32 {
+    // SAFETY: a NULL attr with size 0 and LANDLOCK_CREATE_RULESET_VERSION is the documented ABI query;
+    // the kernel reads no memory.
     let r = unsafe {
         libc::syscall(
             libc::SYS_landlock_create_ruleset,
@@ -145,6 +147,8 @@ impl Ruleset {
             4 | 5 => 16,
             _ => std::mem::size_of::<RulesetAttr>(),
         };
+        // SAFETY: `attr` is a live #[repr(C)] landlock_ruleset_attr and `size` never exceeds its size (shorter
+        // prefixes for older ABIs); the kernel only reads it during the call.
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_landlock_create_ruleset,
@@ -157,6 +161,7 @@ impl Ruleset {
             return Err(io::Error::last_os_error());
         }
         Ok(Ruleset {
+            // SAFETY: `fd` is a fresh ruleset descriptor (checked >= 0) that nothing else owns.
             fd: unsafe { OwnedFd::from_raw_fd(fd as i32) },
             abi,
             handled_fs: attr.handled_access_fs,
@@ -169,6 +174,7 @@ impl Ruleset {
     /// (returns false); symlinks are followed (the rule applies to the target).
     pub fn allow_path(&mut self, path: &Path, access: u64) -> io::Result<bool> {
         let c = CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: `c` is a NUL-terminated CString alive across the call.
         let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
         if fd < 0 {
             let e = io::Error::last_os_error();
@@ -177,8 +183,11 @@ impl Ruleset {
                 _ => Err(e),
             };
         }
+        // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: libc::stat is plain C data (integers only); all-zero is a valid value for the out buffer.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `fd` is open (owned above) and `st` is a valid, exclusive out buffer.
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
             // O_PATH opens without permission checks; SELinux denies the getattr (e.g.
             // /dev/random for nexus_pluginhost_t): the plugin could not use it either
@@ -199,6 +208,8 @@ impl Ruleset {
             allowed_access: access,
             parent_fd: fd.as_raw_fd(),
         };
+        // SAFETY: `self.fd` is our open ruleset and `attr` a live #[repr(C, packed)] landlock_path_beneath_attr
+        // (the kernel's layout); `fd` in it stays open across the call.
         let r = unsafe {
             libc::syscall(
                 libc::SYS_landlock_add_rule,
@@ -223,6 +234,8 @@ impl Ruleset {
             allowed_access: NET_CONNECT_TCP,
             port: u64::from(port),
         };
+        // SAFETY: `self.fd` is our open ruleset and `attr` a live #[repr(C)] landlock_net_port_attr;
+        // the kernel only reads it during the call.
         let r = unsafe {
             libc::syscall(
                 libc::SYS_landlock_add_rule,
@@ -249,6 +262,8 @@ impl Ruleset {
 /// # Safety
 /// `fd` must be a Landlock ruleset descriptor.
 pub unsafe fn restrict_self(fd: i32) -> io::Result<()> {
+    // SAFETY: the caller guarantees `fd` is a Landlock ruleset; the syscall takes no pointers and
+    // last_os_error does not allocate (fine in pre_exec).
     unsafe {
         if libc::syscall(libc::SYS_landlock_restrict_self, fd, 0u32) != 0 {
             return Err(io::Error::last_os_error());

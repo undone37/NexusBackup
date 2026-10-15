@@ -30,6 +30,7 @@ const DAY: u64 = 86400;
 const CHUNK: usize = 64 << 10;
 
 fn me() -> u32 {
+    // SAFETY: getuid has no preconditions and cannot fail.
     unsafe { libc::getuid() }
 }
 

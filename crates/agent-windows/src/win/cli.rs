@@ -124,7 +124,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
         }
         ["run"] => run(paths, None).map(|_| ExitCode::SUCCESS),
         ["service"] => {
-            *SERVICE_PATHS.lock().unwrap_or_else(|e| e.into_inner()) = Some(paths);
+            *SERVICE_PATHS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(paths);
             service_dispatcher::start(SERVICE_NAME, ffi_service_main)
                 .map_err(|e| format!("service dispatcher: {e}"))?;
             Ok(ExitCode::SUCCESS)
@@ -310,7 +310,7 @@ fn service_main(_args: Vec<OsString>) {
     let _ = h.set_service_status(svc_status(ServiceState::Running, 0));
     let paths = SERVICE_PATHS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take()
         .unwrap_or_default();
     log_to_file(&paths);

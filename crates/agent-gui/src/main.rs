@@ -85,6 +85,7 @@ fn single_instance(_wake: mpsc::Sender<()>) -> bool {
     let name: Vec<u16> = "Local\\NexusAgentGui\0".encode_utf16().collect();
     // SAFETY: valid NUL-terminated name; the handle lives until the process exits
     let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    // SAFETY: GetLastError has no preconditions; it reads the calling thread's last error, set by CreateMutexW above.
     h.is_null() || unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
 }
 

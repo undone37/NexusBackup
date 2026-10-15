@@ -162,6 +162,8 @@ fn run_one(hook: &Path, phase: &str, timeout: Duration, env: &[(&str, String)]) 
         }
     };
     // descendants that kept the pipes open die with the group
+    // SAFETY: `pid` is the hook's process-group id (it was spawned as its own leader); kill on a group only sends a
+    // signal.
     unsafe { libc::kill(-pid, libc::SIGKILL) };
     let mut out = String::new();
     for r in readers {

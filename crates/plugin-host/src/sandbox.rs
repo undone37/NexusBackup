@@ -267,7 +267,9 @@ fn prepare(spec: &Spec, opts: &Options, tmp: &Path) -> Result<(Prepared, Report)
     .into_iter()
     .map(CString::new)
     .collect::<Result<Vec<_>, _>>()?;
+    // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
+    // SAFETY: getgid has no preconditions and cannot fail.
     let gid = unsafe { libc::getgid() };
     let m = &spec.limits;
     Ok((
@@ -293,6 +295,8 @@ fn prepare(spec: &Spec, opts: &Options, tmp: &Path) -> Result<(Prepared, Report)
 
 /// Async-signal-safe write of a whole buffer to a path (uid_map etc.).
 unsafe fn write_file(path: &[u8], data: &[u8]) -> bool {
+    // SAFETY: callers pass NUL-terminated byte-string literals as `path`; `data` is a slice whose length is
+    // passed with it; the fd is our own and closed once. Only syscalls: async-signal-safe.
     unsafe {
         let fd = libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
         if fd < 0 {
@@ -485,6 +489,7 @@ impl PluginProc {
     ) -> Result<PluginProc> {
         let (p, report) = prepare(spec, opts, tmp)?;
         let bin_fd = bin.as_raw_fd();
+        // SAFETY: getpid has no preconditions and cannot fail.
         let parent = unsafe { libc::getpid() };
         let userns = opts.userns;
         let argv: Vec<*const libc::c_char> = p
@@ -511,6 +516,9 @@ impl PluginProc {
         let (uid_map, gid_map) = (p.uid_map.as_bytes().to_vec(), p.gid_map.as_bytes().to_vec());
         let rlimits = p.rlimits.clone();
         let seccomp = p.seccomp.clone();
+        // SAFETY: the closure runs between fork and exec and only makes syscalls on data captured by move (no
+        // allocation or locks); argv_p/envp_p point to NULL-terminated arrays of CString pointers whose
+        // backing `argv`, `envp` and `p` outlive cmd.spawn() (the child has its own copy after fork).
         unsafe {
             cmd.pre_exec(move || {
                 // only system calls from here on (the parent may be multithreaded)
@@ -575,6 +583,8 @@ impl PluginProc {
                     used.store(n, Ordering::Relaxed);
                     if n > max {
                         over.store(true, Ordering::SeqCst);
+                        // SAFETY: kill(2) takes no pointers; `-pgid` is the plugin's own process group
+                        // (process_group(0)).
                         unsafe { libc::kill(-pgid, libc::SIGKILL) };
                         break;
                     }
@@ -599,6 +609,7 @@ impl PluginProc {
 
     fn kill(&mut self) {
         let pgid = self.child.id() as i32;
+        // SAFETY: kill(2) takes no pointers; `-pgid` is the plugin's own process group (process_group(0)).
         unsafe { libc::kill(-pgid, libc::SIGKILL) };
         let _ = self.child.kill();
         let _ = self.child.wait();

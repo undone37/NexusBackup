@@ -87,6 +87,7 @@ fn probe(cfg: &Value) -> Value {
         r.insert("bind".into(), json!(res.unwrap_or_else(|e| e.kind().to_string())));
     }
     if let Some(pid) = cfg["kill"].as_i64() {
+        // SAFETY: kill(2) takes no pointers; signal 0 only probes whether `pid` may be signalled.
         let rc = unsafe { libc_kill(pid as i32, 0) };
         r.insert(
             "kill".into(),

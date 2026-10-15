@@ -28,6 +28,7 @@ fn run(req: &[u8], env: &[(&str, &str)]) -> (String, bool) {
 }
 
 fn root() -> bool {
+    // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() == 0 }
 }
 

@@ -34,6 +34,8 @@ fn peer(sock: &UnixStream) -> Result<libc::ucred> {
     // SAFETY: zeroed ucred is a valid out buffer of the given length.
     let mut c: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `c` and `len` are valid, exclusive locals and `len` is the exact size of `c` (ucred),
+    // as SO_PEERCRED requires; the socket fd is borrowed from `sock`.
     let r = unsafe {
         libc::getsockopt(
             sock.as_raw_fd(),
@@ -56,6 +58,8 @@ fn uid_of(user: &str) -> Result<u32> {
     if p.is_null() {
         bail!("unknown user {user:?}");
     }
+    // SAFETY: `p` is non-null and points to getpwnam's static entry; the helper is single-threaded and makes
+    // no other getpw* call in between.
     Ok(unsafe { (*p).pw_uid })
 }
 

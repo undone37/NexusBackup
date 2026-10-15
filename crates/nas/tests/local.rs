@@ -22,6 +22,8 @@ fn store(dir: &Path) -> Store {
 fn setxattr(p: &Path, n: &str, v: &[u8]) -> bool {
     let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
     let n = std::ffi::CString::new(n).unwrap();
+    // SAFETY: `c` and `n` are NUL-terminated CStrings and `v` a slice whose length is passed with it, all alive
+    // across the call.
     unsafe { libc::lsetxattr(c.as_ptr(), n.as_ptr(), v.as_ptr().cast(), v.len(), 0) == 0 }
 }
 
@@ -48,6 +50,7 @@ fn tree(root: &Path) {
     fs::hard_link(root.join("hl1"), root.join("docs/hl2")).unwrap();
     fs::hard_link(root.join("hl1"), root.join("many/hl3")).unwrap();
     let f = std::ffi::CString::new(root.join("fifo").as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: `f` is a NUL-terminated CString alive across the call.
     assert_eq!(unsafe { libc::mkfifo(f.as_ptr(), 0o640) }, 0);
     fs::set_permissions(root.join("docs/README.txt"), fs::Permissions::from_mode(0o640)).unwrap();
     fs::create_dir_all(root.join(".snapshot/nightly")).unwrap();

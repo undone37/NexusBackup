@@ -26,10 +26,13 @@ fn resolve_uid(user: &str) -> io::Result<u32> {
         return Ok(uid);
     }
     let name = CString::new(user).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad user"))?;
+    // SAFETY: `name` is a NUL-terminated CString alive across the call; the CLI resolves the user before
+    // it starts any thread, so getpwnam's static buffer is not shared.
     let pw = unsafe { libc::getpwnam(name.as_ptr()) };
     if pw.is_null() {
         return Err(io::Error::new(io::ErrorKind::NotFound, format!("unknown user {user}")));
     }
+    // SAFETY: `pw` is non-null and points to getpwnam's static entry, not overwritten since the call above.
     Ok(unsafe { (*pw).pw_uid })
 }
 

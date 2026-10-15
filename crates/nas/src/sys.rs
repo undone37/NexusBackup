@@ -211,6 +211,7 @@ const MASK: libc::c_uint = libc::STATX_BASIC_STATS | libc::STATX_MNT_ID;
 pub fn statx_at(dirfd: RawFd, name: &CStr) -> io::Result<Stat> {
     // SAFETY: zeroed statx is a valid out buffer.
     let mut s: libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: `name` is a valid C string borrowed for the call and `s` a valid, exclusive out buffer.
     cvt(unsafe {
         libc::statx(
             dirfd,
@@ -225,6 +226,7 @@ pub fn statx_at(dirfd: RawFd, name: &CStr) -> io::Result<Stat> {
 
 /// `statx` of an open fd; `force_sync` asks the server (NFS/SMB: no cached attributes).
 pub fn fstatx(fd: RawFd, force_sync: bool) -> io::Result<Stat> {
+    // SAFETY: libc::statx is plain C data (integers only); all-zero is a valid value for the out buffer.
     let mut s: libc::statx = unsafe { std::mem::zeroed() };
     let flags = libc::AT_EMPTY_PATH | if force_sync { libc::AT_STATX_FORCE_SYNC } else { 0 };
     // SAFETY: empty C string with AT_EMPTY_PATH on a valid fd.
@@ -241,6 +243,7 @@ pub fn read_dir(fd: &OwnedFd) -> io::Result<Vec<Vec<u8>>> {
     let dir = unsafe { libc::fdopendir(d) };
     if dir.is_null() {
         let e = io::Error::last_os_error();
+        // SAFETY: `d` is our own fd that fdopendir did not take over (it returned NULL); it is closed exactly once.
         unsafe { libc::close(d) };
         return Err(e);
     }
@@ -248,8 +251,10 @@ pub fn read_dir(fd: &OwnedFd) -> io::Result<Vec<Vec<u8>>> {
     let res = loop {
         // SAFETY: errno is thread-local; readdir64 on a valid DIR*.
         unsafe { *libc::__errno_location() = 0 };
+        // SAFETY: `dir` is a non-null DIR* from fdopendir, owned by this function and not yet closed.
         let e = unsafe { libc::readdir64(dir) };
         if e.is_null() {
+            // SAFETY: __errno_location returns a valid pointer to this thread's errno.
             let errno = unsafe { *libc::__errno_location() };
             break if errno == 0 {
                 Ok(())

@@ -351,6 +351,8 @@ pub fn assert_matches(store: &Store, entries: &[TreeEntry], live: &Path) {
 pub fn xattr_set(p: &Path, k: &str, v: &[u8]) -> bool {
     let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
     let n = std::ffi::CString::new(k).unwrap();
+    // SAFETY: `c` and `n` are NUL-terminated CStrings and `v` a slice whose length is passed with it, all alive
+    // across the call.
     unsafe { libc::lsetxattr(c.as_ptr(), n.as_ptr(), v.as_ptr().cast(), v.len(), 0) == 0 }
 }
 
@@ -358,6 +360,7 @@ pub fn xattr_get(p: &Path, k: &str) -> Option<Vec<u8>> {
     let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
     let n = std::ffi::CString::new(k).unwrap();
     let mut buf = vec![0u8; 4096];
+    // SAFETY: `buf` is a writable buffer of exactly `buf.len()` bytes; `c` and `n` are live C strings.
     let r = unsafe { libc::lgetxattr(c.as_ptr(), n.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
     (r >= 0).then(|| {
         buf.truncate(r as usize);

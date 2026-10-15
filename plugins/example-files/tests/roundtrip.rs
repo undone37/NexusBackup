@@ -13,6 +13,8 @@ const MANIFEST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/manifest.json");
 fn set_mtime(p: &Path, secs: i64, nsec: i64) {
     let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
     let t = libc_timespec(secs, nsec);
+    // SAFETY: `c` is a live C string and the [t, t] temporary lives until the end of the statement; Timespec
+    // is #[repr(C)] { i64, i64 }, the kernel timespec on 64-bit Linux; -100 = AT_FDCWD.
     unsafe { utimensat(-100, c.as_ptr(), [t, t].as_ptr(), 0x100) };
 }
 
@@ -34,6 +36,7 @@ extern "C" {
 fn xattr(p: &Path) -> Option<Vec<u8>> {
     let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).unwrap();
     let mut buf = [0u8; 64];
+    // SAFETY: `buf` is writable for `buf.len()` bytes; the path and name are NUL-terminated and alive.
     let n = unsafe { lgetxattr(c.as_ptr(), c"user.nexus".as_ptr(), buf.as_mut_ptr(), buf.len()) };
     (n >= 0).then(|| buf[..n as usize].to_vec())
 }
@@ -54,6 +57,8 @@ fn make_data(d: &Path) -> bool {
     set_mtime(&d.join("hello.txt"), 1_600_000_000, 123_456_789);
     set_mtime(&d.join("sub/deeper"), 1_500_000_000, 0);
     let c = std::ffi::CString::new(d.join("empty").as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: `c` and the name are NUL-terminated and alive across the call; the value is a 4-byte literal
+    // and 4 is passed as its length.
     unsafe { setxattr(c.as_ptr(), c"user.nexus".as_ptr(), b"meta".as_ptr(), 4, 0) == 0 }
 }
 

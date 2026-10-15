@@ -130,6 +130,8 @@ mod tests {
             ];
             let c = sys::cstr(s.join(n).as_os_str().as_encoded_bytes()).unwrap();
             assert_eq!(
+                // SAFETY: `c` is a NUL-terminated CString and `tv` an array of two timespecs, both alive across the
+                // call.
                 unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), tv.as_ptr(), 0) },
                 0
             );

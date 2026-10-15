@@ -574,6 +574,7 @@ pub fn import_sealed(dir: &Path, tenant: &str, origin: &str, blob: &[u8]) -> io:
 /// nexus-offsite): no core dumps and no ptrace / `/proc/<pid>/mem` access by
 /// other processes of the same uid (e.g. a restore-VM QEMU after an escape).
 pub fn deny_dumps() {
+    // SAFETY: prctl(PR_SET_DUMPABLE, 0) takes no pointers and only changes this process's dumpable flag.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
@@ -585,6 +586,8 @@ const MIN_MEMLOCK_FOR_FUTURE: u64 = 64 << 20;
 
 /// umask 077, no core dumps / ptrace by same uid, keys never swapped (best effort).
 pub fn harden_process() {
+    // SAFETY: umask, prctl, geteuid and mlockall take no pointers; getrlimit writes into `lim`, a valid,
+    // exclusive rlimit (all-zero is a valid value of the plain C struct).
     unsafe {
         libc::umask(0o077);
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
@@ -610,6 +613,8 @@ pub fn harden_process() {
 fn peer_uid(s: &UnixStream) -> io::Result<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are valid, exclusive locals and `len` is the exact size of `cred` (ucred),
+    // as SO_PEERCRED requires.
     let rc = unsafe {
         libc::getsockopt(
             std::os::fd::AsRawFd::as_raw_fd(s),
@@ -1043,6 +1048,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         init(d.path()).unwrap();
         let sock = d.path().join("k.sock");
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let l = UnixListener::bind(&sock).unwrap();
         let dir = d.path().to_owned();
@@ -1082,6 +1088,7 @@ mod tests {
         init(b.path()).unwrap();
         create_tenant(b.path(), "other").unwrap();
         let sock = b.path().join("k.sock");
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let l = UnixListener::bind(&sock).unwrap();
         let dir = b.path().to_owned();
@@ -1139,6 +1146,7 @@ mod tests {
         let sock = b.path().join("s");
         let l = UnixListener::bind(&sock).unwrap();
         let dir = b.path().to_owned();
+        // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
         std::thread::spawn(move || serve(l, &dir, uid));
         let deks: Vec<_> = esc.iter().filter(|(n, _)| n.starts_with("tenants/")).cloned().collect();
@@ -1268,6 +1276,7 @@ mod tests {
         init(p.path()).unwrap();
         init(s.path()).unwrap();
         create_tenant(p.path(), "acme").unwrap();
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let start = |dir: &Path, n: usize| {
             let sock = dir.join("k.sock");
@@ -1305,6 +1314,7 @@ mod tests {
         init(d.path()).unwrap();
         create_tenant(d.path(), "acme").unwrap();
         let sock = d.path().join("k.sock");
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let l = UnixListener::bind(&sock).unwrap();
         let dir = d.path().to_owned();
@@ -1351,6 +1361,7 @@ mod tests {
         let sock = d.path().join("keyd.sock");
         let l = UnixListener::bind(&sock).unwrap();
         let dir = d.path().to_owned();
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         let t = std::thread::spawn(move || {
             for _ in 0..2 {
@@ -1369,6 +1380,7 @@ mod tests {
         init(d.path()).unwrap();
         create_tenant(d.path(), "acme").unwrap();
         let sock = d.path().join("keyd.sock");
+        // SAFETY: getuid has no preconditions and cannot fail.
         let me = unsafe { libc::getuid() };
         for (allow, ok) in [(me, true), (me + 1, false)] {
             let l = UnixListener::bind(&sock).unwrap();

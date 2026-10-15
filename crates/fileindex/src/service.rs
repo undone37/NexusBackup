@@ -92,6 +92,7 @@ fn free_bytes(p: &Path) -> u64 {
     };
     // SAFETY: statvfs with a valid path and an out struct
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a NUL-terminated CString alive across the call and `st` a valid, exclusive out buffer.
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return 0;
     }

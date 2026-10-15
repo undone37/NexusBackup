@@ -44,16 +44,20 @@ fn utc(ts: i64) -> String {
 fn read(prompt: &str, secret: bool) -> std::io::Result<Option<Zeroizing<String>>> {
     print!("{prompt}");
     std::io::stdout().flush()?;
+    // SAFETY: libc::termios is plain C data (integers and arrays); all-zero is a valid value for the out buffer.
     let mut old: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: `old` is a valid, exclusive out buffer; fd 0 needs not be a tty (tcgetattr then fails).
     let tty = secret && unsafe { libc::tcgetattr(0, &mut old) } == 0;
     if tty {
         let mut t = old;
         t.c_lflag &= !libc::ECHO;
+        // SAFETY: `t` is a fully initialised termios copied from tcgetattr's output, borrowed for the call.
         unsafe { libc::tcsetattr(0, libc::TCSANOW, &t) };
     }
     let mut s = Zeroizing::new(String::new());
     let n = std::io::stdin().lock().read_line(&mut s);
     if tty {
+        // SAFETY: `old` is the termios that tcgetattr filled in above, borrowed for the call.
         unsafe { libc::tcsetattr(0, libc::TCSANOW, &old) };
         println!();
     }
@@ -89,6 +93,8 @@ fn shell(s: &Session) -> std::io::Result<std::process::ExitStatus> {
         .env("SHELL", "/bin/bash")
         .env("NEXUS_CONSOLE_SHELL_UNTIL", s.until.to_string());
     // the gate ignores terminal signals and runs with umask 077: not the shell
+    // SAFETY: the closure runs between fork and exec and only calls signal and umask (async-signal-safe,
+    // no allocation, no locks).
     unsafe {
         cmd.pre_exec(|| {
             for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGTTIN, libc::SIGTTOU] {
@@ -99,6 +105,7 @@ fn shell(s: &Session) -> std::io::Result<std::process::ExitStatus> {
         });
     }
     let r = cmd.status();
+    // SAFETY: tcsetpgrp and getpgrp take no pointers; fd 0 is the gate's terminal (an error is ignored).
     unsafe { libc::tcsetpgrp(0, libc::getpgrp()) };
     // leftovers (background jobs) end with the shell
     stop(&s.unit);
@@ -154,6 +161,7 @@ fn run(args: &[String]) -> Result<()> {
             _ => bail!("unknown argument {a}\n{USAGE}"),
         }
     }
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root (nexus-console-gate.service)");
     }
@@ -164,6 +172,7 @@ fn run(args: &[String]) -> Result<()> {
     let gate = Gate::new(Paths::under(&root), unlock);
     // Ctrl-C / Ctrl-\ / Ctrl-Z at the prompt do nothing; SIGTTOU: taking the terminal back
     for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTSTP, libc::SIGTTOU] {
+        // SAFETY: SIG_IGN is a valid disposition for these signals and no handler code is installed.
         unsafe { libc::signal(sig, libc::SIG_IGN) };
     }
     match gate.clear_stale(now()) {

@@ -130,6 +130,7 @@ pub fn fstatat_nofollow(dirfd: RawFd, name: &OsStr) -> io::Result<libc::stat> {
     let n = cstr(name)?;
     // SAFETY: zeroed stat is a valid out buffer.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `n` is a NUL-terminated CString alive across the call and `st` a valid, exclusive out buffer.
     cvt(unsafe { libc::fstatat(dirfd, n.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) })?;
     Ok(st)
 }
@@ -137,6 +138,7 @@ pub fn fstatat_nofollow(dirfd: RawFd, name: &OsStr) -> io::Result<libc::stat> {
 pub fn fstat(fd: &impl AsRawFd) -> io::Result<libc::stat> {
     // SAFETY: as above.
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: the fd is borrowed from `fd` (open for the call) and `st` is a valid, exclusive out buffer.
     cvt(unsafe { libc::fstat(fd.as_raw_fd(), &mut st) })?;
     Ok(st)
 }
@@ -215,6 +217,8 @@ pub fn private_mount_namespace() -> io::Result<()> {
     // SAFETY: plain syscalls with valid arguments.
     cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
     let root = cstr("/")?;
+    // SAFETY: `root` is a NUL-terminated CString alive across the call; the null source, fstype and data are allowed
+    // for a propagation change (MS_REC | MS_SLAVE).
     cvt(unsafe {
         libc::mount(
             std::ptr::null(),
@@ -243,6 +247,7 @@ pub fn umount(target: &Path) -> io::Result<()> {
 pub fn uname() -> (String, String) {
     // SAFETY: zeroed utsname is a valid out buffer.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: `u` is a valid, exclusive out buffer of type utsname.
     if unsafe { libc::uname(&mut u) } != 0 {
         return (String::new(), String::new());
     }
@@ -262,13 +267,16 @@ pub fn lower_priority(n: u8) -> io::Result<(i32, bool)> {
     // SAFETY: plain syscalls on the calling thread.
     let tid = unsafe { libc::syscall(libc::SYS_gettid) } as libc::id_t;
     // getpriority may legitimately return -1: clear errno first
+    // SAFETY: __errno_location returns a valid pointer to this thread's errno.
     unsafe { *libc::__errno_location() = 0 };
+    // SAFETY: getpriority only reads scheduling state of thread `tid` (our own thread id).
     let cur = unsafe { libc::getpriority(libc::PRIO_PROCESS, tid) };
     if cur == -1 && io::Error::last_os_error().raw_os_error().unwrap_or(0) != 0 {
         return Err(io::Error::last_os_error());
     }
     let nice = cur.max(i32::from(n.min(19)));
     if nice > cur {
+        // SAFETY: setpriority on our own thread id with a value in 0..=19; no memory is passed.
         cvt(unsafe { libc::setpriority(libc::PRIO_PROCESS, tid, nice) })?;
     }
     let idle = n >= 15;

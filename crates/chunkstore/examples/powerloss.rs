@@ -124,6 +124,8 @@ fn sys(r: libc::c_long, what: &str) -> Res<()> {
 }
 
 fn mount(src: &str, dst: &str, fs: &str, opts: &str) -> Res<()> {
+    // SAFETY: every pointer comes from a CString temporary that lives until the end of the statement, i.e.
+    // across the call; mount does not keep the pointers.
     let r = unsafe {
         libc::mount(
             c(src).as_ptr(),
@@ -139,14 +141,18 @@ fn mount(src: &str, dst: &str, fs: &str, opts: &str) -> Res<()> {
 fn init() -> Res<()> {
     mount("devtmpfs", "/dev", "devtmpfs", "")?;
     mount("proc", "/proc", "proc", "")?;
+    // SAFETY: the path is a NUL-terminated CString temporary alive across the call.
     let fd = unsafe { libc::open(c("/dev/console").as_ptr(), libc::O_RDWR) };
     for i in 0..3 {
+        // SAFETY: dup2 only touches the fd table; an invalid `fd` (-1 on open failure) just yields EBADF.
         unsafe { libc::dup2(fd, i) };
     }
     for m in fs::read_to_string("/modules")?.lines() {
         let f = fs::File::open(format!("/lib/{m}.ko.xz"))?;
         use std::os::fd::AsRawFd;
         // MODULE_INIT_COMPRESSED_FILE = 4
+        // SAFETY: `f` stays open across the call and the empty param string is a CString temporary alive across it;
+        // finit_module does not keep either.
         let r = unsafe { libc::syscall(libc::SYS_finit_module, f.as_raw_fd(), c("").as_ptr(), 4) };
         if r < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
             sys(r, &format!("finit_module {m}"))?;
@@ -177,7 +183,9 @@ fn init() -> Res<()> {
         },
         "check" => {
             let res = check(store, arg("pl.committed=").parse()?);
+            // SAFETY: sync has no arguments and no preconditions.
             unsafe { libc::sync() };
+            // SAFETY: the path is a NUL-terminated CString temporary alive across the call.
             unsafe { libc::umount(c("/mnt").as_ptr()) };
             match res {
                 Ok(s) => println!("PASS {s}"),
@@ -199,6 +207,7 @@ fn main() {
             if let Err(e) = &r {
                 println!("FAIL init: {e}");
             }
+            // SAFETY: reboot with RB_POWER_OFF takes no pointers; as PID 1 of the test VM we may power it off.
             unsafe { libc::reboot(libc::RB_POWER_OFF) };
             r
         }

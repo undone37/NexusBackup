@@ -164,7 +164,7 @@ pub fn streams(h: &Handle) -> io::Result<Vec<(Vec<u16>, u64)>> {
                     Some(ERROR_MORE_DATA) | Some(ERROR_INSUFFICIENT_BUFFER)
                 ) && bytes < 1 << 24 =>
             {
-                buf.resize(buf.len() * 4, 0)
+                buf.resize(buf.len() * 4, 0);
             }
             Err(e) => return Err(e),
         }
@@ -366,7 +366,7 @@ pub fn enable_privileges(names: &[&str]) -> Vec<String> {
     let mut token = HANDLE::default();
     // SAFETY: plain token calls with valid out pointers.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token) }.is_err() {
-        return names.iter().map(|s| s.to_string()).collect();
+        return names.iter().map(ToString::to_string).collect();
     }
     let token = Handle(token);
     for n in names {

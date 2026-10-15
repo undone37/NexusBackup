@@ -68,6 +68,8 @@ fn user_name(uid: u32) -> String {
     if pw.is_null() {
         return uid.to_string();
     }
+    // SAFETY: `pw` is non-null; pw_name is a NUL-terminated string in getpwuid's static entry, copied out
+    // before any other getpw* call (single-threaded helper).
     unsafe { std::ffi::CStr::from_ptr((*pw).pw_name) }
         .to_string_lossy()
         .into_owned()
@@ -79,6 +81,8 @@ fn group_name(gid: u32) -> String {
     if gr.is_null() {
         return gid.to_string();
     }
+    // SAFETY: `gr` is non-null; gr_name is a NUL-terminated string in getgrgid's static entry, copied out
+    // before any other getgr* call (single-threaded helper).
     unsafe { std::ffi::CStr::from_ptr((*gr).gr_name) }
         .to_string_lossy()
         .into_owned()

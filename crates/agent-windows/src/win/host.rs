@@ -87,7 +87,7 @@ pub fn info() -> HostInfo {
             "update",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect(),
         agent_version: env!("CARGO_PKG_VERSION").into(),
     }

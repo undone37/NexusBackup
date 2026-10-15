@@ -36,6 +36,8 @@ fn uid_of(name: &str) -> Option<u32> {
     let c = std::ffi::CString::new(name).ok()?;
     // SAFETY: getpwnam at start (single thread), the entry is copied out at once
     let p = unsafe { libc::getpwnam(c.as_ptr()) };
+    // SAFETY: `p` is non-null and points to getpwnam's static entry, which nothing has overwritten yet
+    // (single-threaded start, no other getpw* call in between).
     (!p.is_null()).then(|| unsafe { (*p).pw_uid })
 }
 

@@ -3644,7 +3644,9 @@ impl Scheduler {
     /// system's total / used / free (setting `capacity`).
     fn sample_capacity(&self, now: i64) -> Result<()> {
         let path = std::ffi::CString::new(self.cfg.store_base.as_os_str().as_encoded_bytes())?;
+        // SAFETY: libc::statvfs is plain C data (integers only); all-zero is a valid value for the out buffer.
         let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is a NUL-terminated CString alive across the call and `st` a valid, exclusive out buffer.
         if unsafe { libc::statvfs(path.as_ptr(), &mut st) } == 0 && st.f_blocks > 0 {
             let f = st.f_frsize;
             let (total, free) = (st.f_blocks * f, st.f_bavail * f);
@@ -3681,7 +3683,9 @@ impl Scheduler {
 
     fn check_capacity(&self) -> Result<()> {
         let path = std::ffi::CString::new(self.cfg.store_base.as_os_str().as_encoded_bytes())?;
+        // SAFETY: libc::statvfs is plain C data (integers only); all-zero is a valid value for the out buffer.
         let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        // SAFETY: `path` is a NUL-terminated CString alive across the call and `st` a valid, exclusive out buffer.
         if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 || st.f_blocks == 0 {
             return Ok(());
         }

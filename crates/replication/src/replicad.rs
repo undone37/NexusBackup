@@ -42,6 +42,8 @@ fn open_nofollow(p: &Path) -> io::Result<File> {
 pub fn peer_uid(s: &UnixStream) -> io::Result<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are valid, exclusive locals and `len` is the exact size of `cred` (ucred),
+    // as SO_PEERCRED requires; the fd is borrowed from `s`.
     let rc = unsafe {
         libc::getsockopt(
             std::os::fd::AsRawFd::as_raw_fd(s),

@@ -121,6 +121,7 @@ fn main() {
 }
 
 fn poweroff() -> ! {
+    // SAFETY: sync and reboot take no pointers; the agent is PID 1 of the restore VM and powers it off.
     unsafe {
         libc::sync();
         libc::reboot(libc::RB_POWER_OFF);
@@ -164,6 +165,7 @@ fn run() -> io::Result<()> {
 fn mount(src: &str, dst: &str, ty: &str, flags: libc::c_ulong, data: &str) -> io::Result<()> {
     let c = |s: &str| CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
     let (s, d, t, o) = (c(src)?, c(dst)?, c(ty)?, c(data)?);
+    // SAFETY: all four are NUL-terminated CStrings alive across the call; mount does not keep the pointers.
     let r = unsafe { libc::mount(s.as_ptr(), d.as_ptr(), t.as_ptr(), flags, o.as_ptr().cast()) };
     if r == 0 {
         Ok(())
@@ -368,7 +370,9 @@ fn mount_all() -> Vec<Mount> {
 
 fn statvfs_size(p: &str) -> Option<u64> {
     let c = CString::new(p).ok()?;
+    // SAFETY: libc::statvfs is plain C data (integers only); all-zero is a valid value for the out buffer.
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c` is a NUL-terminated CString alive across the call and `s` a valid, exclusive out buffer.
     (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| s.f_blocks as u64 * s.f_frsize as u64)
 }
 
@@ -435,6 +439,8 @@ fn open_in(mp: &str, rel: &[String], flags: i32) -> io::Result<OwnedFd> {
         mode: 0,
         resolve: RESOLVE_IN_ROOT | RESOLVE_NO_MAGICLINKS,
     };
+    // SAFETY: `root` stays open across the call, `p` is a live C string, and `how` is a live #[repr(C)]
+    // open_how whose exact size is passed.
     let fd = unsafe {
         libc::syscall(
             libc::SYS_openat2,
@@ -447,6 +453,7 @@ fn open_in(mp: &str, rel: &[String], flags: i32) -> io::Result<OwnedFd> {
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
 }
 

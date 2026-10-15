@@ -358,6 +358,7 @@ pub mod unix {
     /// gid of a group (None if it does not exist).
     pub fn group_id(name: &str) -> Option<u32> {
         let c = std::ffi::CString::new(name).ok()?;
+        // SAFETY: libc::group is plain C data (integers and pointers); all-zero is a valid value for the out parameter.
         let mut grp: libc::group = unsafe { std::mem::zeroed() };
         let mut buf = vec![0 as libc::c_char; 16 << 10];
         let mut out: *mut libc::group = std::ptr::null_mut();
@@ -540,6 +541,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("ui.sock");
         std::fs::write(&p, b"stale").unwrap();
+        // SAFETY: getgid has no preconditions and cannot fail.
         let gid = unsafe { libc::getgid() };
         let _l = unix::bind(&p, Some(gid)).unwrap();
         let m = std::fs::metadata(&p).unwrap();

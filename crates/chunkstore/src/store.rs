@@ -453,6 +453,7 @@ impl Store {
         }
         // A crashed predecessor may have renamed chunks into place without syncing
         // their directories; we reuse such chunks without re-syncing, so flush once here.
+        // SAFETY: the File temporary is open until the end of the statement, so the fd is valid during syncfs.
         if unsafe { libc::syncfs(File::open(&root)?.as_raw_fd()) } != 0 {
             return Err(io::Error::last_os_error());
         }

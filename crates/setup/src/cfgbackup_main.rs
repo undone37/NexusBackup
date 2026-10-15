@@ -9,6 +9,7 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     // umask 077 (files are chmod'ed explicitly), not dumpable: key files pass through. No
     // mlockall (keyd::harden_process): the unit has no CAP_IPC_LOCK and the catalog can be large.
+    // SAFETY: umask takes no pointers and cannot fail.
     unsafe {
         libc::umask(0o077);
     }

@@ -245,6 +245,7 @@ fn full_run_then_refuse_then_reconfigure_network() {
     assert_eq!(fs::read(&key).unwrap().len(), 32);
     {
         use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
         assert_eq!(fs::metadata(&key).unwrap().uid(), unsafe { libc::geteuid() });
     }
 

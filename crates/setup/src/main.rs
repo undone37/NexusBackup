@@ -107,6 +107,7 @@ fn parse(args: &[String]) -> Result<Opts> {
 
 fn run(o: Opts) -> Result<ExitCode> {
     let real = o.root == std::path::Path::new("/");
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if real && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root (use --root DIR --dry-run on a development machine)");
     }
@@ -155,6 +156,7 @@ fn recover_admin(args: &[String]) -> Result<ExitCode> {
     if o.dry_run || o.script.is_some() || o.force_network {
         bail!("recover-admin takes only --user, --force-solo and path options");
     }
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }
@@ -185,6 +187,7 @@ fn disable_approvals(args: &[String]) -> Result<ExitCode> {
     if o.dry_run || o.script.is_some() || o.force_network {
         bail!("disable-approvals takes only path options");
     }
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }
@@ -206,6 +209,7 @@ fn grub_password(args: &[String]) -> Result<ExitCode> {
         bail!("grub-password takes only --install and, with it, --dry-run and path options");
     }
     let real = o.root == std::path::Path::new("/");
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if install && real && !o.dry_run && unsafe { libc::geteuid() } != 0 {
         bail!("--install must run as root on the appliance console");
     }
@@ -239,6 +243,7 @@ fn vault_disable(args: &[String]) -> Result<ExitCode> {
     if o.dry_run || o.script.is_some() || o.force_network {
         bail!("vault-disable takes only path options");
     }
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }
@@ -268,6 +273,7 @@ fn restore_config(args: &[String]) -> Result<ExitCode> {
         bail!("restore-config takes a bundle or --offsite, --appliance, --dry-run and path options");
     }
     let real = o.root == std::path::Path::new("/");
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if real && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }
@@ -328,6 +334,7 @@ fn reset_firewall(args: &[String]) -> Result<ExitCode> {
         bail!("reset-firewall takes only path options");
     }
     let real = o.root == std::path::Path::new("/");
+    // SAFETY: geteuid has no preconditions and cannot fail.
     if real && unsafe { libc::geteuid() } != 0 {
         bail!("must run as root on the appliance console");
     }

@@ -170,6 +170,8 @@ pub fn qemu_command(cfg: &Config, initrd: &Path, disks: &[Disk], agent: &Path, l
             .args(["-device", &format!("virtio-blk-pci,drive=d{i},serial={serial}")]);
     }
     c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    // SAFETY: the closure runs between fork and exec and only calls prctl and setrlimit (async-signal-safe,
+    // no allocation); `zero` is a local passed by reference for the call.
     unsafe {
         c.pre_exec(|| {
             // QEMU dies with us; no core dumps of guest memory

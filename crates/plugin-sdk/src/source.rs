@@ -201,6 +201,8 @@ impl Source {
         for (p, m) in dirs.iter().rev() {
             if let Ok((parent, name)) = open_parent(&root, p, false) {
                 let c = CString::new(name)?;
+                // SAFETY: `parent` is an open directory fd and `c` a NUL-terminated CString, both alive across the
+                // call.
                 let fd = unsafe {
                     libc::openat(
                         parent.as_raw_fd(),
@@ -209,6 +211,7 @@ impl Source {
                     )
                 };
                 if fd >= 0 {
+                    // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
                     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
                     apply_meta(&fd, m, opts);
                 }
@@ -253,10 +256,12 @@ fn last_err() -> anyhow::Error {
 fn open_dir(p: &Path) -> Result<OwnedFd> {
     use std::os::unix::ffi::OsStrExt;
     let c = CString::new(p.as_os_str().as_bytes())?;
+    // SAFETY: `c` is a NUL-terminated CString alive across the call.
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
     if fd < 0 {
         return Err(anyhow!("{}: {}", p.display(), io::Error::last_os_error()));
     }
+    // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
@@ -264,12 +269,14 @@ fn open_dir(p: &Path) -> Result<OwnedFd> {
 fn open_parent<'a>(root: &OwnedFd, path: &'a [u8], create: bool) -> Result<(OwnedFd, &'a [u8])> {
     let comps: Vec<&[u8]> = path.split(|b| *b == b'/').collect();
     let (last, dirs) = comps.split_last().ok_or_else(|| anyhow!("empty path"))?;
-    let mut cur = unsafe { OwnedFd::from_raw_fd(libc::dup(root.as_raw_fd())) };
+    let mut cur = root.try_clone()?;
     for d in dirs {
         let c = CString::new(*d)?;
         if create {
+            // SAFETY: `cur` is an open directory fd and `c` a NUL-terminated CString alive across the call.
             unsafe { libc::mkdirat(cur.as_raw_fd(), c.as_ptr(), 0o700) };
         }
+        // SAFETY: `cur` is an open directory fd and `c` a NUL-terminated CString alive across the call.
         let fd = unsafe {
             libc::openat(
                 cur.as_raw_fd(),
@@ -280,12 +287,15 @@ fn open_parent<'a>(root: &OwnedFd, path: &'a [u8], create: bool) -> Result<(Owne
         if fd < 0 {
             return Err(last_err());
         }
+        // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
         cur = unsafe { OwnedFd::from_raw_fd(fd) };
     }
     Ok((cur, last))
 }
 
 fn apply_meta(fd: &OwnedFd, m: &Meta, opts: &RestoreOptions) {
+    // SAFETY: `fd` is open for the whole block; `k` is a live CString, `v` a slice passed with its length, and
+    // the [t, t] temporary lives until the end of the futimens statement.
     unsafe {
         if opts.owners {
             libc::fchown(fd.as_raw_fd(), m.uid, m.gid);
@@ -314,8 +324,10 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
     match m.kind.unwrap_or(Kind::File) {
         Kind::File => {
             if opts.overwrite {
+                // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
                 unsafe { libc::unlinkat(pfd, c.as_ptr(), 0) };
             }
+            // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
             let fd = unsafe {
                 libc::openat(
                     pfd,
@@ -327,6 +339,7 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
             if fd < 0 {
                 return Err(last_err());
             }
+            // SAFETY: `fd` is a fresh descriptor (checked >= 0) that nothing else owns.
             let fd = unsafe { OwnedFd::from_raw_fd(fd) };
             let mut f = std::fs::File::from(fd.try_clone()?);
             io::copy(data, &mut f)?;
@@ -334,6 +347,7 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
             apply_meta(&fd, m, opts);
         }
         Kind::Dir => {
+            // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
             if unsafe { libc::mkdirat(pfd, c.as_ptr(), 0o700) } != 0
                 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists
             {
@@ -343,8 +357,10 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
         Kind::Symlink => {
             let t = CString::new(m.link_target.clone().unwrap_or_default())?;
             if opts.overwrite {
+                // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
                 unsafe { libc::unlinkat(pfd, c.as_ptr(), 0) };
             }
+            // SAFETY: `t` and `c` are live NUL-terminated CStrings and `pfd` is borrowed from `parent` (open).
             if unsafe { libc::symlinkat(t.as_ptr(), pfd, c.as_ptr()) } != 0 {
                 return Err(last_err());
             }
@@ -352,6 +368,8 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
                 tv_sec: m.mtime_ns.div_euclid(1_000_000_000),
                 tv_nsec: m.mtime_ns.rem_euclid(1_000_000_000),
             };
+            // SAFETY: `pfd` is open, `c` a live C string, and the [ts, ts] temporary lives until the end of the
+            // statement.
             unsafe { libc::utimensat(pfd, c.as_ptr(), [ts, ts].as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
         }
         Kind::Hardlink => {
@@ -362,13 +380,16 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
             let (tp, tn) = open_parent(root, &target, false)?;
             let tc = CString::new(tn)?;
             if opts.overwrite {
+                // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
                 unsafe { libc::unlinkat(pfd, c.as_ptr(), 0) };
             }
+            // SAFETY: `tp` and `pfd` are open directory fds; `tc` and `c` are live NUL-terminated CStrings.
             if unsafe { libc::linkat(tp.as_raw_fd(), tc.as_ptr(), pfd, c.as_ptr(), 0) } != 0 {
                 return Err(last_err());
             }
         }
         Kind::Fifo => {
+            // SAFETY: `pfd` is borrowed from `parent` (open) and `c` is a live NUL-terminated CString.
             if unsafe { libc::mkfifoat(pfd, c.as_ptr(), m.mode & 0o7777) } != 0 {
                 return Err(last_err());
             }

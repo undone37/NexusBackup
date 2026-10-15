@@ -16,15 +16,19 @@ fn resolve_uid(user: &str) -> Result<u32> {
         return Ok(uid);
     }
     let name = CString::new(user)?;
+    // SAFETY: `name` is a NUL-terminated CString alive across the call; main resolves the user before it
+    // starts any thread, so getpwnam's static buffer is not shared.
     let pw = unsafe { libc::getpwnam(name.as_ptr()) };
     if pw.is_null() {
         bail!("unknown user {user}");
     }
+    // SAFETY: `pw` is non-null and points to getpwnam's static entry, not overwritten since the call above.
     Ok(unsafe { (*pw).pw_uid })
 }
 
 fn main() -> Result<()> {
     keyd::deny_dumps();
+    // SAFETY: umask takes no pointers and cannot fail.
     unsafe { libc::umask(0o027) };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [state, socket, store, user] = args.as_slice() else {
@@ -39,6 +43,7 @@ fn main() -> Result<()> {
     let gid = std::fs::metadata(dir)
         .ok()
         .map(|m| m.gid())
+        // SAFETY: getegid has no preconditions and cannot fail.
         .filter(|g| *g != unsafe { libc::getegid() });
     r.publish(dir, gid).context("publishing ca.pem / seal.pub")?;
     let _ = std::fs::remove_file(sock);

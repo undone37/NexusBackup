@@ -30,6 +30,8 @@ pub fn kind_of(m: &fs::Metadata) -> Kind {
 /// Extended attributes of `p` (not following symlinks), bounded by the protocol limit.
 pub fn xattrs(p: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let c = CString::new(p.as_os_str().as_bytes())?;
+    // SAFETY: `c` is a NUL-terminated CString alive across the call; a NULL buffer with size 0 only queries
+    // the needed length.
     let n = unsafe { libc::llistxattr(c.as_ptr(), std::ptr::null_mut(), 0) };
     if n < 0 {
         let e = io::Error::last_os_error();
@@ -39,6 +41,7 @@ pub fn xattrs(p: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
         };
     }
     let mut names = vec![0u8; n as usize];
+    // SAFETY: `names` is a writable buffer of exactly `names.len()` bytes and `c` a live C string.
     let n = unsafe { libc::llistxattr(c.as_ptr(), names.as_mut_ptr().cast(), names.len()) };
     if n < 0 {
         return Err(io::Error::last_os_error());
@@ -48,11 +51,14 @@ pub fn xattrs(p: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut total = 0;
     for name in names.split(|b| *b == 0).filter(|n| !n.is_empty()) {
         let cn = CString::new(name)?;
+        // SAFETY: `c` and `cn` are NUL-terminated CStrings alive across the call; a NULL buffer with size 0 only
+        // queries the value length.
         let len = unsafe { libc::lgetxattr(c.as_ptr(), cn.as_ptr(), std::ptr::null_mut(), 0) };
         if len < 0 {
             continue;
         }
         let mut v = vec![0u8; len as usize];
+        // SAFETY: `v` is a writable buffer of exactly `v.len()` bytes; `c` and `cn` are live C strings.
         let len = unsafe { libc::lgetxattr(c.as_ptr(), cn.as_ptr(), v.as_mut_ptr().cast(), v.len()) };
         if len < 0 {
             continue;

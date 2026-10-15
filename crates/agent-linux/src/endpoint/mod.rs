@@ -94,8 +94,10 @@ impl Clock {
 
 fn local_offset(t: i64) -> i64 {
     let tt = t as libc::time_t;
-    // SAFETY: localtime_r writes only into `tm`
+    // SAFETY: libc::tm is plain C data (integers and a pointer); all-zero is a valid value.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `tt` and `tm` are valid, exclusive locals for the call; localtime_r is the reentrant variant and writes
+    // only into `tm`.
     if unsafe { libc::localtime_r(&tt, &mut tm) }.is_null() {
         return 0;
     }
