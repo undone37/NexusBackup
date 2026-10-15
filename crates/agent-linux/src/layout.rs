@@ -13,7 +13,7 @@
 use crate::volumes::{run_tool, tool};
 use agent_proto::layout::*;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -590,11 +590,6 @@ pub fn capture(skip_prefix: &str) -> Layout {
 /// `GetLayout` answer: the layout as JSON.
 pub fn capture_json(skip_prefix: &str) -> String {
     serde_json::to_string(&capture(skip_prefix)).unwrap_or_default()
-}
-
-/// Map a layout's disks for display: name → size (used by the rescue console too).
-pub fn disk_sizes(l: &Layout) -> BTreeMap<String, u64> {
-    l.disks.iter().map(|d| (d.name.clone(), d.size)).collect()
 }
 
 #[cfg(test)]

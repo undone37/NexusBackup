@@ -43,10 +43,3 @@ pub fn locked_down(c: &Connection, tenant: &str) -> rusqlite::Result<bool> {
         .unwrap_or(false),
     )
 }
-
-/// Names of all locked-down tenants.
-pub fn all_locked_down(c: &Connection) -> rusqlite::Result<HashSet<String>> {
-    c.prepare("SELECT tenant FROM tenant_lockdowns WHERE active = 1")?
-        .query_map([], |r| r.get(0))?
-        .collect()
-}

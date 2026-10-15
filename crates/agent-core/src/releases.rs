@@ -162,11 +162,6 @@ pub fn scan(dirs: &[(PathBuf, &'static str)], keys: &[(String, Vec<u8>)]) -> Vec
     out
 }
 
-/// The default store on the appliance.
-pub fn default_dirs() -> Vec<(PathBuf, &'static str)> {
-    vec![(IMAGE_DIR.into(), "image"), (UPLOAD_DIR.into(), "upload")]
-}
-
 /// The newest usable release: what "outdated" is measured against and what
 /// automatic rollouts install.
 pub fn recommended(releases: &[Release]) -> Option<&Release> {

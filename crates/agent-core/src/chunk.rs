@@ -69,10 +69,6 @@ fn remember_hash(chunks: &[(Hash, u32)], h: Hash) {
     });
 }
 
-/// Opens a file of a locator for re-reading (platform specific: never follow a final
-/// symlink on Unix; backup semantics on Windows).
-pub type Opener = fn(&Path) -> io::Result<File>;
-
 #[derive(Clone, Copy, Debug)]
 struct Loc {
     file: u32,
@@ -88,24 +84,12 @@ struct Spool {
 }
 
 /// Where to find each chunk again for `Want`.
+#[derive(Default)]
 pub struct Locator {
     files: Vec<PathBuf>,
     map: HashMap<u64, Vec<(Hash, Loc)>>,
     spool: Option<Spool>,
     open: Option<(u32, File)>,
-    opener: Opener,
-}
-
-impl Default for Locator {
-    fn default() -> Self {
-        Locator {
-            files: vec![],
-            map: HashMap::new(),
-            spool: None,
-            open: None,
-            opener: open_read,
-        }
-    }
 }
 
 fn key(h: &Hash) -> u64 {
@@ -160,11 +144,6 @@ impl Locator {
             spool,
             ..Default::default()
         })
-    }
-
-    pub fn with_opener(mut self, opener: Opener) -> Locator {
-        self.opener = opener;
-        self
     }
 
     pub fn add_file(&mut self, p: PathBuf) -> u32 {
@@ -246,7 +225,7 @@ impl Locator {
     fn file(&mut self, idx: u32) -> Option<&File> {
         if self.open.as_ref().map(|(i, _)| *i) != Some(idx) {
             let p = self.files.get(idx as usize)?;
-            let f = (self.opener)(p).ok()?;
+            let f = open_read(p).ok()?;
             self.open = Some((idx, f));
         }
         self.open.as_ref().map(|(_, f)| f)

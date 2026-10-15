@@ -95,10 +95,6 @@ impl Replicad {
         Ok(())
     }
 
-    pub fn seal_public(&self) -> catalog::secret::SealKey {
-        self.seal.public()
-    }
-
     /// Accept loop: one thread per connection, at most `MAX_CONNECTIONS`.
     pub fn serve(self: Arc<Self>, listener: UnixListener, allow_uid: u32) -> io::Result<()> {
         for conn in listener.incoming() {
