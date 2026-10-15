@@ -32,3 +32,6 @@ agent-linux = { path = "../agent-linux" }
 chunkstore = { path = "../chunkstore" }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"] }
 tempfile = "3"
+
+[lints]
+workspace = true

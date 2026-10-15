@@ -15,3 +15,6 @@ plugin-proto = { path = "../plugin-proto" }
 truenas = { path = "../truenas", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[lints]
+workspace = true

@@ -413,7 +413,7 @@ fn enroll_sync_incremental_restore_on_secondary_only() {
             Ok(()) => break,
             // slow runners: the compliance clock can lag several seconds
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && i < 300 => {
-                std::thread::sleep(Duration::from_millis(100))
+                std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => panic!("{e}"),
         }

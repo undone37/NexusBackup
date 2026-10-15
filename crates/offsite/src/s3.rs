@@ -1331,7 +1331,7 @@ mod tests {
         assert!(c(&|c| c.bucket = "a.b.c".into()).is_err(), "dots need path style");
         assert!(c(&|c| {
             c.bucket = "a.b.c".into();
-            c.path_style = true
+            c.path_style = true;
         })
         .is_ok());
         assert!(c(&|c| c.prefix = "../x".into()).is_err());

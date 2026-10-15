@@ -42,7 +42,7 @@ impl Scheduler {
                     r.get::<_, i64>(3)?,
                 ))
             })?;
-            rows.filter_map(|r| r.ok())
+            rows.filter_map(std::result::Result::ok)
                 .filter(|(_, _, issued, expires)| renewal_due(*issued, *expires, now))
                 .map(|(id, tenant, _, _)| (id, tenant))
                 .collect()

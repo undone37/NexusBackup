@@ -699,7 +699,7 @@ pub fn scan(
             .map(|_| {
                 sc.spawn(|| {
                     let mut xbuf = Vec::new();
-                    s.worker(&mut xbuf)
+                    s.worker(&mut xbuf);
                 })
             })
             .collect();

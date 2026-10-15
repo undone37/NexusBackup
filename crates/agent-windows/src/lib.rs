@@ -33,7 +33,7 @@ pub const DEFAULT_EXCLUDES: [&str; 4] = [
 /// case-insensitive.
 pub fn excludes(user: &[String]) -> agent_core::glob::Excludes {
     let mut all: Vec<String> = user.iter().map(|p| paths::normalize_exclude(p)).collect();
-    all.extend(DEFAULT_EXCLUDES.iter().map(|s| s.to_string()));
+    all.extend(DEFAULT_EXCLUDES.iter().map(std::string::ToString::to_string));
     agent_core::glob::Excludes::new_case_insensitive(&all)
 }
 

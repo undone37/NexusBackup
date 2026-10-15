@@ -162,7 +162,12 @@ fn main() -> Result<()> {
         nodes: cfg.nodes,
         exclude,
         exclude_mode: cfg.exclude_disks_mode,
-        read_limit: cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
+        read_limit: cfg
+            .read_limit
+            .as_ref()
+            .map(catalog::schedule::ReadLimit::throttle)
+            .transpose()?
+            .flatten(),
         full_read: cfg.full_read,
     };
     match (cmd.as_str(), rest) {

@@ -490,7 +490,7 @@ impl NetConfig {
             } => {
                 ip.addresses = vec![format!("{address}/{prefix}")];
                 ip.gateway = gateway.map(|g| g.to_string());
-                ip.dns = dns.iter().map(|d| d.to_string()).collect();
+                ip.dns = dns.iter().map(std::string::ToString::to_string).collect();
             }
         }
         let mut out = Vec::new();
@@ -567,7 +567,7 @@ impl NetConfig {
             "disabled",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         match &self.ipv4 {
             Ipv4Config::Dhcp => a.extend(["ipv4.method".into(), "auto".into()]),
@@ -583,7 +583,7 @@ impl NetConfig {
                     a.extend(["ipv4.gateway".into(), g.to_string()]);
                 }
                 if !dns.is_empty() {
-                    let d: Vec<String> = dns.iter().map(|d| d.to_string()).collect();
+                    let d: Vec<String> = dns.iter().map(std::string::ToString::to_string).collect();
                     a.extend([
                         "ipv4.dns".into(),
                         d.join(","),
@@ -681,7 +681,7 @@ pub fn generate_cert(hostname: &str, ips: &[IpAddr]) -> Result<Cert> {
     let key = KeyPair::generate()?;
     let cert = params.self_signed(&key)?;
     let mut sans = vec![hostname.to_owned()];
-    sans.extend(ips.iter().map(|i| i.to_string()));
+    sans.extend(ips.iter().map(std::string::ToString::to_string));
     Ok(Cert {
         fingerprint: fingerprint(cert.der()),
         cert_pem: cert.pem(),

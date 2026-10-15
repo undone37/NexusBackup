@@ -163,7 +163,7 @@ fn install_upload(p: &ReleasePaths, incoming: &std::path::Path) -> ApiResult<Rel
         let dst = x.join(&name);
         match e.header().entry_type() {
             tar::EntryType::Directory => {
-                std::fs::create_dir_all(&dst).map_err(|e| ApiError::internal(e.to_string()))?
+                std::fs::create_dir_all(&dst).map_err(|e| ApiError::internal(e.to_string()))?;
             }
             tar::EntryType::Regular => {
                 if let Some(d) = dst.parent() {

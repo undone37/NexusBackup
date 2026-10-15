@@ -63,7 +63,7 @@ pub fn run(c: &Cmd, log: &mut Log) -> Result<String, String> {
 
 fn c(argv: &[&str]) -> Cmd {
     Cmd {
-        argv: argv.iter().map(|s| s.to_string()).collect(),
+        argv: argv.iter().map(std::string::ToString::to_string).collect(),
         stdin: None,
     }
 }
@@ -249,7 +249,7 @@ fn fixups(l: &Layout, plan: &Plan, root: &Path, log: &mut Log) -> Result<(), Str
         ("sys", vec!["mount", "--rbind", "/sys", "sys"]),
         ("run", vec!["mount", "-t", "tmpfs", "tmpfs", "run"]),
     ] {
-        let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let mut a: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
         let last = a.len() - 1;
         a[last] = format!("{r}/{what}");
         run(&Cmd { argv: a, stdin: None }, log)?;

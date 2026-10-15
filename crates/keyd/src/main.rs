@@ -56,7 +56,7 @@ fn run(args: &[String]) -> io::Result<()> {
                     eprintln!("keyd: warning: cannot publish the configuration backup key: {e}");
                 }
             }
-            keyd::serve(listener, Path::new(dir), uid)?
+            keyd::serve(listener, Path::new(dir), uid)?;
         }
         ["export-escrow", dir, tenant, out] => {
             for (name, bytes) in keyd::export_escrow(Path::new(dir), tenant)? {

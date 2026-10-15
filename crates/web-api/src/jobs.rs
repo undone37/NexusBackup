@@ -529,7 +529,7 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             snapshot_exists(st, tenant, &f.source, f.time)?;
             if f.params
                 .as_ref()
-                .is_some_and(|v| v.is_null() || v.as_object().is_some_and(|o| o.is_empty()))
+                .is_some_and(|v| v.is_null() || v.as_object().is_some_and(serde_json::Map::is_empty))
             {
                 f.params = None;
             }
@@ -678,7 +678,7 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             }
             match &action.params_schema {
                 Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
-                None if r.params.as_object().is_some_and(|o| o.is_empty()) => {}
+                None if r.params.as_object().is_some_and(serde_json::Map::is_empty) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
             }
             if let Some(tid) = r.target_source_id {

@@ -86,7 +86,7 @@ pub fn scan(
                 let i = next.fetch_add(1, Ordering::SeqCst);
                 let Some(h) = targets.get(i) else { break };
                 let wait = {
-                    let mut t = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut t = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     let now = Instant::now();
                     let start = (*t).max(now);
                     *t = start + gap;

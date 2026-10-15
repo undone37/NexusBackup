@@ -202,7 +202,7 @@ pub fn port_probe(os: &str) -> Vec<String> {
     } else {
         &["sh", "-c", "ss -ltn 2>/dev/null || netstat -ltn"]
     };
-    v.iter().map(|s| s.to_string()).collect()
+    v.iter().map(std::string::ToString::to_string).collect()
 }
 
 /// The checks of one started guest; returns (checks, boot seconds).

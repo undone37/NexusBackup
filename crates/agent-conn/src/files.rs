@@ -212,7 +212,10 @@ pub fn extract(store: &Store, entries: &[TreeEntry], paths: &[String], fmt: Form
                     TreeKind::Socket => continue, // not representable
                 }
             }
-            b.into_inner()?.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+            b.into_inner()?
+                .into_inner()
+                .map_err(std::io::IntoInnerError::into_error)?
+                .sync_all()?;
         }
         Format::Zip => {
             let mut z = zip::ZipWriter::new(out);

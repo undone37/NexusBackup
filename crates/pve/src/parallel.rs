@@ -187,7 +187,7 @@ mod tests {
         Item {
             item: i,
             node: node.into(),
-            storages: storages.iter().map(|s| s.to_string()).collect(),
+            storages: storages.iter().map(std::string::ToString::to_string).collect(),
             locks: Vec::new(),
         }
     }

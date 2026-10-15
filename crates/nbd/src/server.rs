@@ -144,7 +144,7 @@ pub fn serve(
                     Ok(()) => simple_reply(&mut w, 0, cookie, &buf)?,
                     Err(e) => {
                         eprintln!("nbd server: read {off}+{len}: {e}");
-                        simple_reply(&mut w, EIO, cookie, &[])?
+                        simple_reply(&mut w, EIO, cookie, &[])?;
                     }
                 }
             }

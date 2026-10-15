@@ -330,7 +330,10 @@ fn pack_files(dir: &Path, out: &Path) -> Result<usize> {
                 b.append_data(&mut h, name, &mut src)?;
                 fs::remove_file(path)?;
             }
-            b.into_inner()?.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+            b.into_inner()?
+                .into_inner()
+                .map_err(std::io::IntoInnerError::into_error)?
+                .sync_all()?;
         }
         agent_conn::files::Format::Zip => {
             let mut z = zip::ZipWriter::new(f);

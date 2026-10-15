@@ -22,3 +22,6 @@ x509-parser = { version = "0.16", features = ["verify"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

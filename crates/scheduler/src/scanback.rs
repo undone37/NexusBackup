@@ -41,7 +41,7 @@ impl Scheduler {
             let source = ident(&job.params, "source")?.to_owned();
             let from = num(&job.params, "from")? as i64;
             let (rules, _) = scan::rule_set(&self.db.conn())?;
-            if rules.as_array().is_none_or(|a| a.is_empty()) {
+            if rules.as_array().is_none_or(std::vec::Vec::is_empty) {
                 bail!("no YARA rules uploaded (Settings → Malware scan)");
             }
             let local = self.db.conn().query_row(

@@ -248,7 +248,7 @@ pub(crate) fn validate_settings(c: &Connection, s: &Settings) -> ApiResult<()> {
 pub(crate) fn redirect_uri(uri: &Uri, h: &HeaderMap) -> String {
     let host = uri
         .authority()
-        .map(|a| a.as_str())
+        .map(axum::http::uri::Authority::as_str)
         .or_else(|| h.get(header::HOST).and_then(|v| v.to_str().ok()))
         .filter(|s| {
             (1..=255).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
@@ -1418,7 +1418,7 @@ mod tests {
         assert_eq!(
             with(&|c| {
                 c["aud"] = json!([CID]);
-                c["azp"] = json!("other")
+                c["azp"] = json!("other");
             }),
             Err(TokenError::Claim("azp"))
         );
@@ -1502,7 +1502,7 @@ mod tests {
         let m = |g: &str, r: &str, t: &[&str]| Mapping {
             group: g.into(),
             role: r.into(),
-            tenants: t.iter().map(|x| x.to_string()).collect(),
+            tenants: t.iter().map(std::string::ToString::to_string).collect(),
         };
         let s = Settings {
             mappings: vec![
@@ -1516,9 +1516,13 @@ mod tests {
             ..Settings::default()
         };
         let pick = |g: &[&str]| {
-            pick_mapping(&c, &s, &g.iter().map(|x| x.to_string()).collect::<Vec<_>>())
-                .unwrap()
-                .map(|m| m.group.clone())
+            pick_mapping(
+                &c,
+                &s,
+                &g.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
+            )
+            .unwrap()
+            .map(|m| m.group.clone())
         };
         assert_eq!(pick(&["acme-users", "/nexus-admins"]).as_deref(), Some("nexus-admins"));
         assert_eq!(pick(&["support-acme", "ops", "acme-users"]).as_deref(), Some("ops"));
@@ -1566,38 +1570,38 @@ mod tests {
         );
         assert!(bad(&|s| {
             s.mappings[0].role = "tenant_user".into();
-            s.mappings[0].tenants = vec!["nope".into()]
+            s.mappings[0].tenants = vec!["nope".into()];
         }));
         assert!(
             bad(&|s| {
                 s.mappings[0].role = "operator".into();
-                s.mappings[0].tenants = vec!["acme".into()]
+                s.mappings[0].tenants = vec!["acme".into()];
             }),
             "operators see all tenants"
         );
         assert!(!bad(&|s| {
             s.mappings[0].role = "tenant_user".into();
-            s.mappings[0].tenants = vec!["acme".into()]
+            s.mappings[0].tenants = vec!["acme".into()];
         }));
         // viewers: appliance-wide or one tenant
         assert!(!bad(&|s| s.mappings[0].role = "viewer".into()));
         assert!(!bad(&|s| {
             s.mappings[0].role = "viewer".into();
-            s.mappings[0].tenants = vec!["acme".into()]
+            s.mappings[0].tenants = vec!["acme".into()];
         }));
         assert!(bad(&|s| {
             s.mappings[0].role = "viewer".into();
-            s.mappings[0].tenants = vec!["acme".into(), "acme".into()]
+            s.mappings[0].tenants = vec!["acme".into(), "acme".into()];
         }));
         // tenant admins (Phase 19b): exactly one tenant
         assert!(bad(&|s| s.mappings[0].role = "tenant_admin".into()), "unscoped");
         assert!(!bad(&|s| {
             s.mappings[0].role = "tenant_admin".into();
-            s.mappings[0].tenants = vec!["acme".into()]
+            s.mappings[0].tenants = vec!["acme".into()];
         }));
         assert!(bad(&|s| {
             s.mappings[0].role = "tenant_admin".into();
-            s.mappings[0].tenants = vec!["acme".into(), "globex".into()]
+            s.mappings[0].tenants = vec!["acme".into(), "globex".into()];
         }));
         assert!(sso_name_ok("alice@contoso.onmicrosoft.com") && sso_name_ok("kc.alice"));
         assert!(!sso_name_ok("a b") && !sso_name_ok("") && !sso_name_ok(&"x".repeat(129)) && !sso_name_ok("a\tb"));
@@ -1606,7 +1610,7 @@ mod tests {
         assert!(bad(&|s| s.client_id = "a b".into()));
         assert!(!bad(&|s| {
             s.enabled = false;
-            s.mappings.clear()
+            s.mappings.clear();
         }));
     }
 }

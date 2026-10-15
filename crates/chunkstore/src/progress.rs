@@ -152,7 +152,7 @@ fn set_item(item: &str, label: Option<&str>, at: Option<(u32, u32)>) {
             label: label.filter(|l| !l.is_empty()).map(str::to_owned),
             index: at.map(|a| a.0),
             items: at.map(|a| a.1),
-        })
+        });
     });
     Line::default().with_item().print();
 }

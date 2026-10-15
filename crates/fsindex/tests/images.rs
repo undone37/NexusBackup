@@ -712,7 +712,7 @@ fn unsupported_volumes_are_reported() {
         f.write_all_at(&[0x55], n - 33 * 512 + 40).unwrap();
         disks.push(bad);
     }
-    let refs: Vec<&Path> = disks.iter().map(|p| p.as_path()).collect();
+    let refs: Vec<&Path> = disks.iter().map(std::path::PathBuf::as_path).collect();
     let l = list(&refs);
     let states: BTreeSet<(String, String, String)> = l
         .iter()
@@ -780,7 +780,7 @@ fn hostile_volumes_fail_alone() {
         fs::write(&p, b).unwrap();
         paths.push(p);
     }
-    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let refs: Vec<&Path> = paths.iter().map(std::path::PathBuf::as_path).collect();
     let l = list(&refs);
     assert_eq!(l.len(), 5, "{l:?}");
     assert!(
@@ -971,7 +971,7 @@ fn xfs_directory_formats() {
     let mut want: Vec<_> = expect.iter().map(|(p, k, n)| (p.replace(' ', "_"), *k, *n)).collect();
     fn add(dir: &Path, rel: &str, proto: &mut Vec<String>) {
         let mut names: Vec<_> = fs::read_dir(dir.join(rel)).unwrap().map(|e| e.unwrap()).collect();
-        names.sort_by_key(|e| e.file_name());
+        names.sort_by_key(std::fs::DirEntry::file_name);
         for e in names {
             let real = e.file_name().into_string().unwrap();
             let n = real.replace(' ', "_");

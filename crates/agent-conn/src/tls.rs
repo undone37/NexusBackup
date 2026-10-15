@@ -155,7 +155,7 @@ pub fn session_config_pins(ca: &Ca, agent_id: &str, pins: &[&str]) -> Result<Arc
         provider: provider(),
         roots,
         expected_cn: format!("{AGENT_CN_PREFIX}{agent_id}"),
-        pins: pins.iter().map(|p| p.to_string()).collect(),
+        pins: pins.iter().map(std::string::ToString::to_string).collect(),
     };
     client_config(ca, Arc::new(v))
 }

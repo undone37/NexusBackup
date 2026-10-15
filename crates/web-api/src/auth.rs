@@ -223,7 +223,7 @@ impl FromRequestParts<St> for Ctx {
             let given = parts
                 .headers
                 .get("x-csrf-token")
-                .map(|v| v.as_bytes())
+                .map(axum::http::HeaderValue::as_bytes)
                 .unwrap_or_default();
             if !ct_eq(given, csrf.as_bytes()) {
                 return Err(ApiError(

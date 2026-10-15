@@ -29,7 +29,7 @@ pub struct Cmd {
 
 fn cmd(argv: &[&str]) -> Cmd {
     Cmd {
-        argv: argv.iter().map(|s| s.to_string()).collect(),
+        argv: argv.iter().map(std::string::ToString::to_string).collect(),
         stdin: None,
     }
 }
@@ -104,7 +104,7 @@ pub fn sfdisk_script(d: &Disk, target: &str) -> String {
 /// mkfs / mkswap command for a file system on `dev` with its UUID and label.
 pub fn mkfs(f: &FileSystem, dev: &str) -> Result<Cmd, String> {
     let mut a: Vec<String> = vec![];
-    let push = |a: &mut Vec<String>, x: &[&str]| a.extend(x.iter().map(|s| s.to_string()));
+    let push = |a: &mut Vec<String>, x: &[&str]| a.extend(x.iter().map(std::string::ToString::to_string));
     match f.fstype.as_str() {
         t @ ("ext2" | "ext3" | "ext4") => {
             push(&mut a, &[&format!("mkfs.{t}"), "-F", "-q"]);
@@ -247,7 +247,7 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
                     &t.path,
                 ]
                 .iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
                 stdin: Some(sfdisk_script(d, &t.path)),
             });
@@ -266,7 +266,10 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
             devs.push(dev);
         }
         let ext = vg.extent_size.max(1 << 20);
-        let mut c: Vec<String> = ["lvm", "vgcreate", "-y", "-s"].iter().map(|s| s.to_string()).collect();
+        let mut c: Vec<String> = ["lvm", "vgcreate", "-y", "-s"]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         c.push(format!("{}k", ext / 1024));
         c.push(vg.name.clone());
         c.extend(devs);
@@ -285,7 +288,7 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
                 "thin-pool" => {
                     let mut c: Vec<String> = ["lvm", "lvcreate", "-y", "--type", "thin-pool", "-l"]
                         .iter()
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect();
                     c.push(extents(lv.size));
                     if lv.metadata_size > 0 {
@@ -298,7 +301,7 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
                 "thin" => {
                     let mut c: Vec<String> = ["lvm", "lvcreate", "-y", "--type", "thin", "-V"]
                         .iter()
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect();
                     c.push(format!("{}b", lv.size));
                     c.extend([
@@ -320,7 +323,7 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
                     }
                     let mut c: Vec<String> = ["lvm", "lvcreate", "-y", "-Wy", "-Zy", "-l"]
                         .iter()
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect();
                     c.push(extents(lv.size));
                     c.extend(["-n".into(), lv.name.clone(), vg.name.clone()]);
@@ -346,7 +349,11 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
         });
         if f.fstype == "btrfs" {
             let subs: Vec<&str> = {
-                let mut v: Vec<&str> = ms.iter().map(|m| m.subvol()).filter(|s| !s.is_empty()).collect();
+                let mut v: Vec<&str> = ms
+                    .iter()
+                    .map(agent_proto::layout::Mount::subvol)
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 v.sort();
                 v.dedup();
                 v

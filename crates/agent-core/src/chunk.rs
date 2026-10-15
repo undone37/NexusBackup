@@ -187,7 +187,7 @@ impl Locator {
     }
 
     pub fn chunks(&self) -> usize {
-        self.map.values().map(|v| v.len()).sum()
+        self.map.values().map(std::vec::Vec::len).sum()
     }
 
     pub fn spooled_bytes(&self) -> u64 {

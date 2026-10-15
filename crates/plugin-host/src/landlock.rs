@@ -249,8 +249,10 @@ impl Ruleset {
 /// # Safety
 /// `fd` must be a Landlock ruleset descriptor.
 pub unsafe fn restrict_self(fd: i32) -> io::Result<()> {
-    if libc::syscall(libc::SYS_landlock_restrict_self, fd, 0u32) != 0 {
-        return Err(io::Error::last_os_error());
+    unsafe {
+        if libc::syscall(libc::SYS_landlock_restrict_self, fd, 0u32) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
-    Ok(())
 }

@@ -147,7 +147,7 @@ fn main() {
                     text: "checking".into(),
                 },
             );
-            send(&mut w, &Message::Valid)
+            send(&mut w, &Message::Valid);
         }
         (Op::ListGuests, _) => send(
             &mut w,

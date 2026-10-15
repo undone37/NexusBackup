@@ -165,7 +165,7 @@ pub async fn search(State(st): State<St>, ctx: Ctx, Q(f): Q<SearchQuery>) -> Api
     }
     st.audit(ctx.name(), "file.search", &format!("tenant/{tenant}"), audit)?;
     // a group without sources has no hits (no round trip)
-    let resp: SearchResp = if sources.as_ref().is_some_and(|s| s.is_empty()) {
+    let resp: SearchResp = if sources.as_ref().is_some_and(std::vec::Vec::is_empty) {
         SearchResp::default()
     } else {
         serde_json::from_value(call(&st, Request::Search(req)).await?)

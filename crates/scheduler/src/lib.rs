@@ -260,7 +260,7 @@ pub struct Config {
 }
 
 fn cpus() -> usize {
-    std::thread::available_parallelism().map_or(4, |n| n.get())
+    std::thread::available_parallelism().map_or(4, std::num::NonZero::get)
 }
 
 /// Job kinds that never hold back a backup or restore (Phase 32: at most
@@ -797,7 +797,7 @@ impl Scheduler {
                     self.log_err(|s| s.finish(f));
                 }
                 // a job for a tenant created since the last tick needs its DEK first
-                self.log_err(|s| s.ensure_tenant_keys());
+                self.log_err(Scheduler::ensure_tenant_keys);
                 // "back up now" through an edge proxy: poll that agent at once (edge.rs)
                 self.log_err(|s| {
                     s.collect_agent_poll(None)?;
@@ -806,8 +806,8 @@ impl Scheduler {
                     }
                     Ok(())
                 });
-                self.log_err(|s| s.process_cancels());
-                self.log_err(|s| s.start_jobs());
+                self.log_err(Scheduler::process_cancels);
+                self.log_err(Scheduler::start_jobs);
             }
         }
         Ok(())
@@ -823,21 +823,21 @@ impl Scheduler {
     pub fn tick(&mut self, now: i64) -> Result<()> {
         self.now = now;
         self.collect();
-        self.log_err(|s| s.ensure_tenant_keys());
+        self.log_err(Scheduler::ensure_tenant_keys);
         self.log_err(|s| s.expire_downloads(catalog::now()));
-        self.log_err(|s| s.queue_approved_gc());
-        self.log_err(|s| s.queue_snapshot_deletes());
-        self.log_err(|s| s.queue_restore_replaces());
+        self.log_err(Scheduler::queue_approved_gc);
+        self.log_err(Scheduler::queue_snapshot_deletes);
+        self.log_err(Scheduler::queue_restore_replaces);
         self.log_err(|s| s.check_restore_priority(now)); // priority.rs
         self.log_err(|s| s.queue_scheduled(now));
         self.log_err(|s| s.queue_threat_scans(now)); // threat.rs
         self.log_err(|s| s.queue_maintenance(now));
         self.log_err(|s| s.queue_replication(now));
         self.log_err(|s| s.replication_windows(now));
-        self.log_err(|s| s.execute_key_exports());
-        self.log_err(|s| s.queue_ssh_rotations());
+        self.log_err(Scheduler::execute_key_exports);
+        self.log_err(Scheduler::queue_ssh_rotations);
         self.log_err(|s| s.blackout_aborts(now));
-        self.log_err(|s| s.process_cancels());
+        self.log_err(Scheduler::process_cancels);
         self.log_err(|s| s.check_sla(now));
         self.log_err(|s| s.check_paused(now));
         self.log_err(|s| s.queue_inventory(now));
@@ -851,9 +851,9 @@ impl Scheduler {
         self.log_err(|s| s.queue_rekeys(now));
         // restore tests and recovery plans (recovery.rs)
         self.log_err(|s| s.queue_restore_tests(now));
-        self.log_err(|s| s.queue_recovery_executes());
+        self.log_err(Scheduler::queue_recovery_executes);
         self.log_err(|s| s.queue_readiness(now));
-        self.log_err(|s| s.start_jobs());
+        self.log_err(Scheduler::start_jobs);
         let all = now.saturating_sub(self.last_refresh) >= self.cfg.refresh_secs;
         if all || !self.dirty.is_empty() {
             self.log_err(|s| s.refresh(now, all));
@@ -879,7 +879,7 @@ impl Scheduler {
         self.log_err(|s| s.check_tenant_approvers(now));
         self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.audit_net_ops());
-        self.log_err(|s| s.check_clock());
+        self.log_err(Scheduler::check_clock);
         self.log_err(|s| s.check_disabled_tenants());
         self.log_err(|s| s.sync_firewall().map(drop));
         self.deliver_alerts()
@@ -1442,7 +1442,7 @@ impl Scheduler {
                 state,
                 catalog::now(),
                 log,
-                result.as_ref().map(|r| r.to_string()),
+                result.as_ref().map(std::string::ToString::to_string),
                 job.id
             ],
         )?;
@@ -1579,7 +1579,7 @@ impl Scheduler {
         match f.outcome {
             Outcome::Ok => {
                 self.resolve_after_ok(&job)?;
-                self.follow_up(&job)?
+                self.follow_up(&job)?;
             }
             Outcome::Quorum { message } => self.request_gc_quorum(&job, &message)?,
             Outcome::Cancelled => {}
@@ -2754,7 +2754,7 @@ impl Scheduler {
                     .to_string_lossy()
                     .into_owned(),
             )
-            .chain(args.iter().map(|s| s.to_string()))
+            .chain(args.iter().map(std::string::ToString::to_string))
             .collect(),
             alert,
             capture: false,
@@ -2984,7 +2984,7 @@ impl Scheduler {
                 let step = |args: &[&str], alert: Option<&'static str>| Step::Cli {
                     bin: self.cfg.offsite_bin.clone(),
                     args: std::iter::once(cfg.to_string_lossy().into_owned())
-                        .chain(args.iter().map(|s| s.to_string()))
+                        .chain(args.iter().map(std::string::ToString::to_string))
                         .collect(),
                     alert,
                     capture: false,
@@ -3725,7 +3725,7 @@ impl Scheduler {
                         "SELECT source, time FROM snapshots WHERE tenant=?1 AND local=1 AND {col}=0"
                     ))?;
                     let rows = st.query_map([&tenant], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
-                    rows.filter_map(|r| r.ok())
+                    rows.filter_map(std::result::Result::ok)
                         .filter(|(s, _)| sources.contains(s))
                         .map(|(_, t)| t)
                         .min()

@@ -26,3 +26,6 @@ webpki-roots = "1"
 [dev-dependencies]
 plugin-sdk = { path = "../../crates/plugin-sdk", features = ["testing"] }
 tempfile = "3"
+
+[lints]
+workspace = true

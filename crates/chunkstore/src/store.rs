@@ -926,7 +926,7 @@ impl Store {
         };
         let Some(t) = prev else { return Ok(out) };
         let m = self.load_manifest(source, t)?;
-        let Some(names) = self.load_names(&m)?.filter(|n| n.has_hashes()) else {
+        let Some(names) = self.load_names(&m)?.filter(super::names::NameIndex::has_hashes) else {
             return Ok(out);
         };
         let by_path: HashMap<&str, &Sha256> = names.hashed().map(|(p, _, h)| (p, h)).collect();

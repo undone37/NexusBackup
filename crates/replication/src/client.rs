@@ -519,7 +519,7 @@ pub fn repair(p: &SyncParams) -> Result<chunkstore::health::Repair> {
             .as_mut()
             .unwrap()
             .request("POST", &path, Some("application/octet-stream"), id)
-            .and_then(|r| r.ok())
+            .and_then(super::http::Response::ok)
             .and_then(|mut r| read_frame(&mut r, id));
         if r.is_err() {
             conn = None; // reconnect for the next chunk

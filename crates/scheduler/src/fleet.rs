@@ -18,7 +18,7 @@ impl Scheduler {
         ))?;
         let rows = q.query_map([now], fleet::row)?;
         Ok(rows
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|f| f.unusable(now).is_none())
             .collect())
     }

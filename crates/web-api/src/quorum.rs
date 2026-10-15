@@ -390,7 +390,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
                 p["sla_minutes"].as_u64(),
                 // requests made before v19 carry none: off
                 p.get("require_consistency")
-                    .map_or_else(|| r#"{"mode":"off","level":"crash"}"#.to_owned(), |v| v.to_string())
+                    .map_or_else(|| r#"{"mode":"off","level":"crash"}"#.to_owned(), std::string::ToString::to_string)
             ],
             )?)?;
             c.execute(
@@ -439,7 +439,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             if catalog::vault::enabled(c)? {
                 return Err(ApiError::conflict("vault mode is on: approvals cannot be disabled"));
             }
-            catalog::set_setting(c, "approvals_enabled", "false")?
+            catalog::set_setting(c, "approvals_enabled", "false")?;
         }
         catalog::vault::ENABLE => crate::vault::execute_enable(c, requested_by)?,
         // carried out at the console with the recovery key (nexus-setup vault-disable)
@@ -475,7 +475,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
             if crate::agents::agent_in_use(c, id)? {
                 return Err(ApiError::conflict("agent is still used by a source"));
             }
-            changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?
+            changed(c.execute("DELETE FROM agents WHERE id = ?1", [id])?)?;
         }
         a if a.starts_with("replication_") || a == crate::replication::REOPEN => {
             return Ok(crate::replication::execute(c, a, p)?.then(|| json!({})));

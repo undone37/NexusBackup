@@ -251,7 +251,10 @@ impl Config {
         if !(1..=64).contains(&self.threads) {
             bail!("threads: 1..=64");
         }
-        let mut ex: Vec<String> = nas::DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect();
+        let mut ex: Vec<String> = nas::DEFAULT_EXCLUDES
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         ex.extend(self.excludes.iter().cloned());
         Ok(scan::Options {
             threads: self.threads,
@@ -271,7 +274,12 @@ impl Config {
 
             batch: 256,
             before_read: None,
-            limit: self.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten(),
+            limit: self
+                .read_limit
+                .as_ref()
+                .map(catalog::schedule::ReadLimit::throttle)
+                .transpose()?
+                .flatten(),
         })
     }
 }

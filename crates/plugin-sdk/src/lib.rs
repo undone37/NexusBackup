@@ -174,11 +174,11 @@ impl Ctx {
     }
     /// [`Ctx::log`] at [`Level::Info`].
     pub fn info(&self, text: impl Into<String>) {
-        self.log(Level::Info, text)
+        self.log(Level::Info, text);
     }
     /// [`Ctx::log`] at [`Level::Warn`].
     pub fn warn(&self, text: impl Into<String>) {
-        self.log(Level::Warn, text)
+        self.log(Level::Warn, text);
     }
     /// Progress for the job page: `done` of `total` units (bytes or items; `total`
     /// 0 = unknown) and the current step. Any message resets the host's idle limit

@@ -64,7 +64,7 @@ impl Scheduler {
         for (key, (sev, msg)) in &want {
             match open.get(key) {
                 Some((old, _)) if alerting::rank(sev) > alerting::rank(old) => {
-                    self.raise(sev, "disk", key, msg, None)?
+                    self.raise(sev, "disk", key, msg, None)?;
                 }
                 Some((_, m)) if m != msg => {
                     self.db.conn().execute(

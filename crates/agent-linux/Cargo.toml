@@ -34,3 +34,6 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring",
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tempfile = "3"
+
+[lints]
+workspace = true

@@ -554,7 +554,7 @@ mod tests {
     use super::*;
 
     fn v(a: &[&str]) -> Vec<String> {
-        a.iter().map(|s| s.to_string()).collect()
+        a.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

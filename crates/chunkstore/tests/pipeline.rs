@@ -253,7 +253,7 @@ fn throughput() {
         compressible.extend_from_slice(format!("{} ", x % 100_000).as_bytes());
     }
     compressible.truncate(size);
-    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     for (name, data) in [("incompressible", &incompressible), ("compressible", &compressible)] {
         let mut base = 0.0;
         for workers in [1, 2, 4, 8, cpus.min(16)] {

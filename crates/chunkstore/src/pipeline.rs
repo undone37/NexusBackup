@@ -42,7 +42,7 @@ pub(crate) fn resolve_workers(configured: usize) -> usize {
         return n;
     }
     thread::available_parallelism()
-        .map_or(1, |n| n.get())
+        .map_or(1, std::num::NonZero::get)
         .clamp(1, MAX_DEFAULT_WORKERS)
 }
 
@@ -63,7 +63,7 @@ struct Shared<E> {
 impl<E> Shared<E> {
     /// Keeps the first error, then raises the stop flag.
     fn fail(&self, e: E) {
-        let mut g = self.err.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.err.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.is_none() {
             *g = Some(e);
         }
@@ -155,7 +155,7 @@ fn worker<E: From<io::Error>>(
 ) {
     let _guard = PanicGuard(&shared.failed);
     loop {
-        let msg = rx.lock().unwrap_or_else(|p| p.into_inner()).recv();
+        let msg = rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv();
         let Ok((slot, mut job)) = msg else { return };
         if shared.failed.load(Ordering::SeqCst) {
             continue; // drain: the producer may be blocked on a full queue
@@ -221,7 +221,11 @@ pub(crate) fn run<E: From<io::Error> + Send>(
         // failure, discard) what is queued and exit; the scope joins them
         sink.next
     });
-    if let Some(e) = shared.err.into_inner().unwrap_or_else(|p| p.into_inner()) {
+    if let Some(e) = shared
+        .err
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         return Err(e);
     }
     let mut out = vec![None; pushed];

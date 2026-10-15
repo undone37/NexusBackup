@@ -266,7 +266,7 @@ impl<'a> Api<'a> {
                         "status_id": num("closed_status", closed)?.unwrap_or(9)}]),
             ),
             "connectwise" => {
-                let status = match closed.map(|c| c.parse::<i64>()) {
+                let status = match closed.map(str::parse::<i64>) {
                     Some(Ok(n)) => json!({"id": n}),
                     _ => json!({"name": closed.unwrap_or("Closed")}),
                 };

@@ -26,3 +26,6 @@ tempfile = { version = "3", optional = true }
 name = "nexus-plugin"
 path = "src/bin/nexus-plugin.rs"
 required-features = ["cli"]
+
+[lints]
+workspace = true

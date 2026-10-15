@@ -111,7 +111,7 @@ impl Scheduler {
         let mut st = c.prepare("SELECT host, port FROM edges")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u16>(1)?)))?;
         Ok(rows
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .map(|(h, p)| (h.trim_matches(['[', ']']).to_owned(), p))
             .collect())
     }
@@ -234,7 +234,7 @@ impl Scheduler {
                         r.get::<_, Option<String>>(3)?,
                     ))
                 })?;
-                rows.filter_map(|r| r.ok())
+                rows.filter_map(std::result::Result::ok)
                     .filter(|(_, t, _, _)| !off.contains(t))
                     .map(|(a, _, p, n)| {
                         let pins: Vec<String> = [Some(p), n].into_iter().flatten().collect();
@@ -307,7 +307,7 @@ impl Scheduler {
         let out = child.stdout.take().context("link stdout")?;
         let (tx, id) = (self.edges.tx.clone(), id.to_owned());
         std::thread::spawn(move || {
-            for l in std::io::BufReader::new(out).lines().map_while(|l| l.ok()) {
+            for l in std::io::BufReader::new(out).lines().map_while(std::result::Result::ok) {
                 if tx.send((id.clone(), l)).is_err() {
                     break;
                 }

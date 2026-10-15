@@ -383,7 +383,7 @@ fn send_tar(
             tar::EntryType::Directory => sink.entry(path.as_bytes(), meta(Kind::Dir, mode, 0, mtime))?,
             tar::EntryType::Symlink => {
                 let mut m = meta(Kind::Symlink, 0o777, 0, mtime);
-                m.link_target = e.link_name_bytes().map(|l| l.into_owned());
+                m.link_target = e.link_name_bytes().map(std::borrow::Cow::into_owned);
                 sink.entry(path.as_bytes(), m)?;
             }
             t => {
@@ -683,7 +683,7 @@ mod tests {
             "wal",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         let e = encode_paths(&p);
         assert_eq!(e[3], "11:/112");

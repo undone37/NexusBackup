@@ -150,7 +150,7 @@ impl<'a> Remote<'a> {
         finish("hello", child, err)?;
         let s = String::from_utf8_lossy(&v).trim().to_owned();
         if !s.starts_with("nexus-fc ") {
-            bail!("unexpected answer to hello: {:?} (is the forced command installed?)", s);
+            bail!("unexpected answer to hello: {s:?} (is the forced command installed?)");
         }
         Ok(s)
     }

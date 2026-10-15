@@ -9,3 +9,6 @@ description = "Local IPC between the nexus-agent service and its endpoint UIs (T
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[lints]
+workspace = true

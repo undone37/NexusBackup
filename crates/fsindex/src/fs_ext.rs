@@ -97,7 +97,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             };
             if !own {
                 // another helper's entries: only the subdirectories (type from the directory entry)
-                if e.file_type().is_ok_and(|t| t.is_dir())
+                if e.file_type().is_ok_and(ext4_view::FileType::is_dir)
                     && path.len() <= MAX_PATH
                     && depth + 1 < MAX_DEPTH
                     && out.walks(&path, depth + 1)

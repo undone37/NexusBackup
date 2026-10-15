@@ -367,7 +367,7 @@ fn main() -> Result<()> {
             };
             let t = Instant::now();
             let n = agent_conn::fleet::scan(&ca, &f.targets, f.port, &f.id, digest.trim(), &pace, &|a| {
-                println!("fleet-agent {}", serde_json::to_string(a).unwrap_or_default())
+                println!("fleet-agent {}", serde_json::to_string(a).unwrap_or_default());
             });
             println!(
                 "fleet {}: {} addresses scanned on port {} in {:.0?}, {n} agents awaiting enrollment",
@@ -427,7 +427,7 @@ fn main() -> Result<()> {
                 println!(
                     "{what} {}",
                     json!({"agent_id": a.id, "cert_sha256": r.cert_sha256, "not_before": r.not_before, "not_after": r.not_after})
-                )
+                );
             };
             // `renew-issued` first: the scheduler accepts it as a second pin even if
             // the confirmation below never arrives
@@ -899,7 +899,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         reboot: rc.reboot,
     };
     let st = agent_conn::rescue::recover(&store, &map, &mut s, &spec, &mut |l| println!("{l}"), &mut |st| {
-        println!("rescue-step {st}")
+        println!("rescue-step {st}");
     })?;
     s.close();
     println!(

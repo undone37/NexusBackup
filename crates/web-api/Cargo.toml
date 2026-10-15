@@ -63,3 +63,6 @@ keyd = { path = "../keyd" }
 scheduler = { path = "../scheduler" }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 libc = "0.2"
+
+[lints]
+workspace = true

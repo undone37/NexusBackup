@@ -122,7 +122,7 @@ fn journal_read(paths: &Paths) -> Vec<Item> {
 }
 
 fn journal_add(paths: &Paths, item: &Item) -> Result<(), String> {
-    let _g = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = JOURNAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut f = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -134,7 +134,7 @@ fn journal_add(paths: &Paths, item: &Item) -> Result<(), String> {
 }
 
 fn journal_remove(paths: &Paths, item: &Item) {
-    let _g = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = JOURNAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let rest: String = journal_read(paths)
         .iter()
         .filter(|i| *i != item)
@@ -353,7 +353,7 @@ pub fn cleanup_leftovers(paths: &Paths) -> Vec<String> {
     let mut failed = vec![];
     for it in items {
         if !it.ours(paths) {
-            msgs.push(format!("journal entry {:?} ignored: not ours", it));
+            msgs.push(format!("journal entry {it:?} ignored: not ours"));
             continue;
         }
         match it.remove() {

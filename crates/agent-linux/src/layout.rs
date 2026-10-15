@@ -145,7 +145,7 @@ pub fn parse_blkid(text: &str) -> HashMap<String, (String, String, String)> {
     for block in text.split("\n\n") {
         let kv: HashMap<&str, &str> = block.lines().filter_map(|l| l.split_once('=')).collect();
         if let Some(dev) = kv.get("DEVNAME") {
-            let g = |k: &str| kv.get(k).map(|v| v.to_string()).unwrap_or_default();
+            let g = |k: &str| kv.get(k).map(std::string::ToString::to_string).unwrap_or_default();
             out.insert(dev.to_string(), (g("TYPE"), g("UUID"), g("LABEL")));
         }
     }
@@ -703,7 +703,7 @@ pub(crate) mod tests {
     fn btrfs_subvolumes_luks_md_and_old_formats() {
         let l = build(&sources("fedora-btrfs"));
         let b = l.filesystems.iter().find(|f| f.fstype == "btrfs").unwrap();
-        let subs: Vec<&str> = b.mounts.iter().map(|m| m.subvol()).collect();
+        let subs: Vec<&str> = b.mounts.iter().map(agent_proto::layout::Mount::subvol).collect();
         assert_eq!(subs, ["root", "home"]);
         assert_eq!(l.os_id, "fedora");
         // dos label, numbers as strings (util-linux 2.32)

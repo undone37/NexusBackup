@@ -471,7 +471,7 @@ pub fn caps() -> Vec<String> {
         agent_proto::CAP_LAYOUT,
     ]
     .iter()
-    .map(|s| s.to_string())
+    .map(std::string::ToString::to_string)
     .collect();
     for (tool, cap) in [("lvcreate", "lvm"), ("zfs", "zfs"), ("btrfs", "btrfs")] {
         if volumes::tool(tool).is_some() {

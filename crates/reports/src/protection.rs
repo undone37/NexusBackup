@@ -12,7 +12,7 @@ pub const SLA_FACTOR: f64 = 1.5;
 
 /// RPO of a policy schedule: the (longest) schedule period.
 pub fn rpo(schedule: &str) -> i64 {
-    catalog::schedule::Schedule::parse(schedule).map_or(DAY, |s| s.period())
+    catalog::schedule::Schedule::parse(schedule).map_or(DAY, catalog::schedule::Schedule::period)
 }
 
 /// A protected object: one guest / host / dataset / share / plugin guest, merged over all groups that back it up.

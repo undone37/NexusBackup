@@ -110,7 +110,7 @@ fn read_rules(rules: &std::path::Path) -> Result<serde_json::Value> {
         bail!("rules: more than {MAX_RULES_BYTES} bytes");
     }
     let rules: serde_json::Value = serde_json::from_slice(&text).context("rules: [{name, text}]")?;
-    if rules.as_array().is_none_or(|a| a.is_empty()) {
+    if rules.as_array().is_none_or(std::vec::Vec::is_empty) {
         bail!("no YARA rules");
     }
     Ok(rules)

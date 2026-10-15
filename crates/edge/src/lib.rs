@@ -528,7 +528,7 @@ impl Edge {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
-        let mut l = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        let mut l = self.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if l.len() >= LOG_KEEP {
             l.pop_front();
         }
@@ -540,7 +540,7 @@ impl Edge {
         let mut online: Vec<String> = self
             .agents
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned()
             .collect();
@@ -554,7 +554,11 @@ impl Edge {
             relays: self.relays.load(Ordering::SeqCst),
             refused: self.refused.load(Ordering::SeqCst),
             rate_limited: self.rate_limited.load(Ordering::SeqCst),
-            configured: self.pushed.read().unwrap_or_else(|e| e.into_inner()).is_some(),
+            configured: self
+                .pushed
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some(),
         }
     }
 
@@ -562,7 +566,7 @@ impl Edge {
         let l = self
             .pushed
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|p| p.limits)
             .unwrap_or_default();
@@ -607,7 +611,7 @@ impl Edge {
             )
             .map_err(|e| format!("{}: {e}", self.files.config().display()))?;
         }
-        *self.pushed.write().unwrap_or_else(|e| e.into_inner()) = Some(Pushed {
+        *self.pushed.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Pushed {
             tls,
             verifier,
             limits: *limits,
@@ -615,7 +619,7 @@ impl Edge {
         let keep: std::collections::HashSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
         self.agents
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|id, _| keep.contains(id.as_str()));
         Ok(agents.len())
     }
@@ -652,7 +656,7 @@ impl Edge {
     fn allow(&self, buckets: &Mutex<Buckets>, key: &str, per_min: u32) -> bool {
         let ok = buckets
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .allow(key, per_min, Instant::now());
         if !ok {
             self.rate_limited.fetch_add(1, Ordering::SeqCst);
@@ -681,7 +685,7 @@ impl Edge {
         let Some(cfg) = self
             .pushed
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|p| p.tls.clone())
         else {
@@ -696,7 +700,7 @@ impl Edge {
         };
         let agent = {
             let der = tls.get_ref().1.peer_certificates().and_then(|c| c.first()).cloned();
-            let p = self.pushed.read().unwrap_or_else(|e| e.into_inner());
+            let p = self.pushed.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             match (der, p.as_ref()) {
                 (Some(d), Some(p)) => p.verifier.agent(&d).cloned(),
                 _ => None,
@@ -711,7 +715,7 @@ impl Edge {
         match timeout(HANDSHAKE, read_frame(&mut tls, MAX_PUBLIC_FRAME)).await {
             Ok(Ok(EdgeMsg::Rendezvous)) => self.rendezvous(agent, tls, peer).await,
             Ok(Ok(EdgeMsg::Stream { nonce })) => {
-                let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending = self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 match pending.remove(&nonce) {
                     Some((id, tx)) if id == agent => {
                         let _ = tx.send(tls);
@@ -729,7 +733,10 @@ impl Edge {
             }
             Ok(Ok(EdgeMsg::Wake)) => {
                 self.note(format!("agent {agent} from {}: backup requested", peer.ip()));
-                self.wakes.lock().unwrap_or_else(|e| e.into_inner()).push(agent);
+                self.wakes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(agent);
                 self.wake.notify_one();
                 let _ = write_frame(&mut tls, &EdgeMsg::Ok, MAX_PUBLIC_FRAME).await;
                 let _ = tls.shutdown().await;
@@ -747,7 +754,7 @@ impl Edge {
         let conn = self.next_conn.fetch_add(1, Ordering::SeqCst);
         self.agents
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(agent.clone(), (conn, tx));
         self.note(format!("agent {agent} online from {peer}"));
         let (mut rd, mut wr) = tokio::io::split(tls);
@@ -763,7 +770,7 @@ impl Edge {
                 break;
             }
         }
-        let mut a = self.agents.lock().unwrap_or_else(|e| e.into_inner());
+        let mut a = self.agents.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if a.get(&agent).is_some_and(|(c, _)| *c == conn) {
             a.remove(&agent);
         }
@@ -788,16 +795,26 @@ impl Edge {
                 &self.cert_pem,
             ) {
                 Ok(c) => {
-                    *self.control_tls.write().unwrap_or_else(|e| e.into_inner()) = c;
-                    *self.pushed.write().unwrap_or_else(|e| e.into_inner()) = None;
-                    self.agents.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    *self
+                        .control_tls
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = c;
+                    *self.pushed.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                    self.agents
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clear();
                     self.enrolled.store(false, Ordering::SeqCst);
                     self.note("re-initialised on the console: awaiting enrollment");
                 }
                 Err(e) => return self.note(format!("control: {e}")),
             }
         }
-        let cfg = self.control_tls.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let cfg = self
+            .control_tls
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let _ = tcp.set_nodelay(true);
         let mut tls = match timeout(HANDSHAKE, TlsAcceptor::from(cfg).accept(tcp)).await {
             Ok(Ok(t)) => t,
@@ -821,15 +838,25 @@ impl Edge {
                     Err(e) => error(400, e),
                 },
                 EdgeMsg::Wait { secs } => {
-                    let empty = self.wakes.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+                    let empty = self
+                        .wakes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .is_empty();
                     if empty {
                         let secs = secs.min(proto::MAX_WAIT_SECS);
                         let _ = timeout(Duration::from_secs(secs.into()), self.wake.notified()).await;
                     }
-                    let mut wakes = std::mem::take(&mut *self.wakes.lock().unwrap_or_else(|e| e.into_inner()));
+                    let mut wakes =
+                        std::mem::take(&mut *self.wakes.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
                     wakes.sort();
                     wakes.dedup();
-                    let log = self.log.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
+                    let log = self
+                        .log
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .drain(..)
+                        .collect();
                     EdgeMsg::Events {
                         health: self.health(),
                         wakes,
@@ -918,7 +945,10 @@ impl Edge {
         });
         match stored {
             Ok(c) => {
-                *self.control_tls.write().unwrap_or_else(|e| e.into_inner()) = c;
+                *self
+                    .control_tls
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = c;
                 self.enrolled.store(true, Ordering::SeqCst);
                 self.note(format!(
                     "enrolled by the appliance at {} (certificate {pin})",
@@ -957,7 +987,7 @@ impl Edge {
         let tx = self
             .agents
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&agent)
             .map(|(_, tx)| tx.clone());
         let Some(tx) = tx else {
@@ -968,14 +998,17 @@ impl Edge {
         let (stx, srx) = oneshot::channel();
         self.pending
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(n, (agent.clone(), stx));
         let got = if tx.send(EdgeMsg::Connect { nonce: n }).await.is_ok() {
             timeout(OPEN_TIMEOUT, srx).await.ok().and_then(Result::ok)
         } else {
             None
         };
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&n);
         let Some(agent_tls) = got else {
             let _ = write_frame(&mut appliance, &error(504, "agent did not open the stream"), 4096).await;
             return;
@@ -1000,7 +1033,7 @@ impl Edge {
         let mut buf = vec![0u8; 64 << 10];
         let mut total = 0u64;
         let slot = self.tap.as_ref().map(|t| {
-            let mut t = t.lock().unwrap_or_else(|e| e.into_inner());
+            let mut t = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             t.push(Vec::new());
             t.len() - 1
         });
@@ -1010,7 +1043,7 @@ impl Edge {
                 _ => break,
             };
             if let (Some(t), Some(i)) = (&self.tap, slot) {
-                let t = &mut t.lock().unwrap_or_else(|e| e.into_inner())[i];
+                let t = &mut t.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[i];
                 let room = TAP_MAX.saturating_sub(t.len()).min(n);
                 t.extend_from_slice(&buf[..room]);
             }

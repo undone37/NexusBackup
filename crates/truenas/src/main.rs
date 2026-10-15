@@ -183,7 +183,12 @@ fn main() -> Result<()> {
             let store = cfg.store()?;
             let mut api = cfg.api()?;
             let ssh = cfg.ssh()?;
-            let throttle = cfg.read_limit.as_ref().map(|r| r.throttle()).transpose()?.flatten();
+            let throttle = cfg
+                .read_limit
+                .as_ref()
+                .map(catalog::schedule::ReadLimit::throttle)
+                .transpose()?
+                .flatten();
             let spec = Spec {
                 source_id: cfg.source_id,
                 datasets: cfg.datasets.clone(),

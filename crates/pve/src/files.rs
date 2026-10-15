@@ -243,7 +243,7 @@ pub fn extract(r: impl Read, paths: &[String], fmt: Format, out: File) -> Result
                 match h.entry_type() {
                     EntryType::Directory => z.add_directory(path, opts)?,
                     EntryType::Symlink | EntryType::Link => {
-                        z.add_symlink(path, link.context("link without target")?, opts)?
+                        z.add_symlink(path, link.context("link without target")?, opts)?;
                     }
                     EntryType::Regular | EntryType::Continuous => {
                         z.start_file(path, opts)?;

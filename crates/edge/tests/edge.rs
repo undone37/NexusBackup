@@ -55,8 +55,8 @@ fn start_edge(dir: &Path, limits_tap: bool) -> Running {
             c.set_nonblocking(true).unwrap();
             let p = tokio::net::TcpListener::from_std(p).unwrap();
             let c = tokio::net::TcpListener::from_std(c).unwrap();
-            e.run(p, c).await
-        })
+            e.run(p, c).await;
+        });
     });
     Running { edge, public, control }
 }

@@ -24,3 +24,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 sha2 = "0.10"
 tempfile = "3"
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+
+[lints]
+workspace = true

@@ -338,10 +338,10 @@ impl<F: RestoreFs> Stream<F> {
 
 impl<F: RestoreFs> crate::server::RestoreJob for Stream<F> {
     fn entries(&mut self, batch: Vec<Entry>) {
-        Stream::entries(self, batch)
+        Stream::entries(self, batch);
     }
     fn chunk(&mut self, hash: Hash, data: &[u8]) {
-        Stream::chunk(self, hash, data)
+        Stream::chunk(self, hash, data);
     }
     fn end(self) -> ScanStats {
         Stream::end(self)

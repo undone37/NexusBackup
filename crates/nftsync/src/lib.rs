@@ -718,7 +718,7 @@ mod tests {
         assert!(!write_allowed(&d.join("missing/allowed.json"), [e], None, &BTreeMap::new()).unwrap());
         let rule = |allow: &[&str]| InboundRule {
             enabled: true,
-            allow: allow.iter().map(|s| s.to_string()).collect(),
+            allow: allow.iter().map(std::string::ToString::to_string).collect(),
         };
         let m = BTreeMap::from([
             ("web".to_owned(), rule(&["10.1.2.3/16", "bad", "10.1.0.0/16"])),

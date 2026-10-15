@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn ranges_expand_with_limits() {
-        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let v = |s: &[&str]| s.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
         let a = expand(&v(&["10.0.0.0/30", "10.0.0.2", "Host-1.example", "2001:db8::/127"])).unwrap();
         assert_eq!(
             a,

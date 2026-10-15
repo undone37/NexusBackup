@@ -293,13 +293,15 @@ fn prepare(spec: &Spec, opts: &Options, tmp: &Path) -> Result<(Prepared, Report)
 
 /// Async-signal-safe write of a whole buffer to a path (uid_map etc.).
 unsafe fn write_file(path: &[u8], data: &[u8]) -> bool {
-    let fd = libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
-    if fd < 0 {
-        return false;
+    unsafe {
+        let fd = libc::open(path.as_ptr().cast(), libc::O_WRONLY | libc::O_CLOEXEC);
+        if fd < 0 {
+            return false;
+        }
+        let ok = libc::write(fd, data.as_ptr().cast(), data.len()) == data.len() as isize;
+        libc::close(fd);
+        ok
     }
-    let ok = libc::write(fd, data.as_ptr().cast(), data.len()) == data.len() as isize;
-    libc::close(fd);
-    ok
 }
 
 /// Messages and errors from the plugin's stdout.
@@ -497,7 +499,7 @@ impl PluginProc {
             .map(|a| a.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect();
-        let ruleset_fd = p.ruleset.as_ref().map(|r| r.raw_fd());
+        let ruleset_fd = p.ruleset.as_ref().map(super::landlock::Ruleset::raw_fd);
         let mut cmd = Command::new("/proc/self/exe"); // never executed: pre_exec execs the plugin
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

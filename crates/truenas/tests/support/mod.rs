@@ -339,7 +339,7 @@ pub fn assert_matches(store: &Store, entries: &[TreeEntry], live: &Path) {
                 assert_eq!(
                     fs::read_link(&p).unwrap().as_os_str().as_bytes(),
                     e.link_target.as_deref().unwrap()
-                )
+                );
             }
             _ => {}
         }

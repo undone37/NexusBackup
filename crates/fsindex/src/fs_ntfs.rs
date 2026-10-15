@@ -138,7 +138,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                         ok = false;
                         break;
                     };
-                    let pos = run.data_position().value().map_or(0, |p| p.get());
+                    let pos = run.data_position().value().map_or(0, std::num::NonZero::get);
                     for b in pos.to_le_bytes().into_iter().chain(run.allocated_size().to_le_bytes()) {
                         h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
                     }
@@ -152,7 +152,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // every lookup reads the $MFT record (crate ntfs finds the records through its data
     // runs): its blocks change with their neighbours in every snapshot, the layout above
     // stands for what matters in it
-    let mft = ntfs.mft_position().value().map(|p| p.get());
+    let mft = ntfs.mft_position().value().map(std::num::NonZero::get);
     let ignore = mft
         .map(|p| v.disk_blocks(p, u64::from(ntfs.file_record_size())))
         .unwrap_or_default();
@@ -277,9 +277,15 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             let si: Option<NtfsStandardInformation> = file.info().ok();
             let mtime = si
                 .as_ref()
-                .map_or(key.modification_time(), |s| s.modification_time())
+                .map_or(
+                    key.modification_time(),
+                    ntfs::structured_values::NtfsStandardInformation::modification_time,
+                )
                 .nt_timestamp();
-            let attrs = si.as_ref().map_or(key.file_attributes(), |s| s.file_attributes());
+            let attrs = si.as_ref().map_or(
+                key.file_attributes(),
+                ntfs::structured_values::NtfsStandardInformation::file_attributes,
+            );
             let is_dir = file.is_directory();
             let tag = if attrs.contains(ntfs::structured_values::NtfsFileAttributeFlags::REPARSE_POINT) {
                 reparse_tag(&file, &mut fs)
@@ -311,7 +317,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             }
             let owner = si
                 .as_ref()
-                .and_then(|s| s.security_id())
+                .and_then(ntfs::structured_values::NtfsStandardInformation::security_id)
                 .and_then(|id| owner_of.get(&id))
                 .map(String::as_str);
             info.owned_entries += u64::from(own && owner.is_some());

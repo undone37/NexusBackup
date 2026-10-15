@@ -852,7 +852,7 @@ pub fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
             params![p["id"].as_str(), catalog::now()],
         )?)?,
         "replication_source.delete" => {
-            changed(c.execute("DELETE FROM replication_sources WHERE id = ?1", [p["id"].as_i64()])?)?
+            changed(c.execute("DELETE FROM replication_sources WHERE id = ?1", [p["id"].as_i64()])?)?;
         }
         "replication_source.update" => {
             let cur = source_value(c, p["id"].as_i64().unwrap_or_default())?;
@@ -874,7 +874,7 @@ pub fn execute(c: &Connection, action: &str, p: &Value) -> ApiResult<bool> {
                     s["sync_window"].to_string(),
                     s["timezone"].as_str()
                 ],
-            )?)?
+            )?)?;
         }
         REOPEN => changed(c.execute(
             "UPDATE replication_sources SET closed_until = NULL, closed_by = NULL, closed_at = NULL \

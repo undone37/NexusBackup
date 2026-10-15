@@ -208,7 +208,9 @@ impl Scan {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(l) => {
                     if let Some((rule, p)) = parse_match(&l) {
-                        let path = back.get(Path::new(p)).map_or_else(|| p.to_owned(), |s| s.to_string());
+                        let path = back
+                            .get(Path::new(p))
+                            .map_or_else(|| p.to_owned(), std::string::ToString::to_string);
                         self.found(rule, path);
                     }
                 }

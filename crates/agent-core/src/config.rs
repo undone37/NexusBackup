@@ -205,7 +205,7 @@ impl Settings {
                                 n + 1
                             ))
                         }
-                    })
+                    });
                 }
                 _ => return Err(format!("agent.conf line {}: unknown key {k}", n + 1)),
             }

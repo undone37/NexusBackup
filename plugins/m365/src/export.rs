@@ -177,7 +177,7 @@ pub fn run(ctx: &Ctx, ex: &mut Export) -> Result<String> {
                 Some(w) => mail::mbox_append(w, &eml)?,
                 None => {
                     let mut open = |n: &str| ex.output(n);
-                    psts.add(&mut open, &mut |o: Output| o.finish(), &pst_path(dir), &eml)?
+                    psts.add(&mut open, &mut |o: Output| o.finish(), &pst_path(dir), &eml)?;
                 }
             }
             messages += 1;
@@ -187,7 +187,7 @@ pub fn run(ctx: &Ctx, ex: &mut Export) -> Result<String> {
             }
         }
         if let Some(w) = mbox {
-            w.into_inner().map_err(|e| e.into_error())?.finish()?;
+            w.into_inner().map_err(std::io::IntoInnerError::into_error)?.finish()?;
         }
     }
     psts.finish(&mut |o: Output| o.finish())?;

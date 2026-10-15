@@ -246,7 +246,7 @@ impl Scheduler {
             let cfg = crate::anomaly::Config::load(&self.db.conn());
             let notes: Vec<Glob> = RANSOM_NOTES
                 .iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .chain(cfg.ransom_notes)
                 .map(|g| Glob::new(&g, true))
                 .collect();

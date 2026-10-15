@@ -433,7 +433,7 @@ impl Scheduler {
                 now,
                 short("version"),
                 short("os"),
-                power.as_ref().map(|p| p.to_string()),
+                power.as_ref().map(std::string::ToString::to_string),
                 v["policy_version"].as_i64()
             ],
         )?;

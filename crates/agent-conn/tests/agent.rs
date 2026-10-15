@@ -762,7 +762,7 @@ fn restore_to_another_host_from_share_plugin_and_vm_tar() {
         job: 9,
         source: source.into(),
         time: 100,
-        paths: paths.iter().map(|p| p.to_string()).collect(),
+        paths: paths.iter().map(std::string::ToString::to_string).collect(),
         target: target.into(),
         overwrite: Overwrite::Never,
         confirm: "web01".into(),
@@ -894,7 +894,7 @@ fn fleet_scan_then_enrollment() {
     let found = std::sync::Mutex::new(Vec::new());
     let targets = vec!["127.0.0.1".to_string(), "localhost".to_string()];
     let n = agent_conn::fleet::scan(&ca, &targets, agent.port(), "0011223344556677", &digest, &pace, &|f| {
-        found.lock().unwrap().push(f.clone())
+        found.lock().unwrap().push(f.clone());
     });
     assert_eq!(n, 2);
     let f = found.lock().unwrap()[0].clone();
@@ -980,7 +980,7 @@ fn full_read_finds_what_the_metadata_cache_missed() {
     let mut lines = Vec::new();
     let r = e
         .backup_spec(&store, &pin, 3, false, Some("metadata-cache"), &mut |l| {
-            lines.push(l.to_owned())
+            lines.push(l.to_owned());
         })
         .unwrap();
     assert_eq!(e.agent.st.lock().unwrap().scans.last().unwrap(), &None, "no base");

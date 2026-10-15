@@ -72,7 +72,7 @@ impl Platform for Rescue {
             hostname: "nexus-rescue".into(),
             caps: ["restore", "xattrs", "acl", "hardlinks", agent_proto::CAP_RESCUE]
                 .iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
             agent_version: env!("CARGO_PKG_VERSION").into(),
         }
@@ -122,7 +122,12 @@ impl Platform for Rescue {
         overwrite: Overwrite,
         confirm: &str,
     ) -> io::Result<Restore> {
-        if self.applied.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+        if self
+            .applied
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+        {
             return Err(io::Error::other("restore before RescueApply: nothing is mounted yet"));
         }
         if Path::new(target) != Path::new(TARGET) {
@@ -141,7 +146,7 @@ impl Platform for Rescue {
 
     fn rescue_apply(&self, _: Ctx, _job: u64, layout: &str) -> Result<(String, String), Refused> {
         let l: Layout = serde_json::from_str(layout).map_err(|e| Refused(E_BAD_REQUEST, format!("layout: {e}")))?;
-        let mut applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+        let mut applied = self.applied.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut log = exec::Log::default();
         match exec::apply(&l, &self.targets, &mut log) {
             Ok(plan) => {
@@ -157,7 +162,7 @@ impl Platform for Rescue {
     }
 
     fn rescue_finish(&self, _: Ctx, _job: u64) -> Result<(String, String), Refused> {
-        let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+        let applied = self.applied.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((l, plan)) = applied.as_ref() else {
             return Err(refused("RescueFinish before RescueApply"));
         };
@@ -237,7 +242,7 @@ fn prompt(q: &str, default: &str) -> String {
 fn sh(argv: &[&str]) -> Result<String, String> {
     exec::run(
         &plan::Cmd {
-            argv: argv.iter().map(|s| s.to_string()).collect(),
+            argv: argv.iter().map(std::string::ToString::to_string).collect(),
             stdin: None,
         },
         &mut exec::Log::default(),

@@ -33,3 +33,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tar = "0.4"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

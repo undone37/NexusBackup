@@ -469,7 +469,7 @@ impl<R: BufRead> Splitter<R> {
                         continue;
                     }
                     let line_comment = rest.starts_with(b"#")
-                        || (rest.starts_with(b"--") && rest.get(2).is_none_or(|x| x.is_ascii_whitespace()));
+                        || (rest.starts_with(b"--") && rest.get(2).is_none_or(u8::is_ascii_whitespace));
                     if line_comment {
                         self.at = self.line.len();
                         stmt.push(b'\n');

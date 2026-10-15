@@ -249,7 +249,7 @@ fn diff(a: &str, b: &str) -> Vec<String> {
 
 #[test]
 fn validate_guests_dumps_and_restores() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("validate_guests_dumps_and_restores") else {
         return;
     };
@@ -398,7 +398,7 @@ fn validate_guests_dumps_and_restores() {
 
 #[test]
 fn server_backup_and_point_in_time_restore() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("server_backup_and_point_in_time_restore") else {
         return;
     };

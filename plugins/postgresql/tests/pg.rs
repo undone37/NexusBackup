@@ -228,7 +228,7 @@ fn reset(b: &Box, alt: bool, dbs: &[&str]) {
 
 #[test]
 fn validate_guests_dump_and_restore() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("validate_guests_dump_and_restore") else {
         return;
     };
@@ -339,7 +339,7 @@ fn validate_guests_dump_and_restore() {
 
 #[test]
 fn cluster_backup_and_point_in_time_restore() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("cluster_backup_and_point_in_time_restore") else {
         return;
     };
@@ -494,7 +494,7 @@ fn stop_rm(b: &Box, dirs: &[&str]) {
 /// directory, PostgreSQL started by the plugin.
 #[test]
 fn restore_targets_tablespaces_and_start() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("restore_targets_tablespaces_and_start") else {
         return;
     };
@@ -603,7 +603,7 @@ fn restore_targets_tablespaces_and_start() {
 /// is a full one from the new primary.
 #[test]
 fn ha_primary_and_failover() {
-    let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let _s = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(env) = testbox("ha_primary_and_failover") else {
         return;
     };

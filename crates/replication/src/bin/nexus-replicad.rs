@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     let _ = std::fs::remove_file(sock);
     let l = UnixListener::bind(sock)?;
     std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o660))?;
-    eprintln!("<6>replicad: serving {} on {}", store, socket);
+    eprintln!("<6>replicad: serving {store} on {socket}");
     r.serve(l, uid)?;
     Ok(())
 }

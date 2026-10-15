@@ -21,3 +21,6 @@ catalog = { path = "../catalog" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 web-api = { path = "../web-api" }
+
+[lints]
+workspace = true

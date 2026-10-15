@@ -33,3 +33,6 @@ path = "src/main.rs"
 [dev-dependencies]
 tempfile = "3"
 libc = "0.2"
+
+[lints]
+workspace = true

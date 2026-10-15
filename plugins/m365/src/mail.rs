@@ -53,7 +53,10 @@ pub fn from_line(eml: &[u8]) -> String {
         })
         .filter(|a| !a.is_empty() && !a.contains(char::is_whitespace))
         .unwrap_or_else(|| "MAILER-DAEMON".into());
-    let date = parsed.as_ref().and_then(|m| m.date()).map_or(0, |d| d.to_timestamp());
+    let date = parsed
+        .as_ref()
+        .and_then(|m| m.date())
+        .map_or(0, mail_parser::DateTime::to_timestamp);
     format!("From {sender} {}", asctime(date))
 }
 
@@ -185,11 +188,11 @@ pub fn to_pst(eml: &[u8]) -> Message {
     let subject = m.subject().unwrap_or_default().to_owned();
     props.push((0x0037, s(subject.clone())));
     props.push((0x0070, s(m.thread_name().unwrap_or(&subject).to_owned())));
-    let sent = m.date().map(|d| d.to_timestamp());
+    let sent = m.date().map(mail_parser::DateTime::to_timestamp);
     let received = m
         .received()
         .and_then(|r| r.date.as_ref())
-        .map(|d| d.to_timestamp())
+        .map(mail_parser::DateTime::to_timestamp)
         .or(sent);
     if let Some(t) = sent {
         props.push((0x0039, Val::Time(filetime(t))));

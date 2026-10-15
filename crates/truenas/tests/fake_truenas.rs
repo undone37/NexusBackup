@@ -323,7 +323,7 @@ fn existing_snapshots_mode() {
     put(&l.data.join("docs/live.txt"), b"not in any snapshot\n");
     let mut log = Vec::new();
     let r1 = backup(&l.store, &mut l.nas, &l.t, &ex(HashMap::new()), &mut |s| {
-        log.push(s.to_owned())
+        log.push(s.to_owned());
     })
     .unwrap();
     assert!(r1.failed.is_empty(), "{:?} {log:?}", r1.failed);

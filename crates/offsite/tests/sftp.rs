@@ -26,7 +26,7 @@ struct Box {
 }
 
 fn testbox(test: &str) -> Option<Box> {
-    let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let var = |k: &str| std::env::var(format!("NEXUS_TESTBOX_{k}")).ok();
     let (Some(host), Some(port), Some(user), Some(key), Some(kh), Some(ctl)) = (
         var("HOST"),

@@ -59,7 +59,7 @@ pub fn now() -> u64 {
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn random_id() -> String {
@@ -213,7 +213,7 @@ impl Ui {
                     started: now,
                     jobs: 1,
                     ..Default::default()
-                })
+                });
             }
         }
     }

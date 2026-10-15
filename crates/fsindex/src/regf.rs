@@ -394,7 +394,7 @@ mod tests {
     }
 
     fn utf16(s: &str) -> Vec<u8> {
-        s.encode_utf16().flat_map(|c| c.to_le_bytes()).collect()
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
     #[test]

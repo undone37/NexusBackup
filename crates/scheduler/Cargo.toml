@@ -43,3 +43,6 @@ path = "src/main.rs"
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 tempfile = "3"
+
+[lints]
+workspace = true

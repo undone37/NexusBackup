@@ -407,7 +407,7 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                 }
                 let kind = tree_kind(meta.kind);
                 match kind {
-                    TreeKind::Symlink if meta.link_target.as_ref().is_none_or(|t| t.is_empty()) => {
+                    TreeKind::Symlink if meta.link_target.as_ref().is_none_or(std::vec::Vec::is_empty) => {
                         return Err(peer.violation("symlink without target"));
                     }
                     TreeKind::Hardlink => {

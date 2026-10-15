@@ -1008,7 +1008,7 @@ impl Identity {
                         .trim()
                         .split(',')
                         .find_map(|o| o.strip_prefix("uuid="))
-                        .map(str::to_ascii_lowercase)
+                        .map(str::to_ascii_lowercase);
                 }
                 _ => {}
             }

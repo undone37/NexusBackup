@@ -137,7 +137,7 @@ fn item(g: &str, tags: &[&str]) -> Item {
         guest: g.into(),
         name: format!("vm{g}"),
         kind: "qemu".into(),
-        tags: tags.iter().map(|t| t.to_string()).collect(),
+        tags: tags.iter().map(std::string::ToString::to_string).collect(),
     }
 }
 

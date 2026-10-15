@@ -91,7 +91,7 @@ pub fn open_walk(dirfd: RawFd, path: &[u8], flags: libc::c_int, resolve: u64) ->
             libc::O_RDONLY | libc::O_DIRECTORY
         };
         let name = cstr(c)?;
-        let at = cur.as_ref().map_or(dirfd, |f| f.as_raw_fd());
+        let at = cur.as_ref().map_or(dirfd, std::os::fd::AsRawFd::as_raw_fd);
         // SAFETY: openat with a valid C string.
         let r = unsafe {
             libc::openat(

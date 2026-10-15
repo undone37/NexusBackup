@@ -221,7 +221,7 @@ pub fn check_name(name: &[u8]) -> Result<(), String> {
         .iter()
         .find(|c| **c < 0x20 || (**c < 0x80 && b"<>:\"/\\|?*".contains(&(**c as u8))))
     {
-        return Err(format!("{shown:?}: character {:#x} is not allowed", c));
+        return Err(format!("{shown:?}: character {c:#x} is not allowed"));
     }
     if name.ends_with(b" ") || name.ends_with(b".") {
         return Err(format!("{shown:?}: trailing space or dot"));

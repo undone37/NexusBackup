@@ -99,7 +99,7 @@ impl Drop for NbdDisk {
 
 impl DiskWriter for NbdDisk {
     fn size(&self) -> u64 {
-        self.client.as_ref().map_or(0, |c| c.size())
+        self.client.as_ref().map_or(0, nbd::Client::size)
     }
 
     fn write(

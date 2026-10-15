@@ -119,7 +119,7 @@ async fn fleet_overview() {
             "--check",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
         let (out, code) = fleet::cli(&args, false).unwrap();
         assert_eq!(code, 2, "an appliance is unreachable and both have failed jobs");

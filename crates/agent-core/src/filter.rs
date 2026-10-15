@@ -184,7 +184,7 @@ mod tests {
     use super::*;
 
     fn f(globs: &[&str], include: &[&str], regex: &[&str]) -> Filter {
-        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let s = |v: &[&str]| v.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
         Filter::new(Excludes::new(&s(globs)), &s(include), &s(regex), false).unwrap()
     }
 

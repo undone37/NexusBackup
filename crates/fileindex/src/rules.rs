@@ -19,10 +19,7 @@ pub struct Rules {
 }
 
 fn comps(p: &str) -> Vec<String> {
-    p.split('/')
-        .filter(|c| !c.is_empty())
-        .map(|c| c.to_lowercase())
-        .collect()
+    p.split('/').filter(|c| !c.is_empty()).map(str::to_lowercase).collect()
 }
 
 /// `*` any run, `?` one character, within one component (lowercase input).
@@ -124,8 +121,8 @@ mod tests {
         Rules::new(
             src,
             &SourceRules {
-                include: inc.iter().map(|s| s.to_string()).collect(),
-                exclude: exc.iter().map(|s| s.to_string()).collect(),
+                include: inc.iter().map(std::string::ToString::to_string).collect(),
+                exclude: exc.iter().map(std::string::ToString::to_string).collect(),
                 ..Default::default()
             },
         )

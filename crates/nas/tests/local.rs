@@ -58,7 +58,10 @@ fn tree(root: &Path) {
 }
 
 fn opts(threads: usize) -> scan::Options {
-    let mut ex: Vec<String> = nas::DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect();
+    let mut ex: Vec<String> = nas::DEFAULT_EXCLUDES
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     ex.push("*.tmp".into());
     scan::Options {
         threads,

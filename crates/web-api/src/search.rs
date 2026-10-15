@@ -54,15 +54,14 @@ pub async fn search(State(st): State<St>, ctx: Ctx, J(mut r): J<SearchReq>) -> A
     r.query = r.query.trim().to_owned();
     if r.query.is_empty() || r.query.len() > MAX_QUERY || r.query.chars().any(char::is_control) {
         return Err(ApiError::bad(format!(
-            "query: 1..={} characters, no control characters",
-            MAX_QUERY
+            "query: 1..={MAX_QUERY} characters, no control characters"
         )));
     }
     if let Some(s) = &r.source {
         validate::source_ref(s)?;
     }
     if !(1..=MAX_LIMIT).contains(&r.limit) {
-        return Err(ApiError::bad(format!("limit: 1..={}", MAX_LIMIT)));
+        return Err(ApiError::bad(format!("limit: 1..={MAX_LIMIT}")));
     }
     if let (Some(f), Some(t)) = (r.from, r.to) {
         if f > t {

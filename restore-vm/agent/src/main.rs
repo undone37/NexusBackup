@@ -779,7 +779,7 @@ mod tests {
 
     #[test]
     fn resolves_paths_to_mounts() {
-        let fs = |m: &str, r: &[&str]| Target::Fs(m.into(), r.iter().map(|s| s.to_string()).collect());
+        let fs = |m: &str, r: &[&str]| Target::Fs(m.into(), r.iter().map(std::string::ToString::to_string).collect());
         assert_eq!(resolve("/vda1", &mps()).unwrap(), fs("/vda1", &[]));
         assert_eq!(
             resolve("/vda1//etc/über x/", &mps()).unwrap(),

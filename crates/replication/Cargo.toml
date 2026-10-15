@@ -44,3 +44,6 @@ required-features = ["daemons"]
 name = "nexus-replica"
 path = "src/bin/nexus-replica.rs"
 required-features = ["daemons"]
+
+[lints]
+workspace = true

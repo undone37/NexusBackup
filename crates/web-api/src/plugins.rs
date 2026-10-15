@@ -340,7 +340,7 @@ fn s<'a>(p: &'a Value, k: &str) -> ApiResult<&'a str> {
 pub fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by: &str) -> ApiResult<bool> {
     match action {
         "plugin.install" => {
-            plugin_manager::approve_install(c, s(p, "id")?, s(p, "version")?, s(p, "sha256")?).map_err(merr)?
+            plugin_manager::approve_install(c, s(p, "id")?, s(p, "version")?, s(p, "sha256")?).map_err(merr)?;
         }
         "plugin.disable" => {
             c.execute("UPDATE plugins SET enabled = 0 WHERE id = ?1", [s(p, "id")?])?;
@@ -692,7 +692,11 @@ pub fn public_plugin_config(c: &Connection, kind: &str, raw: &str) -> Value {
     if let Some(o) = v.as_object_mut() {
         let mut add = Map::new();
         let mut all: Vec<String> = fields.clone();
-        all.extend(catalog::secret::SECRET_FIELDS.iter().map(|s| s.to_string()));
+        all.extend(
+            catalog::secret::SECRET_FIELDS
+                .iter()
+                .map(std::string::ToString::to_string),
+        );
         all.sort();
         all.dedup();
         for f in &all {

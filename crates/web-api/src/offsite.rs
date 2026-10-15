@@ -104,7 +104,7 @@ pub struct RunReq {
 
 /// `16 groups of 4 hex digits` (keyd's format), separators optional.
 fn recovery_key(s: &str) -> ApiResult<String> {
-    let h: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let h: String = s.chars().filter(char::is_ascii_alphanumeric).collect();
     if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) || s.len() > 200 {
         return Err(ApiError::bad("recovery_key: 64 hex digits (16 groups of 4)"));
     }

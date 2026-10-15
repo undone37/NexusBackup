@@ -385,7 +385,7 @@ impl Request {
                 "sign" => r.sign = flag(v)?,
                 "seal" => r.seal = flag(v)?,
                 "password" => {
-                    r.password = Some(String::from_utf8(unhex(v).context("password")?).context("password: not UTF-8")?)
+                    r.password = Some(String::from_utf8(unhex(v).context("password")?).context("password: not UTF-8")?);
                 }
                 "keytab" => r.keytab = Some(unhex(v).context("keytab")?),
                 "principal" => r.principal = Some(v.into()),

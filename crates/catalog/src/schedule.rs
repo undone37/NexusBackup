@@ -1025,7 +1025,7 @@ mod tests {
     #[test]
     fn blackout_windows() {
         let w = |days: &[&str], from: &str, to: &str, abort: bool| Window {
-            days: days.iter().map(|d| d.to_string()).collect(),
+            days: days.iter().map(std::string::ToString::to_string).collect(),
             from: from.into(),
             to: to.into(),
             abort,
@@ -1072,7 +1072,7 @@ mod tests {
 
     fn rw(days: &[&str], from: &str, to: &str, rate: Option<u64>) -> RateWindow {
         RateWindow {
-            days: days.iter().map(|d| d.to_string()).collect(),
+            days: days.iter().map(std::string::ToString::to_string).collect(),
             from: from.into(),
             to: to.into(),
             action: if rate.is_some() { Action::Limit } else { Action::Pause },
@@ -1082,7 +1082,7 @@ mod tests {
 
     fn span(days: &[&str], from: &str, to: &str) -> Span {
         Span {
-            days: days.iter().map(|d| d.to_string()).collect(),
+            days: days.iter().map(std::string::ToString::to_string).collect(),
             from: from.into(),
             to: to.into(),
         }

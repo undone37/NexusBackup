@@ -18,7 +18,7 @@ fn inbound_rules_reach_the_firewall_file() {
             .map(|(k, r)| (k, (r.enabled, r.allow)))
             .collect::<Vec<_>>()
     };
-    let v = |l: &[&str]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let v = |l: &[&str]| l.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
     assert_eq!(
         inbound(&s),
         [("icmp".into(), (false, v(&[]))), ("web".into(), (true, v(&[])))],

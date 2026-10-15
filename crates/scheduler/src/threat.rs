@@ -134,7 +134,7 @@ pub fn hunt(
                 }
                 match store.load_names(&snaps[i]) {
                     Ok(n) => {
-                        let hits = n.filter(|n| n.has_hashes()).map(|n| {
+                        let hits = n.filter(chunkstore::NameIndex::has_hashes).map(|n| {
                             n.hashed()
                                 .filter(|(_, _, h)| set.contains_key(*h))
                                 .map(|(p, s, h)| (p.to_owned(), s, *h))

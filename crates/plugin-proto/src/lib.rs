@@ -714,7 +714,7 @@ impl KindSpec {
                 .unwrap_or(e.default_port);
             match cfg.pointer(&e.host) {
                 Some(serde_json::Value::Array(items)) => {
-                    out.extend(items.iter().filter_map(|v| split_host_port(v.as_str()?, port)))
+                    out.extend(items.iter().filter_map(|v| split_host_port(v.as_str()?, port)));
                 }
                 v => {
                     let host = v

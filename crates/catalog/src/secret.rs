@@ -160,7 +160,7 @@ pub fn for_each_secret_with(
                     ptr.push_str(&k.replace('~', "~0").replace('/', "~1"));
                     match x {
                         Value::String(s) if SECRET_FIELDS.contains(&k.as_str()) || extra.contains(&k.as_str()) => {
-                            f(ptr, &format!("{owner}{ptr}@{b}"), s)?
+                            f(ptr, &format!("{owner}{ptr}@{b}"), s)?;
                         }
                         _ => walk(owner, ptr, x, extra, f)?,
                     }

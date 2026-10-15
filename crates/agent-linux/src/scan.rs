@@ -328,7 +328,12 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn scan_dir(dir: &Path, excludes: &[&str], cache: Option<&Cache>, live: bool) -> (Vec<Entry>, Scanner<'static>) {
-        let globs = crate::glob::Excludes::new(&excludes.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let globs = crate::glob::Excludes::new(
+            &excludes
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+        );
         scan_filtered(dir, Filter::globs(globs), cache, live)
     }
 

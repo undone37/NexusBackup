@@ -60,7 +60,7 @@ pub fn format_recovery_key(k: &[u8; 32]) -> String {
 /// Inverse of [`format_recovery_key`]: 64 hex digits, case and separators (dashes, spaces) ignored.
 /// Error `InvalidInput` for anything else.
 pub fn parse_recovery_key(s: &str) -> io::Result<Key> {
-    let h: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let h: String = s.chars().filter(char::is_ascii_alphanumeric).collect();
     parse_hex(&h.to_ascii_lowercase())
         .map(Zeroizing::new)
         .ok_or_else(|| err(io::ErrorKind::InvalidInput, "recovery key must be 64 hex digits"))

@@ -98,7 +98,7 @@ pub async fn get_firewall(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp
         status
             .as_ref()
             .map(|s| s["sets"][name].clone())
-            .filter(|v| v.is_array())
+            .filter(serde_json::Value::is_array)
     };
     let services: Vec<Value> = firewall::SERVICES
         .iter()

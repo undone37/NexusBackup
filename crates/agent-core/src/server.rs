@@ -385,11 +385,14 @@ impl<P: Platform> Agent<P> {
     }
 
     pub fn mode(&self) -> Mode {
-        self.mode.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.mode
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_mode(&self, m: Mode) {
-        *self.mode.write().unwrap_or_else(|e| e.into_inner()) = m;
+        *self.mode.write().unwrap_or_else(std::sync::PoisonError::into_inner) = m;
     }
 
     /// Accept loop: one thread per connection, at most `max_connections`.
@@ -509,7 +512,10 @@ impl<P: Platform> Agent<P> {
     }
 
     fn enroll(&self, s: &mut Stream) -> io::Result<()> {
-        let _g = self.enroll_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = self
+            .enroll_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !matches!(self.mode(), Mode::Enroll(_)) {
             return error(s, E_LOCKED, "not in enrollment mode");
         }
@@ -711,12 +717,12 @@ impl<P: Platform> Session<'_, P> {
                 Message::SessionSummary { summary, status } => {
                     let job = summary.job;
                     self.agent.ui.record_summary(summary, status, crate::ui::now());
-                    write_msg(s, &Message::SummaryAck { job })?
+                    write_msg(s, &Message::SummaryAck { job })?;
                 }
                 Message::Poll { status, ack } => {
                     let power = self.agent.platform.power_state();
                     let reply = self.agent.ui.poll(status, &ack, power, crate::ui::now());
-                    write_msg(s, &reply)?
+                    write_msg(s, &reply)?;
                 }
                 Message::RenewDone { cert_pem, ca_pem } => self.renew_done(s, &cert_pem, &ca_pem)?,
                 Message::SetEdge { addr, cert_sha256 } => {
@@ -740,7 +746,7 @@ impl<P: Platform> Session<'_, P> {
                     crate::chunk::set_file_hashing(true);
                     let r = self.scan(s, job, base.map(|b| b.time), true);
                     crate::chunk::set_file_hashing(false);
-                    r?
+                    r?;
                 }
                 Message::Want { job, hashes } => self.want(s, job, &hashes, false)?,
                 Message::WantLz4 { job, hashes } => self.want(s, job, &hashes, true)?,
@@ -765,7 +771,7 @@ impl<P: Platform> Session<'_, P> {
                     {
                         Ok(r) => {
                             self.restore = Some(r);
-                            write_msg(s, &Message::RestoreReady)?
+                            write_msg(s, &Message::RestoreReady)?;
                         }
                         Err(e) => error(s, E_REFUSED, e.to_string())?,
                     }
@@ -796,7 +802,7 @@ impl<P: Platform> Session<'_, P> {
                             stats.bytes,
                             stats.errors.len()
                         ));
-                        write_msg(s, &Message::RestoreDone { stats })?
+                        write_msg(s, &Message::RestoreDone { stats })?;
                     }
                     None => return error(s, E_BAD_REQUEST, "RestoreEnd without RestoreBegin"),
                 },
@@ -829,7 +835,7 @@ impl<P: Platform> Session<'_, P> {
                         Ok(()) => write_msg(s, &Message::UpdateReady)?,
                         Err(Refused(code, msg)) => {
                             log(format!("update refused: {msg}"));
-                            error(s, code, msg)?
+                            error(s, code, msg)?;
                         }
                     }
                 }
@@ -852,7 +858,7 @@ impl<P: Platform> Session<'_, P> {
                 },
                 Message::RescueApply { job, layout } => {
                     let r = self.agent.platform.rescue_apply(self.agent.ctx(), job, &layout);
-                    self.rescue_reply(s, job, r)?
+                    self.rescue_reply(s, job, r)?;
                 }
                 Message::RescueFinish { job, reboot } => {
                     let r = self.agent.platform.rescue_finish(self.agent.ctx(), job);
@@ -1042,11 +1048,11 @@ impl<P: Platform> Session<'_, P> {
                                 raw_len: data.len() as u32,
                                 data: c,
                             },
-                        )?
+                        )?;
                     }
                     None => {
                         pace(data.len());
-                        write_msg(s, &Message::Chunk { hash: *h, data })?
+                        write_msg(s, &Message::Chunk { hash: *h, data })?;
                     }
                 },
                 None => missing.push(hex::encode(h)),

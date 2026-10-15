@@ -62,7 +62,7 @@ async fn commands_against_the_api() {
             })
             .unwrap()
         };
-        let cmd = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let cmd = |v: &[&str]| v.iter().map(std::string::ToString::to_string).collect::<Vec<_>>();
         let (r, o) = (cl(&read), cl(&op));
         let out = run(&r, &cmd(&["sources"]), false).unwrap();
         assert!(

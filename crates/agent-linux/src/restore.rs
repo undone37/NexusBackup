@@ -90,11 +90,11 @@ impl Restore {
     }
 
     pub fn entries(&mut self, batch: Vec<Entry>) {
-        self.0.entries(batch)
+        self.0.entries(batch);
     }
 
     pub fn chunk(&mut self, hash: Hash, data: &[u8]) {
-        self.0.chunk(hash, data)
+        self.0.chunk(hash, data);
     }
 
     pub fn end(self) -> ScanStats {
@@ -104,10 +104,10 @@ impl Restore {
 
 impl agent_core::server::RestoreJob for Restore {
     fn entries(&mut self, batch: Vec<Entry>) {
-        self.0.entries(batch)
+        self.0.entries(batch);
     }
     fn chunk(&mut self, hash: Hash, data: &[u8]) {
-        self.0.chunk(hash, data)
+        self.0.chunk(hash, data);
     }
     fn end(self) -> ScanStats {
         self.0.end()

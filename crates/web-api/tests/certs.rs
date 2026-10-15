@@ -312,7 +312,7 @@ async fn handshake(port: u16, alpn: &[u8]) -> (String, Option<Vec<u8>>) {
         .connect(ServerName::try_from("backup.example.com").unwrap(), tcp)
         .await
         .unwrap();
-    let alpn = s.get_ref().1.alpn_protocol().map(|a| a.to_vec());
+    let alpn = s.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
     let der = rec.0.lock().unwrap().clone().unwrap();
     (webtls::fingerprint(&der), alpn)
 }

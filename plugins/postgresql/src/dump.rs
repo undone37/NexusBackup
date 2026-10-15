@@ -55,7 +55,7 @@ fn col(r: &Row, i: usize) -> &str {
 }
 
 fn has(r: &Row, i: usize) -> bool {
-    r.get(i).is_some_and(|v| v.is_some())
+    r.get(i).is_some_and(std::option::Option::is_some)
 }
 
 /// Writes the dump of the connection's database to `w`.

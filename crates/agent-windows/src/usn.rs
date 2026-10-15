@@ -167,7 +167,7 @@ pub mod fixtures {
     //! (winioctl.h); no Windows host was available to capture real buffers.
 
     pub fn v2(file: u64, parent: u64, usn: i64, reason: u32, name: &str) -> Vec<u8> {
-        let name: Vec<u8> = name.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let name: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let len = (60 + name.len() + 7) & !7;
         let mut r = Vec::with_capacity(len);
         r.extend((len as u32).to_le_bytes());
@@ -189,7 +189,7 @@ pub mod fixtures {
     }
 
     pub fn v3(file: u128, parent: u128, usn: i64, reason: u32, name: &str) -> Vec<u8> {
-        let name: Vec<u8> = name.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let name: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
         let len = (76 + name.len() + 7) & !7;
         let mut r = Vec::with_capacity(len);
         r.extend((len as u32).to_le_bytes());

@@ -109,7 +109,7 @@ impl Form {
             (KeyCode::BackTab | KeyCode::Up, _) => self.move_focus(false),
             (KeyCode::Left, Kind::Choice(o)) if !o.is_empty() => f.choice = (f.choice + o.len() - 1) % o.len(),
             (KeyCode::Right | KeyCode::Char(' '), Kind::Choice(o)) if !o.is_empty() => {
-                f.choice = (f.choice + 1) % o.len()
+                f.choice = (f.choice + 1) % o.len();
             }
             (KeyCode::Char(c), Kind::Text { .. }) if f.value.len() < 256 && !c.is_control() => f.value.push(c),
             (KeyCode::Backspace, Kind::Text { .. }) => {
@@ -1467,7 +1467,7 @@ pub fn run(s: &mut Setup, force_network: bool) -> Result<Outcome> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |p| {
         restore_terminal();
-        hook(p)
+        hook(p);
     }));
     let mut term = Terminal::new(CrosstermBackend::new(stdout()))?;
     let mut app = App {

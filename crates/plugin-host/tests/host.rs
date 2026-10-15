@@ -102,7 +102,7 @@ impl Env {
             },
             &mut |l| {
                 log.push_str(l);
-                log.push('\n')
+                log.push('\n');
             },
         );
         (r, log)

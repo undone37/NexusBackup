@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     fn log(lines: &[&str]) -> Vec<String> {
-        lines.iter().map(|s| s.to_string()).collect()
+        lines.iter().map(std::string::ToString::to_string).collect()
     }
 
     // excerpts of PVE 9 vzdump task logs (the messages of qemu-server / pve-container)

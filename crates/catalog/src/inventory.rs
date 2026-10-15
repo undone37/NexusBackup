@@ -104,7 +104,7 @@ pub fn resolve(
         })
         .collect();
     if kind == "pve" {
-        out.sort_by_key(|v| v.as_u64());
+        out.sort_by_key(serde_json::Value::as_u64);
     }
     Ok(out)
 }
@@ -176,7 +176,7 @@ mod tests {
             guest: g.into(),
             name: format!("guest {g}"),
             kind: "qemu".into(),
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            tags: tags.iter().map(std::string::ToString::to_string).collect(),
         }
     }
 

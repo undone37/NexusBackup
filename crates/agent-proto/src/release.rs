@@ -398,7 +398,7 @@ mod tests {
     fn host_facts_from_caps() {
         let caps: Vec<String> = ["lz4", "update2", "arch=aarch64", "install=rpm", "gui=0.1.0"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         let h = HostFacts::from_caps("AlmaLinux 10", &caps);
         assert_eq!(h, host("linux", "aarch64", "rpm", Some("0.1.0")));

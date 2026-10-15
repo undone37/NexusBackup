@@ -145,7 +145,7 @@ pub fn scan(dirs: &[(PathBuf, &'static str)], keys: &[(String, Vec<u8>)]) -> Vec
     for (d, source) in dirs {
         let Ok(rd) = fs::read_dir(d) else { continue };
         let mut names: Vec<PathBuf> = rd
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
             .map(|e| e.path())
             .filter(|p| p.file_name().and_then(|n| n.to_str()).and_then(parse_version).is_some())

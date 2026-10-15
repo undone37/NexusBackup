@@ -601,7 +601,7 @@ impl Plugin for M365 {
                     }
                     if let Some(id) = u["id"].as_str().filter(|i| guid_ok(i)) {
                         let mut tags = vec!["type:user".to_owned()];
-                        if u["assignedLicenses"].as_array().is_some_and(|l| l.is_empty()) {
+                        if u["assignedLicenses"].as_array().is_some_and(std::vec::Vec::is_empty) {
                             tags.push("license:none".into());
                         }
                         out.push(SdkGuest {
