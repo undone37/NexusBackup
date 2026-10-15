@@ -1,0 +1,59 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        NexusBackup is an alpha and not for production use. Remove passwords, tokens, recovery keys and customer
+        data from logs before you paste them. A diagnostics bundle (Settings, Support) is redacted already.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Appliance version (Settings, Updates) and, for agent problems, the agent version.
+      placeholder: 0.1.0-alpha, agent 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Proxmox VE (VMs, containers, instant recovery, restore tests)
+        - Linux agent
+        - Windows agent
+        - NAS / TrueNAS
+        - Plugins (PostgreSQL, MySQL, Microsoft 365, other)
+        - Offsite / replication
+        - Web UI / API / sign-in
+        - Appliance OS / updates / installer
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Job log or error message
+      description: The job's log (Jobs, open the job) or the error shown in the UI.
+      render: text
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: For example PVE version and storage type, guest OS, hardware or hypervisor of the appliance.

@@ -1,0 +1,30 @@
+name: Lab result
+description: The result of a lab or real-system run (what works, timings, what broke).
+labels: [lab]
+body:
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or version
+    validations:
+      required: true
+  - type: input
+    id: lab
+    attributes:
+      label: Lab
+      description: Script and environment, e.g. lab/pvehost/verify.sh windows on the PVE lab host.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options: [passed, failed, partly]
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Timings, log excerpts, follow-ups for state.md.
+      render: text
