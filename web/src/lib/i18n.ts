@@ -701,6 +701,8 @@ export const en = {
     anyState: "Any state",
     anyKind: "Any kind",
     kinds: {
+      report_send: "Report e-mail",
+      ssh_key_rotate: "SSH key rotation",
       backup: "Backup",
       restore: "Restore VM",
       restore_ct: "Restore container",
