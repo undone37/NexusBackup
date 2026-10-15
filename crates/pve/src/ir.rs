@@ -66,13 +66,15 @@ pub fn ir_volid(storage: &str, target: u32, archive: &str, device: &str) -> Stri
     format!("{storage}:ir/{target}/{archive}.{device}.qcow2")
 }
 
+/// A disk key of a VM config: `efidisk0`, `tpmstate0` or `ide|sata|scsi|virtio` plus a bus
+/// number (at most two digits, PVE's largest is `virtio15` / `scsi30`).
 pub(crate) fn is_disk_key(k: &str) -> bool {
     if k == "efidisk0" || k == "tpmstate0" {
         return true;
     }
     ["ide", "sata", "scsi", "virtio"].iter().any(|p| {
         k.strip_prefix(p)
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .is_some_and(|n| !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()))
     })
 }
 

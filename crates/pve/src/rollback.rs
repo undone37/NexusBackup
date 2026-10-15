@@ -30,6 +30,7 @@
 
 use crate::backup::{read_config, source_name, Identity};
 use crate::exclude::disk_key;
+use crate::ir::is_disk_key;
 use anyhow::{bail, Context, Result};
 use chunkstore::{Index, Store};
 use serde::Serialize;
@@ -203,16 +204,6 @@ pub fn disk_keys(conf: &BTreeMap<String, String>) -> BTreeMap<String, Option<u64
             )
         })
         .collect()
-}
-
-fn is_disk_key(k: &str) -> bool {
-    if k == "efidisk0" || k == "tpmstate0" {
-        return true;
-    }
-    ["ide", "sata", "scsi", "virtio"].iter().any(|p| {
-        k.strip_prefix(p)
-            .is_some_and(|n| !n.is_empty() && n.len() <= 2 && n.bytes().all(|b| b.is_ascii_digit()))
-    })
 }
 
 /// `32G`, `4M`, `528K`, `1T`, plain bytes.
