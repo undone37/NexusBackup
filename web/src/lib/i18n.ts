@@ -32,6 +32,7 @@ export const en = {
   created: "Created.",
   confirmDelete: (what: string) =>
     `Delete ${what}? When approvals are enabled, deletions need a second person (admin or security officer) to approve them.`,
+  openApproval: (id: number) => `Open approval #${id}`,
   quorumPending: (id: number) =>
     `Pending approval: request #${id} needs a second person (another admin or a security officer) to approve it before it takes effect.`,
   approvalsOff: (ok: string) =>

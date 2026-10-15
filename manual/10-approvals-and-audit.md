@@ -51,6 +51,8 @@ Rules:
 ## Deciding requests
 
 Open **Approvals** in the sidebar, or click the stamp icon in the top bar; both show the number of pending requests.
+An action that has to wait says so in its notice, with **Open approval #N**; that link (like the request numbers on
+the Plugins page and in the audit log) opens the request itself, highlighted, also when it is already decided.
 By default only pending requests are listed; clear **Pending only** to see the history. The chip next to it shows
 whether approvals are **Enabled** or **Disabled**; **Approval settings** opens **Settings → Approvals**.
 

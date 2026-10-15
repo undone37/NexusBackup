@@ -1,9 +1,9 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
   import { askConfirm } from '../lib/confirm.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { get, post, act, errText } from '../lib/api';
-  import { href } from '../lib/router.svelte';
+  import { href, route } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { fmtAgo, fmtTime, fmtValue } from '../lib/format';
@@ -18,6 +18,9 @@
   let error: string | null = $state(null);
   let loaded = $state(false);
   let onlyPending = $state(true);
+  // ?id=N (links from notices, plugins, the audit log): that request, shown even when decided
+  const focus = Number(route.query.get('id')) || null;
+  let focused = false;
 
   let settings: ApprovalsState | null = $state(null);
   let gc: GcPending[] = $state([]);
@@ -39,6 +42,11 @@
       error = errText(e);
     }
     loaded = true;
+    if (focus && !focused && items.some((q) => q.id === focus)) {
+      focused = true;
+      if (items.find((q) => q.id === focus)?.state !== 'pending') onlyPending = false;
+      tick().then(() => document.getElementById(`q${focus}`)?.scrollIntoView({ block: 'start' }));
+    }
   }
   onMount(() => {
     load();
@@ -161,7 +169,7 @@
   {#each shown as q (q.id)}
     {@const d = diff(q)}
     {@const own = q.requested_by === session.user?.name}
-    <article class="card" aria-labelledby="q{q.id}">
+    <article class="card" class:focus={q.id === focus} aria-labelledby="q{q.id}">
       <h2 id="q{q.id}">
         <span>#{q.id} · {humanize(q.action)}</span>
         <span class="chip {stateCls[q.state] ?? ''}">{t.quorum.states[q.state] ?? q.state}</span>
@@ -264,3 +272,10 @@
 {/if}
 
 <ActivationCode bind:open={secondOpen} name={second.name} activation={second.activation} />
+
+<style>
+  article.focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+</style>

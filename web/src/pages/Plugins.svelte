@@ -3,6 +3,7 @@
   // Plugin platform (docs/plugin-system.md): installed plugins per id/version, signed
   // uploads (four-eyes), lifecycle actions and the publisher keys signatures are checked against.
   import { onMount } from 'svelte';
+  import { href } from '../lib/router.svelte';
   import { askConfirm } from '../lib/confirm.svelte';
   import { get, post, postRaw, del, act, errText } from '../lib/api';
   import { notify } from '../lib/notify.svelte';
@@ -285,7 +286,7 @@
                 <td>
                   <span class="chip {stateCls[v.state] ?? ''}">{t.plugins.states[v.state] ?? v.state}</span>
                   {#if v.quorum_id && (v.state === 'pending' || v.state === 'removing')}
-                    <div class="muted">{t.plugins.pendingQuorum(v.quorum_id)}</div>
+                    <div class="muted"><a href={href(`/quorum?id=${v.quorum_id}`)}>{t.plugins.pendingQuorum(v.quorum_id)}</a></div>
                   {/if}
                   {#if v.error}<div class="chip bad" title={v.error}>{v.error.slice(0, 80)}</div>{/if}
                 </td>

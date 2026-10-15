@@ -210,7 +210,7 @@
               <td class="mono">
                 <!-- jobs and approvals open from their entries -->
                 {#if /^job\/\d+$/.test(e.target)}<a href={href(`/${e.target.replace('job/', 'jobs/')}`)}>{e.target}</a>
-                {:else if /^quorum\/\d+$/.test(e.target)}<a href={href('/quorum')}>{e.target}</a>
+                {:else if /^quorum\/\d+$/.test(e.target)}<a href={href(`/quorum?id=${e.target.slice(7)}`)}>{e.target}</a>
                 {:else}{e.target}{/if}
               </td>
               <td class="mono details">

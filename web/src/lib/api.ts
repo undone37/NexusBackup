@@ -115,7 +115,10 @@ export async function act<T>(
     if (o.quorum) {
       // Phase 29: a production restore of a flagged snapshot waits for approval `restore.infected`
       const inf = (o.data as { infected?: boolean } | null)?.infected;
-      notify('pending', inf ? t.p29.infected.pending(o.quorumId) : t.quorumPending(o.quorumId));
+      notify('pending', inf ? t.p29.infected.pending(o.quorumId) : t.quorumPending(o.quorumId), undefined, {
+        path: `/quorum?id=${o.quorumId}`,
+        label: t.openApproval(o.quorumId),
+      });
       return o;
     }
     const ok = typeof okText === 'function' ? okText(o.data) : okText;
