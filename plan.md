@@ -1030,6 +1030,28 @@ without help, and the GitHub side runs with as little manual work and runner loa
 - **Verification:** all gates green in CI on the self-hosted runner, a docs-only push skips the heavy jobs, a test tag
   on a fork-like branch produces a complete draft release.
 
+### Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15 by user request)
+
+Source: CIS AlmaLinux OS 10 Benchmark v1.0.0 (maintainer's copy in `tmp/`, not in git: CIS licence; the repository
+refers to recommendation numbers and our own short titles only, never to CIS text).
+
+- **35a Gap analysis:** every recommendation of the Level 1 Server profile, and Level 2 where it fits an appliance,
+  classified as *applied*, *not applicable* (with the reason, e.g. no GUI, immutable bootc `/usr`, no interactive
+  users) or *deviates* (with the reason and the compensating control, e.g. SELinux domains per service, nftables
+  default-deny both ways). Result: `docs/cis.md`, one row per recommendation.
+- **35b Evidence:** the OpenSCAP report the release workflow already produces (`release/cis-report.sh`, container
+  view) plus a scan of a booted appliance VM in the lab (kernel, mounts, services, boot state the container cannot
+  show), before and after; numbers in state.md.
+- **35c Hardening in `os/`:** the applicable gaps, in the image: sysctl and module blacklists, mount options
+  (`/tmp`, `/var/tmp`, `/dev/shm`) and the installer's partition layout, sshd and PAM / password policy for the
+  break-glass and console accounts, auditd rules, file permissions, crypto policy, banners, journald/rsyslog,
+  disabled services. Every change keeps greenboot, signed updates, the restore micro-VM (KVM), the agents' and the
+  PVE connector's SSH paths and the full lab green.
+- **35d Gate:** the CIS report becomes a CI/release gate for the rules marked *applied* (a regression fails the
+  release); deviations stay documented.
+- **Verification:** appliance lab (install from the ISO, setup, PVE backup and restore test on VM 101, update and
+  rollback) with the hardened image; lab scan score before/after.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---

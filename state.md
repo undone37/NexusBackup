@@ -781,3 +781,8 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 ## Release 0.1.0-alpha (2026-10-15)
 - [x] Tag `v0.1.0-alpha` on ff968dc (CI green on main); release workflow started
 - [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
+
+## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
+Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
+Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.
+
