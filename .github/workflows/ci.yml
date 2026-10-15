@@ -33,6 +33,7 @@ jobs:
       plugin: ${{ steps.diff.outputs.plugin }}
       os: ${{ steps.diff.outputs.os }}
       windows: ${{ steps.diff.outputs.windows }}
+      testbox: ${{ steps.diff.outputs.testbox }}
       deps: ${{ steps.diff.outputs.deps }}
     steps:
       - uses: actions/checkout@v7
@@ -56,12 +57,14 @@ jobs:
             echo "$1=$v" | tee -a "$GITHUB_OUTPUT"
           }
           wf='^\.github/workflows/ci\.yml$'
-          out rust "^(crates|plugins|restore-vm)/|^Cargo\.(toml|lock)$|^(rustfmt|deny)\.toml$|$wf"
+          out rust "^(crates|plugins|restore-vm)/|^Cargo\.(toml|lock)$|^(rustfmt|deny)\.toml$|^\.config/nextest\.toml$|$wf"
           out web "^web/|^crates/web-api/openapi\.json$|$wf"
           out plugin "^pve-plugin/|$wf"
           out os "^(os|release)/|$wf"
           out windows "^crates/agent-(core|proto|windows|gui)/|^Cargo\.lock$|$wf"
           out deps "^Cargo\.(toml|lock)$|^deny\.toml$|$wf"
+          # the container-based suites: their plugins, the plugin runtime and store under them, OIDC
+          out testbox "^plugins/(mysql|postgresql)/|^crates/(plugin-[a-z]+|chunkstore)/|^crates/web-api/(src/oidc\.rs|tests/oidc_keycloak\.rs)$|^Cargo\.lock$|$wf"
   lint:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -93,9 +96,29 @@ jobs:
       - run: |
           f=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -e "$f" ] && [ "$(cat "$f")" != 0 ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
-      - run: cargo test --all --no-fail-fast
+      # pinned prebuilt binary (checksum-verified by the action) into ~/.cargo/bin; no build, no package
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-nextest@0.9.148 }
+      # every test binary in parallel (.config/nextest.toml); the container suites run in `testbox`
+      - run: >-
+          cargo nextest run --workspace --profile ci
+          -E 'not (package(mysql) | package(postgresql) | binary(oidc_keycloak))'
+      # nextest does not run doc tests
+      - run: cargo test --workspace --doc
       - if: always()
         run: df -h / && du -sh target
+  testbox:
+    # MySQL/MariaDB, PostgreSQL and Keycloak in rootless podman: about 15 minutes, so only when
+    # their code changed (and in the weekly run)
+    needs: [changes, lint]
+    if: needs.changes.outputs.testbox == 'true'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v7
+        with: { clean: false }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p mysql -p postgresql --no-fail-fast
+      - run: cargo test -p web-api --test oidc_keycloak
   plugin:
     needs: changes
     if: needs.changes.outputs.plugin == 'true'

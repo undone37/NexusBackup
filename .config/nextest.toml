@@ -1,0 +1,17 @@
+# cargo-nextest (CI job `test`): every test in its own process, test binaries in parallel.
+# The container-based suites (MySQL, PostgreSQL, Keycloak) run in the CI job `testbox` with
+# plain `cargo test`: they start their servers once per process and serialize their tests.
+
+[test-groups]
+# tests/sftp.rs shares one SFTP test server and restarts it; its in-process mutex does not
+# reach across nextest's processes
+offsite-sftp = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "package(offsite) & binary(sftp)"
+test-group = "offsite-sftp"
+
+[profile.ci]
+fail-fast = false
+# report hanging tests; kill one after 10 minutes
+slow-timeout = { period = "60s", terminate-after = 10 }

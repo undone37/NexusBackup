@@ -57,7 +57,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 The hooks run the fast part automatically; `--no-verify` skips them only for a deliberate exception (for example a
 test key). After pushing, check the CI run (`gh run list -L 3`) and fix a red run before anything else. CI runs only
-the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`).
+the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`). CI runs the tests with cargo-nextest (all test binaries in parallel, `.config/nextest.toml`) and the container-based MySQL, PostgreSQL and Keycloak suites in a separate `testbox` job; locally `cargo test` is fine.
 
 ## Conventions
 
