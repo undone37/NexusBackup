@@ -460,7 +460,8 @@ time; **Load more** fetches the next ones, sorted by path.
 
 The arrow at the start of a row opens its **version timeline**: one line per version (size, modification time,
 **First seen** in which snapshot, **Until** the snapshot that no longer has it, or **current**), with the snapshots
-that hold it. Pick the snapshot (default: the newest holding that version), then:
+that hold it. For files on VM disks the timeline also shows the **Owner** (Windows: the owner's SID,
+well-known ones such as SYSTEM, Administrators or TrustedInstaller by name; Linux: `uid:gid`). Pick the snapshot (default: the newest holding that version), then:
 
 - **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
 - **Download** packs the file as a tar archive (needs the download permission);

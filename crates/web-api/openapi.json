@@ -78,6 +78,13 @@
                           "type": "integer"
                         },
                         "description": "local indexed snapshots holding it, newest first (empty: deleted)"
+                      },
+                      "owner": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "owner of the version (Windows SID or uid:gid; VM disks), null when not recorded"
                       }
                     }
                   }

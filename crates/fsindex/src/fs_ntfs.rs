@@ -159,6 +159,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     out.dir_basis(layout, ignore);
     // Phase 31c: owners (security id in $STANDARD_INFORMATION -> descriptor in $Secure)
     let owner_of = owners(&ntfs, &mut fs);
+    info.owner_ids = owner_of.len() as u64;
     let mut stack: Vec<(u64, String, usize)> = vec![(ROOT, String::new(), 0)];
     // NTFS has no directory hard links: a directory seen twice is a loop
     let mut visited = std::collections::HashSet::from([ROOT]);
@@ -313,6 +314,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 .and_then(|s| s.security_id())
                 .and_then(|id| owner_of.get(&id))
                 .map(String::as_str);
+            info.owned_entries += u64::from(own && owner.is_some());
             // Phase 31c: the content's SHA-256 (not of deduplicated stubs; budgeted)
             let mut sha = None;
             if kind == KIND_FILE && own && out.hashing() {

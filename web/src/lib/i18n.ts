@@ -1907,6 +1907,7 @@ export const en = {
     current: "current",
     expand: (p: string) => `Versions of ${p}`,
     timeline: "Version timeline",
+    owner: "Owner",
     firstSeen: "First seen",
     until: "Until",
     inSnapshot: "Snapshot",

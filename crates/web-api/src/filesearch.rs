@@ -212,7 +212,7 @@ fn enrich(st: &St, tenant: &str, resp: SearchResp) -> ApiResult<Value> {
                         .filter(|t| *t >= v.first as i64 && v.gone.is_none_or(|g| *t < g as i64))
                         .filter(|t| idx.is_some_and(|i| i.contains(t)))
                         .collect();
-                    json!({"size": v.size, "mtime": v.mtime, "first": v.first, "gone": v.gone, "times": held})
+                    json!({"size": v.size, "mtime": v.mtime, "first": v.first, "gone": v.gone, "times": held, "owner": v.owner})
                 })
                 .collect();
             json!({"source": h.source, "path": h.path, "browse": h.browse, "kind": h.kind, "versions": versions})

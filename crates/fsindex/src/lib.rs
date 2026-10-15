@@ -93,6 +93,12 @@ pub struct Volume {
     /// logical size; restore them through the Windows agent)
     #[serde(default)]
     pub dedup_files: u64,
+    /// Phase 31c: owner SIDs / ids the volume's metadata knows (NTFS `$Secure:$SDS`
+    /// descriptors) and listed entries that got an owner (diagnostics of the owner column)
+    #[serde(default)]
+    pub owner_ids: u64,
+    #[serde(default)]
+    pub owned_entries: u64,
     /// entries skipped (path too long, names that do not decode, …)
     #[serde(default)]
     pub skipped_entries: u64,

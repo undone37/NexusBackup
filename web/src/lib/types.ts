@@ -972,6 +972,8 @@ export interface FileVersion {
   gone: number | null;
   /** local snapshots holding this version, newest first; empty = those snapshots were deleted */
   times: number[];
+  /** owner (Windows SID or `uid:gid`; VM disks, Phase 31c), null / absent when not recorded */
+  owner?: string | null;
 }
 
 /** One hit of GET /files/search: a path in one source with its versions (newest first). */

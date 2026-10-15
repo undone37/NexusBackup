@@ -526,6 +526,7 @@ pub fn summary(v: &Volume) -> Value {
     json!({
         "browse": v.browse, "device": v.device, "fs": v.fs, "mount": v.mount, "state": v.state,
         "reason": v.reason, "entries": v.entries, "dedup_files": v.dedup_files,
+        "owner_ids": v.owner_ids, "owned_entries": v.owned_entries,
     })
 }
 

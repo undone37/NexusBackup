@@ -276,7 +276,7 @@ fn fake_index(dir: &std::path::Path) -> (std::path::PathBuf, Arc<std::sync::Mute
                 Some("search") => json!({"ok": {
                     "hits": [{"source": "vm-100", "path": "/home/ann/report.docx", "browse": "vda2/ann/report.docx",
                               "kind": "file", "versions": [
-                                  {"size": 9, "mtime": 30, "first": 300},
+                                  {"size": 9, "mtime": 30, "first": 300, "owner": "S-1-5-32-544"},
                                   {"size": 5, "mtime": 10, "first": 100, "gone": 300}]}],
                     "next": "50", "elapsed_ms": 3, "pending": 1,
                     "sources": {"vm-100": {"indexed": [100, 200, 300], "unindexed": [400]}}}}),
@@ -317,6 +317,9 @@ async fn instant_search_through_nexus_index() {
     assert_eq!(h["path"], "/home/ann/report.docx");
     // the local, indexed snapshots holding each version
     assert_eq!(h["versions"][0]["times"], json!([300]));
+    // Phase 31c: the owner reaches the client
+    assert_eq!(h["versions"][0]["owner"], "S-1-5-32-544");
+    assert!(h["versions"][1]["owner"].is_null());
     assert_eq!(h["versions"][1]["times"], json!([200, 100]));
     assert_eq!(r.body["next"], "50");
     let marks = &r.body["snapshots"]["vm-100"];
