@@ -43,10 +43,13 @@ use std::time::{Duration, Instant};
 /// Resource limits of one plugin process.
 #[derive(Clone, Debug)]
 pub struct Limits {
+    /// `RLIMIT_DATA` in MiB (`RLIMIT_AS` = 4 times, at least 4 GiB); 16 to 65536.
     pub memory_mb: u64,
+    /// Size of the private tmp dir and `RLIMIT_FSIZE` in MiB; 16 to 1048576.
     pub tmp_mb: u64,
     /// RLIMIT_CPU (seconds of CPU time)
     pub cpu_secs: u64,
+    /// `RLIMIT_NOFILE` (1024).
     pub nofile: u64,
 }
 
@@ -101,7 +104,9 @@ pub struct Spec {
     pub manifest: Option<String>,
     /// TCP ports the plugin may connect to; None = no network restriction by Landlock
     pub tcp_ports: Option<Vec<u16>>,
+    /// Resource limits.
     pub limits: Limits,
+    /// Job id: `NEXUS_PLUGIN_JOB` in the plugin's environment and part of the tmp dir name.
     pub job: u64,
 }
 
@@ -134,10 +139,15 @@ const SYSTEM_RW: &[&str] = &["/dev/null", "/dev/zero", "/dev/urandom", "/dev/ful
 /// Summary of the applied sandbox (logged into the job log).
 #[derive(Debug, Clone, Default)]
 pub struct Report {
+    /// Landlock ABI the ruleset was built for.
     pub landlock_abi: u32,
+    /// TCP connect/bind restricted by Landlock.
     pub tcp_restricted: bool,
+    /// Signals and abstract Unix sockets scoped (Landlock ABI ≥ 6).
     pub scoped: bool,
+    /// The private tmp dir (`TMPDIR`, `HOME`).
     pub tmp: PathBuf,
+    /// The limits as text (memory, tmp, CPU).
     pub limits: String,
 }
 
@@ -320,6 +330,7 @@ pub(crate) fn reader_thread(r: impl Read + Send + 'static) -> Inbox {
 
 /// The host's side of a plugin connection.
 pub trait Peer {
+    /// Sends one message; fails (and stops the plugin) if the plugin is gone.
     fn send(&mut self, m: &Message) -> Result<()>;
     /// Next message; fails (and stops the plugin) on EOF, invalid frames and timeouts.
     fn recv(&mut self) -> Result<Message>;
@@ -389,6 +400,7 @@ pub struct PluginProc {
     tmp: PathBuf,
     over_quota: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// The sandbox that was applied (for the job log).
     pub report: Report,
 }
 

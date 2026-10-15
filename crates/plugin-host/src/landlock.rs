@@ -16,21 +16,37 @@ const CREATE_RULESET_VERSION: u32 = 1;
 const RULE_PATH_BENEATH: u32 = 1;
 const RULE_NET_PORT: u32 = 2;
 
+/// Execute a file.
 pub const FS_EXECUTE: u64 = 1 << 0;
+/// Open a file for writing.
 pub const FS_WRITE_FILE: u64 = 1 << 1;
+/// Open a file for reading.
 pub const FS_READ_FILE: u64 = 1 << 2;
+/// List a directory.
 pub const FS_READ_DIR: u64 = 1 << 3;
+/// Remove an empty directory.
 pub const FS_REMOVE_DIR: u64 = 1 << 4;
+/// Unlink a file.
 pub const FS_REMOVE_FILE: u64 = 1 << 5;
+/// Create a character device.
 pub const FS_MAKE_CHAR: u64 = 1 << 6;
+/// Create a directory.
 pub const FS_MAKE_DIR: u64 = 1 << 7;
+/// Create a regular file.
 pub const FS_MAKE_REG: u64 = 1 << 8;
+/// Create a Unix socket file.
 pub const FS_MAKE_SOCK: u64 = 1 << 9;
+/// Create a named pipe.
 pub const FS_MAKE_FIFO: u64 = 1 << 10;
+/// Create a block device.
 pub const FS_MAKE_BLOCK: u64 = 1 << 11;
+/// Create a symlink.
 pub const FS_MAKE_SYM: u64 = 1 << 12;
+/// Link or rename a file into another directory (ABI 2).
 pub const FS_REFER: u64 = 1 << 13; // ABI 2
+/// Truncate a file (ABI 3).
 pub const FS_TRUNCATE: u64 = 1 << 14; // ABI 3
+/// `ioctl` on a device file (ABI 5).
 pub const FS_IOCTL_DEV: u64 = 1 << 15; // ABI 5
 const NET_BIND_TCP: u64 = 1 << 0;
 const NET_CONNECT_TCP: u64 = 1 << 1;
@@ -39,7 +55,9 @@ const SCOPE_SIGNAL: u64 = 1 << 1;
 
 /// Rights that apply to a regular file (a rule on a file may only carry these).
 const FILE_RIGHTS: u64 = FS_EXECUTE | FS_WRITE_FILE | FS_READ_FILE | FS_TRUNCATE | FS_IOCTL_DEV;
+/// Read files, list directories and execute: install dir and system paths.
 pub const READ_EXEC: u64 = FS_READ_FILE | FS_READ_DIR | FS_EXECUTE;
+/// Read files and list directories.
 pub const READ: u64 = FS_READ_FILE | FS_READ_DIR;
 
 #[repr(C)]
@@ -95,9 +113,12 @@ fn fs_rights(abi: u32) -> u64 {
 /// A created ruleset (the host keeps it until the child has restricted itself).
 pub struct Ruleset {
     fd: OwnedFd,
+    /// Landlock ABI version the ruleset was built for.
     pub abi: u32,
     handled_fs: u64,
+    /// TCP bind/connect are restricted (asked for and ABI ≥ 4).
     pub net: bool,
+    /// Signals and abstract Unix sockets are scoped to the sandbox (ABI ≥ 6).
     pub scoped: bool,
 }
 
@@ -217,6 +238,7 @@ impl Ruleset {
         Ok(())
     }
 
+    /// The ruleset descriptor for [`restrict_self`] in the child.
     pub fn raw_fd(&self) -> i32 {
         self.fd.as_raw_fd()
     }

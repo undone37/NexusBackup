@@ -14,15 +14,21 @@ use serde_json::{json, Value};
 
 /// A plugin snapshot loaded for restore / mount / download.
 pub struct Snapshot {
+    /// Snapshot source name (`plugin-<id>-<source>[-<guest>]`).
     pub source: String,
+    /// Snapshot time, Unix seconds.
     pub time: u64,
     /// sorted by path (bytes)
     pub files: Vec<TreeEntry>,
+    /// Application streams (`path` = stream name), empty if the backup sent none.
     pub streams: Vec<FileEntry>,
+    /// The plugin's state blob of this snapshot.
     pub state: Option<Vec<u8>>,
 }
 
 impl Snapshot {
+    /// Loads the `files`, `streams` and `state` indexes of `source`/`time`; fails if
+    /// the snapshot is missing or not a plugin snapshot.
     pub fn load(store: &Store, source: &str, time: u64) -> Result<Snapshot> {
         let m = store.load_manifest(source, time)?;
         let mut files = match store.load_index(&m, FILES_INDEX)? {
@@ -59,6 +65,7 @@ impl Snapshot {
         out
     }
 
+    /// The entry at exactly `path`.
     pub fn file(&self, path: &[u8]) -> Option<&TreeEntry> {
         self.files
             .binary_search_by(|e| e.path.as_slice().cmp(path))
@@ -116,28 +123,43 @@ fn send_chunks(store: &Store, peer: &mut dyn Peer, chunks: &[chunkstore::ChunkId
     Ok(n)
 }
 
+/// Input of [`run`].
 pub struct Params<'a> {
+    /// Job id (`Init.job`).
     pub job: u64,
+    /// Manifest kind of the source (`Init.kind`).
     pub kind: &'a str,
+    /// Source config as JSON text, secrets opened (the target source's for a
+    /// `target_source` restore).
     pub config: &'a str,
     /// restore id from the manifest (`to_target`, `pitr`, …)
     pub restore: &'a str,
     /// user parameters (validated against the restore's params_schema by the web-api)
     pub params: Value,
+    /// Plugin log text kept for the job, in bytes.
     pub max_log_bytes: usize,
     /// restore with another source's config (`target_source` restores): its id
     pub target_source_id: Option<u64>,
 }
 
+/// Outcome of one restore.
 #[derive(Debug, Default)]
 pub struct Report {
+    /// Regular files sent to the plugin.
     pub files_sent: u64,
+    /// Streams sent to the plugin.
     pub streams_sent: u64,
+    /// Data bytes sent (files and streams).
     pub bytes_sent: u64,
+    /// `Done.summary` of the plugin, as sent (escape before printing).
     pub summary: String,
+    /// `Done.consistent` of the plugin.
     pub consistent: bool,
 }
 
+/// Runs one restore of `snap`: sends `Init` (params from [`Snapshot::init_params`]
+/// plus restore id, user params and `target_source_id`) and answers the plugin's
+/// requests until `Done`. Fails on `Error`, a protocol violation or a store error.
 pub fn run(
     store: &Store,
     peer: &mut dyn Peer,

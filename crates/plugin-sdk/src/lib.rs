@@ -23,6 +23,8 @@
 //! an `Err` into the protocol's `Error` (code from [`PluginError`], else 1). Plugins
 //! never see store, keys or catalog; they only name paths and send bytes.
 
+#![warn(missing_docs)]
+
 pub mod export;
 pub mod meta;
 pub mod sink;
@@ -42,12 +44,18 @@ use std::cell::RefCell;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::rc::Rc;
 
+/// Result of every plugin callback; an `Err` ends the operation with a protocol
+/// `Error` (code from a [`PluginError`] in the chain, else 1).
 pub type Result<T> = anyhow::Result<T>;
 
 /// An error with a protocol error code (default code 1 for any other error).
+/// Create it with [`error`]. The runner finds it also below `.context(...)`, but then
+/// sends only its own message, without the context.
 #[derive(Debug)]
 pub struct PluginError {
+    /// Protocol error code (errno-like: 2 not found, 22 invalid argument, 95 not supported).
     pub code: u32,
+    /// Reason shown in the job log (truncated to 60,000 bytes).
     pub message: String,
 }
 
@@ -58,6 +66,7 @@ impl std::fmt::Display for PluginError {
 }
 impl std::error::Error for PluginError {}
 
+/// An [`anyhow::Error`] carrying a [`PluginError`] with this code and message.
 pub fn error(code: u32, message: impl Into<String>) -> anyhow::Error {
     PluginError {
         code,
@@ -66,21 +75,35 @@ pub fn error(code: u32, message: impl Into<String>) -> anyhow::Error {
     .into()
 }
 
+/// Answer of [`Plugin::validate`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Validation {
+    /// Config, connectivity and permissions are fine.
     Valid,
-    Invalid { field: String, message: String },
+    /// The config does not work; shown next to the form field.
+    Invalid {
+        /// Config property at fault (top-level name), or empty for the whole source.
+        field: String,
+        /// Reason shown to the admin; never include secrets.
+        message: String,
+    },
 }
 
+/// Answer of [`Plugin::backup`]; the runner sends it as `Done` and the host commits.
 #[derive(Debug, Clone, Default)]
 pub struct BackupResult {
     /// opaque state for the next backup (≤ 1 MiB), returned in `Ctx::state`
     pub state: Option<Vec<u8>>,
+    /// Whether the snapshot is a consistent view of the source. Set `false` when there
+    /// was no snapshot of the source to read from; the SDK also forces `false` when
+    /// [`Sink::file`] had to pad or cut a file that changed while read.
     pub consistent: bool,
+    /// One line for the job log, e.g. `"3 databases, 1.2 GiB"`.
     pub summary: String,
 }
 
 impl BackupResult {
+    /// A consistent result without state blob.
     pub fn consistent(summary: impl Into<String>) -> Self {
         BackupResult {
             state: None,
@@ -90,11 +113,16 @@ impl BackupResult {
     }
 }
 
+/// Log level of [`Ctx::log`] (shown as `plugin[<level>]: ` in the job log).
 #[derive(Clone, Copy, Debug)]
 pub enum Level {
+    /// Something failed.
     Error = 0,
+    /// Something the operator should look at; the operation goes on.
     Warn = 1,
+    /// Normal progress information.
     Info = 2,
+    /// Details for troubleshooting.
     Debug = 3,
 }
 
@@ -117,9 +145,11 @@ pub(crate) type Shared = Rc<RefCell<Chan>>;
 
 /// What the host asked for.
 pub struct Ctx {
+    /// Appliance job id (for logs only).
     pub job: u64,
     /// manifest kind of the source
     pub kind: String,
+    /// Operation being run; tells which trait method was called.
     pub op: Op,
     /// the source config (secrets opened; keep them in memory)
     pub config: Value,
@@ -134,18 +164,25 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// Sends a line to the job log (escaped and truncated by the host). Never log
+    /// secrets. Send errors are ignored.
     pub fn log(&self, level: Level, text: impl Into<String>) {
         let _ = self.chan.borrow_mut().send(&Message::Log {
             level: level as u8,
             text: text.into(),
         });
     }
+    /// [`Ctx::log`] at [`Level::Info`].
     pub fn info(&self, text: impl Into<String>) {
         self.log(Level::Info, text)
     }
+    /// [`Ctx::log`] at [`Level::Warn`].
     pub fn warn(&self, text: impl Into<String>) {
         self.log(Level::Warn, text)
     }
+    /// Progress for the job page: `done` of `total` units (bytes or items; `total`
+    /// 0 = unknown) and the current step. Any message resets the host's idle limit
+    /// (15 min), so send it during long silent phases. Send errors are ignored.
     pub fn progress(&self, done: u64, total: u64, text: impl Into<String>) {
         let _ = self.chan.borrow_mut().send(&Message::Progress {
             done,
@@ -162,7 +199,7 @@ impl Ctx {
     pub fn source_id(&self) -> Option<u64> {
         self.params["source_id"].as_u64()
     }
-    /// A string config field.
+    /// A top-level string config field; error code 22 if it is missing or not a string.
     pub fn config_str(&self, key: &str) -> Result<&str> {
         self.config[key]
             .as_str()
@@ -170,6 +207,10 @@ impl Ctx {
     }
 }
 
+/// A plugin: one implementation serves every operation of its manifest's kinds.
+/// [`run`] calls exactly one method per process (the host starts a new sandboxed
+/// process for each operation), so state kept in `self` lives for one operation only;
+/// what must survive to the next backup goes into [`BackupResult::state`].
 pub trait Plugin {
     /// Connectivity and permission check of the source config.
     fn validate(&mut self, ctx: &Ctx) -> Result<Validation>;
@@ -183,6 +224,9 @@ pub trait Plugin {
     fn list_tagged_guests(&mut self, ctx: &Ctx) -> Result<Vec<TaggedGuest>> {
         Ok(self.list_guests(ctx)?.into_iter().map(TaggedGuest::from).collect())
     }
+    /// Backs up the source (or `ctx.guest()`) by sending files and streams to `sink`.
+    /// `ctx.base_time` / `ctx.state` describe the previous snapshot for incrementals.
+    /// An `Err` fails the job and nothing is committed.
     fn backup(&mut self, ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult>;
     /// A restore of the manifest's `restores[]` (`ctx.params["restore"]`); returns a summary.
     fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String>;

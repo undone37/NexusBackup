@@ -11,9 +11,13 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+/// Input of [`validate`], [`guests`] and [`mount`].
 pub struct Params<'a> {
+    /// Job id (`Init.job`).
     pub job: u64,
+    /// Manifest kind of the source (`Init.kind`).
     pub kind: &'a str,
+    /// Source config as JSON text, secrets opened.
     pub config: &'a str,
 }
 

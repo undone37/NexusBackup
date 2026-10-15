@@ -1,5 +1,31 @@
 //! Restore side: receiving snapshot content from the host, writing it safely to a
 //! local directory, and the mount op.
+//!
+//! Every request is answered completely before the call returns; the callbacks get
+//! each item's data as a [`Read`] that is valid only during the call (unread bytes
+//! are skipped).
+//!
+//! ```no_run
+//! use plugin_sdk::{Ctx, Result, RestoreOptions, Source};
+//! use std::path::Path;
+//!
+//! // Body of `Plugin::restore`: the top-level entries into a directory, then the dumps.
+//! fn restore(ctx: &Ctx, src: &mut Source) -> Result<String> {
+//!     let top: Vec<Vec<u8>> = ctx.params["top"]
+//!         .as_array()
+//!         .into_iter()
+//!         .flatten()
+//!         .filter_map(|v| v.as_str().map(|s| s.as_bytes().to_vec()))
+//!         .collect();
+//!     let opts = RestoreOptions { overwrite: false, owners: false, xattrs: true };
+//!     let st = src.restore_tree(&top, Path::new("/srv/restore"), &opts)?;
+//!     src.streams(&["app/dump.sql".into()], |_name, data| {
+//!         std::io::copy(data, &mut std::io::sink())?;
+//!         Ok(())
+//!     })?;
+//!     Ok(format!("{} files, {} errors", st.files, st.errors))
+//! }
+//! ```
 
 use crate::{Result, Shared};
 use anyhow::{anyhow, bail};
@@ -12,13 +38,18 @@ use std::path::Path;
 /// One file of the snapshot as the host sends it.
 #[derive(Debug, Clone)]
 pub struct FileItem {
+    /// Relative path in the snapshot (checked by the host; [`Source::restore_tree`]
+    /// checks it again).
     pub path: Vec<u8>,
+    /// Stored metadata; regular files are followed by exactly `meta.size` data bytes.
     pub meta: Meta,
 }
 
 /// Callback over one received item: a file (with metadata) or a named stream, and its data.
 type ItemFn<'a> = dyn FnMut(Option<&FileItem>, Option<&str>, &mut dyn Read) -> Result<()> + 'a;
 
+/// The host side of a restore, passed to [`crate::Plugin::restore`]: the content of
+/// the snapshot being restored, on request.
 pub struct Source {
     chan: Shared,
 }
@@ -98,6 +129,8 @@ impl Source {
     }
 
     /// Files at or below `paths` (relative), in snapshot order. Paths not in the snapshot are skipped.
+    /// If `f` fails, the rest of the answer is read and skipped, then the first error
+    /// is returned (so it reaches the job log).
     pub fn files(
         &mut self,
         paths: &[Vec<u8>],
@@ -108,13 +141,15 @@ impl Source {
         })
     }
 
-    /// Application streams by name (missing names are skipped).
+    /// Application streams by name (missing names are skipped); `ctx.params["streams"]`
+    /// lists the snapshot's streams. Errors of `f` as in [`Source::files`].
     pub fn streams(&mut self, names: &[String], mut f: impl FnMut(&str, &mut dyn Read) -> Result<()>) -> Result<()> {
         self.items(Message::NeedStreams { names: names.to_vec() }, &mut |_, n, r| {
             f(n.expect("stream"), r)
         })
     }
 
+    /// Progress for the job page, as [`crate::Ctx::progress`]. Send errors are ignored.
     pub fn progress(&mut self, done: u64, total: u64, text: &str) {
         let _ = self.chan.borrow_mut().send(&Message::Progress {
             done,
@@ -126,6 +161,9 @@ impl Source {
     /// Writes the files at/below `paths` into `target` with their metadata: no symlink
     /// in the target is ever followed (component-wise `openat` with `O_NOFOLLOW`),
     /// files are created exclusively (existing ones are replaced only with `overwrite`).
+    /// Restores files, directories, symlinks, hard links and fifos (not devices or
+    /// sockets); per-entry failures are counted in [`RestoreStats`], not returned.
+    /// Fails if `target` cannot be opened or the host connection breaks.
     pub fn restore_tree(&mut self, paths: &[Vec<u8>], target: &Path, opts: &RestoreOptions) -> Result<RestoreStats> {
         let root = open_dir(target)?;
         let mut st = RestoreStats::default();
@@ -180,22 +218,31 @@ impl Source {
     }
 }
 
+/// Options of [`Source::restore_tree`].
 #[derive(Debug, Clone, Default)]
 pub struct RestoreOptions {
     /// replace existing files (else they are left alone and counted as errors)
     pub overwrite: bool,
     /// set owner/group (needs privileges; failures are ignored)
     pub owners: bool,
+    /// set extended attributes (failures are ignored)
     pub xattrs: bool,
 }
 
+/// Counters of one [`Source::restore_tree`].
 #[derive(Debug, Clone, Default)]
 pub struct RestoreStats {
+    /// Regular files written.
     pub files: u64,
+    /// Directories created or reused.
     pub dirs: u64,
+    /// Symlinks, hard links and fifos created.
     pub other: u64,
+    /// Bytes of the files written.
     pub bytes: u64,
+    /// Entries that could not be written (existing file without `overwrite`, device, ...).
     pub errors: u64,
+    /// The first 20 errors (`path: error`), for the job log.
     pub messages: Vec<String>,
 }
 
@@ -332,6 +379,8 @@ fn write_item(root: &OwnedFd, item: &FileItem, data: &mut dyn Read, opts: &Resto
 }
 
 /// Mount op: announce readiness, read snapshot files on demand, wait for `Unmount`.
+/// Passed to [`crate::Plugin::mount`]; return from `mount` within 120 s after the
+/// unmount (the runner then sends `Done`).
 pub struct Mount {
     chan: Shared,
     unmounted: bool,
@@ -342,6 +391,8 @@ impl Mount {
         Mount { chan, unmounted: false }
     }
 
+    /// Announces that the mount is usable; `info` (e.g. an address) is shown to the
+    /// user. Call it once, before serving.
     pub fn ready(&mut self, info: &str) -> Result<()> {
         self.chan
             .borrow_mut()
@@ -372,6 +423,8 @@ impl Mount {
         }
     }
 
+    /// Whether the host has sent `Unmount` (seen by [`Mount::read_file`] or
+    /// [`Mount::wait_unmount`]).
     pub fn unmounted(&self) -> bool {
         self.unmounted
     }

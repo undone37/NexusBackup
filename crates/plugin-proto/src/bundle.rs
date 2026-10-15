@@ -22,7 +22,9 @@ use std::path::Path;
 
 /// Bundles larger than this are refused (upload limit of the web-api).
 pub const MAX_BUNDLE: usize = 128 << 20;
+/// Largest `manifest.json` in bytes (1 MiB).
 pub const MAX_MANIFEST: usize = 1 << 20;
+/// Most files below `assets/`.
 pub const MAX_ASSETS: usize = 256;
 /// Publisher name of plugins signed with a project (release) key.
 pub const PROJECT_PUBLISHER: &str = "nexusbackup";
@@ -35,14 +37,17 @@ const P256_SPKI_PREFIX: [u8; 26] = [
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+/// SHA-256 of `b` as 64 lowercase hex digits.
 pub fn sha256_hex(b: &[u8]) -> String {
     Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// A parsed bundle (see [`read`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bundle {
     /// `manifest.json` exactly as signed
     pub manifest_raw: Vec<u8>,
+    /// `manifest_raw` parsed and validated ([`Manifest::validate`]).
     pub manifest: Manifest,
     /// `bin/plugin`
     pub bin: Vec<u8>,
@@ -51,6 +56,7 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// SHA-256 (hex) of `bin/plugin`; the host checks the installed binary against it.
     pub fn bin_sha256(&self) -> String {
         sha256_hex(&self.bin)
     }
@@ -171,10 +177,12 @@ pub struct TrustedKey {
     pub publisher: String,
     /// uncompressed P-256 point (65 bytes)
     pub point: Vec<u8>,
+    /// A project key from the image (`true`) or a publisher key from the catalog.
     pub builtin: bool,
 }
 
 impl TrustedKey {
+    /// [`fingerprint`] of this key.
     pub fn fingerprint(&self) -> String {
         fingerprint(&self.point)
     }
@@ -201,6 +209,7 @@ pub fn fingerprint(point: &[u8]) -> String {
     sha256_hex(&[&P256_SPKI_PREFIX[..], point].concat())
 }
 
+/// PEM `PUBLIC KEY` (P-256 SPKI) of an uncompressed point; inverse of [`parse_public_key`].
 pub fn public_key_pem(point: &[u8]) -> String {
     pem_wrap("PUBLIC KEY", &[&P256_SPKI_PREFIX[..], point].concat())
 }

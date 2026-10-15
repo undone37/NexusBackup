@@ -8,6 +8,8 @@
 //! the manifest last, serving restores/mounts from the store, escaping of
 //! everything the plugin says before it reaches the job log.
 
+#![warn(missing_docs)]
+
 pub mod backup;
 pub mod export;
 pub mod files;
@@ -52,8 +54,10 @@ pub fn endpoint_ports(manifest: &Manifest, kind: &str, cfg: &serde_json::Value) 
     Some(manifest.kinds.iter().find(|k| k.kind == kind)?.tcp_ports(cfg))
 }
 
-/// Index names of a plugin snapshot.
+/// Index names of a plugin snapshot: the plugin's files (`Index::Tree`).
 pub const FILES_INDEX: &str = "files";
+/// The plugin's application streams (`Index::Dynamic`, one entry per stream; only
+/// present if the backup sent any).
 pub const STREAMS_INDEX: &str = "streams";
 /// The plugin's opaque state blob (≤ 1 MiB): a dynamic index with one entry whose
 /// chunks hold the blob (sealed like every chunk; replicated/offsited with the snapshot).
@@ -69,6 +73,8 @@ pub struct Timeouts {
 }
 
 impl Timeouts {
+    /// Limits per operation: validate/guests 300 s (idle 120 s), backup/restore/export
+    /// 24 h (idle 900 s), mount 24 h + 10 min (idle 900 s).
     pub fn for_op(op: plugin_proto::Op) -> Timeouts {
         use plugin_proto::Op::*;
         match op {
@@ -107,6 +113,7 @@ pub fn escape(s: &str, max: usize) -> String {
     out
 }
 
+/// Name of a `Log.level` for the `plugin[<level>]: ` prefix (3 and above: `debug`).
 pub fn level_name(l: u8) -> &'static str {
     match l {
         0 => "error",

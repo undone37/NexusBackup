@@ -1,4 +1,28 @@
 //! Backup side: sending files, `Unchanged` decisions and application streams.
+//!
+//! Everything goes out in call order; one entry or stream is complete before the
+//! next starts (a [`StreamWriter`] must be finished or dropped before the next call).
+//!
+//! ```no_run
+//! use plugin_sdk::{BackupResult, Ctx, Meta, Result, Sink, WalkOptions};
+//! use std::io::Write;
+//!
+//! // Body of `Plugin::backup`: a local tree plus one application stream.
+//! fn backup(ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult> {
+//!     let opts = WalkOptions { excludes: vec!["*.tmp".into()], xattrs: true };
+//!     let st = sink.walk_dir(std::path::Path::new("/srv/data"), &opts)?;
+//!     for m in &st.messages {
+//!         ctx.warn(m.clone());
+//!     }
+//!     let mut s = sink.stream("app/dump.sql")?;
+//!     s.write_all(b"-- dump\n")?;
+//!     s.finish()?;
+//!     let note = b"written by the plugin\n";
+//!     let meta = Meta { size: note.len() as u64, mode: 0o100644, ..Meta::default() };
+//!     sink.file(b"README", meta, &mut &note[..])?;
+//!     Ok(BackupResult::consistent(format!("{} files, {} unchanged", st.files, st.unchanged)))
+//! }
+//! ```
 
 use crate::meta::meta_of;
 use crate::{Result, Shared};
@@ -15,6 +39,10 @@ use std::path::Path;
 const QUERY_PATHS: usize = 1000;
 const QUERY_BYTES: usize = 512 << 10;
 
+/// The host side of a backup, passed to [`crate::Plugin::backup`]. Every method
+/// fails only on a broken host connection or a misuse the host would refuse anyway
+/// (invalid stream name, `entry` for a regular file); the host checks paths,
+/// uniqueness and `Unchanged` claims and ends the job on a violation.
 pub struct Sink {
     chan: Shared,
     has_base: bool,
@@ -22,6 +50,8 @@ pub struct Sink {
     pub inconsistent: u64,
     /// items skipped with an error ([`Sink::item_failed`]); the first few with their error
     pub failed: u64,
+    /// Up to [`plugin_proto::MAX_WARNING_SAMPLES`] of the skipped items, each cut to
+    /// [`plugin_proto::MAX_WARNING_SAMPLE`] bytes; sent with the count in `Warnings`.
     pub failed_samples: Vec<String>,
 }
 
@@ -218,6 +248,8 @@ impl Sink {
     /// Backs up a local directory tree below `root` (paths relative to it). Regular
     /// files whose base entry has the same type, size, mtime, ctime, inode, mode and
     /// owner are sent as `Unchanged`; hard links as links to their first path.
+    /// Entries that vanish or cannot be read are counted in [`WalkStats`] and left
+    /// out; a directory that cannot be listed fails the walk.
     pub fn walk_dir(&mut self, root: &Path, opts: &WalkOptions) -> Result<WalkStats> {
         let mut st = WalkStats::default();
         let mut links: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
@@ -349,6 +381,7 @@ impl Sink {
 pub struct WalkOptions {
     /// glob patterns (`*`, `?`); with a `/` they match the relative path, else the name
     pub excludes: Vec<String>,
+    /// Read extended attributes (bounded by [`plugin_proto::MAX_XATTR`] per entry).
     pub xattrs: bool,
 }
 
@@ -386,17 +419,28 @@ pub fn glob(p: &[u8], s: &[u8]) -> bool {
     pi == p.len()
 }
 
+/// Counters of one [`Sink::walk_dir`] (for the backup summary and the job log).
 #[derive(Debug, Default, Clone)]
 pub struct WalkStats {
+    /// Entries sent (files, directories, links, ...).
     pub entries: u64,
+    /// Regular files sent, read or unchanged.
     pub files: u64,
+    /// Directories sent.
     pub dirs: u64,
+    /// Regular files sent as `Unchanged`.
     pub unchanged: u64,
+    /// Regular files read and sent with their data.
     pub files_read: u64,
+    /// Bytes of all regular files in the snapshot (read and unchanged).
     pub bytes: u64,
+    /// Bytes of the files actually read.
     pub read_bytes: u64,
+    /// Entries skipped by [`WalkOptions::excludes`] (a directory counts once).
     pub excluded: u64,
+    /// Entries that disappeared between listing and reading.
     pub vanished: u64,
+    /// Entries left out because of an I/O error.
     pub errors: u64,
     /// the first 20 errors (`path: error`), for the job log
     pub messages: Vec<String>,
@@ -428,6 +472,8 @@ impl StreamWriter {
         Ok(())
     }
 
+    /// Sends the buffered rest and `StreamEnd`. Dropping the writer does the same
+    /// but ignores errors.
     pub fn finish(mut self) -> Result<()> {
         self.flush_buf()?;
         self.done = true;

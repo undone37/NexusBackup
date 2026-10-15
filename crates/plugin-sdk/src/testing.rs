@@ -48,12 +48,18 @@ pub struct Host {
     store: Store,
     launch: Launch,
     manifest: Manifest,
+    /// Manifest kind every operation runs as.
     pub kind: String,
     /// sandbox: extra readable / writable paths (the data a test plugin reads, restore targets)
     pub read_paths: Vec<PathBuf>,
+    /// Extra writable paths of the sandbox (restore targets); see `read_paths`.
     pub write_paths: Vec<PathBuf>,
+    /// Time limit per operation (default 120 s; the appliance allows 24 h).
     pub timeout: Duration,
+    /// Longest silence between two plugin messages (default 60 s; the appliance
+    /// allows 900 s).
     pub idle: Duration,
+    /// Source id of the snapshot names and of `Ctx::source_id` (default 1).
     pub source_id: u64,
     log: RefCell<Vec<String>>,
     job: RefCell<u64>,
@@ -138,6 +144,7 @@ impl Host {
         Host::new(Launch::InProcess(f), m, kind)
     }
 
+    /// The temp chunk store the snapshots are committed to.
     pub fn store(&self) -> &Store {
         &self.store
     }
@@ -191,12 +198,15 @@ impl Host {
         }
     }
 
+    /// Runs `Validate`: `{"valid": true}` or `{"valid": false, "field", "message"}`.
     pub fn validate(&self, config: &Value) -> Result<Value> {
         let cfg = config.to_string();
         let mut p = self.peer(self.timeout, config)?;
         ops::validate(p.as_mut(), &self.ops_params(&cfg), &mut self.out())
     }
 
+    /// Runs `ListGuests`: `{"guests": [{"id", "title", "size", "tags"}]}` (invalid
+    /// ids dropped, as on the appliance).
     pub fn guests(&self, config: &Value) -> Result<Value> {
         let cfg = config.to_string();
         let mut p = self.peer(self.timeout, config)?;
@@ -223,10 +233,14 @@ impl Host {
         )
     }
 
+    /// A committed snapshot (`source` and `time` from [`backup::Report`]), to check
+    /// its files and streams.
     pub fn snapshot(&self, source: &str, time: u64) -> Result<Snapshot> {
         Snapshot::load(&self.store, source, time)
     }
 
+    /// Runs restore `restore_id` of snapshot `source`/`time` with the user's
+    /// `params` (`ctx.params["params"]` in the plugin), using `config` as the source config.
     pub fn restore(
         &self,
         config: &Value,
@@ -306,6 +320,8 @@ impl Host {
         Ok(r)
     }
 
+    /// Runs a mount of snapshot `source`/`time` for `duration`, then unmounts:
+    /// `{"info", "reads", "bytes", "summary"}`.
     pub fn mount(&self, config: &Value, source: &str, time: u64, params: Value, duration: Duration) -> Result<Value> {
         let cfg = config.to_string();
         let snap = self.snapshot(source, time)?;

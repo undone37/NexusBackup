@@ -22,22 +22,32 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+/// Input of [`run`].
 pub struct Params<'a> {
+    /// Job id (`Init.job`).
     pub job: u64,
+    /// Manifest kind of the source (`Init.kind`).
     pub kind: &'a str,
+    /// Source config as JSON text; the scheduler passes `{}` (no secrets for an export).
     pub config: &'a str,
     /// the user's export parameters (validated against the `download` params_schema)
     pub params: Value,
     /// selected snapshot paths (`/` or empty = everything)
     pub paths: &'a [String],
+    /// Most output files the plugin may create.
     pub max_files: usize,
+    /// Most bytes of all output files together.
     pub max_bytes: u64,
 }
 
+/// Outcome of one export (before packing).
 #[derive(Debug, Default)]
 pub struct Report {
+    /// Output files staged.
     pub files: usize,
+    /// Bytes of all staged output files.
     pub bytes: u64,
+    /// `Done.summary` of the plugin, escaped.
     pub summary: String,
 }
 

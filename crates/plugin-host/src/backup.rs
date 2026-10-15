@@ -26,7 +26,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// Upper bounds the host enforces beyond the protocol's per-message limits.
 #[derive(Clone, Debug)]
 pub struct Bounds {
+    /// Entries (files, directories, links, ...) per snapshot.
     pub max_entries: usize,
+    /// Streams per snapshot.
     pub max_streams: usize,
     /// summed path bytes of one `BaseQuery`
     pub max_query_bytes: usize,
@@ -47,15 +49,19 @@ impl Default for Bounds {
 
 /// The previous snapshot of the same source.
 pub struct Base {
+    /// Snapshot time, Unix seconds.
     pub time: u64,
+    /// Entries of its `files` index.
     pub entries: Vec<TreeEntry>,
     by_path: HashMap<Vec<u8>, usize>,
     /// entry indexes in path order (built on the first `BaseList`)
     sorted: std::cell::OnceCell<Vec<usize>>,
+    /// Its state blob (index `state`), returned to the plugin in `Init.state`.
     pub state: Option<Vec<u8>>,
 }
 
 impl Base {
+    /// The entry at `path`, if the base snapshot has one.
     pub fn get(&self, path: &[u8]) -> Option<&TreeEntry> {
         self.by_path.get(path).map(|&i| &self.entries[i])
     }
@@ -208,14 +214,22 @@ impl Chunker {
     }
 }
 
+/// Outcome of one committed backup (printed as part of the `result {json}` line).
 #[derive(Debug, Default, Clone)]
 pub struct Report {
+    /// Snapshot source name (`plugin-<id>-<source>[-<guest>]`).
     pub source: String,
+    /// Snapshot time, Unix seconds (later than the base's).
     pub time: u64,
+    /// Time of the base snapshot, if there was one.
     pub base: Option<u64>,
+    /// Entries in the `files` index.
     pub entries: u64,
+    /// Regular files (sent or unchanged).
     pub files: u64,
+    /// Application streams.
     pub streams: u64,
+    /// Entries reused from the base with `Unchanged`.
     pub unchanged: u64,
     /// logical bytes (files + streams)
     pub bytes: u64,
@@ -223,10 +237,13 @@ pub struct Report {
     pub transferred: u64,
     /// bytes in chunks that were new to the store
     pub new_bytes: u64,
+    /// `Done.consistent` of the plugin.
     pub consistent: bool,
+    /// `Done.summary` as sent (escape it before printing).
     pub summary: String,
     /// items the plugin skipped (v1.7 `Warnings`) and the first few of them
     pub warnings: u64,
+    /// Samples of the skipped items as sent, at most 20 (escape before printing).
     pub warning_samples: Vec<String>,
     /// v1.8 `SnapshotMeta` (a JSON object), kept in the appliance catalog
     pub meta: Option<serde_json::Value>,
@@ -309,14 +326,19 @@ fn same_meta(base: &TreeEntry, m: &Meta) -> bool {
         && (k != TreeKind::File || base.size == m.size)
 }
 
+/// Input of [`run`].
 pub struct Params<'a> {
+    /// Job id (`Init.job`).
     pub job: u64,
+    /// Manifest kind of the source (`Init.kind`).
     pub kind: &'a str,
     /// source config (JSON) with secrets opened
     pub config: &'a str,
     /// op parameters (JSON), e.g. `{"guest": "db1"}`
     pub params: serde_json::Value,
+    /// Snapshot source name to write; its latest snapshot is the base (none if damaged).
     pub source: &'a str,
+    /// Limits beyond the protocol's.
     pub bounds: Bounds,
 }
 

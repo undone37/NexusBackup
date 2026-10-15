@@ -13,6 +13,8 @@
 //! files 0444, `bin/plugin` 0555), marks it `installed` + `current` and removes the
 //! staged files. `removing` rows are deleted from disk the same way.
 
+#![warn(missing_docs)]
+
 use catalog::rusqlite::{params, Connection, OptionalExtension};
 use catalog::Catalog;
 use plugin_proto::bundle::{self, Bundle, TrustedKey};
@@ -23,12 +25,16 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+/// Actor of the audit entries the installer writes.
 pub const ACTOR: &str = "plugin-installer";
 
 /// An error with an HTTP-like status for the web-api (400 bad input, 409 conflict).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error {
+    /// 400 bad input (bundle, signature, manifest), 409 conflict with the catalog
+    /// (id owner, version order, kind taken), 500 catalog or file system failure.
     pub status: u16,
+    /// Reason shown to the user.
     pub message: String,
 }
 
@@ -91,10 +97,15 @@ pub fn trusted_keys(c: &Connection, project_dir: &Path) -> Result<Vec<TrustedKey
 /// Result of a successful upload check.
 #[derive(Debug, Clone)]
 pub struct Verified {
+    /// The parsed bundle.
     pub bundle: Bundle,
+    /// SHA-256 (hex) of the bundle file; the staged file name.
     pub sha256: String,
+    /// Bundle size in bytes.
     pub size: usize,
+    /// The key that verified the signature, as `<key name> (sha256:<fingerprint>)`.
     pub signer: String,
+    /// The installed version this one replaces, if it is an upgrade.
     pub upgrade_from: Option<String>,
 }
 
@@ -194,6 +205,7 @@ pub fn verify_upload(c: &Connection, project_keys: &Path, bytes: &[u8], sig: &[u
     })
 }
 
+/// Staged bundle and signature of `sha256`: `<staging>/<sha256>.nxplugin` and `.sig`.
 pub fn staged_paths(staging: &Path, sha256: &str) -> (PathBuf, PathBuf) {
     (
         staging.join(format!("{sha256}.nxplugin")),
@@ -305,14 +317,22 @@ pub fn sources_using(c: &Connection, id: &str) -> Result<i64, Error> {
 /// The installed, current version of a plugin that provides `kind` (scheduler, web-api).
 #[derive(Debug, Clone)]
 pub struct Current {
+    /// Plugin id.
     pub id: String,
+    /// Installed version (`<plugins>/<id>/<version>/`).
     pub version: String,
+    /// SHA-256 (hex) of `bin/plugin`; the host checks the binary against it.
     pub bin_sha256: String,
+    /// `manifest.json` as signed; the host checks the installed copy against it.
     pub manifest_raw: String,
+    /// `manifest_raw` parsed.
     pub manifest: Manifest,
+    /// `false` while disabled: jobs of its sources fail before starting.
     pub enabled: bool,
 }
 
+/// The installed current version providing `kind` (without the `plugin:` prefix);
+/// `None` if no installed plugin provides it.
 pub fn current_for_kind(c: &Connection, kind: &str) -> Result<Option<Current>, Error> {
     let mut st = c
         .prepare(
@@ -351,9 +371,13 @@ pub fn current_for_kind(c: &Connection, kind: &str) -> Result<Option<Current>, E
 
 // ---- installer ---------------------------------------------------------------
 
+/// Directories of the installer.
 pub struct Paths {
+    /// Staged uploads and `.trigger` (`/var/lib/nexus/plugins-staging`).
     pub staging: PathBuf,
+    /// Install root, `<id>/<version>/` below it (`/var/lib/nexus/plugins`).
     pub plugins: PathBuf,
+    /// Project keys of the image, `*.pub` (`/etc/pki/nexus/plugin-keys`).
     pub project_keys: PathBuf,
 }
 
@@ -610,6 +634,7 @@ pub fn row_json(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> 
     }))
 }
 
+/// Columns of a `plugins` row in the order [`row_json`] reads them.
 pub const ROW_COLS: &str =
     "id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, \
                             quorum_id, uploaded_by, uploaded_at, installed_at, error";

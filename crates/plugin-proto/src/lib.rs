@@ -1,23 +1,42 @@
 //! Protocol between `nexus-pluginhost` (trusted) and a plugin process (untrusted),
 //! see docs/plugin-system.md. Framing: `u32 BE length | postcard(Message)`, max `MAX_FRAME`.
 
+#![warn(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
+/// Protocol major version; `Init.api` and the manifest's `api` must equal it.
+/// Additive changes (v1.1 to v1.9) keep it at 1.
 pub const API: u32 = 1;
+/// Largest encoded message in bytes (8 MiB, without the 4-byte length prefix).
 pub const MAX_FRAME: usize = 8 << 20;
+/// Largest payload of one `Data`, `FileData` or `Output` frame in bytes (4 MiB).
 pub const MAX_DATA: usize = 4 << 20;
+/// Largest path or symlink target in bytes.
 pub const MAX_PATH: usize = 4096;
+/// Largest state blob (`Done.state`, `Init.state`) in bytes (1 MiB).
 pub const MAX_STATE: usize = 1 << 20;
+/// Largest sum of xattr names and values of one entry in bytes (64 KiB).
 pub const MAX_XATTR: usize = 64 << 10;
+/// Most paths, names or entries in one `NeedFiles`, `NeedStreams`, `BaseQuery` or
+/// `BaseEntries` message.
 pub const MAX_BATCH: usize = 10_000;
 
+/// Operation of one plugin run, sent in `Init.op`. The wire index is the variant
+/// order: new operations are only appended.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    /// Check config, connectivity and permissions; answered with `Valid` or `Invalid`.
     Validate,
+    /// List the selectable guests; answered with `Guests` or `TaggedGuests`.
     ListGuests,
+    /// Stream files and/or streams of a new snapshot, then `Done`.
     Backup,
+    /// Restore to the source or a target (not `download`): the plugin asks with
+    /// `NeedFiles`/`NeedStreams` and writes to its target.
     Restore,
+    /// Serve the snapshot read-only: `MountReady`, then `ReadFile` requests until `Unmount`.
     Mount,
     /// v1.9 (appended): the generic download with plugin-side conversion (`download`
     /// restore with a `params_schema`); the plugin lists (`BaseList`) and reads
@@ -25,36 +44,65 @@ pub enum Op {
     Export,
 }
 
+/// Entry type in [`Meta::kind`].
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// Regular file; the only kind that carries `Data` (exactly `Meta::size` bytes).
     File,
+    /// Directory.
     Dir,
+    /// Symbolic link; needs [`Meta::link_target`].
     Symlink,
+    /// Hard link to a regular file sent earlier in the same backup ([`Meta::link_target`]
+    /// names its path).
     Hardlink,
+    /// Character or block device (stored without `rdev`).
     Device,
+    /// Named pipe.
     Fifo,
+    /// Unix socket.
     Socket,
 }
 
 /// File metadata as the plugin knows it (POSIX-ish; plugins fill what they have).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct Meta {
+    /// Entry type; `None` is stored as a regular file.
     pub kind: Option<Kind>,
+    /// Unix mode (`st_mode`, type and permission bits, at most `0o177777`).
     pub mode: u32,
+    /// Owner user id.
     pub uid: u32,
+    /// Owner group id.
     pub gid: u32,
+    /// Size in bytes; for regular files the exact number of `Data` bytes that follow
+    /// `FileBegin`, 0 for everything else.
     pub size: u64,
+    /// Modification time, nanoseconds since the Unix epoch.
     pub mtime_ns: i64,
+    /// Status change time, nanoseconds since the Unix epoch.
     pub ctime_ns: i64,
+    /// Inode number on the source (stored as is, 0 if unknown).
     pub inode: u64,
+    /// Target of a symlink, or the path of the earlier file a hard link points to;
+    /// at most [`MAX_PATH`] bytes, no NUL.
     pub link_target: Option<Vec<u8>>,
+    /// Extended attributes as (name, value); names and values together at most
+    /// [`MAX_XATTR`] bytes.
     pub xattrs: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
+/// One selectable guest of a source (database, mailbox, dataset ...), answer to
+/// `ListGuests`. Postcard is not self-describing, so this struct never gets new
+/// fields; tags live in [`TaggedGuest`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Guest {
+    /// Stable id, part of the snapshot source name; see [`valid_guest_id`] (invalid
+    /// ids are dropped by the host).
     pub id: String,
+    /// Name shown in the UI.
     pub title: String,
+    /// Approximate size in bytes, if known.
     pub size: Option<u64>,
 }
 
@@ -62,14 +110,20 @@ pub struct Guest {
 /// select on (docs/plugin-system.md "v1.5"). Sent as [`Message::TaggedGuests`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct TaggedGuest {
+    /// As [`Guest::id`].
     pub id: String,
+    /// As [`Guest::title`].
     pub title: String,
+    /// As [`Guest::size`].
     pub size: Option<u64>,
+    /// Free-form `key:value` tags; at most [`MAX_GUEST_TAGS`], each at most
+    /// [`MAX_TAG`] bytes. The host keeps only printable, trimmed tags.
     pub tags: Vec<String>,
 }
 
-/// Tags per guest and bytes per tag (`TaggedGuests`).
+/// Tags per guest (`TaggedGuests`).
 pub const MAX_GUEST_TAGS: usize = 64;
+/// Bytes per tag (`TaggedGuests`).
 pub const MAX_TAG: usize = 128;
 
 impl From<Guest> for TaggedGuest {
@@ -96,113 +150,189 @@ impl From<TaggedGuest> for Guest {
 /// What the host knows about the previous snapshot of this source.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BaseInfo {
+    /// Snapshot time, Unix seconds.
     pub time: u64,
 }
 
+/// One entry of the base snapshot (answer to `BaseQuery` or `BaseList`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct BaseEntry {
+    /// Relative path as stored in the snapshot.
     pub path: Vec<u8>,
+    /// Metadata as stored (xattrs may be dropped from a `BaseQuery` answer that would
+    /// not fit one frame).
     pub meta: Meta,
 }
 
+/// One protocol frame, in either direction. The wire index is the variant order:
+/// new variants are only appended (v1.3 and later), so older peers decode the
+/// existing ones unchanged.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Message {
     // host -> plugin, first message
+    /// Host to plugin, always first: what to do and with which config.
     Init {
+        /// Protocol version of the host ([`API`]).
         api: u32,
+        /// Appliance job id (for logs).
         job: u64,
+        /// Manifest kind the source is of (without the `plugin:` prefix).
         kind: String,
+        /// Operation to run.
         op: Op,
         /// source config (JSON) with secrets opened
         config: String,
         /// op parameters (JSON): guests for Backup, restore id + params for Restore, …
         params: String,
+        /// Previous snapshot of this source (backup: the base for `Unchanged`;
+        /// restore, mount, export: the snapshot itself), `None` for a first backup.
         base: Option<BaseInfo>,
+        /// State blob the plugin returned in `Done` of that snapshot.
         state: Option<Vec<u8>>,
     },
     // validate / list guests
+    /// Plugin to host: the validation passed.
     Valid,
+    /// Plugin to host: the validation failed.
     Invalid {
+        /// Config field at fault (property name), or empty.
         field: String,
+        /// Reason shown to the admin.
         message: String,
     },
+    /// Plugin to host: answer to `ListGuests` without tags.
     Guests {
+        /// The guests.
         list: Vec<Guest>,
     },
     // backup stream (plugin -> host)
+    /// Plugin to host: start of an entry; a regular file is followed by `Data`
+    /// frames with exactly `meta.size` bytes, every entry by `FileEnd`.
     FileBegin {
+        /// Relative path ([`valid_path`]), unique in the snapshot, not below [`STREAMS_DIR`].
         path: Vec<u8>,
+        /// Metadata of the entry.
         meta: Meta,
     },
+    /// Content of the open file or stream (either direction), at most [`MAX_DATA`] bytes.
     Data {
+        /// The bytes.
         bytes: Vec<u8>,
     },
+    /// End of the entry opened with `FileBegin`.
     FileEnd,
+    /// Plugin to host: reuse the base snapshot's entry at `path`; type, mode, uid,
+    /// gid, mtime, link target (and size for files) must match the base entry.
     Unchanged {
+        /// Relative path in the base snapshot.
         path: Vec<u8>,
+        /// Current metadata of the entry.
         meta: Meta,
     },
+    /// Start of an application stream (dump, WAL ...), followed by `Data`* and `StreamEnd`.
     Stream {
+        /// Stream name ([`valid_stream_name`]), unique in the snapshot.
         name: String,
     },
+    /// End of the stream opened with `Stream`.
     StreamEnd,
+    /// Plugin to host: the operation finished; for a backup the host commits now.
     Done {
+        /// Opaque blob (at most [`MAX_STATE`] bytes) returned in the next `Init.state`.
         state: Option<Vec<u8>>,
+        /// Whether the snapshot is consistent (`false` raises `backup_inconsistent`).
         consistent: bool,
+        /// One line for the job log.
         summary: String,
     },
     // base metadata on demand
+    /// Plugin to host, backup only: metadata of these base snapshot paths; answered
+    /// with one `BaseEntries` (found paths only).
     BaseQuery {
+        /// Relative paths, at most [`MAX_BATCH`].
         paths: Vec<Vec<u8>>,
     },
+    /// Host to plugin: answer to `BaseQuery` or one page of `BaseList`.
     BaseEntries {
+        /// Entries in path order, at most [`MAX_BATCH`].
         entries: Vec<BaseEntry>,
     },
     // restore (plugin asks, host streams FileBegin/Data/FileEnd and Stream/Data/StreamEnd back)
+    /// Plugin to host, restore only: send these entries or subtrees of the snapshot
+    /// (`FileBegin`/`Data`/`FileEnd`), then `NeedDone`. Unknown paths are skipped.
     NeedFiles {
+        /// Relative paths, at most [`MAX_BATCH`].
         paths: Vec<Vec<u8>>,
     },
+    /// Plugin to host, restore only: send these streams (`Stream`/`Data`/`StreamEnd`),
+    /// then `NeedDone`. Unknown names are skipped.
     NeedStreams {
+        /// Stream names, at most [`MAX_BATCH`].
         names: Vec<String>,
     },
+    /// Host to plugin: end of the answer to `NeedFiles` or `NeedStreams`.
     NeedDone,
+    /// Plugin to host: progress for the job page.
     Progress {
+        /// Units done (bytes or items, the plugin's choice).
         done: u64,
+        /// Units in total, 0 if unknown.
         total: u64,
+        /// Short description of the current step.
         text: String,
     },
     // mount
+    /// Plugin to host, mount only: the mount is ready.
     MountReady {
+        /// How to reach it (shown to the user, e.g. an address).
         info: String,
     },
+    /// Plugin to host (mount, export): read a byte range of a regular file of the
+    /// snapshot; answered with `FileData`, or `Error { code: 2 }` for a missing or
+    /// non-regular file.
     ReadFile {
+        /// Relative path.
         path: Vec<u8>,
+        /// Byte offset.
         offset: u64,
+        /// Bytes to read, at most [`MAX_DATA`].
         len: u32,
     },
+    /// Host to plugin: answer to `ReadFile` (shorter than asked at the end of the file).
     FileData {
+        /// The bytes.
         bytes: Vec<u8>,
     },
+    /// Host to plugin, mount only: the mount time ended; the plugin answers `Done`
+    /// within 120 s.
     Unmount,
     // any time
+    /// Plugin to host, any time: a line for the job log (escaped and truncated by the host).
     Log {
+        /// 0 error, 1 warn, 2 info, 3 and above debug.
         level: u8,
+        /// The text, at most 64 KiB.
         text: String,
     },
+    /// Either direction, any time: the operation failed and ends.
     Error {
+        /// Error code (errno-like; 2 = not found, 95 = not supported, 1 = other).
         code: u32,
+        /// Reason for the job log, at most 64 KiB.
         message: String,
     },
     // v1.3 (appended: older variants keep their wire index)
     /// The base snapshot's entries in path order (bytes) after `after`; answered
     /// with one `BaseEntries` page (empty = end). Backup only.
     BaseList {
+        /// Last path of the previous page; `None` starts at the beginning.
         after: Option<Vec<u8>>,
     },
     // v1.5 (appended)
     /// Answer to `ListGuests` with tags; plugins without tags keep sending `Guests`
     /// (the SDK does that), so they still run on a v1.4 host.
     TaggedGuests {
+        /// The guests.
         list: Vec<TaggedGuest>,
     },
     // v1.7 (appended)
@@ -211,7 +341,9 @@ pub enum Message {
     /// with their error. The job ends `ok` with warnings. The SDK sends it only when
     /// `count > 0`, so plugins without skipped items still run on a v1.6 host.
     Warnings {
+        /// Items skipped since the previous `Warnings` (the host adds the counts up).
         count: u64,
+        /// At most [`MAX_WARNING_SAMPLES`] lines of at most [`MAX_WARNING_SAMPLE`] bytes.
         samples: Vec<String>,
     },
     // v1.8 (appended after `Warnings`)
@@ -220,6 +352,7 @@ pub enum Message {
     /// the appliance keeps with the snapshot in its catalog (e.g. PostgreSQL's
     /// recoverable range, shown in the restore dialog).
     SnapshotMeta {
+        /// The JSON object as text.
         json: String,
     },
     // v1.9 (appended after `SnapshotMeta`)
@@ -228,8 +361,11 @@ pub enum Message {
     /// go back (e.g. a PST header written last); the host packs the files as the
     /// download's tar/zip after `Done`.
     Output {
+        /// Relative path of the output file, at most 1024 bytes, not below [`STREAMS_DIR`].
         name: String,
+        /// Byte offset in that file; `offset + bytes.len()` at most [`MAX_OUTPUT_FILE`].
         offset: u64,
+        /// The bytes, at most [`MAX_DATA`].
         bytes: Vec<u8>,
     },
 }
@@ -237,16 +373,20 @@ pub enum Message {
 /// Upper bound of one export output file (`Output.offset + len`): 64 GiB.
 pub const MAX_OUTPUT_FILE: u64 = 64 << 30;
 
-/// Samples per `Warnings` message and bytes per sample.
+/// Samples per `Warnings` message.
 pub const MAX_WARNING_SAMPLES: usize = 20;
+/// Bytes per `Warnings` sample.
 pub const MAX_WARNING_SAMPLE: usize = 1024;
 
+/// Largest `SnapshotMeta` JSON in bytes (16 KiB).
 pub const MAX_SNAPSHOT_META: usize = 16 << 10;
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
 }
 
+/// Encodes `m`, writes it as one frame and flushes. Fails for a message above
+/// [`MAX_FRAME`] or on an I/O error; does not run [`check`].
 pub fn write_msg(w: &mut impl Write, m: &Message) -> io::Result<()> {
     let body = postcard::to_stdvec(m).map_err(|e| bad(format!("encode: {e}")))?;
     if body.len() > MAX_FRAME {
@@ -257,6 +397,9 @@ pub fn write_msg(w: &mut impl Write, m: &Message) -> io::Result<()> {
     w.flush()
 }
 
+/// Reads one frame and decodes it. Fails (`InvalidData`) for a frame above
+/// [`MAX_FRAME`], an undecodable body or a message that fails [`check`]; EOF is
+/// `UnexpectedEof`.
 pub fn read_msg(r: &mut impl Read) -> io::Result<Message> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
@@ -366,12 +509,18 @@ pub fn check(m: &Message) -> io::Result<()> {
 
 // ---- manifest -----------------------------------------------------------------
 
+/// A network endpoint a kind's sources connect to; the firewall and the sandbox open
+/// exactly these (see [`KindSpec::tcp_targets`]).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Endpoint {
-    /// JSON pointers into the source config
+    /// JSON pointer into the source config to the host (a string, or v1.8 an array
+    /// of `host[:port]` strings).
     pub host: String,
+    /// JSON pointer into the source config to the port (number or numeric string).
     pub port: Option<String>,
+    /// Port used when the config has none at `port`.
     pub default_port: u16,
+    /// `tcp` or `udp` (UDP endpoints are not opened by the appliance firewall).
     pub proto: String,
     /// v1.3: host used when the config has no (or an empty) value at `host`, e.g. a
     /// fixed cloud API host that a config field may override (national clouds, tests)
@@ -379,12 +528,20 @@ pub struct Endpoint {
     pub default_host: Option<String>,
 }
 
+/// One restore a kind offers (manifest `restores[]`).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RestoreAction {
+    /// `[a-z0-9_-]{2,32}`, unique per kind. Reserved: `download` (required; done by
+    /// the host, or v1.9 with a `params_schema` by [`Op::Export`]) and `mount` (runs
+    /// [`Op::Mount`]); every other id runs [`Op::Restore`].
     pub id: String,
+    /// Name shown in the restore dialog.
     pub title: String,
+    /// JSON-Schema subset (an object) of the restore's parameters; the UI renders a
+    /// form from it. Parameters are visible to operators: never put secrets here.
     #[serde(default)]
     pub params_schema: Option<serde_json::Value>,
+    /// An application-specific restore (e.g. point-in-time), shown as such in the UI.
     #[serde(default)]
     pub app_specific: bool,
     /// v1.4: which snapshots the restore is offered for: `guest`
@@ -413,30 +570,53 @@ impl RestoreAction {
     }
 }
 
+/// One source kind a plugin provides (manifest `kinds[]`); sources of it have the
+/// catalog kind `plugin:<kind>`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct KindSpec {
+    /// `[a-z0-9-]{2,32}`, unique in the manifest and across installed plugins.
     pub kind: String,
+    /// Name shown in the UI.
     pub title: String,
+    /// JSON-Schema subset (an object) of the source config; the UI renders the source
+    /// form from it.
     pub config_schema: serde_json::Value,
+    /// Top-level properties of `config_schema` that hold secrets (write-only, sealed;
+    /// v1.6 also inside lists of objects).
     #[serde(default)]
     pub secret_fields: Vec<String>,
+    /// Endpoints the plugin may connect to.
     #[serde(default)]
     pub endpoints: Vec<Endpoint>,
+    /// Guest selection, e.g. `{"title": "Databases", "list": true}` (`list`: guests
+    /// come from `ListGuests`); `None` = the source is backed up as a whole.
     #[serde(default)]
     pub guests: Option<serde_json::Value>,
+    /// Backup properties shown in the UI, e.g. `{"incremental": true, "consistent": "application"}`.
     #[serde(default)]
     pub backup: Option<serde_json::Value>,
+    /// Restore actions offered for snapshots of this kind; must contain `download`.
     pub restores: Vec<RestoreAction>,
 }
 
+/// `manifest.json` of a plugin bundle (docs/plugin-system.md "Package").
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Manifest {
+    /// Plugin id, see [`valid_plugin_id`]; owned by the first publisher that installs it.
     pub id: String,
+    /// Display name, 1 to 64 printable characters.
     pub name: String,
+    /// `MAJOR.MINOR.PATCH` (digits only); an upgrade must be strictly newer.
     pub version: String,
+    /// `[a-z0-9-]{2,32}`; must equal the publisher of the signing key (`nexusbackup`
+    /// = project keys only).
     pub publisher: String,
+    /// Protocol major version the plugin speaks; must equal [`API`].
     pub api: u32,
+    /// Source kinds, at least one.
     pub kinds: Vec<KindSpec>,
+    /// Sandbox limits: `network` (`endpoints` default, or `none`), `tmp_mb`,
+    /// `memory_mb`, `cpu_quota` (not enforced in v1).
     #[serde(default)]
     pub sandbox: Option<serde_json::Value>,
 }
@@ -676,6 +856,7 @@ pub fn newer(a: &str, than: &str) -> bool {
     n(a) > n(than)
 }
 
+/// Bundle reader/packer and signatures (feature `bundle`).
 #[cfg(feature = "bundle")]
 pub mod bundle;
 

@@ -9,8 +9,11 @@ use std::io::{BufWriter, Read, Write};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// The plugin's main: runs one operation on (stdin, stdout), e.g. `plugin_sdk::run_with`.
 pub type PluginFn = Box<dyn FnOnce(Box<dyn Read + Send>, Box<dyn Write + Send>) + Send>;
 
+/// A [`Peer`] to a plugin on a thread. Dropping it closes the pipes (the thread then
+/// ends on EOF); [`Peer::finish`] also joins the thread.
 pub struct InProc {
     conn: Option<Conn>,
     thread: Option<JoinHandle<()>>,

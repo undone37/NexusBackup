@@ -12,6 +12,7 @@ pub fn view(s: &Snapshot) -> Vec<TreeEntry> {
     agent_conn::files::with_streams(s.files.clone(), &s.streams, s.time)
 }
 
+/// Entries directly inside `dir` of [`view`] (absolute, `/` = root), for `files_list`.
 pub fn list(s: &Snapshot, dir: &str) -> Result<Vec<agent_conn::files::ListEntry>> {
     agent_conn::files::list(&view(s), dir)
 }

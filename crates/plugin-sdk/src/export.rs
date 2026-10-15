@@ -3,12 +3,37 @@
 //! (`ReadFile`) and writes what the plugin sends as `Output` into the download,
 //! which it packs as tar/zip after `Done`. Request/answer only, so the plugin may
 //! write output between any two reads.
+//!
+//! ```no_run
+//! use plugin_sdk::{Ctx, Export, Result};
+//! use std::io::Write;
+//!
+//! // Body of `Plugin::export`: one `.txt` per selected regular file.
+//! fn export(_ctx: &Ctx, ex: &mut Export) -> Result<String> {
+//!     let mut files = Vec::new();
+//!     ex.list(|e| {
+//!         if e.meta.kind == Some(plugin_sdk::Kind::File) {
+//!             files.push(e.path);
+//!         }
+//!         Ok(())
+//!     })?;
+//!     for path in &files {
+//!         let data = ex.read_all(path, 64 << 20)?;
+//!         let mut out = ex.output(&format!("{}.txt", String::from_utf8_lossy(path)))?;
+//!         out.write_all(&data)?;
+//!         out.finish()?;
+//!     }
+//!     Ok(format!("{} files", files.len()))
+//! }
+//! ```
 
 use crate::{Result, Shared};
 use anyhow::{anyhow, bail};
 use plugin_proto::{BaseEntry, Message, MAX_DATA, MAX_OUTPUT_FILE};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
+/// The host side of an export, passed to [`crate::Plugin::export`]. The plugin
+/// runs without network and without the source's credentials (`ctx.config` is `{}`).
 pub struct Export {
     chan: Shared,
 }
@@ -91,6 +116,7 @@ impl Export {
         })
     }
 
+    /// Progress for the job page, as [`crate::Ctx::progress`]. Send errors are ignored.
     pub fn progress(&self, done: u64, total: u64, text: &str) {
         let _ = self.chan.borrow_mut().send(&Message::Progress {
             done,
@@ -100,6 +126,8 @@ impl Export {
     }
 }
 
+/// [`Read`] over one snapshot file, from [`Export::reader`]. A path that is not a
+/// selected regular file fails the first read with `NotFound`.
 pub struct FileReader<'a> {
     ex: &'a mut Export,
     path: Vec<u8>,
@@ -136,6 +164,8 @@ impl Read for FileReader<'_> {
 }
 
 /// One output file: buffered writes sent as `Output` frames (≤ 4 MiB).
+/// `SeekFrom::End` is not supported; a file may grow to 64 GiB. Dropping it without
+/// [`Output::finish`] loses what is still buffered (up to 4 MiB).
 pub struct Output {
     chan: Shared,
     name: String,

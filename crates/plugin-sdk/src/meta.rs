@@ -8,6 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::Path;
 
+/// Entry kind of local metadata (from `symlink_metadata`). Never [`Kind::Hardlink`]:
+/// hard links are detected by [`crate::Sink::walk_dir`] from the inode.
 pub fn kind_of(m: &fs::Metadata) -> Kind {
     let t = m.file_type();
     if t.is_dir() {
