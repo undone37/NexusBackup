@@ -4,3 +4,7 @@
 /web/node_modules
 /tmp
 /os/agent-release/*/
+# Python byte code (release/tests imports release/cve-exceptions.py)
+__pycache__/
+# signing work directory of docs/release.md (release/sign.sh sign-blobs pkgs)
+/pkgs/
