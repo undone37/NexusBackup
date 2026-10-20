@@ -115,7 +115,10 @@ FROM ${BASE}
 # smartmontools (smartctl, ~2.3 MB) and mdadm (~1.1 MB), both AlmaLinux BaseOS: disk health
 # and the data array of nexus-disks (Phase 16, docs/hardware.md); xfsprogs and util-linux
 # (mkfs.xfs, xfs_growfs, lsblk, wipefs, blkid) are part of the base, asserted.
+# toolbox (from the base image) is unused and carried a critical Go stdlib finding (v0.1.0-alpha CVE
+# report); rpm -e refuses if anything depends on it. podman and skopeo stay: bootc needs them.
 RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit smartmontools mdadm \
+ && { ! rpm -q toolbox >/dev/null || rpm -e toolbox; } \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
  && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd \

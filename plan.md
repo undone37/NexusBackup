@@ -1198,9 +1198,11 @@ state.md and commits.
 
 **Release and CI**
 - R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
-- R2 CVE gate for final releases: critical findings in the restore micro-VM's Debian kernel and in AlmaLinux's
-  podman/skopeo Go code must be fixed upstream or accepted; remove the unused `toolbox` from the image (Release
-  0.1.0-alpha).
+- R2 CVE gate for final releases (recheck 2026-10-20): `toolbox` removed from the image (its go1.26.2 finding gone).
+  podman 5.8.2-9 and skopeo 1.22.2-5 (grpc v1.72.2, x/net 0.48/0.56, go1.26.7) are still the newest AlmaLinux 10
+  builds: not fixed upstream. Restore VM kernel: trixie-security has 6.12.113 (the next build takes it); the Debian
+  tracker marks several of grype's kernel findings "not affected" or fixed in 6.12.x, which grype cannot see (it
+  compares upstream versions). Open: a reviewed exception list (VEX) for those, or wait (Release 0.1.0-alpha).
 - R3 perlcritic for pve-plugin at an agreed level (needs the OK to install it) (Phase 34a).
 - R4 **Done 2026-10-20:** Dependabot runs at night (02:00 Europe/Berlin, actions 03:00 monthly) (Phase 34d).
 - R5 **Done 2026-10-20 (maintainer):** private vulnerability reporting and Dependabot alerts enabled (Phase 34d).
