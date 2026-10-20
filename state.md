@@ -806,7 +806,16 @@ their IDs. In progress:
   snapshot, 17/17 forced-command probes. Lab fixes: scripts take TN_HOST/TN_API_PORT/TN_SSH_PORT (default: the
   local QEMU forwards), provision.py creates the appliance key, disk serials for the pool, setfattr fallback
   (27.0 ships no attr tools; `data.sh xattrs` for tests/lab.rs still needs getfattr)
-- [ ] Windows agent tests (L7) on VM 242
+- [x] Windows agent e2e (2026-10-20, `lab/windows/e2e.sh 242`, default steps, MSI 0.1.0 of the release draft) on
+  VM 242 (Windows Server 2022): MSI install (auto, LocalSystem, 3 restarts, protected ACL), enrol 5 s, VSS backup
+  34 s (995 entries, 267 MB), incremental 440 unchanged / 0.5 MB, restore identical (70 entries incl. long path,
+  ADS, hidden, links), nothing written through a junction, MSI self-update refused, service restart behaviour.
+  The first comparison showed 4 differing lines: manifest.ps1 (Windows PowerShell 5.1) descended into junction
+  and symlink targets, which are restored verbatim outside the tree, and missed the long path
+  (LongPathsEnabled=0 on a fresh server) and the hidden file's streams; fixed in manifest.ps1, the VM now enables
+  long paths
+- [ ] L7 proper: MSI major upgrade with the GUI running, 1603 log parsing, watchdog revert, MSI rollback refused
+  (needs a second MSI with a bumped version, `upgrade` step)
 
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
