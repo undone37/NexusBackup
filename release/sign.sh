@@ -111,6 +111,7 @@ sign-blobs)
 	[ $# = 2 ] || die "usage: sign-blobs DIR"
 	[ -f "$2/SHA256SUMS" ] || die "$2/SHA256SUMS not found"
 	(cd "$2" && sha256sum -c --quiet --strict SHA256SUMS) || die "SHA256SUMS does not match the files in $2"
+	key_opts # a missing key file fails here, before the passphrase prompt
 	if [ -z "${COSIGN_PKCS11_URI:-}" ] && [ -z "${COSIGN_PASSWORD+x}" ]; then
 		read -rsp "passphrase for ${COSIGN_KEY:-./cosign.key}: " COSIGN_PASSWORD
 		echo >&2
@@ -129,6 +130,7 @@ sign-blobs)
 sign-agent-release)
 	[ $# = 2 ] || die "usage: sign-agent-release DIR"
 	[ -f "$2/manifest.json" ] || die "$2/manifest.json not found"
+	key_opts # a missing key file fails here, before the passphrase prompt
 	if [ -z "${COSIGN_PKCS11_URI:-}" ] && [ -z "${COSIGN_PASSWORD+x}" ]; then
 		read -rsp "passphrase for ${COSIGN_KEY:-./cosign.key}: " COSIGN_PASSWORD
 		echo >&2
