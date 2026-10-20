@@ -92,14 +92,14 @@ fn rules_file() -> PathBuf {
 /// Writes and compiles the rules; returns the number of files.
 pub(crate) fn compile(rules: &[Rule]) -> io::Result<usize> {
     if rules.is_empty() {
-        return Err(crate::err("no rules"));
+        return Err(super::err("no rules"));
     }
     let _ = fs::remove_dir_all(DIR);
     fs::create_dir_all(Path::new(DIR).join("src"))?;
     let mut args = vec!["-w".to_owned()];
     for r in rules {
         if !valid_rule_name(&r.name) {
-            return Err(crate::err(format!("invalid rule file name {:?}", r.name)));
+            return Err(super::err(format!("invalid rule file name {:?}", r.name)));
         }
         let p = Path::new(DIR).join("src").join(&r.name);
         fs::write(&p, &r.text)?;
@@ -110,7 +110,7 @@ pub(crate) fn compile(rules: &[Rule]) -> io::Result<usize> {
     if !out.status.success() {
         let e = String::from_utf8_lossy(&out.stderr);
         let e: String = e.trim().chars().take(2000).collect();
-        return Err(crate::err(format!("rules do not compile: {e}")));
+        return Err(super::err(format!("rules do not compile: {e}")));
     }
     Ok(rules.len())
 }
@@ -233,7 +233,7 @@ impl Scan {
     pub(crate) fn mounts(&mut self, mountpoints: &[String]) -> io::Result<()> {
         let mut batch: Vec<(PathBuf, String)> = Vec::new();
         for mp in mountpoints {
-            let mut dirs = vec![PathBuf::from(format!("{}{mp}", crate::MNT))];
+            let mut dirs = vec![PathBuf::from(format!("{}{mp}", super::MNT))];
             while let Some(d) = dirs.pop() {
                 if self.halted() {
                     return Ok(());
@@ -262,7 +262,7 @@ impl Scan {
                         }
                         let shown = p
                             .to_string_lossy()
-                            .strip_prefix(crate::MNT)
+                            .strip_prefix(super::MNT)
                             .unwrap_or_default()
                             .to_owned();
                         batch.push((p, shown));
@@ -348,7 +348,7 @@ impl<R: Read> Read for FrameReader<R> {
                 return Ok(0);
             }
             if self.left > MAX_FRAME {
-                return Err(crate::err("frame too large"));
+                return Err(super::err("frame too large"));
             }
         }
         let n = buf.len().min(self.left as usize);
@@ -370,7 +370,7 @@ impl<R: Read> FrameReader<R> {
 
 /// `scantar`: answers `{"ok":"send"}`, reads the framed tar, replies with the report.
 pub(crate) fn serve_tar(r: &mut impl BufRead, w: &mut impl Write, limits: Limits) -> io::Result<serde_json::Value> {
-    crate::send_line(w, &serde_json::json!({"ok": "send"}))?;
+    super::send_line(w, &serde_json::json!({"ok": "send"}))?;
     let mut fr = FrameReader {
         r,
         left: 0,
