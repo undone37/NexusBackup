@@ -127,6 +127,25 @@ Against the appliance VM (SELinux enforcing): `PVE=0 LAB=... lab/appliance/e2e.s
 then `ROOT=$LAB/appliance/root PORT=<port> AGENT_HOST=10.0.2.2 UPDATE_DIR= lab/linux/e2e.sh <vm>`
 and `lab/appliance/e2e.sh check` for AVCs (see docs/agent-linux.md, "Lab results").
 
+## Agent test VMs on the PVE lab host (`lab/pvehost/agent-vms.sh`)
+
+One small VM per distribution release on pve-test (2 vCPUs, 2 GB, 16 GB thin disk, DHCP on vmbr0, IDs 220-233,
+names `ag-<release>`, tag `nexus-agent-lab`): Ubuntu 22.04, 24.04, 26.04, 26.10; Debian 12, 13, testing; Alma
+8.10, 9.8, 10.2; Rocky 8.10, 9.8, 10.2; openSUSE Leap 16.0. Installed unattended from the ISOs on the host
+(direct kernel boot with the answer file URL: Ubuntu autoinstall, Debian preseed, kickstart, Agama profile; the
+files come from a temporary HTTP server on the host), then the offline snapshot **`clean-os`** (OS only), then
+the agent package of `$TAG`. Root and user `nexus` log in with `~/nexus-lab/lab_ed25519` (through the host);
+the `nexus` password is in `~/nexus-lab/agent-vms/password`.
+
+```sh
+lab/pvehost/agent-vms.sh install [names]   # e.g. ubuntu-2404 debian-13; default all (4 at a time, ~45 min)
+lab/pvehost/agent-vms.sh ip [names]        # addresses from the guest agent
+lab/pvehost/agent-vms.sh reset [names]     # back to the clean OS (stopped); then `agent` installs the package
+lab/pvehost/agent-vms.sh agent [names]
+```
+
+Stop the VMs when no test runs (`qm stop`): together they hold 28 GB of the host's memory.
+
 ## TrueNAS lab (`lab/truenas/`, docs/truenas-connector.md)
 
 TrueNAS Community 25.10.7 in QEMU/KVM (8 GB RAM, 20 GB boot disk, two 8 GB data disks), installed

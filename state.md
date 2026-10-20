@@ -788,6 +788,15 @@ their IDs. In progress:
 - Maintainer input 2026-10-20: perlcritic may be installed (runner has it), nested hypervisors on pve-test allowed,
   ISOs on pve-test: TrueNAS SCALE 27.0.0-RC1 and 25.10.7, Windows Server (SERVER_EVAL), ESXi 7.0 and 8.0
 
+## Lab: agent test VMs on pve-test (2026-10-20)
+- [x] `lab/pvehost/agent-vms.sh install`: 14 VMs (IDs 220-233) installed unattended, snapshot `clean-os`, agent
+  0.1.0 (v0.1.0-alpha draft packages) installed on all: Ubuntu 22.04/24.04/26.04/26.10, Debian 12/13/testing,
+  Alma 8.10/9.8/10.2, Rocky 8.10/9.8/10.2, Leap 16.0. Ubuntu 24.04 alone 11 min; the batch of 12, four at a time,
+  41 min. Fixed on the way: answer file server held the ssh session (exec in a redirected subshell), background
+  jobs read the VM list from stdin, ssh jump with the lab key, Agama product id `openSUSE_Leap` and timezone
+  `UTC`, agent install retried while the first boot's name resolution is not up (Leap).
+- [ ] Enrol the agents with the appliance VM 201 and run L6 (agent updates) on them
+
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 
