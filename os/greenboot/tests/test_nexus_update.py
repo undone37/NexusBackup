@@ -33,6 +33,8 @@ def entry(img, sig, digest, version, download_only=False):
             "downloadOnly": download_only}
 if os.path.exists(os.path.join(d, "fail")):
     sys.exit("bootc: simulated failure")
+if a[0] in ("switch", "upgrade") and os.path.exists(os.path.join(d, "fail-fetch")):
+    sys.exit(open(os.path.join(d, "fail-fetch")).read())
 af = os.environ.get("NEXUS_UPDATE_AUTHFILE", "")
 if a[0] in ("switch", "upgrade") and af and os.path.exists(af):  # what a fetch would log in with
     open(os.path.join(d, "seen-auth.json"), "w").write(open(af).read())
@@ -365,6 +367,20 @@ class Agent(unittest.TestCase):
         self.tick(utc(2026, 10, 11, 3, 30))
         self.assertNotIn("bootc upgrade --from-downloaded --apply", self.calls())
         self.assertIn("older", self.status()["last_result"]["result"])
+
+    def test_wrong_key_on_the_registry_is_explained(self):
+        pol = {"transports": {"docker": {REPO: [{"type": "sigstoreSigned", "keyPaths": ["/etc/pki/nexus/cosign/TEST-KEY-DO-NOT-SHIP.pub"]}]}}}
+        (self.d / "policy.json").write_text(json.dumps(pol))
+        os.environ["NEXUS_UPDATE_POLICY"] = str(self.d / "policy.json")
+        try:
+            (self.d / "fail-fetch").write_text("error: Fetching manifest: failed to invoke method OpenImage: cryptographic "
+                                         "signature verification failed: invalid signature when validating ASN.1 encoded signature")
+            (self.d / "ctl/request").write_text("stage")
+            self.tick()
+            err = self.status()["api"]["error"]
+            self.assertIn("is not signed with a key this appliance trusts (pinned: TEST-KEY-DO-NOT-SHIP.pub)", err)
+        finally:
+            os.environ.pop("NEXUS_UPDATE_POLICY", None)
 
     def test_bootc_failure_is_reported_not_raised(self):
         (self.d / "fail").touch()

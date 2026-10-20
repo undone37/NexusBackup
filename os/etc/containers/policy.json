@@ -10,7 +10,8 @@
         {
           "type": "sigstoreSigned",
           "keyPaths": [
-            "/etc/pki/nexus/cosign/TEST-KEY-DO-NOT-SHIP.pub"
+            "/etc/pki/nexus/cosign/TEST-KEY-DO-NOT-SHIP.pub",
+            "/etc/pki/nexus/cosign/nexus-release-2026-alpha.pub"
           ],
           "signedIdentity": {
             "type": "matchRepository"

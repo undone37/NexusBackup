@@ -74,6 +74,15 @@ for f in "${pkeys[@]}"; do
 		bad "plugin key $n is not a PEM public key"
 done
 
+# development and lab builds pin the TEST key and every release key, so a lab appliance can follow the real
+# releases (an image pinning only the TEST key refuses them: "invalid signature")
+if [ $release = 0 ]; then
+	for k in "$RELEASE_DIR"/keys/*.pub; do
+		printf '%s\n' "${keys[@]}" | grep -qx "/etc/pki/nexus/cosign/$(basename "$k")" ||
+			bad "development tree does not pin the release key $(basename "$k") (copy it to os/etc/pki/nexus/cosign/ and policy.json)"
+	done
+fi
+
 if [ $release = 1 ]; then
 	if grep -rlq "NEXUS TEST KEY" "$etc" || printf '%s\n' "${keys[@]}" | grep -q TEST; then
 		bad "release build still pins the TEST key (run release/inject-keys.sh)"

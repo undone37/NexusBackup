@@ -348,12 +348,25 @@ def stage(c):
     if s["spec_image"] is None:
         raise Error("not a bootc host (bootc status has no spec image)")
     with Egress(c), PullAuth(c):
-        if s["spec_image"] != target or s["spec_signature"] != "containerPolicy":
-            # first run after install, or channel/repo changed: pin the signed origin
-            log(f"switching origin {s['spec_image']} ({s['spec_signature']}) -> {target} (signature enforced)")
-            run("bootc", "switch", "--quiet", "--enforce-container-sigpolicy", target)
-        else:
-            run("bootc", "upgrade", "--quiet", "--download-only")
+        try:
+            if s["spec_image"] != target or s["spec_signature"] != "containerPolicy":
+                # first run after install, or channel/repo changed: pin the signed origin
+                log(f"switching origin {s['spec_image']} ({s['spec_signature']}) -> {target} (signature enforced)")
+                run("bootc", "switch", "--quiet", "--enforce-container-sigpolicy", target)
+            else:
+                run("bootc", "upgrade", "--quiet", "--download-only")
+        except Error as e:
+            if "signature verification failed" in str(e) or "invalid signature" in str(e):
+                # containers/image only says "invalid signature when validating ASN.1 encoded signature"
+                try:
+                    keys = ", ".join(os.path.basename(k) for k in pinned_keys(c))
+                except (Error, OSError, ValueError):
+                    keys = "?"
+                raise Error(
+                    f"{target} is not signed with a key this appliance trusts (pinned: {keys}); a development or "
+                    "lab build that pins only the TEST key cannot follow the release channel"
+                ) from e
+            raise
     s = summary(bootc_status())
     if s["staged"]:
         log(f"staged {s['staged']['digest']} (version {s['staged']['version']})")
