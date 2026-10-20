@@ -852,6 +852,11 @@ their IDs. In progress:
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 
+## Phase 41 — VMware ESXi and vCenter backups as plugins (added 2026-10-21)
+Scope: plan.md Phase 41 (plugins `vmware-esxi` and `vmware-vcenter` on a shared vSphere library; transport spike
+in a nested ESXi 7.0U3/8.0U3 lab on pve-test first, vCenter needs a VCSA ISO and evaluation licences; CBT
+incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Not started.
+
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
 Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.

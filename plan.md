@@ -1192,8 +1192,7 @@ state.md and commits.
   volumes (31c).
 - C4 M365 item metadata search (sender, recipients) for cases: plugin contract change, design in docs/m365.md
   (Phase 19, 33).
-- C5 VMware vSphere: run the transport spike (docs/vmware-transport-spike.md) in a vSphere lab, then schedule the
-  plugin (Phase 33).
+- C5 VMware vSphere: moved to Phase 41 (2026-10-21).
 - C6 Instant rollback for containers (Phase 30).
 - C7 Progress lines for nexus-nas and the plugin host (today log only) (Phase 31 lab notes).
 
@@ -1266,6 +1265,30 @@ Split out of Phase 39 (S6) as its own phase. The plan §12.2 disk layout without
 - The NVMe metadata tier: catalog and chunk indexes on a mirrored NVMe pair, the data array for packs only.
 - Virtual appliances: vTPM limits (manual chapter 2), and what the setup wizard offers without a TPM.
 - Lab: appliance VM with vTPM and Secure Boot on pve-test; unlock, update, rollback, disk replacement, recovery.
+Not started.
+
+### Phase 41 — VMware ESXi and vCenter backups as plugins (added 2026-10-21 by user request)
+
+VM backups from VMware vSphere 7 and 8 as signed, sandboxed plugins (Phase 9), the main audience being SMBs moving
+from VMware to Proxmox VE. Takes over Phase 39 C5 and builds on docs/vmware-transport-spike.md (transport decision:
+no VDDK in the image; HTTPS datastore reads with `QueryChangedDiskAreas` first, nbdkit with a customer-supplied VDDK
+only if the spike shows it is needed).
+- Plugins: `vmware-esxi` (standalone hosts) and `vmware-vcenter` (inventory, clusters, VMs that move between hosts),
+  both on one shared vSphere client library in the SDK (session, snapshot, CBT, datastore reads); the host keeps the
+  chunking, encryption and keys as for every plugin. Egress only to the declared ESXi / vCenter addresses.
+- Spike first, in a lab: nested ESXi 7.0U3 and 8.0U3 on pve-test (ISOs present), a vCenter appliance (VCSA ISO and
+  evaluation licences still to be supplied by the maintainer). Measure datastore read throughput per stream and with
+  parallel ranges, CBT behaviour after snapshot consolidation and storage vMotion, vSAN/vVols reachability.
+- Backup: snapshot with quiescing through VMware Tools (VSS on Windows guests, fallback crash-consistent with an
+  alert), CBT incrementals into one fixed index per disk, scheduled full read against CBT drift (Phase 29), VM
+  configuration (vmx, hardware version, NICs, firmware, vTPM state where readable) in the snapshot, file index on
+  the disk images (Phase 31), malware scan and restore tests as for PVE VMs.
+- Restore: to Proxmox VE (VM conversion: disk bus, NIC model, firmware, VirtIO drivers note for Windows guests),
+  file-level restore and downloads; back to ESXi / vCenter as a later step.
+- Requirements and limits to document: licensed ESXi (the free hypervisor's API is read-only, so no snapshots), a
+  least-privilege vCenter role, CBT enabled per VM by the plugin, which datastore types work (VMFS, NFS; vSAN and
+  vVols per the spike result).
+- UI, manual chapter, compatibility matrix rows, docs/plugin-system.md entry; lab e2e like `lab/truenas/e2e.sh`.
 Not started.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
