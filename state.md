@@ -800,3 +800,11 @@ Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.
 Scope: plan.md Phase 36 (signed update bundle as a release asset, spike: local mirror registry vs own signature
 check + oci-archive, upload in Settings > Updates / nexusctl / console USB, same checks as online). Not started.
 
+## Phase 37 — Windows bare-metal recovery (added 2026-10-20)
+Scope: plan.md Phase 37 (layout, VSS volume images, recovery media spike Linux rescue ISO vs customer-built WinPE,
+P2V to PVE, limits). Not started.
+
+## Phase 38 — Standalone agents with Veeam Agent parity (added 2026-10-20)
+Scope: plan.md Phase 38 (comparison doc first, managed and standalone mode, local repository in the appliance
+format on disk/USB/NFS/SMB/SFTP/S3, image and file backups, client triggers, application-aware processing, client
+restores, UI/CLI, import into an appliance). All in this repository. Not started.

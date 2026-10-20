@@ -1085,6 +1085,80 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
   build, rollback by greenboot after a broken build, refusal of an unsigned, re-signed-with-another-key, truncated
   and older bundle; then an online update afterwards still works.
 
+### Phase 37 — Windows bare-metal recovery (added 2026-10-20 by user request)
+
+Goal: a Windows Server or Windows 11 machine backed up by the Windows agent can be rebuilt on empty disks: same
+machine after a disk loss, new hardware, or as a Proxmox VE VM (P2V), like Linux BMR (Phase 19a, `docs/bmr.md`).
+Until now the Windows agent backs up files (VSS, USN incrementals), and BMR was listed as open (Phase 23b).
+
+- **37a Layout:** the agent records the machine layout with every backup (`GetLayout`, as on Linux): disks, GPT/MBR,
+  partitions with type GUIDs (EFI system, MSR, recovery, basic data), volume GUIDs and disk signatures, file systems,
+  BitLocker state per volume, firmware (UEFI/BIOS), Secure Boot state, BCD store location, network interfaces.
+  Dynamic disks and Storage Spaces are detected and reported as unsupported for BMR.
+- **37b Volume images:** the system-relevant volumes (EFI system, MSR, Windows, recovery) are backed up as images
+  read from the VSS shadow copy, only blocks in use (`FSCTL_GET_VOLUME_BITMAP`), chunked and deduplicated like VM
+  disks. Incrementals at first by re-reading and deduplicating (no kernel driver); changed block tracking is a
+  follow-up (Phase 38). BitLocker volumes are read in plain text from the shadow copy; the restore says so.
+- **37c Recovery media, decided by a spike first:**
+  - *A: the existing Linux rescue ISO* recreates the partition table, writes the volume images, keeps disk and
+    partition GUIDs so the BCD entries stay valid, and resizes the Windows volume (ntfs3/ntfsresize) when the new
+    disk is larger. No Windows licensing question.
+  - *B: a WinPE-based medium* built by the customer with the Windows ADK (WinPE may not be redistributed) carrying
+    the Windows agent's rescue mode; needed for driver injection on dissimilar hardware (DISM) and BCD repair
+    (`bcdboot`).
+  - The spike decides on: boot after restore to the same and to different hardware, UEFI and BIOS, Secure Boot,
+    BitLocker re-enable, and how much of B is unavoidable. A may be enough for same hardware and P2V.
+- **37d P2V:** "Restore as PVE VM" for Windows: UEFI/OVMF or SeaBIOS as recorded, vTPM, VirtIO drivers injected
+  (or the VM starts on SATA/e1000 first, then the VirtIO drivers are installed), the network configured.
+- **37e Limits:** domain controllers follow the AD restore runbook (VM-GenerationID, non-authoritative by default);
+  dynamic disks, Storage Spaces and Windows clusters are out of scope at first.
+- **Verification:** VM 101 is never written to: lab restores of an isolated copy of VM 101 onto blank disks (same
+  firmware) and as a P2V VM; Windows boots, the guest agent answers, the data is identical (hash list), BitLocker
+  state as recorded. Then a test on physical hardware.
+
+### Phase 38 — Standalone agents with Veeam Agent parity (added 2026-10-20 by user request)
+
+Goal: the Linux and Windows agents also run **without the appliance**, for small companies without a large server
+infrastructure: backups to a local or USB disk, NFS, SMB, SFTP or S3, scheduled and triggered on the client,
+application-aware backups and restores controlled from the client. The target is feature parity with the commercial
+Veeam Agent for Microsoft Windows and Veeam Agent for Linux (both editions, not only the free one). Everything stays
+in this repository and uses the same crates as the appliance; the agents get their own version line inside it.
+
+- **38a Comparison first:** `docs/veeam-agent-comparison.md`, from Veeam's current documentation: backup modes,
+  targets, schedules and triggers, application-aware processing, restores, recovery media, management (standalone,
+  managed), security, limits. Each feature: has / partial / missing here, with effort. It fixes the scope of 38b-38j;
+  the list below is the starting point, not the result.
+- **38b Two modes, one agent:** *managed* (today: the appliance pulls, its policies apply) and *standalone* (the
+  agent schedules and writes itself). A standalone agent can later be attached to an appliance without a new full
+  backup (38i).
+- **38c Local repository, same format as the appliance:** the chunk store (`crates/chunkstore`: deduplication,
+  zstd, XChaCha20-Poly1305) on a local disk, a USB disk (rotation, "backup when the disk is connected"), NFS, SMB,
+  SFTP and S3 (Object Lock for immutability, as for offsite). Local key with the 24-word recovery key (ADR-015);
+  retention locks where the target can enforce them; GFS retention (`crates/retention`); health check and compaction
+  (GC, verify) scheduled by the agent.
+- **38d Backup modes:** entire computer and volume level (images as in Phase 37, BMR-capable), file level (today's
+  file backups). Changed block tracking for images: Linux blksnap/LVM/btrfs snapshots, Windows a CBT filter driver
+  (needs a Microsoft-signed kernel driver: decide in 38a whether that is in scope or re-read plus deduplication stays).
+- **38e Schedules and triggers:** daily/periodic schedules, backup at lock/log off, when the target becomes available,
+  on idle, not on battery, retries, bandwidth limit, "back up now" from the tray, CLI and TUI.
+- **38f Application-aware processing:** Windows VSS writers with log truncation as an option (SQL Server, Exchange,
+  SharePoint, Active Directory), SQL Server transaction log backups, Oracle (RMAN or archive logs), and the existing
+  MySQL/MariaDB and PostgreSQL plugins run locally; pre/post scripts.
+- **38g Restores from the client:** files and folders (desktop UI, with versions and search), volumes, whole
+  machine (recovery media of Phase 19a and 37), application items (databases to a point in time, AD objects as far
+  as 38a decides), export of a machine backup as VHDX/qcow2.
+- **38h UI and CLI:** the desktop agent UI (`crates/agent-gui`) and the TUI get job configuration, target setup,
+  restore wizards and a status/notification history; a scriptable CLI (`nexus-agent job|backup|restore ...`);
+  e-mail notification in standalone mode.
+- **38i Growing into the appliance:** an appliance imports a standalone repository (or reads it on the share) and
+  takes the agent over as managed; policies can be pushed to standalone agents later.
+- **38j Packaging:** the same signed packages (.deb, .rpm, .msi) with standalone mode chosen at install or later;
+  agent releases keep the release key and the self-update rules (Phase 27).
+- **Order:** 38a, then 38b + 38c (repository and modes), 38e, 38d with Phase 37, 38f, 38g, 38h, 38i.
+- **Verification:** lab matrix from `lab/README.md` (Linux distributions) and VM 101 copies for Windows: backup to
+  each target type, triggers, application-aware backup and point-in-time restore, BMR from a standalone repository,
+  attach of a standalone repository to an appliance, recovery with only the 24 words and the target.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
