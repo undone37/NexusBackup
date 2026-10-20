@@ -82,7 +82,7 @@ instance; laptop on battery reports `on_battery`.
 
 - **GUI (24c, `crates/agent-gui`, binary `nexus-agent-gui`):** implemented against the IPC contract
   (`crates/agent-ui-proto`). iced 0.14 with the tiny-skia software renderer, run as a daemon: tray icon (tray-icon;
-  Windows notification area, Linux StatusNotifierItem via its pure-Rust ksni backend, no GTK) with the states
+  Windows notification area, Linux StatusNotifierItem over zbus 6 in `src/sni.rs`, no GTK) with the states
   no job / waiting / running (progress in the tooltip) / requested / success / warning / error / cancelled /
   not connected to the service / not reached by the appliance since …; each state has its own badge symbol, the
   tooltip names it. Colours are the appliance web UI's (`src/palette.rs` mirrors the tokens of `web/src/app.css`,

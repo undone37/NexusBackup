@@ -114,6 +114,7 @@ impl App {
             Ok(t) => app.tray = Some(t),
             Err(e) => app.tray_error = Some(e),
         }
+        tray::watch_dark_mode();
         let mut tasks = vec![iced::system::theme().map(Message::Mode), Task::done(Message::Refresh)];
         // without a tray there is no other way into the program
         if open || app.tray.is_none() {
@@ -226,6 +227,7 @@ impl App {
                         tray::Action::Open => tasks.push(self.open_window()),
                         tray::Action::BackupNow => tasks.push(self.backup_now()),
                         tray::Action::Quit => return iced::exit(),
+                        tray::Action::Dark(d) => self.mode = if d { theme::Mode::Dark } else { theme::Mode::Light },
                     }
                 }
                 let woken = self
@@ -252,13 +254,7 @@ impl App {
                     Ok(s) => {
                         if self.settings.notify {
                             if let Some((title, body)) = model::notification(self.seen, &s.sessions) {
-                                std::thread::spawn(move || {
-                                    let _ = notify_rust::Notification::new()
-                                        .appname("NexusBackup Agent")
-                                        .summary(&title)
-                                        .body(&body)
-                                        .show();
-                                });
+                                tray::notify(title, body);
                             }
                         }
                         self.seen = s.sessions.first().map(|s| s.id).or(self.seen);

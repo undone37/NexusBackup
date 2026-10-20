@@ -11,13 +11,9 @@ ignore = [
     # ttf-parser unmaintained (via iced/cosmic-text/fontdb): only in nexus-agent-gui, parses
     # the fonts installed on the desktop (no untrusted input); docs/security-review.md
     "RUSTSEC-2026-0192",
-    # zvariant / zbus_names / zvariant_derive unmaintained: merged into zbus 6, no flaw; via zbus 5 in tray-icon
-    # and iced_winit, desktop GUI only (docs/security-review.md, review 2026-10-20)
-    "RUSTSEC-2026-0370",
-    "RUSTSEC-2026-0371",
-    "RUSTSEC-2026-0372",
-    # lru 0.16 unsound (pop with a panicking key Drop): left only in the desktop GUI via cryoglyph (glyph cache,
-    # plain value keys); the appliance's file index uses lru 0.18.5 through tantivy 0.27
+    # lru 0.16 unsound (pop with a panicking key Drop): in Cargo.lock only, through cryoglyph in iced_wgpu, which
+    # is never built (software renderer; Cargo locks optional dependencies named by weak `dep?/feature`
+    # features); the appliance's file index uses lru 0.18.5 through tantivy 0.27
     "RUSTSEC-2026-0253",
 ]
 
