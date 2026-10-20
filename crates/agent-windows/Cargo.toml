@@ -21,7 +21,7 @@ agent-ui-proto = { path = "../agent-ui-proto" }
 blake3 = "1"
 
 [target.'cfg(windows)'.dependencies]
-windows-core = "0.62"
+windows-core = "0.100"
 windows-service = "0.8"
 
 [target.'cfg(windows)'.dependencies.windows]
