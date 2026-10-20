@@ -36,7 +36,8 @@ NAME=${NAME:-nexus-pg-testbox$([ $k = 0 ] || echo "-w$k")}
 if [ -n "${GITHUB_RUN_ID:-}" ]; then
 	BASE_NAME=$NAME
 	NAME=$NAME-r$GITHUB_RUN_ID
-	podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^$BASE_NAME-r[0-9]+" | grep -v "^$NAME" |
+	# any -w<k>: k depends on the run id too, so earlier runs have other prefixes
+	podman ps -a --format '{{.Names}}' 2>/dev/null | grep -E "^${BASE_NAME%-w*}(-w[0-9]+)?-r[0-9]+" | grep -v "^$NAME" |
 		while read -r old; do podman rm -f -t 0 "$old" >/dev/null 2>&1 || true; done || true
 fi
 

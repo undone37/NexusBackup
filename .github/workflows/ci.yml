@@ -119,6 +119,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p mysql -p postgresql --no-fail-fast
       - run: cargo test -p web-api --test oidc_keycloak
+      # the tests start their testboxes and leave them running; remove this run's (and any older run's)
+      # containers so they do not pile up on the runner (one job at a time on it)
+      - if: always()
+        run: |
+          for s in plugins/mysql/testbox/run.sh plugins/postgresql/testbox/run.sh crates/web-api/tests/oidc-testbox/run.sh; do
+            "$s" stop || true
+          done
+          podman ps -a --format '{{.Names}}' | grep -E '^nexus-(my|pg|oidc)-testbox' | xargs -r podman rm -f -t 0 || true
   plugin:
     needs: changes
     if: needs.changes.outputs.plugin == 'true'
