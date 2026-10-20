@@ -22,17 +22,19 @@ nanosecond times, xattrs, POSIX ACLs, file capabilities, hard and symbolic links
 | Debian | 12.15 (bookworm) | .deb | ext4 | none, read live | passed, restore identical |
 | Debian | 13.7 (trixie) | .deb | ext4 | none, read live | passed, restore identical |
 | Debian | testing (forky) | .deb | ext4 | none, read live | passed, restore identical |
-| AlmaLinux | 8.10 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
-| AlmaLinux | 9.8 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
-| AlmaLinux | 10.2 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
-| Rocky Linux | 8.10 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
-| Rocky Linux | 9.8 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
-| Rocky Linux | 10.2 | .rpm | XFS on LVM | none (no free extents), read live | passed, restore identical |
+| AlmaLinux | 8.10 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
+| AlmaLinux | 9.8 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
+| AlmaLinux | 10.2 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
+| Rocky Linux | 8.10 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
+| Rocky Linux | 9.8 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
+| Rocky Linux | 10.2 | .rpm | XFS on LVM, 4 GB free in the VG | LVM snapshot, consistent | passed, restore identical |
 | openSUSE Leap | 16.0 | .rpm | btrfs | btrfs snapshot, consistent | passed, restore identical |
 
-Notes: on the default layouts only btrfs gives a consistent backup. LVM snapshots need free space in the volume
-group (about 10 % of the snapshotted volume by default, `lvm_snapshot_percent`); the Alma and Rocky kickstart
-defaults leave none, so the agent reads live and says why. On Alma, Rocky and Leap firewalld blocks TCP 7444 until
+Notes: Ubuntu and Debian default installs (plain ext4) have no snapshots: the agent reads live and marks the backup
+not consistent. LVM snapshots need free space in the volume group (about 10 % of the snapshotted volume by default,
+`lvm_snapshot_percent`); the Alma and Rocky kickstart default (`autopart`) leaves none, so the agent then reads live
+and says why. The lab VMs use root 10 GB + swap 1 GB with 4 GB free in the VG (2026-10-20, run against the
+appliance VM on pve-test): LVM snapshot and consistent backups on all six. On Alma, Rocky and Leap firewalld blocks TCP 7444 until
 the rule from manual chapter 4 is added.
 
 ### Storage layouts (bundle), 2026-10-13 and earlier

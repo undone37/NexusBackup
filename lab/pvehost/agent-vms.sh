@@ -149,7 +149,13 @@ sshkey --username=nexus "$KEY"
 ignoredisk --only-use=sda
 zerombr
 clearpart --all --initlabel
-autopart
+# not autopart: it gives the whole volume group to the volumes, and LVM snapshots need free extents
+# (the agent snapshots 10 % of the volume by default): root 10 GB, swap 1 GB, about 4 GB of 16 GB stay free
+reqpart --add-boot
+part pv.01 --size=1 --grow
+volgroup vg pv.01
+logvol swap --vgname=vg --name=swap --size=1024
+logvol / --vgname=vg --name=root --fstype=xfs --size=10240
 bootloader --location=mbr
 selinux --enforcing
 firstboot --disable

@@ -803,6 +803,9 @@ their IDs. In progress:
   consistent, as designed. Found on the way: firewalld (Alma, Rocky, Leap) rejects 7444 until the documented
   rule is added; the job log only said "No route to host", now agent-conn names the likely cause and next step
   (firewall / service not running / no answer)
+- [x] Alma/Rocky 8/9/10 re-installed with 4 GB free in the VG (kickstart: root 10 GB, swap 1 GB instead of
+  autopart); the matrix against the appliance VM 201 on pve-test: LVM snapshot, consistent, restore identical on
+  all six (2026-10-20). Tests run on pve-test only from now on (maintainer)
 - [ ] L6: agent updates (deb/rpm in-band update, bundle swap + watchdog) on these VMs
 - [x] `lab/pvehost/server-vms.sh install` (2026-10-20): TrueNAS SCALE 25.10.7 (VM 240, 3.5 min) and 27.0.0-RC1
   (VM 241, 4 min; install.py unchanged) with the API answering; Windows Server 2022 Standard Evaluation (VM 242,
