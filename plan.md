@@ -729,7 +729,7 @@ Order is driven by dependencies: the chunk store first, then the key model (hard
 ### Phase 23 — Service-provider operations and new workloads
 - Usage/billing export, per-tenant IdP, impersonation rules, policy tiers, onboarding wizard, immutable tenant IDs,
   site-VPN pattern, interim-backup DR runbook; MSSQL (log chain, PITR), MySQL/MariaDB plugin, Exchange full-VSS mode,
-  AD runbook, Hyper-V host-level, Windows BMR, Windows client + arm64 agents.
+  AD runbook, Hyper-V host-level, Windows BMR (now Phase 37), Windows client + arm64 agents.
 
 ### Phase 24 — Endpoint UIs for the agents (added 2026-10-12 by user request)
 - Linux agent TUI (`nexus-agent tui`, Veeam-Agent-for-Linux style: status, last sessions with result/duration/
@@ -803,7 +803,7 @@ docs/malware-scan.md "Scheduled scans", docs/file-index.md "File hashes", docs/c
   (accepted). Hashes come from the reader (agents with `file-hash`, NAS/TrueNAS/plugin connectors), else carried over
   from the previous snapshot by identical chunk list, else read back from the store (old agents, first run after
   switching on: no forced full read on the source). Containers are hashed in the `file_index` job (with
-  `index_files`); **VM disks are not hashed** (open question 3: later, opt-in). Hash cache in the store: about
+  `index_files`); **VM disks are not hashed** (open question 3: later, opt-in; done in 31c for NTFS, ext4, XFS, the rest Phase 39 C1). Hash cache in the store: about
   100 bytes per file of one backup.
 - **Agent protocol:** `ScanHashed`/`EntryHashes` appended as tags 49/50 behind capability `file-hash`, documented in
   the v1.8 notes without a version change. The v1.8 agent-update messages (Phase 27) must be ordered after or before
@@ -842,8 +842,8 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   with the network up, instant recovery with links up, instant disk, files into the original paths (`target` "/") or
   overwriting, plugin restores. One `restore.infected` request also covers a replace (no second `restore.replace`).
   With approvals disabled administrators only (open question 3 proposed security officers, who cannot start jobs).
-  Downloads stay with the download privilege (the proposal's "admins/SOs only" is not done). Jobs queued by recovery
-  plans or the vault are re-checked by the scheduler and fail without the approval. BMR/P2V are not gated.
+  Downloads stay with the download privilege (the proposal's "admins/SOs only" is not done: Phase 39 S3). Jobs queued by recovery
+  plans or the vault are re-checked by the scheduler and fail without the approval. BMR/P2V are not gated (Phase 39 S3).
 - **Scan back** is driven by the scheduler (one ordinary `snapshot_scan` per snapshot with `--stop-on-match`, so every
   scan has its own job and `snapshot_scans` row) instead of one long connector run; `nexus-pve scan-back` exists as a
   manual CLI. Default 30 snapshots, one hour per snapshot; hits found by it are flagged without alerts. No bisect.
@@ -856,7 +856,7 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   second person; leaving incident mode / lifting the lockdown ends them as well.
 - **Risk signals:** four rules (unusual sign-in hour UTC +-1 h after 10 sign-ins in 90 days; 5 weakening requests per
   hour; 10 delete requests per hour; downloads over max(10 x daily median, 1 GiB) in 24 h); the "first API token use
-  from a new network" rule is not done. Thresholds are constants, not settings. The mark lasts 24 h; marked sessions
+  from a new network" rule is not done. Thresholds are constants, not settings (both Phase 39 S2). The mark lasts 24 h; marked sessions
   get 428 on their first change until `POST /auth/step-up`; tokens of a marked account cannot write; security
   officers and admins list and clear marks (not their own).
 
@@ -883,15 +883,15 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   pre-rollback incremental backup of the paused VM (which also keeps the old state in the store, instead of a PVE
   snapshot); the VM's configuration is not rolled back. Fallback to the full replace when the VM is stopped, its
   identity or disk layout changed, or a bitmap cannot be reused.
-- **Post-quantum** (open question 7, proposal taken: keyd hybrid wrapping first, TLS later): ADR-014. RustCrypto
+- **Post-quantum** (open question 7, proposal taken: keyd hybrid wrapping first, TLS later: Phase 39 S5): ADR-014. RustCrypto
   `ml-kem` (already in the tree through russh) rather than another implementation; the ML-KEM keys are derived from
-  the existing X25519 secrets, so tenant recovery keys stay one 64-hex-digit secret. Existing tenant recovery keys and
+  the existing X25519 secrets, so a tenant recovery key stays one secret (24 BIP39 words since ADR-015). Existing tenant recovery keys and
   replication peers stay X25519-only until replaced or enrolled again (the appliance cannot derive their ML-KEM half).
 - **Second offsite target** (decision 5, proposal taken; plan §2 updated): `tenants.offsite.second` with its own
   remote, lock and `gfs`, set with `PUT /tenants/{name}/offsite2`; per class the larger of the policies' and the
   target's value (identical by default, longer only). One offsite job per target, own upload state, copy status per
   target (`snapshots.offsite2`), inventory and `offsite_lag` alerts per target, gc/verify on both, browse/fetch per
-  target. No per-policy offsite GFS. Configuration backups still go to the first target only.
+  target. No per-policy offsite GFS. Configuration backups still go to the first target only (Phase 39 O1).
 
 ### Phase 31 — Guest file index without the restore micro-VM (proposed 2026-10-13 by user request)
 - VM/CT disk file systems (GPT/MBR, LVM2, NTFS, ext4, FAT; XFS/btrfs/LDM later) parsed read-only by a sandboxed
@@ -918,13 +918,13 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   - `index_files` is on by default for **new** Proxmox VE groups; existing groups keep their setting (no lab
     measurement of the per-snapshot cost on the PVE lab host yet: decision 4 asks for one first).
   - nexus-index runs as `nexus-chunkstore` (keyd hands keyrings to one uid) with its own SELinux domain and group
-    `nexus-index` for the socket; one-uid split of keyd stays an open item (threat model).
+    `nexus-index` for the socket; one-uid split of keyd stays an open item (threat model; Phase 39 S4).
   - Snapshot deletion does not cancel a running `file_index` job (the job fails on the missing snapshot; the next
     sync drops the versions). The nightly compare is the periodic sync (every 10 min) comparing the index payload with
     the stores; rebuild per source on any difference other than appended snapshots.
   - Owner/SID filters, XFS walker, LVM thin, btrfs, LDM, Windows drive letters from the SYSTEM hive, per-directory
-    reuse, content hashes: 31c (open). Lab runs on the PVE lab host (Windows Server / Windows 11 / DC VMs) not done
-    (not allowed in this run); compared against the micro-VM on the restore-vm fixtures instead.
+    reuse, content hashes: done in 31c. Lab runs on the PVE lab host: Phase 39 L11 (compared against the micro-VM on
+    the restore-vm fixtures instead).
 - **Implemented 31c (2026-10-14/15).** Per-directory reuse (NTFS, XFS); drive letters from the SYSTEM hive (own regf
   parser); XFS and single-device btrfs walkers (own parsers; the micro-VM fallback only for ZFS and multi-device
   btrfs); LVM thin volumes (dm-thin metadata); Windows dynamic disks (LDM, simple/spanned/mirrored); owners (NTFS
@@ -933,10 +933,10 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
   - btrfs has no per-directory records (copy-on-write rewrites the path to the root on every change); ext4 neither
     (crate cache); both are reused per volume.
   - Owners are stored and returned, not yet filterable (the search filter needs a web-api parameter and the UI); SIDs
-    and uids are not resolved to names.
+    and uids are not resolved to names (Phase 39 C2).
   - Dynamic volumes get their own browse paths (`ldm/<name>`); the micro-VM cannot open them, restores go through the
-    Windows agent. GPT dynamic disks follow libldm's layout, not yet checked against a Windows-made disk.
-  - Hashes: btrfs, FAT and exFAT files stay unhashed; NTFS compressed / encrypted / deduplicated files too.
+    Windows agent. GPT dynamic disks follow libldm's layout, not yet checked against a Windows-made disk (Phase 39 C3).
+  - Hashes: btrfs, FAT and exFAT files stay unhashed; NTFS compressed / encrypted / deduplicated files too (Phase 39 C1).
   - No new catalog migration was needed.
 
 ### Phase 33 — Commvault Tier 2 (2026-10-14)
@@ -979,7 +979,7 @@ T70–T75. Decisions and deviations:
   restores of a flagged snapshot to production keep needing `restore.infected` (conservative: unknown malware may
   remain); not for VM/CT disks, plugins or M365 (no per-file versions without a per-snapshot file index walk).
 - **M365 compliance search and cases** (implemented as cases on the name index; the Phase 19 item metadata search
-  still does not exist): `cases` / `case_snapshots`, criteria = name pattern + source prefix (default
+  still does not exist: Phase 39 C4): `cases` / `case_snapshots`, criteria = name pattern + source prefix (default
   `plugin-m365-`) + snapshot range, search = `file_search` with `case_id` (new `source_prefix` filter), holds by
   security officers on the matched snapshots, export = one `files_get` per snapshot with the matched items (M365
   mail as eml/mbox/PST), Cases page. Decisions taken: provider roles only (admins, security officers), case audit
@@ -988,7 +988,7 @@ T70–T75. Decisions and deviations:
   "Compliance search and cases".
 - **VMware vSphere source**: not implemented; transport spike document docs/vmware-transport-spike.md (open question
   6 decided: no VDDK in the image; HTTPS datastore reads + `QueryChangedDiskAreas` first, nbdkit with a
-  customer-supplied VDDK later if needed; scheduled after the spike ran in a vSphere lab).
+  customer-supplied VDDK later if needed; scheduled after the spike ran in a vSphere lab: Phase 39 C5).
 
 ### Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15 by user request)
 
@@ -1002,7 +1002,7 @@ without help, and the GitHub side runs with as little manual work and runner loa
   - lints: workspace `[lints]` table (clippy pedantic subset that fits the code, `unsafe_code` denied outside the
     crates that need it, `missing_docs` on public items of library crates);
   - the same for the web UI (`svelte-check` strict, no unused exports) and the Perl plugin (`perlcritic` at a level
-    agreed on first, no new dependency without asking).
+    agreed on first, no new dependency without asking; open: Phase 39 R3).
 - **34b Documentation:**
   - every crate gets a crate-level doc comment (purpose, entry points, links to docs/), every public item a doc
     comment; `cargo doc --no-deps` without warnings becomes a CI gate;
@@ -1158,6 +1158,89 @@ in this repository and uses the same crates as the appliance; the agents get the
 - **Verification:** lab matrix from `lab/README.md` (Linux distributions) and VM 101 copies for Windows: backup to
   each target type, triggers, application-aware backup and point-in-time restore, BMR from a standalone repository,
   attach of a standalone repository to an appliance, recovery with only the 24 words and the target.
+
+### Phase 39 — Open items (consolidated 2026-10-20 by user request)
+
+The small open points that were scattered over Phases 0–34 and the state log. Each lives here only; the earlier
+sections keep their decisions and point here. Larger planned work stays in Phases 35–38. IDs are for references from
+state.md and commits.
+
+**Security**
+- S1 Offline key ceremony with a standby key; rotate away from the alpha key before the first beta
+  (0.0.1-alpha release).
+- S2 Risk signals: the "first API token use from a new network" rule; thresholds as settings instead of constants
+  (Phase 29).
+- S3 Flagged snapshots: gate BMR/P2V restores; limit downloads of flagged snapshots to admins and security officers
+  (Phase 29).
+- S4 Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
+- S5 Post-quantum TLS (hybrid key exchange for the web and replication endpoints); keyd wrapping is done
+  (Phase 30, ADR-014).
+- S6 Full-disk encryption with LUKS2 and TPM unlock, and the NVMe metadata tier, not implemented (Phase 0, plan §12.2,
+  manual chapter 2 status).
+
+**Sources and connectors**
+- C1 VM disk file hashes for btrfs, FAT and exFAT (NTFS, ext4, XFS done); NTFS compressed / encrypted / deduplicated
+  files unhashed (Phase 28, 31c). MD5/SHA-1 IOC lists: decided SHA-256 only for now.
+- C2 File search: owner filter (web-api parameter + UI); SID and uid resolved to names (31c).
+- C3 Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
+  volumes (31c).
+- C4 M365 item metadata search (sender, recipients) for cases: plugin contract change, design in docs/m365.md
+  (Phase 19, 33).
+- C5 VMware vSphere: run the transport spike (docs/vmware-transport-spike.md) in a vSphere lab, then schedule the
+  plugin (Phase 33).
+- C6 Instant rollback for containers (Phase 30).
+- C7 Progress lines for nexus-nas and the plugin host (today log only) (Phase 31 lab notes).
+
+**Storage and offsite**
+- O1 Configuration backups to the second offsite target as well (today the first only) (Phase 30).
+
+**Web UI**
+- U1 In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14).
+
+**Release and CI**
+- R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
+- R2 CVE gate for final releases: critical findings in the restore micro-VM's Debian kernel and in AlmaLinux's
+  podman/skopeo Go code must be fixed upstream or accepted; remove the unused `toolbox` from the image (Release
+  0.1.0-alpha).
+- R3 perlcritic for pve-plugin at an agreed level (needs the OK to install it) (Phase 34a).
+- R4 Single self-hosted runner: Dependabot runs block main; a second runner instance or Dependabot at night (Phase 34d).
+- R5 Maintainer: enable private vulnerability reporting and Dependabot alerts in the repository settings (Phase 34d).
+
+**Labs and tests** (lab rules: `lab/README.md`, Windows only on copies of VM 101)
+- L1 Real Hetzner Storage Box: rename-no-overwrite, extensions, WAN throughput (Phase 4).
+- L2 Appliance VM scripts not run since Phases 13–18: `disks.sh` (EXTRA_DISKS=5 NVME=1), `grub-lock.sh`, m5-api
+  `firewall` step, `forwarding.sh` rerun, `offsite-fetch`, `config-restore.sh`, `console-gate.sh`, PG 1.2.0 bundle,
+  vault mode, ui-smoke.
+- L3 Installation on physical hardware (none tested; manual chapter 2) and a multi-node PVE cluster (manual chapter 4).
+- L4 Windows: desktop GUI checked by the maintainer (icon, palette), MSI major upgrade with a bumped version, the
+  appliance on pve-test backing up the Windows VMs through PVE (Phase 24, 27).
+- L5 Restore test of VM 101 on pve-test: pipelined reads byte-exact and timed on a full run.
+- L6 Linux agent updates: `lab/linux/e2e.sh <vm> agent agent_deb update_deb`, `.rpm` on alma-xfs, desktop package
+  with the GUI running, bundle swap + watchdog on deb-plain, arm64 on the emulated aarch64 VM, edge-connected laptop
+  updated on reconnect (Phase 27).
+- L7 Windows agent updates: MSI update with the GUI running (service stays enrolled), msiexec outside the service's
+  job object, MSI 1603 log parsing, watchdog revert of a manual install, rollback refused for MSI (Phase 27).
+- L8 Appliance image with a signed agent release (os/agent-release) booted; SELinux of the upload dir
+  (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign under enforcing (Phase 27).
+- L9 Scheduled scan and hash hunt with real Linux and Windows agents; lockdown with a tenant admin session;
+  new-device mail through the lab SMTP sink (Phase 28).
+- L10 Full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with a
+  passkey in the browser (Phase 29).
+- L11 File index: Debian LVM + XFS guest; XFS / btrfs / LVM thin / LDM on real guests; index time with the LRU cache
+  on the Windows member server; several groups at once (needs a second PVE node); per-snapshot cost of `index_files`
+  on by default (decision 4 of docs/file-index-v2-plan.md) (Phase 31).
+- L12 Instant rollback on a PVE host with a running VM: `restore ... --replace --rollback` on LVM-thin, ZFS, dir
+  qcow2 and RBD, the root service's socket unit after installing the .deb, rolled-back disk compared with
+  `nexus-pve dump`; risk of a pre-rollback backup of a paused Windows guest without guest-agent freeze (Phase 30).
+- L13 Two real offsite targets (Storage Box + S3 with Object Lock) for one tenant: uploads, longer monthly retention
+  on the second, listing, fetch and DR (`nexus-setup` attach) from the second (Phase 30).
+- L14 PSA ticketing against HaloPSA, ConnectWise and Autotask sandboxes (needs vendor test instances) (Phase 33).
+- L15 `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs (Phase 33).
+- L16 Clean-file restore of a real agent / share snapshot after a simulated ransomware run (rename + YARA rule),
+  download and to host (Phase 33).
+- L17 M365 case over a real test tenant backup with a PST export (Phase 33).
+- L18 Instant recovery with disk move of a TPM VM (TPM state fix, 2026-10-15).
+- L19 First boot with the 24-word recovery key screen on a real console, 80x25 (ADR-015).
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

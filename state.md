@@ -84,7 +84,7 @@ Instant recovery and single-file restore (VM images via micro-VM; containers via
 - [x] CLI `nexus-offsite <cfg> upload|retention|gc|verify [n]|check|list|restore <src> <t>|dr <keyd-dir>` (remote `local` or `sftp`), `keyd export-escrow` (wrapped keys to `keys/` on the box on upload)
 - [x] `os/systemd/nexus-offsite.{service,timer}` (daily 02:00: upload, check, retention, gc, verify 3)
 - [x] DR drill over SFTP testbox with real lab data: upload 10 snapshots (670 MB, 26 packs) in 1.6 s loopback; check clean; verify 0 corrupt; fresh appliance + box + recovery key → `dr` (26 packs, 10 snapshots indexed) → restore vm-100 → disk sha256 identical to original; wrong recovery key refused
-- [ ] Final run against a real Hetzner Storage Box (user to provide; check rename-no-overwrite, extensions, WAN throughput)
+- [ ] Real Hetzner Storage Box run: plan.md Phase 39 L1
 
 ## M4 status
 Every snapshot can be uploaded and verified offsite (`check`/`verify`), and the DR drill from the (test) box on a fresh store succeeds. Open: per-snapshot "local ✓ / offsite ✓" view belongs to the UI (Phase 5); real Storage Box run pending.
@@ -245,7 +245,7 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] Signed with the alpha key, verified with release trust, `:stable` promoted, published 2026-10-12 as a pre-release
 - [x] Installer ISO (`iso.yml`, bootc-image-builder anaconda-iso, 1.86 GB) attached to v0.0.1-alpha; `lab/appliance/iso-test.sh`: unattended UEFI install in QEMU, first boot into the nexus-setup wizard, SELinux enforcing
 - [ ] ~~Make the ghcr.io package public~~ — decided 2026-10-12: repo + package stay private for now; test appliances need a pull credential (read:packages) for updates (Phase 14 add-on)
-- [ ] Before beta: offline key ceremony + standby key, rotate away from the alpha key
+- [ ] Offline key ceremony + standby key before beta: plan.md Phase 39 S1
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
 Decisions: plan.md §2 (UI redesign, dashboard KPIs, OIDC + JIT provisioning, branding, UI deps). Contract: docs/phase12-contract.md
@@ -286,7 +286,7 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [x] 14e reports — merged 2026-10-12 (no schema): crates/reports (protection, failed, sla, storage), `GET /reports/{type}.csv`, `settings/reports`, scheduler `report_send` jobs; Reports page
 - [x] add-on: registry pull credential for the private repo (Settings → Updates; nexus-update writes /run/ostree/auth.json only during a fetch); tests test_private_registry_login_only_during_the_fetch, update_registry_credential
 - [x] all Phase 14 parts merged
-- [ ] NEXT (after usage limit): full suite, build image, VM labs (PVE e2e incl. phase13/phase14d2/diag steps, console-gate.sh, forwarding.sh, plugins, ui-smoke), screenshots, CI, release 0.1.0-alpha
+- [x] Release 0.1.0-alpha tagged (2026-10-15); the VM labs listed here: plan.md Phase 39 L2
 
 ## Phase 14 VM verification (2026-10-12)
 - PVE e2e on the real image incl. steps phase13, phase14d2 (tokens, CSR → install → revert), access, diag; console gate (code once, reuse refused, recovery key, shells unconfined_t); 0 AVCs after fixes.
@@ -299,13 +299,13 @@ Six parallel worktree agents (each merges main into its branch before reporting)
 - [x] 15g per-tenant file index + search — merged as catalog v19
 - [x] 15a+15d restore options + consistency — merged as catalog v20
 - [x] 15e+15f selection + agents — merged as catalog v21 (exclude disks placeholder/omit, file filters, agent cert renewal + re-enroll, limits, parallel guests)
-- [ ] labs (PVE e2e incl. legal-hold, forwarding, console gate, plugins, linux agent xhost), screenshots, CI, release 0.1.0-alpha (Phases 13–15)
+- [x] Release 0.1.0-alpha done; the labs listed here: plan.md Phase 39 L2
 
 ## Phase 16 — Hardware + inbound firewall (2026-10-12)
 - [x] 16c inbound firewall per service — merged (settings `inbound`, nft sets in_web/in_icmp, blocked attempts, `nexus-setup reset-firewall`)
 - [x] 16a/16b disks, SMART, alerts, mdadm + XFS data array — merged (`nexus-disks` helper, Hardware page; metadata tier deferred)
 - [x] VM finding: outgoing MLD reports were dropped + drop log flooded the console → allowed, kernel.printk 3 4 1 7
-- [ ] VM labs: m5-api `firewall` step, `lab/appliance/disks.sh` (EXTRA_DISKS=5 NVME=1)
+- [ ] VM labs (firewall step, disks.sh): plan.md Phase 39 L2
 
 ## Phase 17 — Offsite, replication, vault, tenants (started 2026-10-12)
 Four parallel agents: 17a+b windows + close vault; 17c+f vault profile + tenant deactivate; 17d offsite in the UI + attach offsite copy; 17e per-tenant recovery key.
@@ -320,12 +320,12 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] 18a1 M365 warnings (contract v1.7) + coverage, 18a2 M365 apps/chats/cross-tenant (v1.6), 18b PostgreSQL 1.2.0 (v23, contract v1.8)
 ## Urgent hardening (2026-10-12)
 - [x] GRUB password (ADR-013), fleecing guard, compliance clock fix + clock_skew, Splunk HEC + alert categories
-- [ ] VM labs for 16/17/18/hardening (grub-lock.sh, disks.sh, firewall step, offsite-fetch, PG 1.2.0 bundle, vault mode, windows)
+- [ ] VM labs for 16/17/18/hardening: plan.md Phase 39 L2
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
 - [x] forwarding lab found forward_test result dropped → fixed (5233b5a); rerun pending
-- [ ] disks.sh, grub-lock.sh, forwarding rerun, offsite-fetch, config-restore.sh
+- [ ] disks.sh, grub-lock.sh, forwarding, offsite-fetch, config-restore.sh: plan.md Phase 39 L2
 
 ## Phase 19 — Tier 3 (2026-10-13)
 - [x] 19b tenant_admin, policy tiers, view as tenant, immutable tenant uid + tombstones (v25, T30–T32)
@@ -379,7 +379,7 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] lab/linux/bmr.sh with the current code: backup 332 s, check-in 13 s, recover 32 s, first boot 11 s; host name, 2723-file sample, LVM thin pool + XFS layout equal, PostgreSQL running
 - CI on bf5e4da: all Rust tests green; `prove pve-plugin/t` failed because the runner lacked libjson-perl (installed by the maintainer)
 - [x] CI: gh-runner rootless podman repaired by the maintainer (linger, store reset, XDG_RUNTIME_DIR in the runner .env)
-- [ ] screenshots regenerate, tag v0.1.0-alpha (draft)
+- [x] Tag v0.1.0-alpha (draft) done 2026-10-15; whether the screenshots were regenerated for it is not recorded
 
 ## Big lab: PVE host pve-test (2026-10-13)
 PVE 9.2 with a Windows DC (dc1dev), member server (member1dev, Server 2022) and Windows 11 client; driven
@@ -401,8 +401,7 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   ran (wixl sequenced PurgeData after RemoveFiles, error 1721), fleet secret in the verbose MSI log (HideTarget)
 - [x] arm64: emulated aarch64 Debian 13 VM on pve-test (`lab/linux/remote.sh 10.2.34.210`): arm64 .deb installs,
   enrollment, backup, restore identical (1237 entries)
-- [ ] GUI on Windows checked by the maintainer (new icon + web UI palette), MSI major upgrade (needs a bumped
-  version), appliance VM on pve-test backing up the Windows VMs through PVE
+- [ ] Windows GUI check, MSI major upgrade, appliance backing up the Windows VMs: plan.md Phase 39 L4
 - [x] Appliance VM 201 on pve-test (`lab/pvehost/deploy.sh`: upload, create, tunnel, setup with static 10.2.34.211,
   PVE source): plugin package on the host, storage `nexus` (fleecing local-zfs), user `nexusbackup` with the
   forced-command key, token `nexus@pve!backup`. VM 200 (arm64) backed up and restored as VM 210, boots to login.
@@ -421,7 +420,7 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - Fixed on the way: incrementals failed on EFI disks ("can't get block status": base:allocation only for full
   reads, full-read fallback); the node's zero scan had no progress; snapshot rows were "not local" until the next
   store scan (restore test 404 right after a backup); job logs had no times (time marks + column)
-- [ ] restore test vm-101 on pve-test; pipelined reads: byte-exact check + full run timing
+- [ ] Restore test VM 101, pipelined reads byte-exact + timing: plan.md Phase 39 L5
 
 ## Live job progress (2026-10-13)
 - [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,
@@ -434,7 +433,7 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
   Progress column; mock + manual 03 (jobs-running.png, job-running.png)
 - Found on the way: `store_image_extents` read every chunk twice on a full read (no base: dirty extent and the
   "grown" range overlapped); now each byte once (test `dirty_extents_read_each_byte_once`)
-- [ ] nexus-nas and the plugin host report no progress yet (log only); check on the real PVE host
+- [ ] Progress lines for nexus-nas and the plugin host: plan.md Phase 39 C7
 
 ## Phase 27 — Agent updates pushed from the appliance (2026-10-14)
 Contract + deviations: docs/agent-update-plan.md "Implementation"; decisions plan.md Phase 27. Catalog v41, protocol v1.8,
@@ -468,13 +467,9 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   0.1.0 -> 0.1.1 in-band via apt-get in the transient unit, postinst restart, update state `ok` in 6 s; same version refused;
   a signed 9.9.9 .deb with an unmet dependency: apt-get exit 100 reported as `failed` with the apt output, agent stays on
   0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
-- [ ] Lab VMs (not run: the VMs were in use by parallel work): `lab/linux/e2e.sh <vm> agent agent_deb update_deb` (.deb on
-  deb-lvm through the appliance API), `.rpm` on alma-xfs (dnf path), desktop package with the GUI running, bundle binary
-  swap + watchdog on deb-plain, arm64 on the emulated aarch64 VM, an edge-connected laptop updated on reconnect
-- [ ] Windows lab: MSI update on Server 2022 / Windows 11 with the GUI running (service stays enrolled), msiexec outside the
-  service's job object, MSI failure log parsing (1603), watchdog revert of a manual install, rollback refused for MSI
-- [ ] Appliance image with a signed agent release (os/agent-release) built and booted; SELinux of the upload dir
-  (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign checked under enforcing
+- [ ] Linux agent update labs: plan.md Phase 39 L6
+- [ ] Windows agent update labs: plan.md Phase 39 L7
+- [ ] Image with a signed agent release, SELinux checks: plan.md Phase 39 L8
 ## Phase 28 — Commvault Tier 1 (2026-10-14)
 - [x] catalog v43 (`groups.scan_schedule/scan_budget_min/file_hashes`, `snapshots.scan_state`, `hash_lists`,
   `tenant_lockdowns`, `login_devices`, `users.email`; migration test), alert kinds + hints, threat model T62–T63
@@ -492,9 +487,8 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   without the capability, hostile hash lists), pve (CT index hashes), scheduler `tests/threat.rs`, web-api
   `tests/phase28.rs` + tenant-admin route classification; mock, manual 03/05/06/09/11/14, 7 new screenshots
   (scene `threat`), ui-smoke pages
-- [ ] lab: scheduled scan and hash hunt on the appliance image with a real agent (Linux, Windows), lockdown with a
-  tenant admin session, new-device mail through the lab SMTP sink
-- [ ] VM disk file hashes (opt-in with `index_files`), MD5/SHA-1 lists (decided: SHA-256 only for now)
+- [ ] Scan, hash hunt, lockdown, new-device mail labs: plan.md Phase 39 L9
+- [ ] Remaining VM disk file hashes (btrfs, FAT, exFAT): plan.md Phase 39 C1
 
 ## Phase 29 — NetBackup Tier 1 (2026-10-14)
 - [x] catalog v44 (`groups.full_read_days`, `full_reads`, `snapshots.clean_point`, `login_hours`,
@@ -514,10 +508,8 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   `POST /auth/step-up`, `GET /risk`, clear
 - [x] tests: catalog (v44, incident, fullread), web-api `tests/phase29.rs` + freeze/risk unit tests, scheduler
   `tests/phase29.rs`, chunkstore/pve/agent-conn/nas/truenas/restore VM agent; UI, mock, manual, screenshots, ui-smoke
-- [ ] lab: full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with
-  a passkey in the browser
-- [ ] open: first-API-token-use-from-a-new-network rule, risk thresholds as settings, gating BMR/P2V of flagged
-  snapshots, downloads of flagged snapshots limited to admins
+- [ ] Full read, scan back, passkey step-up labs: plan.md Phase 39 L10
+- [ ] Risk rule + thresholds as settings: plan.md Phase 39 S2; flagged BMR/P2V and downloads: S3
 
 ## Phase 31 — Guest file index without the micro-VM, instant search (2026-10-14)
 - [x] 31a `nexus-fsindex` (crate fsindex): GPT/MBR (+EBR), LVM2 linear/striped/mirror/raid1, ext2/3/4 (ext4-view),
@@ -552,9 +544,7 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   entries in 150-290 s per snapshot (vTPM and EFI disks skipped as "no known file system"); Debian VM 200 ext4 `/`
   + vfat `/boot/efi` (26k entries, 1 s). Instant search over 6 snapshots: 50-70 ms, guest paths
   (`C:/Users/Admin/Desktop/desktop.ini`), the default scope keeps 6916 of about 1.4 M entries (system folders out)
-- [ ] Lab: Debian LVM + XFS guest (XFS through the micro-VM fallback) not run; incremental re-parse took 150 s
-  for an unchanged-looking C: (the volume's chunks change with every Windows snapshot, so per-volume reuse rarely
-  applies to a running Windows system volume: per-directory reuse is 31c)
+- [ ] File index labs: plan.md Phase 39 L11 (per-directory reuse was done in 31c)
 - [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14); lab: member
   server C: rose from 5.6 % to 98.1 % against an estimate of 390,899 entries (previous snapshot's count)
 - [x] 31c per-directory reuse (NTFS): records of what each directory's listing read (side file `fsindex-dirs`),
@@ -608,8 +598,7 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   crates, contained by the helper's rlimit before, now refused up front; regression inputs in tests/regress): an
   NTFS `$INDEX_ROOT` with a huge index record size, an ext4 superblock whose block count made `ext4-view` allocate
   25 GB of block group descriptors (file system larger than its volume); `/etc/fstab` is read only up to 64 KiB
-- [ ] 31c open: btrfs / FAT / exFAT hashes, owner search filter (web-api + UI), SID/uid names, GPT dynamic disks
-  checked against Windows, micro-VM restore from dynamic volumes, lab run of XFS / btrfs / LVM thin / LDM on real guests
+- [ ] 31c rest: plan.md Phase 39 C1, C2, C3, L11
 - [x] Lab 10/11 (2026-10-15, merged main, Windows Server VM 101): C: from the SYSTEM hive, owners on the NTFS system
   volume (1,225 security descriptors, all 390,926 entries owned; web-api dropped them from search hits: fixed),
   file index 33.9 s first / 15.5 s next (78,202 of 94,230 directories taken over), full backup 388 s, incremental
@@ -635,10 +624,8 @@ so per node the guests run one after the other; parallelism comes from nodes, gr
   trees (`fsindex::Part`, hash of the first two path components), the parent serves them on one thread each with
   a shared LRU cache (chunks decrypted in parallel) and merges; test: 3 helpers list exactly what 1 lists
 - [x] lab appliance VM: 16 GiB RAM, 8 CPUs (chunk workers follow the CPUs, up to 8)
-- [ ] lab: file index time with the LRU cache on the Windows member server; several groups at once (one node:
-  serialised by the node lock, needs a second PVE node to show the speed-up)
-- [ ] open: per-directory reuse of unchanged Windows volumes (31c) would cut the file index of a running system
-  volume from 150 s to seconds
+- [ ] File index timing labs: plan.md Phase 39 L11
+- [x] Per-directory reuse of Windows volumes: done in 31c (lab timing: plan.md Phase 39 L11)
 
 ## Phase 30 — NetBackup Tier 2 (2026-10-14)
 Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, tests, docs, UI, manual). Catalog v45
@@ -670,10 +657,7 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   node: changed chunks only, fallbacks, resume; the real helper + root service (stub PVE modules) + qemu-nbd +
   NBD client end to end), crates/nbd/tests/qemu.rs (writes), pve-plugin/t/rollback.t, scheduler + web-api
   tests; UI restore dialog option, mock, manual 06, docs/pve-connector.md "Instant rollback", T67
-- [ ] lab (3): on a PVE host with a running VM: `nexus-pve <cfg> restore <vmid> <time> <node> <new id> <storage>
-  --replace --rollback` (vzdump of a paused VM with bitmap reuse, the real PVE module calls of the root service,
-  qemu-nbd on LVM-thin / ZFS / dir qcow2 / RBD, socket unit after `apt install ./nexusbackup-pve_*.deb`); compare
-  the rolled-back disk with `nexus-pve dump` of the snapshot
+- [ ] Instant rollback lab: plan.md Phase 39 L12
 - [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
   secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
   existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:
@@ -690,10 +674,8 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   `snapshots.offsite2` (catalog v45) from each target's listing, `offsite_lag` and `inventory` per target, egress to
   both, browse/fetch with `target`; UI: Second target dialog, own retention in the tenant form, Offsite 2 column,
   target choice in Offsite copy; mock; manual 07/11, control-plane "Second offsite target", T69
-- [ ] lab (5): two real targets (Storage Box + S3 with Object Lock) for one tenant: uploads, retention with a longer
-  monthly count on the second, listing, fetch back from the second, DR (`nexus-setup` attach) from the second
-- [ ] open (all): lab runs listed above; rollback of containers; per-policy offsite GFS; risk of a pre-rollback
-  backup of a paused Windows guest without guest-agent freeze (crash-consistent state kept)
+- [ ] Two real offsite targets lab: plan.md Phase 39 L13
+- [ ] Rollback of containers: plan.md Phase 39 C6; pre-rollback Windows risk: L12; per-policy offsite GFS: decided no (plan Phase 30)
 
 ## Phase 33 — Commvault Tier 2 (2026-10-14)
 Scope: docs/commvault-comparison.md Tier 2 (plan.md Phase 33); catalog v46 (`SCHEMA_V46`, after v44: v45 is
@@ -704,7 +686,7 @@ Phase 30's), threat model T70–T75.
   closes a ticket, tickets on the Alerts page; tests: scheduler `tests/phase33.rs` (mock HaloPSA / ConnectWise /
   Autotask servers), web-api `tests/phase33.rs`, catalog migration; UI rule editor, mock, manual 11, screenshots
   (scene `p33psa`)
-- [ ] lab: PSA ticketing against real HaloPSA / ConnectWise / Autotask sandboxes (needs vendor test instances)
+- [ ] PSA ticketing lab: plan.md Phase 39 L14
 - [x] tenant-side approvers: `tenant_approvals`, `quorum_tenants`, `quorum.approved_by/at`, `users.approver_since` +
   trigger (catalog v46, `catalog::approvers`), quorum co-approval (any order, refusal final, 24 h wait, approvals-off
   path, own consent, impersonation refused), `GET/PUT /tenants/{name}/approvers`, scheduler `tenant_approver` alert;
@@ -715,7 +697,7 @@ Phase 30's), threat model T70–T75.
   `/auth/me` `token`, parallel pull of dashboard / open alerts / failed jobs, text, JSON, static HTML, `--check`);
   tests: unit (config, token file mode, rendering and escaping), `crates/nexusctl/tests/fleet.rs` (two real web-api
   routers, operator token refused, unreachable appliance); manual 09, control-plane, threat model T72
-- [ ] lab: `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs
+- [ ] nexusctl fleet lab: plan.md Phase 39 L15
 - [x] synthetic (clean-file) restore: `synthetic_restore` job (web-api params, gates like restore_files / files_get,
   download + report tokens, `GET /jobs/{id}/synthetic.csv`), scheduler decision (`synthetic.rs`), plan + CSV,
   `chunkstore::synthetic::compose`, `nexus-agentctl synthetic` (tar/zip or `restore_tree` onto an agent); tests:
@@ -723,17 +705,16 @@ Phase 30's), threat model T70–T75.
   `synthetic_restore_download_and_to_host` (fake agent), web-api `tests/phase33.rs`, catalog production rule; UI
   (Snapshots menu, dialog, job result with report and download), mock, manual 06, screenshots (scene `p33synthetic`),
   threat model T73
-- [ ] lab: clean-file restore of a real agent / share snapshot after a simulated ransomware run (lockbit-style rename
-  plus a YARA rule), download and to host
+- [ ] Clean-file restore lab: plan.md Phase 39 L16
 - [x] cases (M365 compliance search on the name index; item metadata search not built, design in docs/m365.md):
   catalog `cases` / `case_snapshots`, `file_search` `source_prefix` + case bookkeeping, web-api `/cases` (create,
   search, hold, export, close), Cases page, mock, manual 06, screenshot (scene `p33cases`), ui-smoke, threat model
   T74; tests: web-api `tests/phase33.rs`, scheduler `tests/phase33.rs`, route classification, catalog migration
-- [ ] M365 item metadata search (sender, recipients) for cases: needs a plugin contract change (design in docs/m365.md)
-- [ ] lab: a case over a real M365 test tenant backup with a PST export
+- [ ] M365 item metadata search: plan.md Phase 39 C4
+- [ ] M365 case lab: plan.md Phase 39 L17
 - [x] VMware: transport spike document docs/vmware-transport-spike.md (HTTPS datastore + CBT vs. nbdkit + customer
   VDDK, licensing, effort, recommendation, spike steps); not implemented by decision
-- [ ] VMware spike run in a vSphere lab (ESXi 8 with VMFS/NFS, vSAN if available), then schedule the plugin
+- [ ] VMware spike in a vSphere lab: plan.md Phase 39 C5
 
 ## Web UI usability pass (2026-10-14/15)
 Goal (maintainer): every running task explains itself, states visible everywhere, rows clickable.
@@ -750,14 +731,14 @@ Goal (maintainer): every running task explains itself, states visible everywhere
   approvals: changed fields first; audit: details folded + target links; sessions: browser and system
 - [x] Replication: queued / running syncs per tenant with job links, Sync now greyed out while one runs,
   15 s refresh; offsite uploads log per-snapshot progress
-- [ ] Not reviewed in depth: Plugins, Hardware (already live), Quorum, Search pages
+- [ ] UI review of Plugins, Hardware, Quorum, Search: plan.md Phase 39 U1
 
 ## TPM state on restores (2026-10-15)
 - [x] Restore tests and instant recovery import the backed-up `tpmstate0` (`import-from` of its IR volume, plugin
   feature `copy`) instead of a fresh vTPM; TPM VMs are no longer refused for instant recovery
 - [x] Lab 12 on VM 101 (PVE host): full 459 s, incremental 29 s; restore test passed with the imported TPM state
   (`drive-tpmstate0-backup` served once, "backed-up state copied to local storage", guest agent after 146 s)
-- [ ] Instant recovery (with disk move) of a TPM VM in the lab
+- [ ] Instant recovery with disk move of a TPM VM: plan.md Phase 39 L18
 
 ## Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15)
 Scope: plan.md Phase 34 (clean code, crate docs, AGENTS.md, issue forms, versioned pre-commit hooks, CI path
@@ -778,8 +759,8 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 - [x] Dependabot: fastcdc 5 by hand (crates/chunkstore/tests/cut_points.rs pins the cut points; identical under
   3.2.1 and 5.0.0), zstd 0.14 (drop-in); TypeScript 7 not possible yet (svelte-check 4.7.6 peer ^5 || ^6),
   major updates ignored in dependabot.yml; PRs #1, #3, #4 closed as superseded
-- [ ] Dependabot PR #2 (serde_json, tokio-util minor): CI rerun, merge when green
-- [ ] Not done: perlcritic (not installed, ask), missing_docs for the binary crates (by decision: module docs only)
+- [x] Dependabot PR #2: replaced by #6 and then #7 (2026-10-20); #5 merged
+- [ ] perlcritic: plan.md Phase 39 R3 (missing_docs for binary crates: by decision module docs only)
 
 ## Release 0.1.0-alpha (2026-10-15)
 - [x] Tag `v0.1.0-alpha` on 6b1dbddd (CI green on main; moved from ff968dc after the runner fixes: SBOM bind
@@ -787,17 +768,21 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 - [x] Release workflow 38769757069: image, cve, packages green (57 min)
 - [x] ISO: two failures (ftp.fau.de refused 2655 of 3393 parallel curl downloads); iso.yml now uses librepo with
   curl as the fallback (a9749d5c); run 38781214443 green (iso, rescue, assets check), all assets attached
-- [ ] Maintainer: sign (digest sha256:176c25e7...) and publish the draft
-- [ ] Runner offline since about 2026-10-15 19:15 UTC (CI 38781215940 on a9749d5c: test hung and was cancelled at 24 h,
-  testbox failed without a log); rerun CI on main, then Dependabot #5 and #6, when it is back
-- [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
+- [ ] Maintainer signs and publishes the draft: plan.md Phase 39 R1
+- [x] Runner back online 2026-10-20; CI on main green again (b44d1749)
+- [x] Image, SBOM, CVE report, packages, ISO, rescue ISO attached (assets check of run 38781214443 green); signing: plan.md Phase 39 R1
 
 ## Recovery key as 24 BIP39 words (2026-10-20, ADR-015)
 - [x] Appliance and tenant recovery keys are 24 BIP39 English words (256 bits + checksum); hex format removed.
   Crate `crates/recovery-key` (sha2 + zeroize only; used by keyd, catalog, web-api without linking keyd). First boot
   asks for 3 random words; four-letter prefixes accepted; errors name the word position. BIP39 test vectors pass;
   GRUB password unchanged for the same key bytes; manual Python one-liner verified. Tenant key dialog and screenshots.
-- [ ] Lab: first boot on the appliance VM with the new key screen (TUI layout at 80x25 not yet seen on a console)
+- [ ] First boot with the 24-word key screen on a console: plan.md Phase 39 L19
+
+## Phase 39 — Open items (added 2026-10-20)
+Scope: plan.md Phase 39 collects the small open points of Phases 0–34 and this log (39 items: security 6, sources
+and connectors 7, storage and offsite 1, web UI 1, release and CI 5, labs and tests 19). The entries above point to
+their IDs. Not started.
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
