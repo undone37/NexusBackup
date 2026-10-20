@@ -13,6 +13,10 @@ updates:
       # BSTR types); windows 0.62 uses windows-core 0.62. Bump both together when windows moves (PR #11)
       - dependency-name: windows-core
         update-types: [version-update:semver-major, version-update:semver-minor]
+      # tiny-skia stays on the version iced renders with (0.11 in iced 0.14): a newer one would put a second
+      # rasterizer into the desktop GUI only for the tray icon (PR #14); bump with iced
+      - dependency-name: tiny-skia
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly, day: monday, time: "02:00", timezone: Europe/Berlin }
