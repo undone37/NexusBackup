@@ -146,6 +146,27 @@ lab/pvehost/agent-vms.sh agent [names]
 
 Stop the VMs when no test runs (`qm stop`): together they hold 28 GB of the host's memory.
 
+## Server test VMs on the PVE lab host (`lab/pvehost/server-vms.sh`)
+
+| ID | Name | What | Sizing |
+|---|---|---|---|
+| 240 | `nx-truenas-2510` | TrueNAS SCALE 25.10.7 | 2 vCPUs, 8 GB, boot 20 GB + two 8 GB disks for the pool |
+| 241 | `nx-truenas-27` | TrueNAS 27.0.0-RC1 | same |
+| 242 | `nx-winsrv-2022` | Windows Server 2022 Standard Evaluation (Desktop Experience) | 2 vCPUs, 4 GB, 40 GB SATA, e1000 |
+
+Unattended like the agent VMs, with the offline snapshot **`clean-os`** after the install. TrueNAS: the live ISO's
+installer API driven by `lab/truenas/install.py` (about 4 min); the installer's DHCP address is read from its first
+packet on the tap interface. Windows: `autounattend.xml` on a generated CD (deleted after the install), one
+automatic logon that installs the virtio-win guest tools (virtio-serial driver + QEMU guest agent), OpenSSH with
+`~/nexus-lab/lab_ed25519` for Administrator, then shuts down (about 14 min). Passwords in `~/nexus-lab/server-vms/`.
+
+```sh
+lab/pvehost/server-vms.sh install [names]   # truenas-2510 truenas-27 winsrv-2022
+lab/pvehost/server-vms.sh ip [names]
+lab/pvehost/server-vms.sh reset [names]
+ssh -i ~/nexus-lab/lab_ed25519 Administrator@<ip>   # Windows; TrueNAS: API https://<ip>/api, user truenas_admin
+```
+
 ## TrueNAS lab (`lab/truenas/`, docs/truenas-connector.md)
 
 TrueNAS Community 25.10.7 in QEMU/KVM (8 GB RAM, 20 GB boot disk, two 8 GB data disks), installed

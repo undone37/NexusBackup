@@ -796,6 +796,12 @@ their IDs. In progress:
   jobs read the VM list from stdin, ssh jump with the lab key, Agama product id `openSUSE_Leap` and timezone
   `UTC`, agent install retried while the first boot's name resolution is not up (Leap).
 - [ ] Enrol the agents with the appliance VM 201 and run L6 (agent updates) on them
+- [x] `lab/pvehost/server-vms.sh install` (2026-10-20): TrueNAS SCALE 25.10.7 (VM 240, 3.5 min) and 27.0.0-RC1
+  (VM 241, 4 min; install.py unchanged) with the API answering; Windows Server 2022 Standard Evaluation (VM 242,
+  14 min, SSH and QEMU guest agent). First Windows run: the agent MSI alone left PVE without the agent (no
+  virtio-serial driver); now the virtio-win guest tools. All with snapshot clean-os.
+- [ ] TrueNAS: `lab/truenas/provision.py` and the connector e2e against VMs 240/241; Windows agent tests (L7) on
+  VM 242
 
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
