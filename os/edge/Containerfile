@@ -47,8 +47,11 @@ FROM ${BASE}
 ARG RELEASE_KEYS=release/keys
 ARG NEXUS_VERSION=0.0.0-dev
 
-# nftables + chrony are part of the base (asserted); nmtui for the console setup.
-RUN dnf -y install --setopt=install_weak_deps=False nftables chrony NetworkManager-tui \
+# nftables + chrony are part of the base (asserted); nmtui for the console setup. dnf upgrade and the unused
+# toolbox/flatpak-session-helper removed: as in os/Containerfile (CVE scan).
+RUN dnf -y upgrade --refresh \
+ && dnf -y install --setopt=install_weak_deps=False nftables chrony NetworkManager-tui \
+ && for p in toolbox flatpak-session-helper; do ! rpm -q $p >/dev/null || rpm -e $p; done \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
  && command -v nft nmtui chronyd >/dev/null

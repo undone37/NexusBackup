@@ -454,10 +454,25 @@ Reviewed with the implementation (2026-10-10):
     modules, no flaw. Via zbus 5 in tray-icon and iced_winit, desktop GUI only (D-Bus to the local session bus); goes
     with the releases of those on zbus 6.
   - All five are in `deny.toml` with these reasons; none reaches the appliance.
+- **Review 2026-10-21 (for 0.2.0-alpha, cargo audit 2 warnings, 0 vulnerabilities):**
+  - zbus 5 stack (RUSTSEC-2026-0370/0371/0372): **fixed**. The Linux desktop GUI now speaks D-Bus itself on zbus 6
+    (`crates/agent-gui/src/sni.rs`: StatusNotifierItem, dbusmenu, notifications, the portal's dark-mode setting)
+    instead of ksni, notify-rust and iced's mundy, which are all still on zbus 5. tray-icon and notify-rust remain
+    for Windows only; test `crates/agent-gui/tests/sni.rs` on a private session bus.
+  - `lru` 0.16.4 (RUSTSEC-2026-0253): in `Cargo.lock` only. cryoglyph belongs to iced_wgpu, which is never built
+    (software renderer); Cargo locks optional dependencies named by weak `dep?/feature` features. Not in any binary.
+  - `ttf-parser` unmaintained (RUSTSEC-2026-0192, no patched version): the font parser of iced 0.14 (fontdb,
+    cosmic-text), reading only the fonts installed on the desktop. No iced release without it yet (iced master
+    still pins cosmic-text from git); goes with the next iced release.
+  - Appliance image CVE scan: `dnf upgrade` in the image build (the base image lagged the AlmaLinux security
+    updates: kernel, openssl, python3, pcre2, bubblewrap, rpcbind) and the unused flatpak-session-helper removed.
+    Still open upstream: podman/skopeo built with Go 1.26.7 (x/net, grpc, podman module findings; fixes need an
+    AlmaLinux rebuild, none published on 2026-10-21; podman is a bootc dependency the appliance never runs,
+    skopeo is run by bootc only for the signed update pull) and kernel fixes RHEL published before AlmaLinux.
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.
-  - The four advisories above are ignored with documented reasons.
+  - The advisories above are ignored with documented reasons.
   - Recommendation: add `cargo deny check` to CI next to `cargo audit`.
 - **`npm audit`** (web/, 5 exact-pinned devDependencies, nothing shipped except the built bundle): **0 vulnerabilities**.
 - **Fuzz toolchain:** nightly + cargo-fuzz are build-time only and not part of the image.

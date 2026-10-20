@@ -116,9 +116,12 @@ FROM ${BASE}
 # and the data array of nexus-disks (Phase 16, docs/hardware.md); xfsprogs and util-linux
 # (mkfs.xfs, xfs_growfs, lsblk, wipefs, blkid) are part of the base, asserted.
 # toolbox (from the base image) is unused and carried a critical Go stdlib finding (v0.1.0-alpha CVE
-# report); rpm -e refuses if anything depends on it. podman and skopeo stay: bootc needs them.
-RUN dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit smartmontools mdadm \
- && { ! rpm -q toolbox >/dev/null || rpm -e toolbox; } \
+# report), flatpak-session-helper is unused without flatpak (high CVEs, 0.2.0-alpha scan); rpm -e refuses if
+# anything depends on them. podman and skopeo stay: bootc needs them. dnf upgrade: the base image lags the
+# AlmaLinux security updates by days (kernel, openssl, python3 in the 0.2.0-alpha scan).
+RUN dnf -y upgrade --refresh \
+ && dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit smartmontools mdadm \
+ && for p in toolbox flatpak-session-helper; do ! rpm -q $p >/dev/null || rpm -e $p; done \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
  && /usr/libexec/qemu-kvm -drive format=help | grep -qw nbd \
