@@ -785,6 +785,11 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 - [x] Tag `v0.1.0-alpha` on 6b1dbddd (CI green on main; moved from ff968dc after the runner fixes: SBOM bind
   mount under SELinux, git/gh on the runner, package check line, CVE gate report-only for pre-releases)
 - [x] Release workflow 38769757069: image, cve, packages green (57 min)
+- [x] ISO: two failures (ftp.fau.de refused 2655 of 3393 parallel curl downloads); iso.yml now uses librepo with
+  curl as the fallback (a9749d5c); run 38781214443 green (iso, rescue, assets check), all assets attached
+- [ ] Maintainer: sign (digest sha256:176c25e7...) and publish the draft
+- [ ] Runner offline since about 2026-10-15 19:15 UTC (CI 38781215940 on a9749d5c: test hung and was cancelled at 24 h,
+  testbox failed without a log); rerun CI on main, then Dependabot #5 and #6, when it is back
 - [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
