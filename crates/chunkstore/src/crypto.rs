@@ -54,7 +54,7 @@ pub fn wrap_key(kek: &[u8; 32], key: &[u8; 32], label: &str) -> Vec<u8> {
     OsRng.fill_bytes(&mut nonce);
     let ct = XChaCha20Poly1305::new(kek.into())
         .encrypt(
-            XNonce::from_slice(&nonce),
+            &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
             Payload {
                 msg: key,
                 aad: label.as_bytes(),
@@ -73,7 +73,7 @@ pub fn unwrap_key(kek: &[u8; 32], wrapped: &[u8], label: &str) -> io::Result<[u8
     let (nonce, ct) = wrapped.split_at(24);
     let mut pt = XChaCha20Poly1305::new(kek.into())
         .decrypt(
-            XNonce::from_slice(nonce),
+            &XNonce::try_from(nonce).expect("24-byte nonce"),
             Payload {
                 msg: ct,
                 aad: label.as_bytes(),
@@ -171,7 +171,10 @@ impl Keyring {
         let aad = self.aad(&out[..9], ctx);
         let key = &self.keys[&self.current].aead_key;
         let ct = XChaCha20Poly1305::new(key.into())
-            .encrypt(XNonce::from_slice(&nonce), Payload { msg: body, aad: &aad })
+            .encrypt(
+                &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
+                Payload { msg: body, aad: &aad },
+            )
             .expect("xchacha encrypt cannot fail");
         out.extend_from_slice(&ct);
         out
@@ -191,7 +194,7 @@ impl Keyring {
         let aad = self.aad(&sealed[..9], ctx);
         let body = XChaCha20Poly1305::new((&key.aead_key).into())
             .decrypt(
-                XNonce::from_slice(&sealed[9..HEADER]),
+                &XNonce::try_from(&sealed[9..HEADER]).expect("24-byte nonce"),
                 Payload {
                     msg: &sealed[HEADER..],
                     aad: &aad,

@@ -433,7 +433,7 @@ impl TotpKey {
         let ct = self
             .cipher()
             .encrypt(
-                XNonce::from_slice(&nonce),
+                &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
                 Payload {
                     msg: secret_b32.as_bytes(),
                     aad: &totp_aad(user),
@@ -450,7 +450,7 @@ impl TotpKey {
         let ct = self
             .cipher()
             .encrypt(
-                XNonce::from_slice(&nonce),
+                &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
                 Payload {
                     msg: secret.as_bytes(),
                     aad: &labeled_aad(label),
@@ -469,7 +469,7 @@ impl TotpKey {
         let pt = Zeroizing::new(
             self.cipher()
                 .decrypt(
-                    XNonce::from_slice(&b[..24]),
+                    &XNonce::try_from(&b[..24]).expect("24-byte nonce"),
                     Payload {
                         msg: &b[24..],
                         aad: &labeled_aad(label),
@@ -494,7 +494,7 @@ impl TotpKey {
         let pt = Zeroizing::new(
             self.cipher()
                 .decrypt(
-                    XNonce::from_slice(&b[..24]),
+                    &XNonce::try_from(&b[..24]).expect("24-byte nonce"),
                     Payload {
                         msg: &b[24..],
                         aad: &totp_aad(user),

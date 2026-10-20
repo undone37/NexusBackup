@@ -147,7 +147,7 @@ pub fn seal(to: &Public, label: &[u8], plaintext: &[u8]) -> io::Result<Vec<u8>> 
     let aad = [label, &out[..]].concat();
     let sealed = XChaCha20Poly1305::new((&*key).into())
         .encrypt(
-            XNonce::from_slice(&nonce),
+            &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
             Payload {
                 msg: plaintext,
                 aad: &aad,
@@ -180,7 +180,10 @@ pub fn open(sk: &Secret, label: &[u8], blob: &[u8]) -> io::Result<Zeroizing<Vec<
     let aad = [label, &blob[..HEAD]].concat();
     let (nonce, msg) = blob[HEAD..].split_at(24);
     XChaCha20Poly1305::new((&*key).into())
-        .decrypt(XNonce::from_slice(nonce), Payload { msg, aad: &aad })
+        .decrypt(
+            &XNonce::try_from(nonce).expect("24-byte nonce"),
+            Payload { msg, aad: &aad },
+        )
         .map(Zeroizing::new)
         .map_err(|_| bad())
 }

@@ -209,7 +209,10 @@ pub fn seal(pubkey: &[u8], kek_recovery: &[u8], header: &[u8], entries: &[Entry]
     let plain = Zeroizing::new(zstd::encode_all(&encode(entries)?[..], 3)?);
     let nonce: [u8; 24] = rand::random();
     let ct = XChaCha20Poly1305::new((&*key).into())
-        .encrypt(XNonce::from_slice(&nonce), Payload { msg: &plain, aad: &out })
+        .encrypt(
+            &XNonce::try_from(&nonce[..]).expect("24-byte nonce"),
+            Payload { msg: &plain, aad: &out },
+        )
         .map_err(|_| err(io::ErrorKind::Other, "encryption failed"))?;
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
@@ -286,7 +289,10 @@ fn open_with_kek(p: &Parts<'_>, kek: &[u8; 32]) -> io::Result<Opened> {
     let (nonce, ct) = p.rest.split_at(24);
     let plain = Zeroizing::new(
         XChaCha20Poly1305::new(key.into())
-            .decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: p.aad })
+            .decrypt(
+                &XNonce::try_from(nonce).expect("24-byte nonce"),
+                Payload { msg: ct, aad: p.aad },
+            )
             .map_err(|_| bad())?,
     );
     let raw = Zeroizing::new(zstd::decode_all(&plain[..]).map_err(|_| bad())?);

@@ -9,7 +9,7 @@ rust-version.workspace = true
 anyhow = "1"
 argon2 = "0.5"
 base64 = "0.22"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 crypto_box = { version = "0.9", features = ["seal"] }
 # Phase 30: the ML-KEM-768 half of a tenant recovery key (same derivation as keyd::hybrid)
 blake3 = "1"
