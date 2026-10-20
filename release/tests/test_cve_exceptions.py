@@ -26,6 +26,14 @@ class Gate(unittest.TestCase):
         self.assertEqual(ce.upstream("6.12.105-1"), (6, 12, 105))
         self.assertGreater(ce.upstream("6.12.113"), ce.upstream("6.12.99-1"))
 
+    def test_location_and_prefix(self):
+        e = {"id": "CVE-1", "package": "linux-kernel", "location": "/usr/lib/nexus/restore-vm/vmlinuz",
+             "version_prefix": "6.12.", "fixed_in": None, "review_by": "2999-01-01"}
+        vm = {"/usr/lib/nexus/restore-vm/vmlinuz"}
+        self.assertTrue(ce.covers(e, "CVE-1", "linux-kernel", "6.12.111+deb13-amd64", vm, "2026-10-20"))
+        self.assertFalse(ce.covers(e, "CVE-1", "linux-kernel", "6.12.111", {"/boot/vmlinuz"}, "2026-10-20"))
+        self.assertFalse(ce.covers(e, "CVE-1", "linux-kernel", "7.2.9+bpo-amd64", vm, "2026-10-20"))
+
     def test_apply(self):
         exc = {"exceptions": [
             {"id": "CVE-1", "package": "linux-kernel", "evidence": "e", "fixed_in": "6.12.105-1",

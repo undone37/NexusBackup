@@ -1198,13 +1198,15 @@ state.md and commits.
 
 **Release and CI**
 - R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
-- R2 CVE gate for final releases (recheck 2026-10-20): `toolbox` removed from the image. Reviewed exceptions with
-  Debian tracker evidence (`release/cve-exceptions.json`, `cve-exceptions.py`, 90-day review) cover 6 of the 19
-  critical kernel findings (2 not affected, 4 fixed in 6.12.100 to 6.12.111). **Still blocking a final release:**
-  13 kernel CVEs open in Debian trixie (not yet triaged; ksmbd, sctp, RDMA rxe, mlx5, qla2xxx, ioam6, tcp, netfs)
-  and the podman/skopeo Go findings (grpc, x/net, Go stdlib; AlmaLinux 10 has no newer build). Options: wait;
-  the trixie-backports kernel (7.2) for the restore VM; or reachability exceptions (the micro-VM has no NIC and
-  only disk/file-system modules) (Release 0.1.0-alpha).
+- R2 CVE gate for final releases (2026-10-20): `toolbox` removed from the image. Reviewed exceptions
+  (`release/cve-exceptions.json`, 90-day review) cover all 19 critical kernel findings of the restore micro-VM: 6 by
+  Debian tracker evidence (2 not affected, 4 fixed in 6.12.100 to 6.12.111), 13 by reachability (maintainer decision:
+  config option per subsystem from Debian's 6.12.111 config; the VM has no NIC; the initrd's 36-module closure holds
+  none of ksmbd, sctp, rdma_rxe, mlx5, qla2xxx, netfs). **Still blocking a final release:** the podman/skopeo Go
+  findings (grpc, x/net, Go stdlib; AlmaLinux 10 has no newer build) (Release 0.1.0-alpha).
+- R6 Spike: our own minimal kernel for the restore micro-VM (no networking, only the needed drivers and file systems,
+  a current LTS series so grype sees the fixes): CI build time, ZFS against the LTS, rebuild cadence per stable
+  release; then decide whether to replace Debian's kernel (maintainer question 2026-10-20).
 - R3 **Done 2026-10-20:** perlcritic severity 4 ("stern") over the plugin, helper and rollback, in CI (`plugin`) and
   the pre-push hook; `.perlcriticrc` excludes octal modes and `use constant`, inline exceptions name their reason
   (PVE storage API `return undef`, process-wide `%SIG`/`%ENV`, streamed tar pipes) (Phase 34a).

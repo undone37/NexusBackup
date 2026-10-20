@@ -183,7 +183,11 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
   applies only while the installed version is at least that) and `review_by` (90 days; afterwards the finding blocks
   again). Refresh: download `https://security-tracker.debian.org/tracker/data/json`, run
   `release/cve-exceptions.py debian cve-report.json tracker.json > new.json` and review the difference before
-  committing. Covered findings are listed in `grype-excepted.txt` and in the job summary.
+  committing. The second kind, **reachability**, is written by hand for the restore micro-VM kernel only
+  (`location` = its vmlinuz, `version_prefix` = the kernel series): the subsystem's config option and why it cannot
+  run there (the VM has no network interface; the initrd carries only the modules of `restore-vm/mkinitrd.sh`).
+  Re-check those entries when that module list, the QEMU arguments in `crates/pve/src/restorevm.rs` or the kernel
+  series change. Covered findings are listed in `grype-excepted.txt` and in the job summary.
 - **Gate:** a **critical** CVE whose package has a **fixed version** fails the job, unless a reviewed exception covers
   it. Do not
   publish the draft then: tag a new patch release. The build pulls the base image with
