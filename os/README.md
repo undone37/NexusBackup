@@ -41,6 +41,7 @@ not valid JSON, or if `bootc container lint` fails.
 | `qemu-kvm-core` | `/usr/libexec/qemu-kvm` | runs the micro-VM (`NEXUS_QEMU` in the scheduler unit) |
 | `audit` | auditd | AVC denials and security events in `/var/log/audit` (`ausearch -m avc`) |
 | `greenboot` | greenboot units | health-gated rollback (docs/release.md) |
+| `os/slim.sh` | (removals) | strips the base to what the appliance runs, shared with the edge image: no GPU/Wi-Fi/audio firmware, translations, docs; no dnf, sudo, sssd, Samba client, flashrom, Bluetooth, kdump, LVM/LUKS/TPM tools, cloud agents. podman stays (bootc's image store needs it on every upgrade). Each group's reason is in the script; rpm refuses a removal a kept package needs, so the build fails instead |
 | `sysusers.d/nexus.conf` | `/usr/lib/sysusers.d/` | users `nexus-keyd`, `nexus-chunkstore` (scheduler and its jobs), `nexus-webapi`; groups `nexus-keyd` (keyd socket), `nexus-catalog` (catalog, downloads, update control); `nexus-chunkstore` ∈ `nexus-keyd`, `nexus-catalog`, `kvm` |
 | `tmpfiles.d/nexus.conf` | `/usr/lib/tmpfiles.d/` | state dirs with owner/mode: catalog 2770 root:nexus-catalog, downloads 2750 nexus-chunkstore:nexus-catalog, keyd 0700 nexus-keyd, chunkstore/offsite/escrow/scheduler 0700 nexus-chunkstore (one 0700 store per tenant below chunkstore, created by the scheduler), `/etc/nexus/ssh` 0750 root:nexus-chunkstore, `/run/nexus-nft` |
 | `systemd/*.service,.path,.timer` | `/usr/lib/systemd/system/` | see "Units" |

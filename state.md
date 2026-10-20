@@ -845,6 +845,12 @@ their IDs. In progress:
 - [x] Smaller image (2026-10-20, maintainer): no GPU/Wi-Fi/audio firmware, translations, docs; release.yml rechunks
   (release/rechunk.sh). 2.09 GB -> 1.40 GB, bundle 1.1 GB -> 656 MB; installed on VM 201 as an offline update,
   booted 0.0.5-dev, system running, no failed units, network up
+- [x] Packages stripped (2026-10-21, maintainer): os/slim.sh shared by both images, appliance 464 -> 356 packages,
+  edge -> 332; rechunked appliance 1.40 GB -> 1.26 GB, edge 955 MB, bundle 607 MB. Lab VM 201 (pve-test): offline
+  update 0.0.5 -> 0.0.8-dev, system running, greenboot ok, nexus-diag 20 pass / 6 lab posture warnings,
+  `verify.sh exact` VM 200 byte-identical (355 s), 0.0.8 stages 0.0.9-dev from a bundle. Finding on the way: an
+  image without podman (0.0.6-dev) booted but could not update (`bootc upgrade`: "No such file or directory"; bootc
+  creates its image store through podman), recovered with `bootc rollback`; podman stays.
 - [x] Appliance VM 201 disk moved from virtio-blk (virtio0) to VirtIO SCSI single (scsi0, iothread, discard, ssd),
   booted unchanged (root by UUID, API up in 30 s, 2026-10-20); deploy.sh, README and manual chapter 2 recommend
   SCSI (a virtio-blk VM did not see a hot-added disk until a reboot)

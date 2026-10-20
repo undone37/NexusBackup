@@ -56,6 +56,11 @@ RUN dnf -y upgrade --refresh \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
  && command -v nft nmtui chronyd >/dev/null
 
+# Only the packages the edge runs: the appliance's list (os/slim.sh) plus NFS, RAID and disk-health tools
+RUN --mount=type=bind,source=os/slim.sh,target=/tmp/slim.sh bash /tmp/slim.sh \
+      nfs-utils rpcbind gssproxy quota quota-nls mdadm smartmontools smartmontools-selinux nvme-cli \
+      qemu-img qemu-kvm-core qemu-kvm-common edk2-ovmf seabios-bin seavgabios-bin ipxe-roms-qemu
+
 COPY os/edge/sysusers.conf /usr/lib/sysusers.d/nexus-edge.conf
 COPY os/edge/tmpfiles.conf /usr/lib/tmpfiles.d/nexus-edge.conf
 RUN systemd-sysusers /usr/lib/sysusers.d/nexus-edge.conf
