@@ -183,11 +183,11 @@ Go through these steps in order; stop at the first that works.
    that an administrator could re-enable (re-enabling an approver needs approval itself, so this only works while a
    second approver is still there).
 3. **The missing approver is a local administrator** who lost the password or authenticator: if you have the
-   recovery key and console access, `nexus-setup recover-admin --user <name> --force-solo` gives that account a new
+   recovery key and console access (root shell: see below), `nexus-setup recover-admin --user <name> --force-solo` gives that account a new
    activation code (see [14 Disaster recovery](14-disaster-recovery.md#break-glass-the-only-administrator-lost-their-authenticator)).
    Its owner, or the person taking over the role, activates it and can approve again.
-4. **Nobody else can approve** (for example administrator plus one security officer who has left): on the console,
-   as root, run
+4. **Nobody else can approve** (for example administrator plus one security officer who has left): open a root shell
+   on the console with the recovery key (below; no approval needed), then run
 
    ```sh
    nexus-setup disable-approvals
@@ -202,8 +202,14 @@ Go through these steps in order; stop at the first that works.
    approver instead (with `--force-solo`), or switch vault mode off first (approved request, then
    `nexus-setup vault-disable`).
 
-The console steps need root on the appliance console **and** the recovery key; both are recorded and alerted, so
-they cannot be used unnoticed.
+**Root shell without an approver.** The console's root shell normally opens with a one-time code that a second
+person approved in the web interface. When nobody can approve, the same prompt on the appliance console (tty2,
+"Unlock code or recovery key:") also accepts **the recovery key**: type all 24 words on one line, then the shell
+duration in hours (1 to 8). No approval is involved; the shell is audited and raises an alert. Details:
+[14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console).
+
+The console steps need physical or remote console access to the appliance **and** the recovery key; both are recorded
+and alerted, so they cannot be used unnoticed.
 
 ## Audit log
 

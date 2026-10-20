@@ -485,10 +485,10 @@ It accepts one of two things.
 An administrator or a security officer can **Revoke** an approved or shown code that is no longer needed; it stops
 working at once.
 
-**The recovery key (when nobody can approve or the web interface is down).** Type the recovery key (all 24 words
-on one line, separated by spaces) at the same prompt, then the shell duration in hours (1 to 8, default 1). It is checked against the key
-service exactly like at first boot. Use this only when the code path is impossible: the recovery key also decrypts
-every backup ([The recovery key](#the-recovery-key)).
+**The recovery key (when nobody can approve or the web interface is down).** Type the recovery key (all 24 words on one
+line, separated by spaces) at the same prompt, then the shell duration in hours (1 to 8, default 1). It is checked
+against the key service exactly like at first boot. Use this only when the code path is impossible: the recovery key
+also decrypts every backup ([The recovery key](#the-recovery-key)).
 
 While the shell runs:
 
