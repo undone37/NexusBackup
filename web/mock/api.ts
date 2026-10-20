@@ -15367,6 +15367,14 @@ const deletionsFrozen = (tenant: string | null) =>
   (!!tenant && p28.lockdowns.some((l) => l.active && l.tenant === tenant && l.freeze?.deletions));
 /** POST /jobs: frozen restores (409) and the `restore.infected` gate; null = go on as usual. */
 async function infectedGate(u: User, kind: string, tenant: string, p: Json): Promise<Reply | null> {
+  // Phase 39 S3: downloads of a flagged snapshot are for administrators only
+  if ((kind === 'files_get' || (kind === 'synthetic_restore' && p.mode === 'download')) && u.role !== 'admin') {
+    const d = (db.snapshots as Json[]).find(
+      (x) => x.tenant === tenant && x.source === p.source && x.time === Number(p.time),
+    );
+    if (d && flaggedSnap(d))
+      throw new HttpError(403, 'the snapshot is flagged as infected: only administrators download from it');
+  }
   if (!productionRestore(kind, p)) return null;
   if (restoresFrozen(tenant))
     throw new HttpError(

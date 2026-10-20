@@ -89,7 +89,8 @@ pub fn production_restore(kind: &str, p: &Value) -> bool {
     match kind {
         "restore" | "restore_ct" => p["replace"] == true || !link_down,
         "instant_recover" => !link_down,
-        "instant_disk" | "plugin_restore" => true,
+        // bare metal and P2V write a whole machine (Phase 39 S3)
+        "instant_disk" | "plugin_restore" | "bmr" | "p2v" => true,
         "restore_files" => {
             let target = p["target"].as_str().unwrap_or("/");
             target.trim_end_matches('/').is_empty() || p["overwrite"].as_str().is_some_and(|o| o != "never")
@@ -119,9 +120,15 @@ pub fn flagged(c: &Connection, tenant: &str, source: &str, time: i64) -> rusqlit
     })
 }
 
-/// A job's snapshot (`source`, `time` params), if it names one.
-pub fn job_snapshot(p: &Value) -> Option<(&str, i64)> {
-    Some((p["source"].as_str()?, p["time"].as_i64()?))
+/// A job's snapshot (`source`, `time` params; BMR/P2V: `source_agent`, whose
+/// snapshots are those of source `host-<agent>`), if it names one.
+pub fn job_snapshot(p: &Value) -> Option<(String, i64)> {
+    let time = p["time"].as_i64()?;
+    match (p["source"].as_str(), p["source_agent"].as_str()) {
+        (Some(s), _) => Some((s.to_owned(), time)),
+        (None, Some(a)) => Some((format!("host-{a}"), time)),
+        (None, None) => None,
+    }
 }
 
 /// Is `id` an approved (or executed) `restore.infected` request for this
@@ -181,9 +188,20 @@ mod tests {
             ("synthetic_restore", json!({"mode": "download"}), false),
             ("plugin_mount", json!({}), false),
             ("restore_test", json!({}), false),
+            ("bmr", json!({"source_agent": "a1", "time": 5}), true),
+            ("p2v", json!({"source_agent": "a1", "time": 5}), true),
         ] {
             assert_eq!(production_restore(kind, &p), prod, "{kind} {p}");
         }
+        assert_eq!(
+            job_snapshot(&json!({"source": "vm-1", "time": 5})),
+            Some(("vm-1".into(), 5))
+        );
+        assert_eq!(
+            job_snapshot(&json!({"source_agent": "a1", "time": 5})),
+            Some(("host-a1".into(), 5))
+        );
+        assert_eq!(job_snapshot(&json!({"time": 5})), None);
     }
 
     #[test]

@@ -1218,8 +1218,13 @@ At most 50 devices per account are kept.
   `flagged` and `clean_point` (the recommended restore point of the source's newest scan back, unix time, or null).
 - Production restores: `restore` / `restore_ct` with `replace` or without `link_down: true`; `instant_recover`
   without `link_down: true`; `instant_disk`; `restore_files` with `target` "/" or `overwrite` other than "never";
-  `plugin_restore`. Isolated: link_down restores, `restore_files` to another path with "never", downloads, mounts,
-  restore tests.
+  `plugin_restore`; `bmr` and `p2v` (Phase 39 S3). Isolated: link_down restores, `restore_files` to another path with
+  "never", mounts, restore tests.
+- Downloads of a flagged snapshot (`files_get`, `synthetic_restore` with `mode: "download"`): administrators only,
+  403 for every other role ("only administrators download from it"); security officers start no jobs at all.
+- BMR / P2V of a flagged snapshot (snapshot of source `host-<agent>`): `POST /rescue/{id}/start` and
+  `POST /agents/{id}/p2v` answer 409 (no approval route), also while restores to production are frozen; the scheduler
+  refuses a queued `bmr` / `p2v` job when it plans it (an unattended P2V that starts at check-in).
 - `POST /jobs` with a production restore of a flagged snapshot: approvals on → 202 `{quorum_id, infected: true}`
   (approval `restore.infected` `{tenant, kind, params, reason}`; the scheduler queues the restore after approval);
   approvals off → administrators only: 200 `{approvals: "disabled", executed: false, quorum_id, state: "approved",

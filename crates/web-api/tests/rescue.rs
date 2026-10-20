@@ -260,6 +260,27 @@ async fn recovery_token_checkin_start_cancel() {
         t.post(&start, &vic, json!({"time": 1000})).await.status,
         StatusCode::FORBIDDEN
     );
+    // Phase 39 S3: a flagged snapshot is refused (no approval route), restorable once cleared
+    let flag = |on: bool| {
+        let sql = if on {
+            "UPDATE snapshots SET anomaly = 'YARA: 1 match', anomaly_cleared_at = NULL WHERE time = 1000"
+        } else {
+            "UPDATE snapshots SET anomaly_cleared_at = 3000, anomaly_cleared_by = 'sam' WHERE time = 1000"
+        };
+        t.st.cat.conn().execute_batch(sql).unwrap();
+    };
+    flag(true);
+    let r = t.post(&start, &otto, json!({"time": 1000})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert!(
+        r.body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("flagged as infected"),
+        "{:?}",
+        r.body
+    );
+    flag(false);
     let r = t.post(&start, &otto, json!({"time": 1000, "reboot": true})).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let job = r.body["id"].as_i64().unwrap();
@@ -379,6 +400,18 @@ async fn p2v_creates_session_and_starts_at_checkin() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(t.post(&url, &gina, body.clone()).await.status, StatusCode::NOT_FOUND);
+    // Phase 39 S3: a flagged snapshot is refused (no approval route), restorable once cleared
+    let flag = |on: bool| {
+        let sql = if on {
+            "UPDATE snapshots SET anomaly = 'YARA: 1 match', anomaly_cleared_at = NULL WHERE time = 1000"
+        } else {
+            "UPDATE snapshots SET anomaly_cleared_at = 3000, anomaly_cleared_by = 'sam' WHERE time = 1000"
+        };
+        t.st.cat.conn().execute_batch(sql).unwrap();
+    };
+    flag(true);
+    assert_eq!(t.post(&url, &alice, body.clone()).await.status, StatusCode::CONFLICT);
+    flag(false);
     let r = t.post(&url, &alice, body.clone()).await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     assert!(r.body["token"].is_null(), "the P2V token is never shown");

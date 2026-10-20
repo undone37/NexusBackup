@@ -34,10 +34,17 @@ impl Scheduler {
         let Some((source, time)) = job_snapshot(p) else {
             return Ok(());
         };
-        if let Some(why) = flagged(&c, &job.tenant, source, time)? {
+        if let Some(why) = flagged(&c, &job.tenant, &source, time)? {
+            // BMR/P2V have no approval route (rescue sessions): the flag has to be cleared
+            if job.kind == "bmr" || job.kind == "p2v" {
+                bail!(
+                    "snapshot {source}/{time} is flagged as infected ({why}): bare-metal and P2V restores of it are \
+                     refused; a security officer clears the flag after review, or run a restore test instead"
+                );
+            }
             let ok = p["quorum_id"]
                 .as_i64()
-                .map(|q| infected_approved(&c, q, &job.tenant, source, time))
+                .map(|q| infected_approved(&c, q, &job.tenant, &source, time))
                 .transpose()?
                 .unwrap_or(false);
             if !ok {

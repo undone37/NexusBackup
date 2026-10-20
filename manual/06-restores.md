@@ -109,7 +109,12 @@ security officer cleared the flag. Restoring such a snapshot **to production** n
   disk recovery (the disk goes into a running VM), **Restore to a host…** to the original paths (`/`) or with
   **Overwrite** other than **Never**, and plugin restores.
 - **Isolated restores stay possible without approval**: restores with every network card disconnected, files to
-  another path without overwriting, downloads, mounts, the file browser and restore tests.
+  another path without overwriting, mounts, the file browser and restore tests.
+- **Downloads** from a flagged snapshot are for **administrators** only; other roles with the download privilege get
+  "only administrators download from it". A download carries the files off the appliance as they are.
+- **Bare-metal recovery and P2V** of a flagged host snapshot are **refused**: they write a whole machine and have no
+  approval route. A security officer reviews and clears the flag first (or restore the host isolated in a restore
+  test).
 
 The restore dialogs show a yellow notice when the chosen options are a production restore of a flagged snapshot,
 with buttons that switch to the isolated variant (**Disconnect the network**, **Restore to another path without

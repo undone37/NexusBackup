@@ -842,8 +842,8 @@ Deviations from the proposal (docs/netbackup-comparison.md) and decisions taken 
   with the network up, instant recovery with links up, instant disk, files into the original paths (`target` "/") or
   overwriting, plugin restores. One `restore.infected` request also covers a replace (no second `restore.replace`).
   With approvals disabled administrators only (open question 3 proposed security officers, who cannot start jobs).
-  Downloads stay with the download privilege (the proposal's "admins/SOs only" is not done: Phase 39 S3). Jobs queued by recovery
-  plans or the vault are re-checked by the scheduler and fail without the approval. BMR/P2V are not gated (Phase 39 S3).
+  Downloads of flagged snapshots are for administrators only (Phase 39 S3, 2026-10-20). Jobs queued by recovery
+  plans or the vault are re-checked by the scheduler and fail without the approval. BMR/P2V of a flagged snapshot are refused (Phase 39 S3).
 - **Scan back** is driven by the scheduler (one ordinary `snapshot_scan` per snapshot with `--stop-on-match`, so every
   scan has its own job and `snapshot_scans` row) instead of one long connector run; `nexus-pve scan-back` exists as a
   manual CLI. Default 30 snapshots, one hour per snapshot; hits found by it are flagged without alerts. No bisect.
@@ -1170,8 +1170,8 @@ state.md and commits.
   (0.0.1-alpha release).
 - S2 Risk signals: the "first API token use from a new network" rule; thresholds as settings instead of constants
   (Phase 29).
-- S3 Flagged snapshots: gate BMR/P2V restores; limit downloads of flagged snapshots to admins and security officers
-  (Phase 29).
+- S3 **Done 2026-10-20:** flagged snapshots: BMR/P2V refused (409, scheduler re-check; no approval route, the flag is
+  cleared first); downloads administrators only (security officers start no jobs) (Phase 29).
 - S4 Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
 - S5 Post-quantum TLS (hybrid key exchange for the web and replication endpoints); keyd wrapping is done
   (Phase 30, ADR-014).

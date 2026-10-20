@@ -348,3 +348,30 @@ fn scan_back_to_the_last_clean_snapshot() {
     run_all(&mut s);
     assert_eq!(state(&s, id), "failed");
 }
+
+/// Phase 39 S3: BMR and P2V of a flagged snapshot fail when planned (no approval
+/// route); once a security officer cleared the flag they pass the guard.
+#[test]
+fn flagged_snapshot_bmr_and_p2v_are_refused() {
+    let e = env(2);
+    let s = sched(&e);
+    s.db.conn()
+        .execute_batch(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until, anomaly) VALUES
+               ('t1','host-a1',4,1,1,0,0,'YARA: 1 matches (Eicar)');",
+        )
+        .unwrap();
+    for kind in ["bmr", "p2v"] {
+        let id = manual(&s, kind, "t1", json!({"source_agent": "a1", "time": 4}));
+        let e = s.check_restore_guard(&s.job(id).unwrap()).unwrap_err();
+        assert!(
+            format!("{e:#}").contains("bare-metal and P2V restores of it are refused"),
+            "{e:#}"
+        );
+    }
+    s.db.conn()
+        .execute_batch("UPDATE snapshots SET anomaly_cleared_at = 5, anomaly_cleared_by = 'sam'")
+        .unwrap();
+    let id = manual(&s, "bmr", "t1", json!({"source_agent": "a1", "time": 4}));
+    s.check_restore_guard(&s.job(id).unwrap()).unwrap();
+}

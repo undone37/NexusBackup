@@ -344,8 +344,22 @@ async fn flagged_snapshot_restores_need_approval() {
         (r.body["state"].clone(), r.body["infected"].clone()),
         (json!("approved"), json!(true))
     );
+    // downloads of a flagged snapshot: administrators only (Phase 39 S3)
+    let get = json!({"kind": "files_get", "tenant": "acme",
+                     "params": {"source": "vm-100", "time": 2000, "paths": ["/etc/hosts"], "format": "zip"}});
+    let r = t.post("/api/v1/jobs", &otto, get.clone()).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+    assert!(r.body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("only administrators download"));
+    assert_eq!(
+        t.post("/api/v1/jobs", &alice, get.clone()).await.status,
+        StatusCode::ACCEPTED
+    );
     // a security officer cleared the flag: a plain job again
     t.exec("UPDATE snapshots SET anomaly_cleared_at = 3000, anomaly_cleared_by = 'sam' WHERE time = 2000");
+    assert_eq!(t.post("/api/v1/jobs", &otto, get).await.status, StatusCode::ACCEPTED);
     let r = t.post("/api/v1/jobs", &otto, restore("vm-100", 2000, false)).await;
     assert_eq!(r.status, StatusCode::ACCEPTED);
     assert!(r.body["id"].is_i64());

@@ -341,6 +341,7 @@ pub async fn start(State(st): State<St>, ctx: Ctx, Path(id): Path<String>, J(r):
         if !snapshot_exists(&c, &tenant, &agent, r.time)? {
             return Err(ApiError::bad("time: no such snapshot of this host"));
         }
+        crate::infected::refuse_bmr(&c, &tenant, &agent, r.time as i64)?;
         if let Some(rb) = r.reboot {
             c.execute("UPDATE rescue_sessions SET reboot = ?2 WHERE id = ?1", params![id, rb])?;
         }
@@ -500,6 +501,7 @@ pub async fn p2v(
         if !snapshot_exists(&c, &tenant, &agent, r.time)? {
             return Err(ApiError::bad("time: no such snapshot of this host"));
         }
+        crate::infected::refuse_bmr(&c, &tenant, &agent, r.time as i64)?;
     }
     let p = json!({
         "source_id": r.source_id, "node": r.node, "vmid": r.vmid, "name": r.name, "storage": r.storage,
