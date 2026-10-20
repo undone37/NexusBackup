@@ -8,6 +8,11 @@ updates:
     open-pull-requests-limit: 3
     groups:
       cargo-minor: { update-types: [minor, patch] }
+    ignore:
+      # windows-core must be the version the windows crate is built on (vss.rs mixes their GUID, HRESULT and
+      # BSTR types); windows 0.62 uses windows-core 0.62. Bump both together when windows moves (PR #11)
+      - dependency-name: windows-core
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly, day: monday, time: "02:00", timezone: Europe/Berlin }
