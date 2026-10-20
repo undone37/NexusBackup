@@ -62,7 +62,12 @@ fn state(s: &Shared) -> State {
 /// ARGB32 in network byte order, as the specification wants it.
 fn pixmap(badge: Badge) -> Pixmaps {
     let rgba = crate::icon::rgba(badge, ICON_SIZE);
-    let argb = rgba.chunks_exact(4).flat_map(|p| [p[3], p[0], p[1], p[2]]).collect();
+    let argb = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| [p[3], p[0], p[1], p[2]])
+        .collect();
     vec![(ICON_SIZE as i32, ICON_SIZE as i32, argb)]
 }
 
