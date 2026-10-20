@@ -33,6 +33,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tar = "0.4"
 tempfile = "3"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+# zip leaves the backend open; miniz_oxide as before (zlib-rs changed png output workspace-wide)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [lints]
 workspace = true

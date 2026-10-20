@@ -15,6 +15,8 @@ chunkstore = { path = "../../chunkstore" }
 tempfile = "3"
 tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+# zip leaves the backend open; miniz_oxide as before (zlib-rs changed png output workspace-wide)
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # restore-vm agent (included by path, it is a bin-only crate)
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
