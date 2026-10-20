@@ -165,7 +165,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "hmac 0.12.1",
- "lz4_flex 0.11.6",
+ "lz4_flex",
  "postcard",
  "serde",
  "serde_json",
@@ -3676,12 +3676,6 @@ dependencies = [
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
-
-[[package]]
-name = "lz4_flex"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef0d4ed8669f8f8826eb00dc878084aa8f253506c4fd5e8f58f5bce72ddb97e"
@@ -6780,7 +6774,7 @@ dependencies = [
  "levenshtein_automata",
  "log",
  "lru 0.16.4",
- "lz4_flex 0.13.1",
+ "lz4_flex",
  "measure_time",
  "once_cell",
  "oneshot",
