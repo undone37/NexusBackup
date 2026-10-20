@@ -445,6 +445,15 @@ Reviewed with the implementation (2026-10-10):
   tray-icon with its pure-Rust StatusNotifierItem backend (ksni, licence Unlicense, allowed in `deny.toml`) instead of
   GTK. `ttf-parser` (via cosmic-text/fontdb) is unmaintained (RUSTSEC-2026-0192, ignored in `deny.toml`): it parses
   only the fonts installed on the user's desktop, the GUI receives no network input (local agent socket/pipe only).
+- **Review 2026-10-20 (cargo audit, 5 warnings, 0 vulnerabilities):**
+  - `lru` 0.16 unsound (RUSTSEC-2026-0253: `LruCache::pop` leaves dangling list nodes if a key's `Drop` panics). On
+    the appliance it came from tantivy (file index): **fixed** by tantivy 0.27 (lru 0.18.5; same index format 7, so
+    existing indexes stay readable). Left only in the desktop GUI via cryoglyph (iced's glyph cache): plain value keys
+    whose `Drop` cannot panic, so the unsound path is not reachable; goes with the next iced release.
+  - `zvariant`, `zbus_names`, `zvariant_derive` unmaintained (RUSTSEC-2026-0370/0371/0372): merged into zbus 6 as
+    modules, no flaw. Via zbus 5 in tray-icon and iced_winit, desktop GUI only (D-Bus to the local session bus); goes
+    with the releases of those on zbus 6.
+  - All five are in `deny.toml` with these reasons; none reaches the appliance.
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.
