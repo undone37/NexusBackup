@@ -62,3 +62,4 @@ are history: they record what was proposed or compared at the time and are not u
 | [file-index-v2-plan.md](file-index-v2-plan.md) | Phase 31, guest file index without the micro-VM |
 | [vmware-transport-spike.md](vmware-transport-spike.md) | VMware vSphere source, transport options (not implemented) |
 | [cohesity-comparison.md](cohesity-comparison.md), [veeam-comparison.md](veeam-comparison.md), [commvault-comparison.md](commvault-comparison.md), [netbackup-comparison.md](netbackup-comparison.md) | feature reviews against other products |
+| [open-source-comparison.md](open-source-comparison.md) | restic + Backrest, Borg + BorgWarehouse, Duplicati, UrBackup (from their documentation, 2026-10-20) |

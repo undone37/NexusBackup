@@ -198,6 +198,31 @@ Where NexusBackup is ahead of the others: its Proxmox VE integration and its loc
 compliance clock and no role can shorten them. Destructive and weakening actions need approvals without exemptions.
 Everywhere else the commercial products are far ahead in coverage, maturity, scale and support.
 
+### Open-source tools
+
+File-level backup programs and their front-ends work differently from an appliance: the client pushes to a
+repository and holds the keys. They are mature and proven; NexusBackup is not. Described from their documentation as
+of October 2026, not installed or tested here. Details, versions and sources:
+[open-source comparison](docs/open-source-comparison.md).
+
+| | NexusBackup | restic + Backrest | Borg + BorgWarehouse | Duplicati | UrBackup |
+|---|---|---|---|---|---|
+| **Model** | appliance, pulls | client CLI pushes; Backrest web UI per host | client pushes over SSH; BorgWarehouse runs the repository server | client with web UI per machine | central server pulls from clients |
+| **License** | AGPL-3.0 | BSD-2 / GPL-3.0 | BSD-3 / AGPL-3.0 | MIT, proprietary M365 and disk image modules | AGPL-3.0 |
+| **Maturity** | vibe-coded alpha | mature | 1.4 mature, 2.0 beta | stable releases | mature |
+| **Proxmox VE VMs** | native | no | no | no | no |
+| **Windows** | agent, file level | yes (VSS) | no | yes (VSS) | yes, file and image |
+| **Image / bare metal** | Linux BMR and P2V; whole PVE VMs | no | no | yes (proprietary module) | Windows, Linux with limits |
+| **Encryption** | always, keys on the appliance | always, client key | optional, client key | optional | transport only (Internet mode) |
+| **Immutability** | extend-only locks, S3 Object Lock | rest-server append-only | append-only (1.4) | S3/Azure/B2/GCS locks | none |
+| **Offsite targets** | SFTP, S3, second appliance | many (S3, SFTP, B2, Azure, GCS, rclone) | SSH (1.4); S3/B2 in 2.0 beta | many | none of its own |
+| **Multi-tenant, approvals** | yes | no | no | commercial console only | per-client rights, no approvals |
+
+NexusBackup differs mainly in its model: it pulls from the sources, so protected hosts hold no backup credentials, and
+it adds Proxmox VE VM integration, tenants with separate keys and approvals for destructive actions. The open-source
+tools are far more mature, run on more platforms (macOS, BSD) and support many more storage backends. For files on a
+few hosts, restic with Backrest or Borg with borgmatic is the proven choice today.
+
 ## Architecture
 ```text
                   Web UI (Svelte SPA) ── REST API: nexus-web-api (axum, TLS 1.3, TOTP/passkeys, RBAC, quorum)
