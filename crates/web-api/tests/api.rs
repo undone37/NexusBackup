@@ -3881,6 +3881,7 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/updates", "/api/v1/updates".into(), none(), 'N'),
         ("POST", "/updates/check", "/api/v1/updates/check".into(), e(), 'N'),
         ("POST", "/updates/apply", "/api/v1/updates/apply".into(), e(), 'N'),
+        ("POST", "/updates/bundle", "/api/v1/updates/bundle".into(), e(), 'N'),
         ("GET", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),
         ("PUT", "/updates/registry", "/api/v1/updates/registry".into(), Some(json!({"username": "bot", "token": "x"})), 'N'),
         ("DELETE", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),

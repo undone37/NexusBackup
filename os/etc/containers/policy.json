@@ -1,22 +1,29 @@
 {
-    "default": [
-        {
-            "type": "reject"
-        }
-    ],
-    "transports": {
-        "docker": {
-            "ghcr.io/undone37/nexusbackup": [
-                {
-                    "type": "sigstoreSigned",
-                    "keyPaths": [
-                        "/etc/pki/nexus/cosign/TEST-KEY-DO-NOT-SHIP.pub"
-                    ],
-                    "signedIdentity": {
-                        "type": "matchRepository"
-                    }
-                }
-            ]
-        }
+  "default": [
+    {
+      "type": "reject"
     }
+  ],
+  "transports": {
+    "docker": {
+      "ghcr.io/undone37/nexusbackup": [
+        {
+          "type": "sigstoreSigned",
+          "keyPaths": [
+            "/etc/pki/nexus/cosign/TEST-KEY-DO-NOT-SHIP.pub"
+          ],
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ]
+    },
+    "oci": {
+      "/var/lib/nexus/update-offline/current/image": [
+        {
+          "type": "insecureAcceptAnything"
+        }
+      ]
+    }
+  }
 }

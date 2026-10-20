@@ -50,6 +50,10 @@ elif a[0] == "upgrade" and "--download-only" in a:
         st["status"]["staged"] = entry(sp["image"], sp["signature"], n["digest"], n["version"], True)
 elif a[0] == "upgrade" and "--from-downloaded" in a:
     pass  # would reboot
+elif a[0] == "upgrade":  # plain upgrade: fetch and stage a normal deployment
+    if os.path.exists(nxt):
+        n = json.load(open(nxt)); sp = st["spec"]["image"]
+        st["status"]["staged"] = entry(sp["image"], sp["signature"], n["digest"], n["version"])
 elif a[0] == "rollback":
     st["status"]["rollbackQueued"] = True
 json.dump(st, open(os.path.join(d, "state.json"), "w"))
@@ -535,6 +539,167 @@ class Agent(unittest.TestCase):
     def test_status_file_is_not_world_readable(self):
         self.tick()
         self.assertEqual((self.d / "ctl/status.json").stat().st_mode & 0o007, 0)
+
+
+
+class Offline(Agent):
+    """The uploaded bundle (request "import"): signature, digest, identity, version, refusals."""
+
+    def setUp(self):
+        super().setUp()
+        import subprocess
+        self.sp = subprocess
+        self.key = self.d / "key.pem"
+        self.pub = self.d / "pub.pem"
+        subprocess.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(self.key)], check=True)
+        subprocess.run(["openssl", "ec", "-in", str(self.key), "-pubout", "-out", str(self.pub)], check=True, capture_output=True)
+        pol = {"default": [{"type": "reject"}], "transports": {"docker": {REPO: [
+            {"type": "sigstoreSigned", "keyPaths": [str(self.pub)], "signedIdentity": {"type": "matchRepository"}}]}}}
+        (self.d / "policy.json").write_text(json.dumps(pol))
+        os.environ["NEXUS_UPDATE_POLICY"] = str(self.d / "policy.json")
+        os.environ["NEXUS_UPDATE_OFFLINE_DIR"] = str(self.d / "offline")
+        self.env.update({"NEXUS_UPDATE_POLICY": "", "NEXUS_UPDATE_OFFLINE_DIR": ""})  # restored by tearDown
+
+    def tearDown(self):
+        for k in ("NEXUS_UPDATE_POLICY", "NEXUS_UPDATE_OFFLINE_DIR"):
+            os.environ.pop(k, None)
+        super().tearDown()
+
+    def bundle(self, version="1.1.0", identity=REPO, key=None, mutate=None):
+        """Writes ctl/bundle.tar; returns the image's manifest digest."""
+        import hashlib, io, tarfile
+        files = {}
+        def blob(b):
+            h = hashlib.sha256(b).hexdigest()
+            files[f"image/blobs/sha256/{h}"] = b
+            return "sha256:" + h
+        cfg = blob(json.dumps({"config": {"Labels": {"org.opencontainers.image.version": version}}}).encode())
+        layer = blob(b"layer")
+        man = blob(json.dumps({"schemaVersion": 2, "config": {"digest": cfg}, "layers": [{"digest": layer}]}).encode())
+        files["image/oci-layout"] = b'{"imageLayoutVersion": "1.0.0"}'
+        files["image/index.json"] = json.dumps({"schemaVersion": 2, "manifests": [
+            {"digest": man, "annotations": {"org.opencontainers.image.ref.name": "nexus"}}]}).encode()
+        payload = json.dumps({"critical": {"identity": {"docker-reference": identity}, "image": {"docker-manifest-digest": man},
+                                           "type": "cosign container image signature"}, "optional": None}).encode()
+        files["signature/payload.json"] = payload
+        (self.d / "payload").write_bytes(payload)
+        der = self.sp.run(["openssl", "dgst", "-sha256", "-sign", str(key or self.key), str(self.d / "payload")],
+                          check=True, capture_output=True).stdout
+        import base64
+        files["signature/payload.sig"] = base64.b64encode(der)
+        files["bundle.json"] = json.dumps({"format": 1, "repository": REPO, "version": version, "digest": man}).encode()
+        if mutate:
+            mutate(files)
+        sums = "".join(f"{hashlib.sha256(b).hexdigest()}  {n}\n" for n, b in sorted(files.items()) if n != "SHA256SUMS")
+        files.setdefault("SHA256SUMS", sums.encode())
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as t:
+            for n, b in files.items():
+                ti = tarfile.TarInfo(n)
+                ti.size = len(b)
+                t.addfile(ti, io.BytesIO(b))
+        (self.d / "ctl/bundle.tar").write_bytes(buf.getvalue())
+        self.registry_serves(man, version)  # what the fake bootc reports as staged after the switch
+        return man
+
+    def imp(self):
+        (self.d / "ctl/request").write_text("import")
+        self.tick()
+        return self.status()["last_result"]["result"]
+
+    def test_valid_bundle_is_verified_and_staged_from_the_offline_dir(self):
+        man = self.bundle()
+        self.assertIn("from the uploaded bundle", self.imp())
+        calls = self.calls()
+        self.assertEqual(calls, [f"bootc switch --quiet --transport oci {self.d}/offline/current/image:nexus"])
+        st = self.status()
+        self.assertEqual((st["offline"]["version"], st["offline"]["digest"]), ("1.1.0", man))
+        self.assertEqual(st["api"]["offline"]["key"], "pub.pem")
+        self.assertFalse((self.d / "ctl/bundle.tar").exists(), "the upload is moved out of the web-api's directory")
+        self.assertFalse((self.d / "offline/bundle.tar").exists(), "the tar is deleted after unpacking")
+        self.assertEqual((self.d / "offline").stat().st_mode & 0o077, 0)
+
+    def test_apply_leaves_a_web_view_for_the_time_after_the_reboot(self):
+        self.bundle()
+        self.imp()
+        (self.d / "ctl/request").write_text("apply")
+        c = self.u.load_conf()
+        st = self.u.read_status(c)
+        self.u.apply(c, st, force=True)  # reboots (fake systemctl): no tick writes status.json afterwards
+        api = json.loads((self.d / "ctl/status.json").read_text())["api"]
+        self.assertEqual((api["booted"]["version"], api["applying"]), ("1.0.0", api["staged"]["digest"]))
+
+    def test_second_bundle_upgrades_from_the_same_offline_origin(self):
+        self.host(image=f"{self.d}/offline/current/image:nexus", signature="insecure")
+        self.bundle(version="1.2.0")
+        self.assertIn("from the uploaded bundle", self.imp())
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet"], "switch to the same origin would do nothing")
+
+    def test_offline_mode_skips_automatic_online_checks_until_check_now(self):
+        self.bundle()
+        self.imp()
+        self.calls()
+        os.environ["NEXUS_UPDATE_CHECK_HOURS"] = "0"  # a check would be due every tick
+        self.tick()
+        self.assertEqual(self.calls(), [], "no online check while the appliance is updated offline")
+        (self.d / "ctl/request").write_text("stage")  # Check now
+        self.tick()
+        self.assertTrue(any("--enforce-container-sigpolicy" in c or "upgrade" in c for c in self.calls()))
+        self.assertIsNone(self.status()["offline"])
+
+    def refused(self, why):
+        r = self.imp()
+        self.assertTrue(r.startswith("refused:"), r)
+        self.assertIn(why, r)
+        self.assertEqual(self.status()["api"]["status"], "refused")
+        self.assertEqual(self.calls(), [], "nothing staged")
+        self.assertFalse((self.d / "offline/current").exists())
+
+    def test_wrong_key_refused(self):
+        other = self.d / "other.pem"
+        self.sp.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(other)], check=True)
+        self.bundle(key=other)
+        self.refused("does not verify with any pinned release key")
+
+    def test_other_repository_signed_refused(self):
+        self.bundle(identity="ghcr.io/evil/nexusbackup")
+        self.refused("not an image signature for")
+
+    def test_tag_in_the_signed_identity_is_fine(self):
+        self.bundle(identity=f"{REPO}:0.2.0")
+        self.assertIn("from the uploaded bundle", self.imp())
+
+    def test_swapped_image_refused(self):
+        def swap(files):  # another manifest behind the same signature
+            idx = json.loads(files["image/index.json"])
+            idx["manifests"][0]["digest"] = "sha256:" + "0" * 64
+            files["image/index.json"] = json.dumps(idx).encode()
+        self.bundle(mutate=swap)
+        self.refused("the signed digest is not the bundle's image")
+
+    def test_truncated_or_modified_file_refused(self):
+        def cut(files):
+            n = next(k for k in files if k.startswith("image/blobs/"))
+            sums = "".join(f"{__import__('hashlib').sha256(b).hexdigest()}  {k}\n" for k, b in sorted(files.items()))
+            files["SHA256SUMS"] = sums.encode()
+            files[n] = files[n][:-1]  # changed after the checksums were taken
+        self.bundle(mutate=cut)
+        self.refused("checksum mismatch")
+
+    def test_older_version_refused(self):
+        self.bundle(version="0.9.0")
+        self.refused("older than the booted 1.0.0")
+
+    def test_not_a_tar_refused(self):
+        (self.d / "ctl/bundle.tar").write_bytes(b"garbage")
+        self.refused("cannot unpack the bundle")
+
+    def test_symlinked_upload_refused(self):
+        target = self.d / "elsewhere"
+        target.write_bytes(b"x")
+        (self.d / "ctl/bundle.tar").symlink_to(target)
+        r = self.imp()
+        self.assertTrue(r.startswith("error: no uploaded bundle"), r)
 
 
 if __name__ == "__main__":

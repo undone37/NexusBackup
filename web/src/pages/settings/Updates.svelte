@@ -1,15 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, put, del, act, errText } from '../../lib/api';
+  import { get, post, postRaw, put, del, act, errText } from '../../lib/api';
   import { askConfirm } from '../../lib/confirm.svelte';
   import { session } from '../../lib/session.svelte';
-  import { fmtAgo, fmtTime } from '../../lib/format';
+  import { fmtAgo, fmtTime, fmtBytes } from '../../lib/format';
   import { t } from '../../lib/i18n';
   import { manualUrl } from '../../lib/manual';
   import type { UpdateImage, UpdatesStatus } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import IconRefresh from '@lucide/svelte/icons/refresh-cw';
   import IconDownload from '@lucide/svelte/icons/download';
+  import IconUpload from '@lucide/svelte/icons/upload';
 
   const admin = $derived(session.user?.role === 'admin');
   let u = $state<UpdatesStatus | null>(null);
@@ -50,6 +51,7 @@
     staged: 'warn',
     error: 'bad',
     blocked: 'bad',
+    refused: 'bad',
   };
 
   async function check() {
@@ -71,6 +73,31 @@
     if (!(await askConfirm(t.settings.upd.reg.removeConfirm))) return;
     if (await act(del('/updates/registry'), t.settings.upd.reg.removed)) load();
   }
+  // offline update bundle (Phase 36): streamed to the appliance, verified there
+  let bundle = $state<File | null>(null);
+  let uploading = $state(false);
+  async function uploadBundle(e: SubmitEvent) {
+    e.preventDefault();
+    if (!bundle) return;
+    uploading = true;
+    try {
+      if (
+        await act(
+          postRaw('/updates/bundle', bundle, { 'content-type': 'application/x-tar' }),
+          t.settings.upd.offline.uploaded,
+        )
+      ) {
+        bundle = null;
+        load();
+      }
+    } finally {
+      uploading = false;
+    }
+  }
+  const refusedImport = $derived(
+    u?.last_result?.request === 'import' && /^(refused|error)/.test(u.last_result.result) ? u.last_result.result : null,
+  );
+
   async function apply() {
     if (!u?.available) return;
     if (!(await askConfirm(t.settings.upd.applyConfirm(u.available.version)))) return;
@@ -133,7 +160,7 @@
           <button type="button" onclick={check} disabled={u.status === 'checking'}
             ><IconRefresh aria-hidden="true" />{t.settings.upd.check}</button
           >
-          {#if u.available && !u.staged}
+          {#if u.available}
             <button type="button" class="primary" onclick={apply}
               ><IconDownload aria-hidden="true" />{t.settings.upd.apply}</button
             >
@@ -141,6 +168,39 @@
         </div>
       {/if}
     </section>
+    {#if admin}
+      <section class="card" aria-labelledby="offline-h">
+        <div class="card-head"><h2 id="offline-h">{t.settings.upd.offline.title}</h2></div>
+        <p class="muted">{t.settings.upd.offline.intro}</p>
+        {#if refusedImport}
+          <p class="banner error" role="alert">{t.settings.upd.offline.refused} {refusedImport}</p>
+        {:else if u.offline}
+          <p class="banner ok">
+            {t.settings.upd.offline.verified(u.offline.version, u.offline.key, fmtAgo(u.offline.imported))}
+            {t.settings.upd.offline.paused}
+          </p>
+        {/if}
+        <form class="form-grid" onsubmit={uploadBundle}>
+          <div class="field">
+            <label for="bundle-file">{t.settings.upd.offline.file}</label>
+            <input
+              id="bundle-file"
+              type="file"
+              accept=".tar,application/x-tar"
+              required
+              onchange={(e) => (bundle = (e.currentTarget as HTMLInputElement).files?.[0] ?? null)}
+            />
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="primary" disabled={!bundle || uploading || u.status === 'checking'}
+              ><IconUpload aria-hidden="true" />{uploading
+                ? t.settings.upd.offline.uploading(fmtBytes(bundle?.size ?? 0))
+                : t.settings.upd.offline.upload}</button
+            >
+          </div>
+        </form>
+      </section>
+    {/if}
     {#if reg}
       <section class="card" aria-labelledby="reg-h">
         <div class="card-head">

@@ -164,6 +164,14 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    Agents of every install type are updated in-band from it (deb with deb, rpm with rpm, MSI
    with MSI, bundles by binary swap); `self_update = off` on a host refuses that.
 
+7. **Offline update bundle** (Phase 36, below): after step 3 the image's signature is in the registry. Build the
+   bundle from it (needs registry access, not the key; nothing is signed again) and attach it:
+   ```sh
+   release/update-bundle.sh nexusbackup-<v>-update.tar --image ghcr.io/undone37/nexusbackup@sha256:D
+   gh release upload vX.Y.Z nexusbackup-<v>-update.tar
+   ```
+   About 1.1 GB today; GitHub limits assets to 2 GiB.
+
 `release/test-local.sh` runs this whole chain against a throwaway `registry:2` on
 127.0.0.1 with the TEST key and a freshly generated untrusted key.
 
@@ -261,7 +269,8 @@ and scheduler can write and root reads):
 
 | File | Writer | Meaning |
 |---|---|---|
-| `request` | web-api | one word: `stage` (check + download now), `apply` (reboot into the staged update now; ignores window and inhibit, and also applies a digest that was rolled back before or an older version), `rollback` (`bootc rollback` + reboot). Consumed at once by `nexus-update.path`. Should be quorum-gated in the control plane |
+| `bundle.tar` | web-api | an uploaded offline update bundle (above), taken by the request `import` |
+| `request` | web-api | one word: `import` (verify and stage `bundle.tar`, above), `stage` (check + download now), `apply` (reboot into the staged update now; ignores window and inhibit, and also applies a digest that was rolled back before or an older version), `rollback` (`bootc rollback` + reboot). Consumed at once by `nexus-update.path`. Should be quorum-gated in the control plane |
 | `window` | web-api | overrides the default window: `<days> HH:MM <minutes>` in UTC, days = `daily` or `Mon,Thu,...`, or `off` (only admin apply). Invalid content → default window + log |
 | `inhibit` | scheduler | while present and touched within the last 6 h, window applies are postponed (touch it while jobs run, delete afterwards). A stale file stops blocking after 6 h |
 | `status.json` | root (0640) | `booted`/`staged`/`rollback` {image, digest, version, signature, download_only}, `spec_signature`, `channel`, `window`, `in_window`, `inhibited`, `last_check`, `last_result` {time, request, result}, `applying`, `failed_digests`, `checks` (pre-update checks, above), `api` (the web view) |
@@ -269,6 +278,37 @@ and scheduler can write and root reads):
 Control files are read with `O_NOFOLLOW`, as regular files only and at most 256
 bytes. Unknown words are logged and dropped. Open: the web-api and scheduler units
 need `ReadWritePaths=/var/lib/nexus/update` (ProtectSystem=strict).
+
+## Offline update bundle (Phase 36)
+
+For appliances without a route to the registry. **Release side:** `release/update-bundle.sh OUT.tar --image
+REPO@sha256:D` after `release/sign.sh sign`: the image with `skopeo copy --preserve-digests` as an OCI layout
+(`image/`, one manifest, ref name `nexus`), and the `.sig` tag's layer (the cosign simple-signing payload) and its
+signature annotation as `signature/payload.json` / `signature/payload.sig`; nothing is signed again.
+`bundle.json` = `{format: 1, repository, version, digest}`, `SHA256SUMS` over every other file. For lab builds
+`--oci-dir DIR` (from `podman save --format oci-dir`) writes the payload and signs it with `COSIGN_KEY`
+(`release/sign.sh sign-blob`). GitHub limits release assets to 2 GiB; a larger bundle is handed over directly.
+
+**Appliance side:** `POST /updates/bundle` (admins, streamed, at most 8 GiB) writes `bundle.tar` into the control
+directory and the request `import`. `nexus-update` (root):
+1. moves the file (opened with `O_NOFOLLOW`, regular file only) to `/var/lib/nexus/update-offline/` (0700 root), out
+   of the web-api's reach, and unpacks it with Python's `tarfile` `data` filter (no absolute paths, no escapes, no
+   devices); links or special files in the bundle are refused;
+2. checks `SHA256SUMS` (exactly the bundle's files), then the signature: `openssl dgst -sha256 -verify` of the
+   payload with each key pinned in `policy.json` for `NEXUS_IMAGE_REPO`; the payload must be a `cosign container
+   image signature`, name that repository (a tag is ignored, like `matchRepository`) and the digest of the bundled
+   manifest, whose bytes must hash to it; `bundle.json`'s version must equal the image's
+   `org.opencontainers.image.version` label;
+3. refuses the running digest, a digest greenboot rolled back before, and an older version;
+4. moves the layout to `update-offline/current/image` and stages it with `bootc switch --transport oci
+   <path>:nexus`. Applying is the usual `apply` (quorum `update.apply`, pre-update checks, greenboot rollback).
+
+`policy.json` accepts the `oci` transport for exactly that path (`insecureAcceptAnything`; `check-trust.sh` allows
+this one scope and nothing else): bootc reads the image unverified from a root-only directory that `nexus-update`
+filled after its own signature check. After an import, automatic online checks pause (`status.json` `offline` =
+`{version, digest, key, imported}`, nexus-diag reports the origin as "updated offline from a verified bundle"); an
+admin's **Check now** (request `stage`) clears it and switches back to the signed registry origin. A staged offline
+deployment lost by a power cut is staged again from `update-offline/current`.
 
 ## Rollback (health-check gated)
 

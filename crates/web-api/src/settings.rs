@@ -754,6 +754,39 @@ pub async fn apply_update(State(st): State<St>, ctx: Ctx) -> ApiResult<Response>
     Ok(accepted(o, json!({})))
 }
 
+/// Largest offline update bundle: the image's OCI layout and its signature (about 2 GB today).
+pub const MAX_BUNDLE: u64 = 8 << 30;
+
+/// Offline update (docs/release.md "Offline update bundle"): the uploaded bundle goes into the
+/// control directory as `bundle.tar`, then the request `import`. nexus-update (root) moves it out
+/// of the web-api's reach, checks the image signature against the pinned keys and stages it; the
+/// result is in the update status. Applying it is the usual `update.apply` (approval).
+pub async fn upload_bundle(State(st): State<St>, ctx: Ctx, body: axum::body::Body) -> ApiResult<Response> {
+    ctx.require(ADMIN)?;
+    let dir = update_dir(&st);
+    if dir.join("request").exists() || dir.join("bundle.tar").exists() {
+        return Err(ApiError::conflict(
+            "an update request or upload is still being processed: wait for its result in the update status",
+        ));
+    }
+    let part = dir.join(".bundle.part");
+    let _ = std::fs::remove_file(&part); // a broken earlier upload (only one upload at a time)
+    let r = crate::agent_updates::receive(body, &part, MAX_BUNDLE, "update bundle larger than 8 GiB").await;
+    if let Err(e) = r {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    let bytes = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+    std::fs::rename(&part, dir.join("bundle.tar")).map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?;
+    update_request(&st, "import")?;
+    st.audit(ctx.name(), "update.upload", "appliance/update", json!({"bytes": bytes}))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"status": "checking", "bytes": bytes})),
+    )
+        .into_response())
+}
+
 /// Pull credential for a private image repository (`nexus-update` turns it into
 /// bootc's auth file only while it fetches). The token is write-only.
 const PULL_AUTH: &str = "pull-auth.json";

@@ -82,7 +82,7 @@ pub async fn upload_release(State(st): State<St>, ctx: Ctx, body: Body) -> ApiRe
     let incoming = p.upload.join(format!(".incoming-{}", &crate::random_hex()[..16]));
     std::fs::create_dir(&incoming).map_err(|e| ApiError::internal(format!("{}: {e}", incoming.display())))?;
     let tar = incoming.join("release.tar");
-    let r = receive(body, &tar).await;
+    let r = receive(body, &tar, MAX_UPLOAD, "release larger than 512 MiB").await;
     let out = match r {
         Ok(()) => {
             let (p2, inc) = (p.clone(), incoming.clone());
@@ -103,23 +103,24 @@ pub async fn upload_release(State(st): State<St>, ctx: Ctx, body: Body) -> ApiRe
     Ok((StatusCode::CREATED, Json(json!({"version": rel.version}))).into_response())
 }
 
-async fn receive(body: Body, to: &std::path::Path) -> ApiResult<()> {
+/// Streams an upload into a new file `to` (it must not exist), at most `max` bytes (413 `too_large`).
+pub(crate) async fn receive(body: Body, to: &std::path::Path, max: u64, too_large: &str) -> ApiResult<()> {
     use http_body_util::BodyExt;
     use tokio::io::AsyncWriteExt;
-    let mut f = tokio::fs::File::create(to)
+    let mut f = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+        .map_err(|e| ApiError::internal(format!("{}: {e}", to.display())))?;
     let mut body = body;
     let mut n = 0u64;
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|e| ApiError::bad(format!("upload: {e}")))?;
         if let Ok(data) = frame.into_data() {
             n += data.len() as u64;
-            if n > MAX_UPLOAD {
-                return Err(ApiError(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "release larger than 512 MiB".into(),
-                ));
+            if n > max {
+                return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, too_large.into()));
             }
             f.write_all(&data)
                 .await

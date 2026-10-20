@@ -546,6 +546,11 @@ pub fn router(st: St) -> Router {
         .route("/updates", get(settings::get_updates))
         .route("/updates/check", post(settings::check_updates))
         .route("/updates/apply", post(settings::apply_update))
+        // offline update bundle (Phase 36): streamed to disk, verified by nexus-update
+        .route(
+            "/updates/bundle",
+            post(settings::upload_bundle).layer(axum::extract::DefaultBodyLimit::max(settings::MAX_BUNDLE as usize)),
+        )
         .route(
             "/updates/registry",
             get(settings::get_registry_auth)

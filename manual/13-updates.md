@@ -69,6 +69,33 @@ administrators see the buttons.
 The web interface does not change the maintenance window and has no rollback button; use the console commands below.
 
 <a id="pre-update-checks"></a>
+## Offline update (appliances without internet access)
+
+Appliances that cannot reach the image registry are updated from a file. Every release has an **update bundle**
+`nexusbackup-<version>-update.tar` (about 2 GB): the image and its signature, the same signature the appliance checks
+online.
+
+1. Download the bundle on a machine with internet access and bring it to a computer that can open the appliance's
+   web interface.
+2. **Settings → Updates → Offline update**: choose the file and click **Upload and verify**. The upload takes a few
+   minutes; the appliance then checks the bundle. Nothing is installed yet.
+3. The card shows the result: **Verified 0.2.0 (signed with nexus-release-2026-alpha.pub)**, and the image appears
+   as **Staged** and **Available**. Install it with **Install now** (with approvals enabled, a second person approves)
+   or let the maintenance window install it. The appliance reboots into it; a failed health check rolls back as with
+   any update.
+
+The appliance refuses a bundle, and installs nothing, when:
+- its signature does not verify with a pinned release key, or it was signed for another image or repository;
+- a file was changed or the upload was cut off (checksums);
+- it is the running version, an older version, or a version that was rolled back before.
+
+The reason is shown on the card ("The last uploaded bundle was refused: ..."). After an offline update the appliance
+stops checking the registry by itself; **Check now** checks online again (needed only when the appliance gets
+internet access).
+
+> **Status:** Implemented in Phase 36 (unit tests for the checks, upload API test). Lab: see state.md. Not yet: a
+> bundle larger than GitHub's 2 GiB asset limit (parts), `nexusctl update upload` and a USB stick at the console.
+
 ## Private image repository
 
 While the image repository is private (as during the 0.x test releases), the appliance needs a read-only pull

@@ -828,6 +828,21 @@ their IDs. In progress:
 - [ ] L7 proper: MSI major upgrade with the GUI running, 1603 log parsing, watchdog revert, MSI rollback refused
   (needs a second MSI with a bumped version, `upgrade` step)
 
+## Phase 36 — Offline appliance updates (2026-10-20)
+- [x] Spike decided B (own signature check, then `bootc switch --transport oci` from a root-only path); `release/
+  update-bundle.sh` (registry image + its .sig, or an OCI layout signed offline), `POST /updates/bundle` (streamed,
+  8 GiB), Settings > Updates "Offline update" card, nexus-update `import` (tar data filter, SHA256SUMS, openssl
+  against the pinned keys, repository + digest + version, no downgrade / no rolled-back digest), automatic online
+  checks pause after an import. 171 Python tests (13 for the bundle), web-api upload test.
+- [x] Lab on the appliance VM 201 (pve-test), no re-install: one-time bootstrap of the old image to 0.0.1-dev
+  (disk + console, the old code has no import), then bundles uploaded through the API. 0.0.3-dev: verified, the
+  old code did not stage (same origin: switch is a no-op, fixed: upgrade), applied; **0.0.4-dev: upload (1.1 GB,
+  18 s), verified, staged, approved, rebooted, booted 0.0.4-dev (rollback 0.0.3-dev), no console**. Refused: older
+  0.0.3-dev, truncated (477 MB), wrong key with consistent checksums. Found and fixed: Install now never shown
+  (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
+  min), refused bundles shown as "blocked by checks"
+- [ ] Greenboot rollback after a broken bundle build; an online update after an offline one; parts above 2 GiB
+
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 

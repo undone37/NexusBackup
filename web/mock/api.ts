@@ -9661,8 +9661,37 @@ on('POST', '/updates/check', async (c) => {
 on('POST', '/updates/apply', (c) => {
   const u = need(c.user, 'admin');
   if (!db.updates.available) throw new HttpError(409, 'no update available');
-  if (db.updates.staged) throw new HttpError(409, 'an update is already staged');
+  // a staged image (also one from an uploaded bundle) is installed now: the appliance reboots into it
   return quorum(u, 'update.apply', { version: db.updates.available.version, digest: db.updates.available.digest });
+});
+// Phase 36: offline update bundle. The real appliance (nexus-update) checks the image signature against the
+// pinned release keys, digest, repository and version; here a body starting with "bad" stands for a refusal.
+on('POST', '/updates/bundle', async (c) => {
+  const u = need(c.user, 'admin');
+  const raw = c.raw;
+  if (!raw?.length) throw new HttpError(400, 'empty upload');
+  if (db.updates.status === 'checking')
+    throw new HttpError(409, 'an update request or upload is still being processed');
+  const bad = new TextDecoder().decode(raw.slice(0, 3)) === 'bad';
+  const t0 = now();
+  if (bad) {
+    db.updates.last_result = {
+      time: t0,
+      request: 'import',
+      result: 'refused: the image signature does not verify with any pinned release key',
+    };
+  } else {
+    const img = { version: '0.2.0', digest: 'sha256:' + 'b2'.repeat(32), since: null };
+    Object.assign(db.updates, {
+      staged: img,
+      available: img,
+      offline: { version: img.version, digest: img.digest, key: 'nexus-release-2026-alpha.pub', imported: t0 },
+    });
+    db.updates.last_result = { time: t0, request: 'import', result: `staged ${img.digest} from the uploaded bundle` };
+  }
+  Object.assign(db.updates, { status: 'checking', checking_since: t0 });
+  await audit(u.name, 'update.upload', 'appliance/update', { bytes: raw.length });
+  return [202, { status: 'checking', bytes: raw.length }];
 });
 
 // ---------------------------------------------------------------- Phase 14d: API tokens, web certificate
@@ -11456,7 +11485,10 @@ async function handle(req: Req, res: Res) {
     }
     const bytes = method === 'GET' ? null : await readBody(req);
     // Plugin uploads are raw bundles, everything else JSON.
-    const raw = method === 'POST' && (path === '/plugins' || path === '/agent-releases') ? bytes : null;
+    const raw =
+      method === 'POST' && (path === '/plugins' || path === '/agent-releases' || path === '/updates/bundle')
+        ? bytes
+        : null;
     const text = bytes && !raw ? bytes.toString('utf8') : '';
     let body: Json = {};
     if (text) {

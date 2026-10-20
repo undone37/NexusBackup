@@ -411,6 +411,11 @@ def bootc():
     d = ", ".join(parts)
     if st.get("rollback_queued"):
         return "warn", 2, "a rollback is queued for the next boot; " + d
+    offline = st.get("offline") or {}
+    if offline and str(st.get("spec_image") or "").startswith("/var/lib/nexus/update-offline/"):
+        # bootc reads the verified bundle unverified (policy.json: only that root-only path); nexus-update
+        # checked its signature against the pinned keys before (docs/release.md "Offline update bundle")
+        return "pass", 1, f"updated offline from a verified bundle ({offline.get('version')}, key {offline.get('key')}); " + d
     if st.get("spec_signature") not in (None, "containerPolicy"):
         return "warn", 2, f"origin signature mode {st.get('spec_signature')} (nexus-update enforces signatures at the next check); " + d
     return "pass", 1, d

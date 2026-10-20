@@ -2088,11 +2088,15 @@ export interface UpdatesStatus {
   /** "Sun 03:00 120" = weekday, start, minutes */
   window: string;
   last_check: number;
-  status: 'idle' | 'checking' | 'staged' | 'error' | 'blocked' | string;
+  status: 'idle' | 'checking' | 'staged' | 'error' | 'blocked' | 'refused' | string;
   error: string | null;
   rollback: UpdateImage | null;
   /** pre-update checks that refused the last stage / apply (status "blocked") */
   blocked?: Pick<DiagCheck, 'id' | 'title' | 'severity' | 'detail' | 'manual'>[];
+  /** the last verified offline bundle; while set, nexus-update makes no automatic online checks */
+  offline?: { version: string; digest: string; key: string; imported: number } | null;
+  /** the last action and its result, e.g. "refused: …" for a bundle */
+  last_result?: { time: number; request: string | null; result: string } | null;
 }
 
 /** One self-check of nexus-diag (Settings → Diagnostics, pre-update checks). */

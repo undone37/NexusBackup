@@ -42,12 +42,15 @@
 import datetime as dt
 import fcntl
 import base64
+import hashlib
 import json
 import os
+import shutil
 import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 
 CONF = os.environ.get("NEXUS_UPDATE_CONF", "/etc/nexus/update.conf")
@@ -63,8 +66,17 @@ CONF_DEFAULTS = {
     "NEXUS_UPDATE_DIAG": "/usr/libexec/nexus/nexus-diag",
     # where bootc/ostree look for registry credentials (tmpfs: gone at reboot)
     "NEXUS_UPDATE_AUTHFILE": "/run/ostree/auth.json",
+    # offline updates (docs/release.md "Offline update bundle"): root-only, the only path policy.json accepts
+    # for the oci transport; the image is verified here before bootc reads it
+    "NEXUS_UPDATE_OFFLINE_DIR": "/var/lib/nexus/update-offline",
+    "NEXUS_UPDATE_POLICY": "/etc/containers/policy.json",
 }
-REQUESTS = ("stage", "apply", "rollback")
+REQUESTS = ("stage", "apply", "rollback", "import")
+# the uploaded bundle (web-api writes it into the control directory, then the request "import")
+BUNDLE = "bundle.tar"
+# what the release signs: the cosign "simple signing" payload of the image (docs/release.md)
+COSIGN_TYPE = "cosign container image signature"
+OCI_REF = "nexus"
 INHIBIT_MAX_AGE = 6 * 3600
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -349,6 +361,176 @@ def stage(c):
     return "up to date"
 
 
+# ---------------------------------------------------------------- offline update bundle
+#
+# bundle.tar (release/update-bundle.sh): bundle.json {format, repository, version, digest}, image/ (an OCI
+# layout with one manifest, ref name "nexus"), signature/payload.json + signature/payload.sig (the cosign
+# simple-signing payload of the image and its base64 DER ECDSA signature, as in the registry's .sig tag),
+# SHA256SUMS over every other file. Trust comes only from the signature: it must verify with a key pinned
+# in policy.json for this repository, name this repository and the manifest digest of image/.
+
+
+def pinned_keys(c):
+    with open(c["NEXUS_UPDATE_POLICY"]) as f:
+        pol = json.load(f)
+    reqs = ((pol.get("transports") or {}).get("docker") or {}).get(c["NEXUS_IMAGE_REPO"]) or []
+    keys = [k for r in reqs if r.get("type") == "sigstoreSigned" for k in (r.get("keyPaths") or [r.get("keyPath")]) if k]
+    if not keys:
+        raise Error(f"no pinned key for {c['NEXUS_IMAGE_REPO']} in {c['NEXUS_UPDATE_POLICY']}")
+    return keys
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def read_text(path):
+    with open(path) as f:
+        return f.read()
+
+
+def verify_signature(c, payload, sig_b64, work):
+    """The pinned key that verifies the payload's signature (openssl, ECDSA P-256 over SHA-256)."""
+    der = os.path.join(work, ".sig.der")
+    try:
+        with open(der, "wb") as f:
+            f.write(base64.b64decode(sig_b64.strip(), validate=True))
+    except ValueError:
+        raise Refused("the signature is not base64")
+    for k in pinned_keys(c):
+        p = run("openssl", "dgst", "-sha256", "-verify", k, "-signature", der, payload, check=False)
+        if p.returncode == 0:
+            return k
+    raise Refused("the image signature does not verify with any pinned release key")
+
+
+def verify_bundle(c, root):
+    """Checks an extracted bundle; returns {version, digest, key}. Raises Refused."""
+    for d, dirs, files in os.walk(root):
+        for n in dirs + files:
+            st_ = os.lstat(os.path.join(d, n))
+            if not (stat.S_ISREG(st_.st_mode) or stat.S_ISDIR(st_.st_mode)):
+                raise Refused(f"bundle contains a link or special file: {os.path.relpath(os.path.join(d, n), root)}")
+    sums = {}
+    try:
+        with open(os.path.join(root, "SHA256SUMS")) as f:
+            for line in f:
+                h, _, name = line.strip().partition("  ")
+                sums[name] = h
+    except OSError:
+        raise Refused("bundle has no SHA256SUMS")
+    have = {os.path.relpath(os.path.join(d, n), root) for d, _, fs in os.walk(root) for n in fs} - {"SHA256SUMS"}
+    if have != set(sums):
+        raise Refused(f"SHA256SUMS does not list exactly the bundle's files ({len(have ^ set(sums))} differ)")
+    for name, h in sums.items():
+        if sha256_file(os.path.join(root, name)) != h:
+            raise Refused(f"checksum mismatch: {name} (truncated or modified upload)")
+    try:
+        meta = json.loads(read_text(os.path.join(root, "bundle.json")))
+        payload_path = os.path.join(root, "signature", "payload.json")
+        payload = json.loads(read_text(payload_path))
+        sig = read_text(os.path.join(root, "signature", "payload.sig"))
+        index = json.loads(read_text(os.path.join(root, "image", "index.json")))
+    except (OSError, ValueError) as e:
+        raise Refused(f"not an update bundle: {e}")
+    if meta.get("format") != 1:
+        raise Refused(f"unknown bundle format {meta.get('format')!r}")
+    repo = c["NEXUS_IMAGE_REPO"]
+    if meta.get("repository") != repo:
+        raise Refused(f"bundle is for {meta.get('repository')}, this appliance follows {repo}")
+    key = verify_signature(c, payload_path, sig, root)
+    crit = payload.get("critical") or {}
+    name = ((crit.get("identity") or {}).get("docker-reference") or "").split("@")[0]
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:  # drop a tag; matchRepository compares the repository only
+        name = name[: len(name) - len(last)] + last.split(":", 1)[0]
+    if crit.get("type") != COSIGN_TYPE or name != repo:
+        raise Refused(f"the signature is not an image signature for {repo} (signed: {name or '-'})")
+    digest = (crit.get("image") or {}).get("docker-manifest-digest") or ""
+    mans = [m for m in index.get("manifests") or [] if (m.get("annotations") or {}).get("org.opencontainers.image.ref.name") == OCI_REF]
+    if len(mans) != 1 or mans[0].get("digest") != digest or not digest.startswith("sha256:"):
+        raise Refused("the signed digest is not the bundle's image")
+    blob = lambda dg: os.path.join(root, "image", "blobs", "sha256", dg.split(":", 1)[1])
+    try:
+        man = json.loads(read_text(blob(digest)))
+        cfg = json.loads(read_text(blob(man["config"]["digest"])))
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        raise Refused(f"image manifest or config missing: {e}")
+    if "sha256:" + sha256_file(blob(digest)) != digest:
+        raise Refused("image manifest does not match its digest")
+    version = ((cfg.get("config") or {}).get("Labels") or {}).get("org.opencontainers.image.version")
+    if not version or version != meta.get("version"):
+        raise Refused(f"image version {version!r} does not match the bundle's {meta.get('version')!r}")
+    return {"version": version, "digest": digest, "key": os.path.basename(key)}
+
+
+def import_bundle(c, st):
+    """Moves the uploaded bundle out of the web-api's reach, extracts and verifies it, then stages it."""
+    up = os.path.join(c["NEXUS_UPDATE_DIR"], BUNDLE)
+    off = c["NEXUS_UPDATE_OFFLINE_DIR"]
+    os.makedirs(off, mode=0o700, exist_ok=True)
+    os.chmod(off, 0o700)
+    tar = os.path.join(off, BUNDLE)
+    try:
+        fd = os.open(up, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise Error("no uploaded bundle")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refused("the upload is not a regular file")
+        os.replace(up, tar)  # same file system; from here on only root can touch it
+    finally:
+        os.close(fd)
+    new = os.path.join(off, "new")
+    shutil.rmtree(new, ignore_errors=True)
+    try:
+        try:
+            with tarfile.open(tar) as t:
+                t.extractall(new, filter="data")  # no absolute paths, no escapes, no devices
+        except (tarfile.TarError, OSError, ValueError) as e:
+            raise Refused(f"cannot unpack the bundle: {e}")
+        info = verify_bundle(c, new)
+        s = summary(bootc_status())
+        if info["digest"] == ((s["booted"] or {}).get("digest")):
+            raise Refused(f"version {info['version']} ({info['digest']}) is already running")
+        if info["digest"] in (st.get("failed_digests") or []):
+            raise Refused(f"{info['digest']} was rolled back by greenboot before")
+        old, newv = parse_version((s["booted"] or {}).get("version")), parse_version(info["version"])
+        if old and newv and newv < old:
+            raise Refused(f"version {info['version']} is older than the booted {(s['booted'] or {}).get('version')}")
+        cur = os.path.join(off, "current")
+        shutil.rmtree(cur, ignore_errors=True)
+        os.replace(new, cur)
+    except Error:
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    finally:
+        if os.path.exists(tar):
+            os.unlink(tar)
+    st["offline"] = {**info, "imported": int(time.time())}
+    log(f"verified bundle {info['version']} ({info['digest']}, key {info['key']})")
+    return stage_offline(c, st)
+
+
+def stage_offline(c, st):
+    """Stages the verified image in the offline directory (policy.json accepts only that path)."""
+    ref = f"{os.path.join(c['NEXUS_UPDATE_OFFLINE_DIR'], 'current', 'image')}:{OCI_REF}"
+    if summary(bootc_status())["spec_image"] == ref:
+        # booted from an earlier bundle: same origin, so switch is a no-op; upgrade reads the new image there
+        run("bootc", "upgrade", "--quiet")
+    else:
+        run("bootc", "switch", "--quiet", "--transport", "oci", ref)
+    s = summary(bootc_status())
+    if not s["staged"]:
+        raise Error("bootc staged nothing from the bundle")
+    log(f"staged {s['staged']['digest']} (version {s['staged']['version']}) from the offline bundle")
+    return f"staged {s['staged']['digest']} from the uploaded bundle"
+
+
 def parse_version(v):
     """'v1.2.3', '1.2.3-rc1' -> (1, 2, 3); None if not a dotted number."""
     if not v:
@@ -383,6 +565,9 @@ def apply(c, status=None, force=False):
             return f"not applying {st['digest']}: version {st['version']} is older than the booted one"
     log(f"applying staged {st['digest']}, rebooting")
     status["applying"] = st["digest"]
+    # the web view too: after the reboot the next tick can be minutes away (timer), and the UI must not show
+    # "no update status" meanwhile
+    status["api"] = api_view({**status, **s, "channel": f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}"})
     write_status(c, status)
     if st["download_only"]:
         run("bootc", "upgrade", "--from-downloaded", "--apply")  # reboots
@@ -444,12 +629,18 @@ def api_view(st):
         "channel": channel.rsplit(":", 1)[-1] if channel else None,
         "window": window_text(st.get("window")),
         "last_check": st.get("last_check"),
-        "status": "error" if error else ("blocked" if refused else ("staged" if staged else "idle")),
+        # a refused bundle is not a failed pre-update check: its own status, the reason in last_result
+        "status": "error" if error else ("refused" if refused and last.get("request") == "import"
+                                         else ("blocked" if refused else ("staged" if staged else "idle"))),
         "error": error,
         # the checks that refused the last stage / apply (manual: chapter 15 anchors)
         "blocked": ((st.get("checks") or {}).get("blocking") or []) if refused else [],
         "rollback": img(st.get("rollback")),
         "applying": st.get("applying"),
+        # the last verified bundle {version, digest, key, imported}; while set, no automatic online checks
+        "offline": st.get("offline"),
+        # {time, request, result} of the last action, e.g. why an uploaded bundle was refused
+        "last_result": st.get("last_result"),
     }
 
 
@@ -482,7 +673,7 @@ def tick(c, now=None):
     now = now or dt.datetime.now(dt.timezone.utc)
     d = c["NEXUS_UPDATE_DIR"]
     prev = read_status(c)
-    st = {k: prev.get(k) for k in ("last_check", "last_result", "failed_digests", "applying", "checks")}
+    st = {k: prev.get(k) for k in ("last_check", "last_result", "failed_digests", "applying", "checks", "offline")}
     st["failed_digests"] = st["failed_digests"] or []
     req = take_request(d)
     result = None
@@ -504,13 +695,24 @@ def tick(c, now=None):
             st["applying"] = None
         if req == "rollback":
             result = rollback(c)
+        elif req == "import":
+            gate()
+            result = import_bundle(c, st)
         else:
+            # updated from an uploaded bundle: no automatic online checks (an air-gapped appliance would
+            # report an error every day) until an admin checks online ("Check now" = request stage)
+            offline = st.get("offline") and req != "stage"
+            if req == "stage":
+                st["offline"] = None
             # bootc keeps a download-only staged deployment in runtime state: an
             # unclean power cut loses it. Re-stage at once instead of waiting a check interval.
             had = (prev.get("staged") or {}).get("digest")
             lost = bool(had) and not prev.get("applying") and not summary(bootc_status())["staged"]
             if lost:
                 log(f"staged update {had} is gone (power loss before apply?); staging again")
+            if lost and offline and os.path.isdir(os.path.join(c["NEXUS_UPDATE_OFFLINE_DIR"], "current", "image")):
+                result = stage_offline(c, st)
+                lost = False
             # "apply" = install now: fetch first when nothing is staged yet
             install_now = req == "apply" and not summary(bootc_status())["staged"]
             check_due = (
@@ -519,7 +721,7 @@ def tick(c, now=None):
                 or lost
                 or not st["last_check"]
                 or now.timestamp() - st["last_check"] >= float(c["NEXUS_UPDATE_CHECK_HOURS"]) * 3600
-            )
+            ) and not offline
             if check_due:
                 st["last_check"] = int(now.timestamp())
                 gate()

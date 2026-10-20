@@ -1084,6 +1084,13 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
 - **Verification:** lab appliance with egress blocked (nftables), update from the uploaded bundle to a newer signed
   build, rollback by greenboot after a broken build, refusal of an unsigned, re-signed-with-another-key, truncated
   and older bundle; then an online update afterwards still works.
+- **Decision (spike, 2026-10-20): B.** No registry binary in the image (AlmaLinux 10 ships none) rules out A.
+  nexus-update verifies the cosign simple-signing payload itself (openssl, keys pinned in policy.json, repository
+  identity, manifest digest, version label), then `bootc switch --transport oci` from a root-only directory, the
+  one path policy.json accepts for that transport (`check-trust.sh` allows exactly it). Same origin on the next
+  bundle: `bootc upgrade`. **Done 2026-10-20** for 36a (release/update-bundle.sh), 36b, 36c (upload API + UI);
+  lab on the appliance VM: see state.md. Open: parts above 2 GiB, `nexusctl update upload`, USB at the console,
+  the greenboot rollback after a broken build and an online update after an offline one (lab).
 
 ### Phase 37 — Windows bare-metal recovery (added 2026-10-20 by user request)
 

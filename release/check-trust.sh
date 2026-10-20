@@ -5,9 +5,11 @@
 #   release/check-trust.sh --release  release build: only keys from release/keys/ (image
 #                                     and plugin keys), no TEST key anywhere in os/etc
 #
-# Checks: policy.json default is reject, nothing anywhere is insecureAcceptAnything,
-# the only scope is NEXUS_IMAGE_REPO (release/config.env) with sigstoreSigned +
-# matchRepository; registries.d and update.conf name the same repository; every
+# Checks: policy.json default is reject, the only image scope is NEXUS_IMAGE_REPO
+# (release/config.env) with sigstoreSigned + matchRepository; the one other scope is the
+# offline update directory for the oci transport (insecureAcceptAnything there, and nowhere
+# else: nexus-update verifies the bundle's signature itself before bootc reads that root-only
+# path, docs/release.md "Offline update bundle"); registries.d and update.conf name the same repository; every
 # pinned key exists and is an EC/RSA public key; no unreferenced key files; at least
 # one project plugin key (pki/nexus/plugin-keys), all PEM public keys (--release: exactly
 # the release keys, never the TEST key).
@@ -27,10 +29,13 @@ bad() {
 
 jq -e . "$pol" >/dev/null || die "$pol is not valid JSON"
 jq -e '.default == [{"type": "reject"}]' "$pol" >/dev/null || bad "policy default must be [{type: reject}]"
-jq -e '[.. | objects | select(.type? == "insecureAcceptAnything")] | length == 0' "$pol" >/dev/null ||
-	bad "policy contains insecureAcceptAnything"
-jq -e --arg r "$repo" '(.transports | keys) == ["docker"] and (.transports.docker | keys) == [$r]' "$pol" >/dev/null ||
-	bad "policy must have exactly one scope: docker $repo"
+offline=/var/lib/nexus/update-offline/current/image
+jq -e '[.transports.docker | .. | objects | select(.type? == "insecureAcceptAnything")] | length == 0' "$pol" >/dev/null ||
+	bad "policy contains insecureAcceptAnything for the registry"
+jq -e --arg o "$offline" '(.transports.oci // {}) == {($o): [{"type": "insecureAcceptAnything"}]}' "$pol" >/dev/null ||
+	bad "the oci scope must be exactly $offline (offline updates) and nothing else"
+jq -e --arg r "$repo" '(.transports | keys) == ["docker", "oci"] and (.transports.docker | keys) == [$r]' "$pol" >/dev/null ||
+	bad "policy must have exactly the scopes docker $repo and oci $offline"
 jq -e --arg r "$repo" '.transports.docker[$r] | length > 0 and all(.[];
 	.type == "sigstoreSigned" and (.keyPaths | length) > 0 and .signedIdentity.type == "matchRepository"
 	and (has("rekorPublicKeyPath") or has("rekorPublicKeyPaths") or has("fulcio") | not))' "$pol" >/dev/null ||

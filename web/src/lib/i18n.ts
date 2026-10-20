@@ -2285,6 +2285,7 @@ export const en = {
         staged: 'Staged',
         error: 'Error',
         blocked: 'Blocked by checks',
+        refused: 'Bundle refused',
       } as Record<string, string>,
       blocked: 'The update was not installed because these pre-update checks failed. Fix them, then click Check now.',
       rollback: 'Rollback image',
@@ -2312,6 +2313,18 @@ export const en = {
       upToDate: 'No newer image available.',
       since: (s: string) => `since ${s}`,
       none: 'none',
+      offline: {
+        title: 'Offline update',
+        intro:
+          'For appliances without access to the image registry: upload the update bundle of a release (nexusbackup-<version>-update.tar). The appliance checks its signature against the pinned release keys before anything is installed; then install it as usual.',
+        file: 'Update bundle',
+        upload: 'Upload and verify',
+        uploading: (size: string) => `Uploading ${size}…`,
+        uploaded: 'Bundle uploaded; the appliance is verifying it.',
+        verified: (v: string, key: string, ago: string) => `Verified ${v} (signed with ${key}), uploaded ${ago}.`,
+        paused: 'Automatic online checks are paused since this offline update. Check now checks the registry again.',
+        refused: 'The last uploaded bundle was refused:',
+      },
     },
     cfgb: {
       intro:

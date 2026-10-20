@@ -152,6 +152,13 @@ impl T {
     async fn post(&self, path: &str, s: &S, body: Value) -> R {
         self.send(Self::req(Method::POST, path, Some(s), Some(&body))).await
     }
+    async fn post_raw(&self, path: &str, s: &S, body: &'static [u8]) -> R {
+        let mut req = Self::req(Method::POST, path, Some(s), None);
+        req.headers_mut()
+            .insert(header::CONTENT_TYPE, "application/x-tar".parse().unwrap());
+        *req.body_mut() = Body::from(body);
+        self.send(req).await
+    }
     async fn put(&self, path: &str, s: &S, body: Value) -> R {
         self.send(Self::req(Method::PUT, path, Some(s), Some(&body))).await
     }
@@ -588,6 +595,34 @@ async fn updates_status_check_and_apply() {
     let r = t.post("/api/v1/updates/apply", &alice, json!({})).await;
     assert_eq!((r.status, r.body["executed"].as_bool()), (StatusCode::OK, Some(true)));
     assert_eq!(std::fs::read_to_string(dir.join("request")).unwrap(), "apply\n");
+}
+
+/// Offline update bundle (Phase 36): streamed into the control directory for nexus-update.
+#[tokio::test]
+async fn update_bundle_upload() {
+    let t = T::new();
+    let dir = t.dir.path().join("update");
+    let alice = t.login("alice").await;
+    let otto = t.login("otto").await;
+    assert_eq!(
+        t.post_raw("/api/v1/updates/bundle", &otto, b"tar").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t.post_raw("/api/v1/updates/bundle", &alice, b"").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "empty upload");
+    assert!(!dir.join("bundle.tar").exists() && !dir.join(".bundle.part").exists());
+    let r = t.post_raw("/api/v1/updates/bundle", &alice, b"not really a tar").await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert_eq!(r.body["bytes"], 16);
+    assert_eq!(std::fs::read(dir.join("bundle.tar")).unwrap(), b"not really a tar");
+    assert_eq!(std::fs::read_to_string(dir.join("request")).unwrap(), "import\n");
+    assert_eq!(t.get("/api/v1/updates", &otto).await.body["pending_request"], "import");
+    // one at a time: nexus-update has not taken it yet
+    assert_eq!(
+        t.post_raw("/api/v1/updates/bundle", &alice, b"second").await.status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(t.audit_count("update.upload"), 1);
 }
 
 // ---------------------------------------------------------------- break-glass banner
