@@ -842,6 +842,9 @@ their IDs. In progress:
   (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
   min), refused bundles shown as "blocked by checks"
 - [ ] Greenboot rollback after a broken bundle build; an online update after an offline one; parts above 2 GiB
+- [x] Appliance VM 201 disk moved from virtio-blk (virtio0) to VirtIO SCSI single (scsi0, iothread, discard, ssd),
+  booted unchanged (root by UUID, API up in 30 s, 2026-10-20); deploy.sh, README and manual chapter 2 recommend
+  SCSI (a virtio-blk VM did not see a hot-added disk until a reboot)
 
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.

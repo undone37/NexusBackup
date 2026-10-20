@@ -284,7 +284,9 @@ Sizing notes:
 - Separate virtual disks for the system, the metadata and the data, ideally on different datastores. Never put the
   data on a thin disk on the same datastore as the VMs it backs up. SMART is not available inside a VM; the
   hypervisor watches the physical disks.
-- Use the VirtIO devices (virtio-scsi or virtio-blk, virtio-net), and one virtual NIC or VLAN per network.
+- Disks on a **VirtIO SCSI single** controller (iothread, discard), not virtio-blk: data disks can be added and
+  replaced while the appliance runs (with virtio-blk a disk only appears after a reboot), and many disks share one
+  controller. virtio-net, one virtual NIC or VLAN per network.
 - A virtual TPM is a file on the host and protects much less than a hardware TPM. Restrict who administers the host.
 - Don't take hypervisor snapshots of the running appliance as a backup. Reverting one leaves the catalog older than
   the store and the offsite copies; use the configuration backup instead.

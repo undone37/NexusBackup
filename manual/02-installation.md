@@ -40,6 +40,9 @@ The appliance runs as a VM as well as on its own hardware (the lab runs it in QE
   state too, so it does not protect the disks the way a hardware TPM does (relevant once disk encryption with TPM
   unlock exists; see [Known gaps](#known-gaps-after-installation)). Restrict who administers the host, and keep the
   recovery key offline as for any appliance.
+- **Disk controller:** VirtIO SCSI single (Proxmox VE's default), with iothread and discard, for all appliance disks.
+  Data disks can then be added and replaced while the appliance runs (**Hardware**); with virtio-blk a new disk only
+  appears after a reboot.
 - **Separate virtual disks** for the system, the metadata (catalog) and the data array, each its own virtual disk
   (ideally on different datastores; the data disks on the capacity storage). Do not put the data array onto a single
   thin-provisioned disk on the same datastore as the VMs it protects. Create the data array in the web UI as on
