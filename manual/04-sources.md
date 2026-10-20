@@ -492,6 +492,82 @@ If the connection breaks after the appliance signed the new certificate, the app
 new certificate until the next connection shows which one the agent uses (the chip "Renewal issued, waiting for the next session to confirm it"). A failed automatic
 renewal is retried after a day.
 
+#### Agent installation: messages and what to do (FAQ)
+
+The **Enroll** job's log and `nexus-agent status` name the problem. The messages below are the exact texts.
+
+**Enroll fails: `connect <host>:7444 (a firewall on the agent host rejects the connection, or the host is down: allow
+TCP 7444 from this appliance)` and "No route to host".**
+The host's firewall rejects the connection. firewalld does this by default on AlmaLinux, Rocky Linux, RHEL, Fedora
+and openSUSE; ufw on Ubuntu is off by default. Allow TCP 7444 from the appliance's address only, then click
+**Enroll** again (the token stays valid for 24 hours):
+
+```sh
+# firewalld (AlmaLinux, Rocky, RHEL, Fedora, openSUSE)
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=<appliance> port port=7444 protocol=tcp accept'
+sudo firewall-cmd --reload
+# ufw (Ubuntu, when enabled)
+sudo ufw allow from <appliance> to any port 7444 proto tcp
+```
+
+On Windows the MSI does not open the port either: `New-NetFirewallRule -DisplayName "nexus-agent" -Direction Inbound
+-Protocol TCP -LocalPort 7444 -RemoteAddress <appliance> -Action Allow`.
+
+**Enroll fails: `(nothing listens on 7444: is the agent service running? It starts only after nexus-agent init)` and
+"Connection refused".**
+The package installs the service but does not start it before `init`. Run the two commands from the install dialog
+(`nexus-agent init --token -`, then `systemctl enable --now nexus-agent`); on Windows `nexus-agent.exe init --token -`
+and start the service. Check with `systemctl status nexus-agent` or `Get-Service nexus-agent`.
+
+**Enroll fails: `(no answer: the host is off, the address is wrong, or a firewall drops the packets ...)`.**
+Nothing answered at all. Check the agent's **Host** on the appliance (the address the appliance connects to, not the
+host name the host gives itself), that the host is up, and firewalls on the way that drop instead of reject.
+
+**The service stops at once: `not initialised: run nexus-agent init --token <T> (or --fleet-secret <S>)`.**
+`init` was not run, or ran with another configuration directory. Run it with the token of the agent's install dialog.
+
+**Enroll is refused: `no valid enrollment token: create a new token and run the install command on the host`.**
+A token works once and for 24 hours. Click **New token** on the agent and run `init` with it.
+
+**The enroll job ends with `the agent's enrollment proof is invalid (wrong token, or a man in the middle): not
+enrolled`.**
+The token on the host is not the one the appliance issued: a typo, or a token of another agent. Run `init` again with
+the right token. If you are sure the token is right, something between the appliance and the host intercepts the
+TLS connection: do not enroll through it.
+
+**`enrollment locked after too many failed proofs; run nexus-agent init again`.**
+After 5 failed proofs the agent refuses further attempts. `nexus-agent init --token -` with a new token clears the
+lock.
+
+**`already enrolled: a fleet secret only initialises new agents (re-enroll with --token)`.**
+The host is already enrolled; a fleet secret does not re-enroll it. Use a token (see re-enrolling below).
+
+**`appliance certificate does not match the pinned fingerprint`.**
+The agent was enrolled with another appliance certificate: the appliance was reinstalled or replaced. Re-enroll the
+agent with a new token.
+
+**The backup succeeds but is "not point-in-time consistent": `no snapshot support for / (ext4 on /dev/sda2), reading
+live`.**
+The file system has no snapshots (plain ext4 or XFS on a partition, the default of Ubuntu and Debian installs). The
+agent reads the files while they change and marks the backup; files that changed during the read are flagged in the
+job. For consistent backups put the data on LVM with free space, btrfs or ZFS, or use pre/post hooks for databases
+(`/etc/nexus-agent/hooks.d`, see the source options below).
+
+**`snapshot of / (Lvm) failed, reading live: lvcreate ...: Volume group "..." has insufficient free space (0
+extents)`.**
+LVM snapshots need free space in the volume group, by default 10 % of the logical volume (`lvm_snapshot_percent` in
+`agent.conf`). The default installs of AlmaLinux and Rocky Linux give the whole disk to the logical volumes; shrink a
+volume or add a disk to the volume group to leave room.
+
+**On a SELinux system the bundle's installer prints `SELinux: /.autorelabel created ...`.**
+The labels of the new files are set at the next boot, which reboots once. The packages (.rpm) label their files
+themselves.
+
+**An agent update from the appliance is refused.**
+An installed package is never replaced by a binary: MSI, .deb and .rpm installs are updated with the signed package
+of their type from an uploaded agent release, a bundle install with the binary. `self_update = off` in `agent.conf`
+refuses every update. See [13 Updates](13-updates.md#how-each-install-type-is-updated).
+
 #### Re-enrolling an agent
 
 If a host lost its agent key (reinstalled host, deleted `/etc/nexus-agent`), do not delete the agent: click **New

@@ -17,6 +17,7 @@ are history: they record what was proposed or compared at the time and are not u
 | [pentest-scope.md](pentest-scope.md) | plan | scope for the external penetration test |
 | [scale-out.md](scale-out.md) | design | groundwork for more than one appliance node |
 | [release.md](release.md) | contract | release, signing, update and rollback chain |
+| [compatibility.md](compatibility.md) | design | what was tested on which platform and version, and what not |
 
 ## Control plane
 

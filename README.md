@@ -141,8 +141,11 @@ In this list, "lab" means a run end to end against real software in VMs. The lab
 - a Proxmox VE 9.2 host with a Windows Server 2022 member server and domain controller, Windows 11 and a Debian
   guest, with the appliance as a VM with SELinux enforcing;
 - nested Proxmox VE;
-- Linux VMs (Debian, AlmaLinux, Ubuntu with ZFS, Fedora with btrfs);
-- TrueNAS;
+- Linux VMs (Debian, AlmaLinux, Ubuntu with ZFS, Fedora with btrfs), and on 2026-10-20 the agent packages on the
+  default installs of 14 releases: Ubuntu 22.04 to 26.10, Debian 12, 13 and testing, AlmaLinux and Rocky Linux 8, 9
+  and 10, openSUSE Leap 16;
+- a fresh Windows Server 2022 installation;
+- TrueNAS 25.10.7 and 27.0.0-RC1;
 - NFS and SMB servers;
 - MinIO;
 - Keycloak.
@@ -150,7 +153,7 @@ In this list, "lab" means a run end to end against real software in VMs. The lab
 | Area | Status |
 |---|---|
 | Proxmox VE VM / container backup, full restore, instant recovery, restore tests, file index and search | lab (single PVE node; multi-node untested) |
-| Linux agent, Windows agent (Server 2022, Windows 11, domain controller with NTDS), bare-metal recovery (Linux) | lab |
+| Linux agent (14 distribution releases, packages), Windows agent (Server 2022, Windows 11, domain controller with NTDS), bare-metal recovery (Linux) | lab |
 | NFS/SMB, TrueNAS, PostgreSQL, replication between two appliances, configuration restore, signed updates, installer ISO | lab |
 | SFTP and S3 offsite | lab against a local SFTP test server and MinIO only; never against a real Hetzner Storage Box or S3 provider |
 | Microsoft 365 | Graph mock only; **never run against a real tenant** |
@@ -165,7 +168,8 @@ Measured in the lab:
 - **Instant recovery:** the VM runs 4.5 s after the start.
 - **Replication:** 181 MB/s for the initial sync.
 
-The exact state, every open item and the production gaps are in [`state.md`](state.md).
+Per platform and version: [compatibility matrix](docs/compatibility.md). The exact state, every open item and the
+production gaps are in [`state.md`](state.md).
 
 ## Comparison
 A rough orientation, not a buyer's guide. The other products are described from their public documentation as of

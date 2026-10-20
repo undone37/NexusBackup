@@ -107,10 +107,15 @@ the appliance-side dashboard service may not be available on your version yet.
 Only one job per source runs at a time. A long backup or restore of the same source delays the next job. Queued jobs
 can be cancelled by administrators and operators.
 
+**An agent does not enroll, or the service does not start.**
+The messages of the enroll job and of `nexus-agent status` (firewall, service not initialised, token, locked
+enrollment, snapshots) are listed with what to do in
+[04 Sources: Agent installation FAQ](04-sources.md#agent-installation-messages-and-what-to-do-faq).
+
 **Agent shows "Token expired", or Enroll is greyed out.**
-Enrollment tokens are valid for 24 hours. Click **New token**, run
-`sudo /usr/local/sbin/nexus-agent init --token -` on the host, paste the token, then click **Enroll**. After 5
-failed proofs the agent locks enrollment; `init --token` clears the lock.
+Enrollment tokens are valid for 24 hours. Click **New token**, run `sudo nexus-agent init --token -` on the host (bundle
+installs: `/usr/local/sbin/nexus-agent`), paste the token, then click **Enroll**. After 5 failed proofs the agent locks
+enrollment; `init --token` clears the lock.
 
 **Agent backup "not point-in-time consistent" and a `backup_inconsistent` alert.**
 The volume has no LVM, ZFS or btrfs snapshot support, so it was read live. Move the data to LVM/ZFS/btrfs, or accept
