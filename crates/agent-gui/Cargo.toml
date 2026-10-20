@@ -23,7 +23,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # software renderer only (no wgpu/GPU drivers); smol for time::every. No linux-theme-detection: its mundy is
 # on zbus 5 (unmaintained, RUSTSEC-2026-0370..0372); src/sni.rs reads the portal setting instead
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "crisp", "smol", "x11", "wayland", "canvas"] }
-tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 
 [dev-dependencies]
 # headless rendering for the manual screenshots (tests/screenshots.rs)
