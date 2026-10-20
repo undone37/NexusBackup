@@ -216,6 +216,50 @@ Details:
 - [`docs/threat-model.md`](docs/threat-model.md) and [`docs/security-review.md`](docs/security-review.md): threat
   model and internal security review.
 
+## Hardware
+The appliance is x86_64 only and boots in UEFI mode. No installation on physical hardware has been tested yet; the
+lab runs it as a VM. The full sizing guide is in [manual/02-installation.md](manual/02-installation.md#hardware-sizing).
+
+| | Evaluation (what the lab VM runs) | Reference (5 tenants, 1–2 TB raw data each, GFS retention) |
+|---|---|---|
+| CPU | 8 cores (vCPUs) with VT-x or AMD-V | 8–16 cores with VT-x or AMD-V |
+| RAM | 16 GB | 32–64 GB |
+| System disk | one SSD, 24 GB or more (64 GB recommended) | 2 SSDs, mirrored |
+| Metadata | on the system disk | 2 NVMe drives of at least 1 TB, mirrored |
+| Data | one or more extra disks, or the system disk for a first look | for example 6 × 12 TB in RAID6: about 40 TB usable for 10 TB of raw data after two years of GFS retention |
+| Network | one NIC | separate NICs for management, backup and offsite traffic (at least two) |
+| Firmware | UEFI | UEFI, TPM 2.0 and Secure Boot capable |
+
+Sizing notes:
+- **RAM:** add about 0.6–0.7 GB for each NFS/SMB share with around a million files while it is backed up (the file
+  list is held in memory), and 1 GB for each running restore micro-VM (file-level restore, malware scan).
+- **Hardware virtualization:** the restore micro-VM uses KVM. Without it, QEMU falls back to software emulation,
+  which is many times slower.
+- **Headroom:** plan for 30–40 % free capacity. The appliance warns when the store is more than 75 % full.
+
+### Bare metal
+- Connect the data disks through a plain HBA (IT mode) or the onboard SATA/NVMe ports. The appliance builds the data
+  array itself with mdadm in the web UI and reads SMART from each disk. A hardware RAID controller hides both, so set
+  it to JBOD/pass-through or don't use it.
+- Use enterprise SSDs (power-loss protection) for the system and metadata disks. The catalog is a SQLite database
+  that commits often.
+- ECC memory is strongly recommended for a machine whose job is to keep data unchanged for years.
+- Set a firmware password and use the BMC (iDRAC/iLO) only on a separate management network.
+
+### Virtual machine
+- **Never on the Proxmox VE cluster it protects.** Put it on a separate host or cluster, ideally in another fire
+  compartment.
+- CPU type `host` (or a model that passes VT-x/AMD-V through) and nested virtualization enabled on the host, so the
+  restore micro-VM gets KVM.
+- Fixed memory: no ballooning, no overcommit; reserve the full amount.
+- Separate virtual disks for the system, the metadata and the data, ideally on different datastores. Never put the
+  data on a thin disk on the same datastore as the VMs it backs up. SMART is not available inside a VM; the
+  hypervisor watches the physical disks.
+- Use the VirtIO devices (virtio-scsi or virtio-blk, virtio-net), and one virtual NIC or VLAN per network.
+- A virtual TPM is a file on the host and protects much less than a hardware TPM. Restrict who administers the host.
+- Don't take hypervisor snapshots of the running appliance as a backup. Reverting one leaves the catalog older than
+  the store and the offsite copies; use the configuration backup instead.
+
 ## Downloads
 Each [GitHub release](https://github.com/undone37/NexusBackup/releases) carries the installer ISO, the rescue ISO
 for bare-metal recovery and the agent packages:
