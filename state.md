@@ -782,7 +782,14 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
 ## Phase 39 — Open items (added 2026-10-20)
 Scope: plan.md Phase 39 collects the small open points of Phases 0–34 and this log (39 items: security 6, sources
 and connectors 7, storage and offsite 1, web UI 1, release and CI 5, labs and tests 19). The entries above point to
-their IDs. Not started.
+their IDs. In progress:
+- [x] S3 (2026-10-20, 2e7f3892): flagged snapshots: BMR/P2V refused, downloads administrators only
+- [x] R4 Dependabot at night; R5 repository settings (maintainer); S6 moved to Phase 40
+- Maintainer input 2026-10-20: perlcritic may be installed (runner has it), nested hypervisors on pve-test allowed,
+  ISOs on pve-test: TrueNAS SCALE 27.0.0-RC1 and 25.10.7, Windows Server (SERVER_EVAL), ESXi 7.0 and 8.0
+
+## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
+Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).

@@ -1175,8 +1175,7 @@ state.md and commits.
 - S4 Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
 - S5 Post-quantum TLS (hybrid key exchange for the web and replication endpoints); keyd wrapping is done
   (Phase 30, ADR-014).
-- S6 Full-disk encryption with LUKS2 and TPM unlock, and the NVMe metadata tier, not implemented (Phase 0, plan §12.2,
-  manual chapter 2 status).
+- S6 Moved to Phase 40 (maintainer decision 2026-10-20).
 
 **Sources and connectors**
 - C1 VM disk file hashes for btrfs, FAT and exFAT (NTFS, ext4, XFS done); NTFS compressed / encrypted / deduplicated
@@ -1203,8 +1202,8 @@ state.md and commits.
   podman/skopeo Go code must be fixed upstream or accepted; remove the unused `toolbox` from the image (Release
   0.1.0-alpha).
 - R3 perlcritic for pve-plugin at an agreed level (needs the OK to install it) (Phase 34a).
-- R4 Single self-hosted runner: Dependabot runs block main; a second runner instance or Dependabot at night (Phase 34d).
-- R5 Maintainer: enable private vulnerability reporting and Dependabot alerts in the repository settings (Phase 34d).
+- R4 **Done 2026-10-20:** Dependabot runs at night (02:00 Europe/Berlin, actions 03:00 monthly) (Phase 34d).
+- R5 **Done 2026-10-20 (maintainer):** private vulnerability reporting and Dependabot alerts enabled (Phase 34d).
 
 **Labs and tests** (lab rules: `lab/README.md`, Windows only on copies of VM 101)
 - L1 Real Hetzner Storage Box: rename-no-overwrite, extensions, WAN throughput (Phase 4).
@@ -1241,6 +1240,18 @@ state.md and commits.
 - L17 M365 case over a real test tenant backup with a PST export (Phase 33).
 - L18 Instant recovery with disk move of a TPM VM (TPM state fix, 2026-10-15).
 - L19 First boot with the 24-word recovery key screen on a real console, 80x25 (ADR-015).
+
+### Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
+
+Split out of Phase 39 (S6) as its own phase. The plan §12.2 disk layout without its missing parts:
+- LUKS2 on the data array and the metadata disks, unlocked by the TPM (systemd-cryptenroll, PCR policy over firmware,
+  Secure Boot state and the bootc deployment), with the recovery key (24 words, ADR-015) as the fallback keyslot.
+- What happens on a bootc update or a firmware update (PCR changes: re-enrolment before the reboot, greenboot check),
+  on a replaced disk (array rebuild into a new LUKS device) and on new hardware (recovery key, then re-enrolment).
+- The NVMe metadata tier: catalog and chunk indexes on a mirrored NVMe pair, the data array for packs only.
+- Virtual appliances: vTPM limits (manual chapter 2), and what the setup wizard offers without a TPM.
+- Lab: appliance VM with vTPM and Secure Boot on pve-test; unlock, update, rollback, disk replacement, recovery.
+Not started.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
