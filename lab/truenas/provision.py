@@ -13,6 +13,7 @@
   ($LAB/truenas/api-key, 0600); the user's authorized_keys line comes from
   $LAB/truenas/authorized_keys if present (written by `nexus-truenas … authorized-key`)
 - API certificate -> $LAB/truenas/cert.pem, SSH host key -> $LAB/truenas/known_hosts
+- the appliance's SSH key pair for the connector -> $LAB/truenas/nexus_ed25519(.pub), created once
 """
 import asyncio
 import os
@@ -92,7 +93,10 @@ async def main():
             write600(f"{D}/api-key", k["key"] + "\n")
             print("api key created", flush=True)
     write600(f"{D}/cert.pem", tn.cert_pem())
-    kh = subprocess.run(["ssh-keyscan", "-p", "12222", "-t", "ed25519", "127.0.0.1"], capture_output=True, text=True)
+    if not os.path.exists(f"{D}/nexus_ed25519"):
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "nexus-appliance-lab",
+                        "-f", f"{D}/nexus_ed25519"], check=True)
+    kh = subprocess.run(["ssh-keyscan", "-p", tn.SSH_PORT, "-t", "ed25519", tn.HOST], capture_output=True, text=True)
     write600(f"{D}/known_hosts", kh.stdout)
     print("provisioned", flush=True)
 

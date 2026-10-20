@@ -12,7 +12,7 @@
 # TrueNAS: the live ISO's installer API (JSON-RPC over WebSocket, port 8080) is driven by
 # lab/truenas/install.py, as in the local TrueNAS lab; its DHCP address is read from the VM's first
 # IP packet on its tap interface (no guest agent in the installer). Boot disk 20 GB, two 8 GB disks
-# for the pool. State per VM in $LAB/<name>/truenas/ (admin password).
+# for the pool, each with a serial number (TrueNAS refuses pool disks without one). State per VM in $LAB/<name>/truenas/ (admin password).
 # Windows Server 2022 Evaluation: autounattend.xml on a small extra CD (generated per run, deleted
 # from the host after the install: it holds the Administrator password), SATA disk and e1000 NIC so
 # setup needs no drivers; the first logon installs the virtio-win guest tools (drivers, among them
@@ -102,8 +102,8 @@ install_truenas() { # id name iso
 	local id=$1 name=$2 iso=$3 ip
 	fresh "$id" "$name"
 	pve "qm create $id --name nx-$name --ostype l26 --machine q35 --cpu host --cores 2 --memory 8192 --balloon 0 \
-		--scsihw virtio-scsi-single --scsi0 $STORAGE:20,discard=on --scsi1 $STORAGE:8,discard=on \
-		--scsi2 $STORAGE:8,discard=on --net0 virtio,bridge=$BRIDGE --ide2 local:iso/$iso,media=cdrom \
+		--scsihw virtio-scsi-single --scsi0 $STORAGE:20,discard=on,serial=NX${id}D0 \
+		--scsi1 $STORAGE:8,discard=on,serial=NX${id}D1 --scsi2 $STORAGE:8,discard=on,serial=NX${id}D2 --net0 virtio,bridge=$BRIDGE --ide2 local:iso/$iso,media=cdrom \
 		--boot 'order=ide2;scsi0' --serial0 socket --tags nexus-server-lab \
 		--description 'TrueNAS test VM (lab/pvehost/server-vms.sh); snapshot clean-os = fresh install'"
 	pve "qm start $id"

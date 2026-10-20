@@ -800,8 +800,13 @@ their IDs. In progress:
   (VM 241, 4 min; install.py unchanged) with the API answering; Windows Server 2022 Standard Evaluation (VM 242,
   14 min, SSH and QEMU guest agent). First Windows run: the agent MSI alone left PVE without the agent (no
   virtio-serial driver); now the virtio-win guest tools. All with snapshot clean-os.
-- [ ] TrueNAS: `lab/truenas/provision.py` and the connector e2e against VMs 240/241; Windows agent tests (L7) on
-  VM 242
+- [x] TrueNAS connector e2e (2026-10-20, dev control plane, `lab/truenas/e2e.sh` all steps) against VM 240
+  (25.10.7): passed in 281 s, and VM 241 (27.0.0-RC1): passed in 274 s. Both: first backup 176 MB (2026 entries in
+  tank/data), incremental after the modify step 67 MB, tar + zip downloads match TrueNAS, rotation keeps one
+  snapshot, 17/17 forced-command probes. Lab fixes: scripts take TN_HOST/TN_API_PORT/TN_SSH_PORT (default: the
+  local QEMU forwards), provision.py creates the appliance key, disk serials for the pool, setfattr fallback
+  (27.0 ships no attr tools; `data.sh xattrs` for tests/lab.rs still needs getfattr)
+- [ ] Windows agent tests (L7) on VM 242
 
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.

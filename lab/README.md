@@ -167,6 +167,16 @@ lab/pvehost/server-vms.sh reset [names]
 ssh -i ~/nexus-lab/lab_ed25519 Administrator@<ip>   # Windows; TrueNAS: API https://<ip>/api, user truenas_admin
 ```
 
+The TrueNAS lab scripts run against these VMs with their address and the real ports (state per VM in
+`~/nexus-lab/server-vms/<name>/truenas/`; disks carry serial numbers, which TrueNAS needs for the pool):
+
+```sh
+export LAB=~/nexus-lab/server-vms/truenas-2510 TN_HOST=<ip> TN_API_PORT=443 TN_SSH_PORT=22
+lab/truenas/provision.py                                  # pool, datasets, user, privilege, API key, appliance key
+lab/e2e/m5.sh setup && lab/e2e/m5.sh start
+FROM=<the dev host's address as TrueNAS sees it> lab/truenas/e2e.sh
+```
+
 ## TrueNAS lab (`lab/truenas/`, docs/truenas-connector.md)
 
 TrueNAS Community 25.10.7 in QEMU/KVM (8 GB RAM, 20 GB boot disk, two 8 GB data disks), installed

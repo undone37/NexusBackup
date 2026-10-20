@@ -4,7 +4,8 @@
   tn.py call METHOD [JSON-PARAMS...]     login as truenas_admin, print the result as JSON
   tn.py cert                             print the API certificate (PEM)
 
-env TN_URL (default wss://127.0.0.1:18444/api/current), LAB (default /home/ah/nexus-lab)
+env TN_URL (default wss://$TN_HOST:$TN_API_PORT/api/current; TN_HOST 127.0.0.1, TN_API_PORT 18444: the local
+QEMU lab; a VM on the PVE lab host: TN_HOST=<its address> TN_API_PORT=443 TN_SSH_PORT=22), LAB (default /home/ah/nexus-lab)
 Lab only: the certificate is not verified here (provision.py pins it for the appliance).
 """
 import asyncio
@@ -17,7 +18,9 @@ import time
 import websockets
 
 LAB = os.environ.get("LAB", "/home/ah/nexus-lab")
-URL = os.environ.get("TN_URL", "wss://127.0.0.1:18444/api/current")
+HOST = os.environ.get("TN_HOST", "127.0.0.1")
+SSH_PORT = os.environ.get("TN_SSH_PORT", "12222")
+URL = os.environ.get("TN_URL", f"wss://{HOST}:{os.environ.get('TN_API_PORT', '18444')}/api/current")
 
 
 class Rpc:

@@ -10,9 +10,9 @@ import sys
 
 LAB = os.environ.get("LAB", "/home/ah/nexus-lab")
 D = f"{LAB}/truenas"
-BASE = ["ssh", "-p", "12222", "-i", f"{D}/nexus_ed25519", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+BASE = ["ssh", "-p", os.environ.get("TN_SSH_PORT", "12222"), "-i", f"{D}/nexus_ed25519", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={D}/known_hosts", "-o", "ConnectTimeout=10"]
-TARGET = "nexusbackup@127.0.0.1"
+TARGET = f"nexusbackup@{os.environ.get('TN_HOST', '127.0.0.1')}"
 
 
 def run(extra, cmd=None, stdin=b"", timeout=30):

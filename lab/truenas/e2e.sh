@@ -19,6 +19,11 @@ LAB=${LAB:-/home/ah/nexus-lab}
 D=$LAB/truenas
 APPL_HOST=${APPL_HOST:-127.0.0.1}
 FROM=${FROM:-10.0.2.2}
+# where the appliance reaches TrueNAS: the dev host's port forwards of the local QEMU lab by default;
+# a VM on the PVE lab host: TN_HOST=<its address> TN_API_PORT=443 TN_SSH_PORT=22 (lab/pvehost/server-vms.sh)
+TN_HOST=${TN_HOST:-$APPL_HOST}
+TN_API_PORT=${TN_API_PORT:-18444}
+TN_SSH_PORT=${TN_SSH_PORT:-12222}
 KIND=${KIND:-truenas}
 case $KIND in
 truenas) PFX=nas- ;;
@@ -49,8 +54,8 @@ plugin_job() {
 config_plugin() {
 	local cfg out j line
 	cfg=$(jq -nc --rawfile ca "$D/cert.pem" --arg tok "$(tr -d '\n' <"$D/api-key")" --rawfile key "$D/nexus_ed25519" \
-		--arg hk "$1" --arg h "$APPL_HOST" --arg from "$FROM" \
-		'{host:$h, port:18444, ca_pem:$ca, user:"nexusbackup", api_key:$tok, ssh_host:$h, ssh_port:12222,
+		--arg hk "$1" --arg h "$TN_HOST" --arg from "$FROM" --argjson ap "$TN_API_PORT" --argjson sp "$TN_SSH_PORT" \
+		'{host:$h, port:$ap, ca_pem:$ca, user:"nexusbackup", api_key:$tok, ssh_host:$h, ssh_port:$sp,
 		  ssh_user:"nexusbackup", ssh_host_key:$hk, ssh_private_key:$key, ssh_from:$from,
 		  datasets:["tank/data","tank/smb"], recursive:true}')
 	out=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"nas", kind:"plugin:truenas", name:"truenas-plugin", config:$c}')")
@@ -82,9 +87,9 @@ step_config() {
 		config_plugin "$hk"
 	else
 		cfg=$(jq -nc --rawfile ca "$D/cert.pem" --arg tok "$(tr -d '\n' <"$D/api-key")" --rawfile key "$D/nexus_ed25519" \
-			--arg pub "$(cat "$D/nexus_ed25519.pub")" --arg hk "$hk" --arg h "$APPL_HOST" --arg from "$FROM" \
-			'{host:"truenas.local", port:18444, connect_addr:($h+":18444"), ca_pem:$ca, user:"nexusbackup", token_secret:$tok,
-			  ssh:{host:$h, port:12222, user:"nexusbackup", host_key:$hk, key_pem:$key, public_key:$pub, from:$from},
+			--arg pub "$(cat "$D/nexus_ed25519.pub")" --arg hk "$hk" --arg h "$TN_HOST" --arg from "$FROM" --argjson ap "$TN_API_PORT" --argjson sp "$TN_SSH_PORT" \
+			'{host:"truenas.local", port:$ap, connect_addr:($h+":"+($ap|tostring)), ca_pem:$ca, user:"nexusbackup", token_secret:$tok,
+			  ssh:{host:$h, port:$sp, user:"nexusbackup", host_key:$hk, key_pem:$key, public_key:$pub, from:$from},
 			  datasets:["tank/data","tank/smb"], recursive:true}')
 		out=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"nas", kind:"truenas", name:"truenas1", config:$c}')")
 		expect 201 "create source"

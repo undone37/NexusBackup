@@ -5,7 +5,8 @@ streamed from `.zfs/snapshot/<snap>` over a restricted SSH user with a forced co
 appliance, nothing installed on TrueNAS beyond a key; the appliance initiates everything (pull).
 
 Tested against **TrueNAS Community Edition 25.10.7** ("Goldeye", the current stable release on
-2026-10-09; 26.0 is in beta). Crate `crates/truenas` (binary `nexus-truenas`), lab `lab/truenas/`.
+2026-10-09) and, on 2026-10-20, **27.0.0-RC1** (lab/truenas/e2e.sh passes unchanged against both, VMs on the PVE
+lab host; 27.0 no longer ships the attr tools, which only the lab's test data script used). Crate `crates/truenas` (binary `nexus-truenas`), lab `lab/truenas/`.
 Since Phase 9 the same connector also runs as the plugin `plugins/truenas` (source kind `plugin:truenas`, §9);
 the built-in kind `truenas` stays.
 

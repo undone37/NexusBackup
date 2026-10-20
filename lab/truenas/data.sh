@@ -8,6 +8,14 @@
 #   data.sh xattrs   getfattr dump (hex) of every entry per dataset
 set -euo pipefail
 S="sudo -n"
+# setx NAME VALUE FILE: setfattr, or Python's os.setxattr where the attr tools are missing (TrueNAS 27.0)
+setx() {
+  if command -v setfattr >/dev/null; then
+    $S setfattr -n "$1" -v "$2" "$3"
+  else
+    $S python3 -c 'import os, sys; os.setxattr(sys.argv[3], sys.argv[1], sys.argv[2].encode())' "$1" "$2" "$3"
+  fi
+}
 case "${1:-}" in
 init)
   # a fresh start: no connector snapshots left from earlier runs
@@ -29,7 +37,7 @@ line"; echo bs > "docs/back\\slash"; echo dash > "docs/-dash"; echo tab > "docs/
   $S mkfifo links/fifo
   $S touch docs/empty
   $S sh -c 'echo topsecret > secret/key.txt'; $S chown -R 1234:1234 secret; $S chmod 700 secret; $S chmod 600 secret/key.txt
-  $S setfattr -n user.comment -v "nexus test" docs/readme.txt
+  setx user.comment "nexus test" docs/readme.txt
   $S sh -c 'echo acl > acl/file'; $S setfacl -m u:1001:rw acl/file; $S setfacl -d -m g:1002:rx acl
   $S chmod 4755 docs/x.txt
   $S bash -c 'for i in $(seq 1 2000); do echo "small $i" > many/f$i; done'
@@ -53,12 +61,13 @@ modify)
   $S dd if=/dev/urandom of=big/random.bin bs=1M count=1 seek=10 conv=notrunc status=none
   $S ln docs/new.txt hl/new-link
   $S chmod 640 docs/x.txt; $S chown 1001:1001 "docs/Grüße.txt"
-  $S setfattr -n user.comment -v "changed comment" docs/README.txt
+  setx user.comment "changed comment" docs/README.txt
   $S setfacl -m u:1003:r acl/file
   cd /mnt/tank/data/projects; $S sh -c 'echo v2 >> p1/plan.md'
   ;;
 xattrs)
   # every xattr (incl. POSIX ACLs and system.nfs4_acl_xdr), hex, per dataset
+  command -v getfattr >/dev/null || { echo "data.sh xattrs: no getfattr on this TrueNAS (27.0 dropped attr)" >&2; exit 1; }
   for ds in data data/projects smb; do
     echo "== $ds"
     (cd "/mnt/tank/$ds" && $S getfattr -R -P -d -m - -e hex . 2>/dev/null | grep -v '^$' || true)

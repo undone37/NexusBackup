@@ -13,8 +13,8 @@ if len(sys.argv) < 2:
     sys.exit(__doc__)
 with open(sys.argv[1], "rb") as f:
     r = subprocess.run(
-        ["ssh", "-p", "12222", "-i", f"{D}/admin_ed25519", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
-         "-o", f"UserKnownHostsFile={D}/known_hosts", "truenas_admin@127.0.0.1", "bash", "-s", "--", *sys.argv[2:]],
+        ["ssh", "-p", os.environ.get("TN_SSH_PORT", "12222"), "-i", f"{D}/admin_ed25519", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+         "-o", f"UserKnownHostsFile={D}/known_hosts", f"truenas_admin@{os.environ.get('TN_HOST', '127.0.0.1')}", "bash", "-s", "--", *sys.argv[2:]],
         stdin=f,
     )
 sys.exit(r.returncode)
