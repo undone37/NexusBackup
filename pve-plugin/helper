@@ -92,6 +92,7 @@ sub slog {
         $msg =~ s/[^\x20-\x7e]/?/g;
         Sys::Syslog::syslog($prio, '%s', $msg);
     };
+    return;
 }
 
 sub fail {
@@ -104,12 +105,13 @@ sub fail {
 sub usage_error {
     my ($what) = @_;
     fail(2, "rejected command: $what");
+    return;
 }
 
 sub read_job {
     my ($vmid) = @_;
     my $file = "$RUNDIR/$vmid.json";
-    open(my $fh, '<', $file) or return undef;
+    open(my $fh, '<', $file) or return undef; ## no critic (ProhibitExplicitReturnUndef) callers test the scalar
     binmode($fh);
     my $raw = do { local $/; <$fh> };
     close($fh);
@@ -137,6 +139,7 @@ sub pump {
             $off += $w;
         }
     }
+    return;
 }
 
 sub cmd_job {
@@ -163,6 +166,7 @@ sub cmd_nbd {
     slog('info', "nbd $vmid: connected to $path");
 
     pipe_stdio($sock, "nbd $vmid");
+    return;
 }
 
 # ---------------------------------------------------------------------------
@@ -196,6 +200,7 @@ sub write_full {
         }
         $off += $w;
     }
+    return;
 }
 
 sub nbd_go {
@@ -310,7 +315,7 @@ sub pipe_stdio {
     binmode(STDIN);
     binmode(STDOUT);
     binmode($sock);
-    $SIG{PIPE} = 'IGNORE';
+    $SIG{PIPE} = 'IGNORE'; ## no critic (RequireLocalizedPunctuationVars) process-wide
 
     # Two processes, one per direction, so a blocked write in one direction
     # can never stall the other (NBD pipelines requests and replies).
@@ -361,6 +366,7 @@ sub cmd_restore_serve {
         if ($req->{device} // '') ne $device || ($req->{archive} // '') ne $archive;
 
     serve_one($label, "$RESTOREDIR/$archive.$device.sock", "$RESTOREDIR/.$archive.$device.$$.sock");
+    return;
 }
 
 # Listen on $path (bound as $tmp, then renamed), accept exactly one connection
@@ -395,6 +401,7 @@ sub serve_one {
     slog('info', "$label: accepted connection");
 
     pipe_stdio($conn, $label);
+    return;
 }
 
 sub cmd_ct_stream {
@@ -413,6 +420,7 @@ sub cmd_ct_stream {
     slog('info', "$label: connected to $path");
 
     pipe_stdio($sock, $label);
+    return;
 }
 
 sub cmd_ct_restore_serve {
@@ -427,6 +435,7 @@ sub cmd_ct_restore_serve {
         if ($req->{type} // '') ne 'lxc' || ($req->{archive} // '') ne $archive;
 
     serve_one($label, "$RESTOREDIR/$archive.ct.sock", "$RESTOREDIR/.$archive.ct.$$.sock");
+    return;
 }
 
 # Instant recovery: QEMU on the node opens the backing NBD export of an overlay
@@ -482,6 +491,7 @@ sub cmd_ir_serve {
     slog('info', "$label: accepted connection");
 
     pipe_stdio($conn, $label);
+    return;
 }
 
 # In-place rollback (Phase 30): one request to the root service, its answer line;
@@ -511,6 +521,7 @@ sub cmd_rollback {
         exit(0);
     }
     pipe_stdio($sock, $label);
+    return;
 }
 
 sub cmd_done {

@@ -34,6 +34,7 @@ use Fcntl qw(:flock O_RDWR O_CREAT);
 use IO::Handle;
 use IO::Socket::UNIX;
 use POSIX ();
+use Time::HiRes ();
 use Socket qw(SOCK_STREAM SHUT_WR);
 use Sys::Syslog ();
 
@@ -49,7 +50,7 @@ my $VMID_RE = qr/^\d{1,9}\z/;
 my $DEVICE_RE = qr/^drive-((?:ide|sata|scsi|virtio)\d{1,2}|efidisk0)\z/;
 my $BUFSIZE = 1024 * 1024;
 
-$ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin';
+$ENV{PATH} = '/usr/sbin:/usr/bin:/sbin:/bin'; ## no critic (RequireLocalizedPunctuationVars) process-wide
 
 sub slog {
     my ($prio, $msg) = @_;
@@ -58,6 +59,7 @@ sub slog {
         $msg =~ s/[^\x20-\x7e]/?/g;
         Sys::Syslog::syslog($prio, '%s', $msg);
     };
+    return;
 }
 
 STDOUT->autoflush(1);
@@ -85,6 +87,7 @@ sub request_line {
         $line .= $c;
     }
     answer_error('request too long');
+    return;
 }
 
 sub tagged {
@@ -169,6 +172,7 @@ sub pump {
             $off += $w;
         }
     }
+    return;
 }
 
 sub cmd_nbd {
@@ -217,7 +221,7 @@ sub cmd_nbd {
     for (1 .. 300) {    # 30 s for qemu-nbd to listen
         $conn = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $sock) and last;
         last if waitpid($pid, POSIX::WNOHANG()) == $pid;
-        select(undef, undef, undef, 0.1);
+        Time::HiRes::sleep(0.1);
     }
     if (!$conn) {
         kill('TERM', $pid);
@@ -230,7 +234,7 @@ sub cmd_nbd {
     print STDOUT "ok $fmt\n";
 
     binmode($conn);
-    $SIG{PIPE} = 'IGNORE';
+    $SIG{PIPE} = 'IGNORE'; ## no critic (RequireLocalizedPunctuationVars) process-wide
     my $child = fork() // die;
     if ($child == 0) {
         close(STDOUT);
@@ -249,7 +253,7 @@ sub cmd_nbd {
     my $gone = 0;
     for (1 .. 50) {
         $gone = waitpid($pid, POSIX::WNOHANG()) == $pid and last;
-        select(undef, undef, undef, 0.1);
+        Time::HiRes::sleep(0.1);
     }
     if (!$gone) {
         kill('TERM', $pid);

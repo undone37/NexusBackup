@@ -21,6 +21,7 @@ use IO::Select;
 use IO::Socket::UNIX;
 use JSON;
 use Socket qw(SOCK_STREAM SHUT_WR);
+use Time::HiRes ();
 
 use base qw(PVE::BackupProvider::Plugin::Base);
 
@@ -49,9 +50,13 @@ sub _log {
     chomp($msg);
     eval { $self->{'log-function'}->($level, $msg) };
     print STDERR "$level: $msg\n" if $@;
+    return;
 }
 
-sub plugin { $_[0]->{'storage-plugin'} }
+sub plugin {
+    my ($self) = @_;
+    return $self->{'storage-plugin'};
+}
 
 sub rundir {
     no warnings 'once';
@@ -84,6 +89,7 @@ sub ensure_rendezvous_dir {
     mkdir($dir) or die "unable to create $dir: $!\n";
     chown(-1, $gid, $dir) or die "unable to chown $dir: $!\n";
     chmod(01770, $dir) or die "unable to chmod $dir: $!\n";
+    return;
 }
 
 sub job_cleanup {
@@ -479,7 +485,7 @@ sub backup_container {
 
     $send_record->($conn, 'C', $guest_config // '');
 
-    my $pid = open(my $tar, '-|', @$cmd) or die "unable to run tar: $!\n";
+    my $pid = open(my $tar, '-|', @$cmd) or die "unable to run tar: $!\n"; ## no critic (RequireBriefOpen) streamed until the end
     binmode($tar);
     my ($buf, $total) = ('', 0);
     eval {
@@ -610,7 +616,7 @@ our $SYSBLOCK = '/sys/block'; # tests only
 
 my $nbd_size = sub {
     my ($dev) = @_;
-    open(my $fh, '<', "$SYSBLOCK/$dev/size") or return undef;
+    open(my $fh, '<', "$SYSBLOCK/$dev/size") or return undef; ## no critic (ProhibitExplicitReturnUndef) callers test the scalar
     my $v = <$fh>;
     close($fh);
     chomp($v) if defined($v);
@@ -668,7 +674,7 @@ sub restore_vm_volume_init {
 
         for (1 .. 100) {
             last if ($nbd_size->($nbd) // 0) > 0;
-            select(undef, undef, undef, 0.1);
+            Time::HiRes::sleep(0.1);
         }
         die "/dev/$nbd has no size after attaching\n" if !($nbd_size->($nbd) // 0);
     };
@@ -788,9 +794,11 @@ sub restore_container_init {
         my $size = $hi * 4294967296 + $lo;
         $self->_log('info', "receiving $size bytes of tar into $stage");
 
+        ## no critic (RequireBriefOpen) streamed until the end
         my $pid = open(my $tar, '|-', 'tar', '--extract', '--file=-', '--numeric-owner',
             '--xattrs', '--xattrs-include=*', '--acls', '--preserve-permissions',
             "--directory=$stage") or die "unable to run tar: $!\n";
+        ## use critic
         binmode($tar);
         my $left = $size;
         eval {

@@ -1203,7 +1203,9 @@ state.md and commits.
   builds: not fixed upstream. Restore VM kernel: trixie-security has 6.12.113 (the next build takes it); the Debian
   tracker marks several of grype's kernel findings "not affected" or fixed in 6.12.x, which grype cannot see (it
   compares upstream versions). Open: a reviewed exception list (VEX) for those, or wait (Release 0.1.0-alpha).
-- R3 perlcritic for pve-plugin at an agreed level (needs the OK to install it) (Phase 34a).
+- R3 **Done 2026-10-20:** perlcritic severity 4 ("stern") over the plugin, helper and rollback, in CI (`plugin`) and
+  the pre-push hook; `.perlcriticrc` excludes octal modes and `use constant`, inline exceptions name their reason
+  (PVE storage API `return undef`, process-wide `%SIG`/`%ENV`, streamed tar pipes) (Phase 34a).
 - R4 **Done 2026-10-20:** Dependabot runs at night (02:00 Europe/Berlin, actions 03:00 monthly) (Phase 34d).
 - R5 **Done 2026-10-20 (maintainer):** private vulnerability reporting and Dependabot alerts enabled (Phase 34d).
 

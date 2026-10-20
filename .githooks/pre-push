@@ -27,7 +27,13 @@ if has '^web/' "${files[@]}"; then
 	(cd web && npm run --silent check >/dev/null) || fail "(cd web && npm run check)"
 	prettier --check --log-level warn . || fail "run: (cd web && npm run format)"
 fi
-if has '^pve-plugin/' "${files[@]}"; then
-	step "prove pve-plugin/t"
+if has '^pve-plugin/|^\.perlcriticrc$' "${files[@]}"; then
+	step "perlcritic, prove pve-plugin/t"
+	if command -v perlcritic >/dev/null; then
+		perlcritic --quiet --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback ||
+			fail "perlcritic (severity 4, .perlcriticrc)"
+	else
+		echo "pre-push: perlcritic not installed, skipped (CI runs it)" >&2
+	fi
 	prove -Q pve-plugin/t || fail "pve-plugin tests failed"
 fi

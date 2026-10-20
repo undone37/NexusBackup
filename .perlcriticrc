@@ -1,0 +1,15 @@
+# perlcritic for pve-plugin/ (Phase 39 R3): severity 4 ("stern") in CI and the pre-push hook.
+# Exceptions apply to the whole plugin; single deliberate cases carry an inline
+# `## no critic (Policy) reason`.
+severity = 4
+verbose = %f:%l:%c %m (%p)\n
+
+# File modes and permission masks (0750, 07777, 01000) are octal on purpose.
+[-ValuesAndExpressions::ProhibitLeadingZeros]
+
+# `use constant` is what PVE's own plugins use (APIVER); Readonly is not in core Perl.
+[-ValuesAndExpressions::ProhibitConstantPragma]
+
+# Package variables of the storage plugin read once from the backup provider.
+[TestingAndDebugging::ProhibitNoWarnings]
+allow = once

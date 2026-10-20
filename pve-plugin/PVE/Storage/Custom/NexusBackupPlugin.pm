@@ -75,6 +75,7 @@ sub ensure_state_dir {
         chmod(01770, $dir);
     };
     warn "nexusbackup: unable to create $dir: $@" if $@;
+    return;
 }
 
 my $index_cache = {};
@@ -165,7 +166,7 @@ sub find_archive {
     for my $a ($class->read_index($storeid)->{archives}->@*) {
         return $a if $a->{volname} eq $volname;
     }
-    return undef;
+    return undef; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
 }
 
 # ---------------------------------------------------------------------------
@@ -262,7 +263,7 @@ sub ir_create_overlay {
 
 sub ir_volume_size {
     my ($class, $storeid, $archive, $device) = @_;
-    my $a = $class->find_archive($storeid, "backup/$archive") or return undef;
+    my $a = $class->find_archive($storeid, "backup/$archive") or return undef; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
     # untaint (perl -T): PVE passes it on to e.g. lvcreate when moving the disk
     my ($size) = ($a->{device_sizes}->{$device} // '') =~ m/^(\d{1,20})\z/;
     return $size;
@@ -330,7 +331,7 @@ sub options {
 sub on_add_hook {
     my ($class, $storeid, $scfg, %param) = @_;
     $class->ensure_state_dir($storeid);
-    return undef;
+    return undef; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
 }
 
 # ---------------------------------------------------------------------------
@@ -405,7 +406,7 @@ sub list_volumes {
 
     my $res = [];
     if (grep { $_ eq 'images' } ($content_types // [])->@*) {
-        push @$res, map { { $_->%*, content => 'images' } } $class->list_images($storeid, $scfg, $vmid)->@*;
+        push @$res, map { +{ $_->%*, content => 'images' } } $class->list_images($storeid, $scfg, $vmid)->@*;
     }
     return $res if !grep { $_ eq 'backup' } ($content_types // [])->@*;
 
@@ -455,8 +456,8 @@ sub volume_size_info {
 sub get_volume_attribute {
     my ($class, $scfg, $storeid, $volname, $attribute) = @_;
 
-    return undef if $attribute ne 'notes' && $attribute ne 'protected';
-    my $a = $class->find_archive($storeid, $volname) or return undef;
+    return undef if $attribute ne 'notes' && $attribute ne 'protected'; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
+    my $a = $class->find_archive($storeid, $volname) or return undef; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
     return $a->{$attribute};
 }
 
@@ -473,7 +474,7 @@ sub free_image {
     my $path = $class->ir_overlay_path($storeid, $vmid, $file);
     unlink($path) or $!{ENOENT} or die "unable to delete '$path': $!\n";
     rmdir("$IRDIR/" . untaint_storeid($storeid) . "/$vmid"); # if empty
-    return undef;
+    return undef; ## no critic (ProhibitExplicitReturnUndef) PVE storage API: one undef, also in list context
 }
 
 # Retention is the appliance's job. Must never die: vzdump calls this after
