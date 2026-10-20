@@ -20,6 +20,13 @@ jobs:
   iso:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: self-hosted
+    # the appliance and the edge proxy (docs/edge.md): same builder, same installer config
+    strategy:
+      max-parallel: 1
+      matrix:
+        include:
+          - { what: appliance, field: image, prefix: nexusbackup }
+          - { what: edge, field: edge_image, prefix: nexusbackup-edge }
     env:
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -37,10 +44,10 @@ jobs:
         run: |
           [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }
           gh release download "$TAG" -p release-metadata.json
-          img=$(jq -er .image release-metadata.json)
-          [[ $img =~ ^ghcr\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$ ]] || { echo "bad image $img"; exit 1; }
+          img=$(jq -er '.${{ matrix.field }}' release-metadata.json)
+          [[ $img =~ ^ghcr\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$ ]] || { echo "bad ${{ matrix.what }} image $img"; exit 1; }
           echo "IMAGE=$img" >> "$GITHUB_ENV"
-          echo "ISO=nexusbackup-${TAG#v}-x86_64.iso" >> "$GITHUB_ENV"
+          echo "ISO=${{ matrix.prefix }}-${TAG#v}-x86_64.iso" >> "$GITHUB_ENV"
 
 
       - name: Pull
@@ -115,6 +122,7 @@ jobs:
           have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           missing=0
           for want in "nexusbackup-$v-x86_64.iso" "nexusbackup-$v-x86_64.iso.sha256" 'nexus-rescue-.*\.iso' \
+                      "nexusbackup-edge-$v-x86_64.iso" "nexusbackup-edge-$v-x86_64.iso.sha256" \
                       sbom.spdx.json release-metadata.json cve-report.txt SHA256SUMS \
                       'nexus-agent_.*_amd64\.deb' 'nexus-agent_.*_arm64\.deb' 'nexus-agent-.*\.x86_64\.rpm' \
                       'nexus-agent-.*\.aarch64\.rpm' 'nexus-agent-.*-x64\.msi' 'nexus-agent-release-.*\.tar'; do

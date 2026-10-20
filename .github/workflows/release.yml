@@ -128,6 +128,22 @@ jobs:
           echo "image=$NEXUS_IMAGE_REPO@$d" >> "$GITHUB_OUTPUT"
           echo "IMAGE_REF=$NEXUS_IMAGE_REPO@$d" >> "$GITHUB_ENV"
 
+      - name: Edge proxy image (docs/edge.md; its ISO comes from iso.yml)
+        run: |
+          img=localhost/nexus-edge-os:release
+          podman build --pull=always --build-arg NEXUS_VERSION="$VERSION" --build-arg RELEASE_KEYS=release/keys \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -f os/edge/Containerfile -t "$img" .
+          podman run --rm "$img" bootc container lint
+          if podman run --rm "$img" grep -rl "NEXUS TEST KEY" /etc 2>/dev/null; then
+            echo "TEST key in the edge image"; exit 1
+          fi
+          podman push --digestfile edge-digest "$img" "docker://$NEXUS_IMAGE_REPO-edge:$GITHUB_REF_NAME"
+          d=$(cat edge-digest)
+          [[ $d =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "EDGE_REF=$NEXUS_IMAGE_REPO-edge@$d" >> "$GITHUB_ENV"
+
       - name: SBOM (syft) and metadata
         # label=disable: the runner enforces SELinux, which refuses unlabeled bind mounts (as release/lib.sh)
         run: |
@@ -138,11 +154,11 @@ jobs:
             -e SYFT_REGISTRY_AUTH_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
             "$SYFT_IMAGE" scan "registry:$IMAGE_REF" -o spdx-json=/out/sbom.spdx.json
           base=$(podman image inspect --format '{{.Digest}}' "$POLICY_CHECK_IMAGE" 2>/dev/null || true)
-          jq -n --arg v "$VERSION" --arg tag "$GITHUB_REF_NAME" --arg img "$IMAGE_REF" \
+          jq -n --arg v "$VERSION" --arg tag "$GITHUB_REF_NAME" --arg img "$IMAGE_REF" --arg edge "$EDGE_REF" \
             --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --arg base "quay.io/almalinuxorg/almalinux-bootc:10@$base" \
             --arg keys "$(cd release/keys && sha256sum -- *.pub)" \
-            '{version: $v, tag: $tag, image: $img, git_commit: $commit, workflow_run: $run,
+            '{version: $v, tag: $tag, image: $img, edge_image: $edge, git_commit: $commit, workflow_run: $run,
               base_image: $base, pinned_keys_sha256: ($keys | split("\n")),
               signed: false, sign_with: "release/sign.sh sign \($img)"}' > out/release-metadata.json
           cat out/release-metadata.json
@@ -163,6 +179,7 @@ jobs:
           **Not signed yet.** Appliances reject this image until the release manager runs, with the offline key:
 
           \`\`\`sh
+          export COSIGN_KEY=/path/to/the-release.key   # the offline release key (not in the repository)
           release/sign.sh sign $IMAGE_REF      # or the air-gapped payload/sign-payload/attach steps
           git worktree add --detach ../rel $GITHUB_REF_NAME && cd ../rel && release/inject-keys.sh   # pin the release key, as the image does
           release/verify.sh --policy $IMAGE_REF
@@ -177,11 +194,22 @@ jobs:
           gh release upload $GITHUB_REF_NAME pkgs/*.sig
           \`\`\`
 
+          Offline update bundle (after \`sign.sh sign\`: it carries that signature, nothing is signed again):
+
+          \`\`\`sh
+          release/update-bundle.sh nexusbackup-$VERSION-update.tar --image $IMAGE_REF
+          gh release upload $GITHUB_REF_NAME nexusbackup-$VERSION-update.tar
+          \`\`\`
+
           Then publish this draft. See docs/release.md.
 
           The installer ISO and the rescue ISO follow from the iso workflow; its \`assets\` job checks that every
           file of the release is attached.
           EOF
+          # hand-written notes for this tag (breaking changes, highlights) go first
+          if [ -f "release/notes/$GITHUB_REF_NAME.md" ]; then
+            { cat "release/notes/$GITHUB_REF_NAME.md"; echo; echo '---'; echo; cat notes.md; } > notes.new && mv notes.new notes.md
+          fi
           prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
           {
             echo

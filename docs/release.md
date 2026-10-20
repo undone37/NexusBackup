@@ -125,7 +125,8 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    appliance policy, so an unsigned digest cannot be promoted). Appliances pick it up at
    their next check. Publish the draft release once the package signatures (step 6) are attached.
 5. The `iso` workflow (`.github/workflows/iso.yml`) starts when the release workflow succeeds: it builds
-   `nexusbackup-<version>-x86_64.iso` with bootc-image-builder (`anaconda-iso`, config `release/iso/config.toml`)
+   `nexusbackup-<version>-x86_64.iso` and, from the edge proxy image of the release (`edge_image`), also
+   `nexusbackup-edge-<version>-x86_64.iso` with bootc-image-builder (`anaconda-iso`, config `release/iso/config.toml`)
    around the release digest from `release-metadata.json` and uploads it with a `.sha256` to the release. For an
    existing release: `gh workflow run iso.yml -f tag=vX.Y.Z`. The ISO embeds the image (no signature inside); the
    installed system switches to signature enforcement on its first update check. Check an ISO before publishing

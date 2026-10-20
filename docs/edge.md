@@ -3,7 +3,10 @@
 Status: implemented 2026-10-13 (crate `crates/edge`, binary `nexus-edge`; agent side in `agent-core`; appliance side
 in `agent-conn`, scheduler and web-api; OS image `os/edge/`). Tested in-process (relay pairing, end to end with a real
 agent and `agent-conn` through a real edge, rate limits, unknown certificates, payload only as TLS records). **Not yet
-run as a VM** (lab: `lab/edge/e2e.sh`); the edge image is not built in CI yet.
+run as a VM** (lab: `lab/edge/e2e.sh`). Since 0.2.0-alpha the release workflow builds the edge image with the release
+keys (`ghcr.io/undone37/nexusbackup-edge:<tag>`, `edge_image` in `release-metadata.json`) and `iso.yml` the installer
+`nexusbackup-edge-<version>-x86_64.iso`; the edge image is not signed yet (`release/sign.sh` signs only the appliance
+repository).
 
 User decisions (plan.md §2 "Edge proxy (Phase 26)", §15 "Phase 26"): a separate single bootc VM hosted by the
 customer in a DMZ or the client network, internet-facing and hardened; the appliance connects **out** to it and

@@ -299,6 +299,8 @@ for bare-metal recovery and the agent packages:
 |---|---|
 | `nexusbackup-<v>-x86_64.iso` | the appliance installer (UEFI); updates come as signed bootc images |
 | `nexus-rescue-<v>.iso` | Linux bare-metal recovery and P2V |
+| `nexusbackup-edge-<v>-x86_64.iso` | the edge proxy for roaming laptops (a small VM in the DMZ, [docs/edge.md](docs/edge.md)); not yet tested as a VM |
+| `nexusbackup-<v>-update.tar` | offline update of an appliance without internet access (Settings, Updates) |
 | `nexus-agent_<v>-1_{amd64,arm64}.deb` | Debian, Ubuntu |
 | `nexus-agent-<v>-1.{x86_64,aarch64}.rpm` | RHEL, AlmaLinux, Rocky, Fedora, SUSE |
 | `nexus-agent-desktop_…` (.deb / .rpm) | Linux desktops: tray icon and status window (needs `nexus-agent`) |
