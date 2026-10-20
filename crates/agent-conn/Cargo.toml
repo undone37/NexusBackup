@@ -24,7 +24,7 @@ sha2 = "0.10"
 tar = "0.4"
 time = "0.3"
 x509-parser = { version = "0.16", features = ["verify"] }
-zip = { version = "9", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
 [[bin]]
 name = "nexus-agentctl"
