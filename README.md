@@ -211,7 +211,7 @@ of October 2026, not installed or tested here. Details, versions and sources:
 | **License** | AGPL-3.0 | BSD-2 / GPL-3.0 | BSD-3 / AGPL-3.0 | MIT, proprietary M365 and disk image modules | AGPL-3.0 |
 | **Maturity** | vibe-coded alpha | mature | 1.4 mature, 2.0 beta | stable releases | mature |
 | **Proxmox VE VMs** | native | no | no | no | no |
-| **Windows** | agent, file level | yes (VSS) | no | yes (VSS) | yes, file and image |
+| **Windows** | agent: VSS with all writers (copy-only), USN incrementals; files, no image yet | yes (VSS) | no | yes (VSS) | yes, file and image |
 | **Image / bare metal** | Linux BMR and P2V; whole PVE VMs | no | no | yes (proprietary module) | Windows, Linux with limits |
 | **Encryption** | always, keys on the appliance | always, client key | optional, client key | optional | transport only (Internet mode) |
 | **Immutability** | extend-only locks, S3 Object Lock | rest-server append-only | append-only (1.4) | S3/Azure/B2/GCS locks | none |
