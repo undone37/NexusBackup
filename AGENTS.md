@@ -52,7 +52,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 | Rust | `cargo fmt --all`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p <crate>` (CI runs `cargo test --all`) |
 | `web/` | `cd web && npm run format && npm run check && npm run build` |
 | `pve-plugin/` | `perlcritic --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback` (severity 4), `prove pve-plugin/t` (about 30 s, taint mode like PVE's workers) |
-| `os/`, `release/` | `python3 -m unittest discover -s os/greenboot/tests`, `release/check-trust.sh` |
+| `os/`, `release/` | `python3 -m unittest discover -s os/greenboot/tests`, `python3 -m unittest discover -s release/tests`, `release/check-trust.sh` |
 | UI visible change | regenerate the affected manual screenshots (`node manual/tools/screenshots.mjs`, see the script header) |
 
 The hooks run the fast part automatically; `--no-verify` skips them only for a deliberate exception (for example a

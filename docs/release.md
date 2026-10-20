@@ -177,7 +177,15 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
   `grype.txt` (table), `grype.json` (all matches) and `grype-blocking.txt`. Both reports are
   uploaded as the `cve-report` artifact and attached to the draft release as
   `cve-report.txt` / `cve-report.json`; the job summary lists the blocking findings.
-- **Gate:** a **critical** CVE whose package has a **fixed version** fails the job. Do not
+- **Reviewed exceptions** (`release/cve-exceptions.json`, Phase 39 R2): grype matches the restore micro-VM's Debian
+  kernel by its upstream version and cannot see fixes Debian backported into 6.12, or Debian's "not affected". An
+  exception names one CVE and package, its evidence (the Debian security tracker's trixie status), `fixed_in` (it
+  applies only while the installed version is at least that) and `review_by` (90 days; afterwards the finding blocks
+  again). Refresh: download `https://security-tracker.debian.org/tracker/data/json`, run
+  `release/cve-exceptions.py debian cve-report.json tracker.json > new.json` and review the difference before
+  committing. Covered findings are listed in `grype-excepted.txt` and in the job summary.
+- **Gate:** a **critical** CVE whose package has a **fixed version** fails the job, unless a reviewed exception covers
+  it. Do not
   publish the draft then: tag a new patch release. The build pulls the base image with
   `--pull=always`, so a rebuild picks up the fixed package. Critical CVEs without a fix and
   all lower severities are in the report but do not fail the release. Review them before

@@ -245,6 +245,11 @@ jobs:
             else
               echo "No critical CVE with a fix available. Full table: cve-report.txt on the release."
             fi
+            if [ -s out/grype-excepted.txt ]; then
+              echo
+              echo "Covered by reviewed exceptions (release/cve-exceptions.json):"
+              echo '```'; cat out/grype-excepted.txt; echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       # final releases: a critical CVE with a fix available fails; pre-releases (vX.Y.Z-alpha, -beta, ...)

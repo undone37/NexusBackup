@@ -1198,11 +1198,13 @@ state.md and commits.
 
 **Release and CI**
 - R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
-- R2 CVE gate for final releases (recheck 2026-10-20): `toolbox` removed from the image (its go1.26.2 finding gone).
-  podman 5.8.2-9 and skopeo 1.22.2-5 (grpc v1.72.2, x/net 0.48/0.56, go1.26.7) are still the newest AlmaLinux 10
-  builds: not fixed upstream. Restore VM kernel: trixie-security has 6.12.113 (the next build takes it); the Debian
-  tracker marks several of grype's kernel findings "not affected" or fixed in 6.12.x, which grype cannot see (it
-  compares upstream versions). Open: a reviewed exception list (VEX) for those, or wait (Release 0.1.0-alpha).
+- R2 CVE gate for final releases (recheck 2026-10-20): `toolbox` removed from the image. Reviewed exceptions with
+  Debian tracker evidence (`release/cve-exceptions.json`, `cve-exceptions.py`, 90-day review) cover 6 of the 19
+  critical kernel findings (2 not affected, 4 fixed in 6.12.100 to 6.12.111). **Still blocking a final release:**
+  13 kernel CVEs open in Debian trixie (not yet triaged; ksmbd, sctp, RDMA rxe, mlx5, qla2xxx, ioam6, tcp, netfs)
+  and the podman/skopeo Go findings (grpc, x/net, Go stdlib; AlmaLinux 10 has no newer build). Options: wait;
+  the trixie-backports kernel (7.2) for the restore VM; or reachability exceptions (the micro-VM has no NIC and
+  only disk/file-system modules) (Release 0.1.0-alpha).
 - R3 **Done 2026-10-20:** perlcritic severity 4 ("stern") over the plugin, helper and rollback, in CI (`plugin`) and
   the pre-push hook; `.perlcriticrc` excludes octal modes and `use constant`, inline exceptions name their reason
   (PVE storage API `return undef`, process-wide `%SIG`/`%ENV`, streamed tar pipes) (Phase 34a).
