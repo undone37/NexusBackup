@@ -193,6 +193,26 @@ impl Session {
     }
 }
 
+/// What a failed connect to an agent most likely means, and what to do (shown in the job log).
+fn connect_hint(e: &std::io::Error, port: u16) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        // firewalld and iptables REJECT answer with ICMP host-prohibited (EHOSTUNREACH)
+        HostUnreachable | NetworkUnreachable => format!(
+            "a firewall on the agent host rejects the connection, or the host is down: allow TCP {port} from \
+             this appliance"
+        ),
+        ConnectionRefused => {
+            format!("nothing listens on {port}: is the agent service running? It starts only after `nexus-agent init`")
+        }
+        TimedOut | WouldBlock => format!(
+            "no answer: the host is off, the address is wrong, or a firewall drops the packets (allow TCP {port} \
+             from this appliance)"
+        ),
+        _ => "see the error below".into(),
+    }
+}
+
 /// TCP connection with timeouts (`connect` ≤ `connect_timeout`).
 pub fn tcp(host: &str, port: u16, connect_timeout: Duration, timeout: Duration) -> Result<TcpStream> {
     let addrs: Vec<_> = (host.trim_matches(['[', ']']), port)
@@ -212,7 +232,10 @@ pub fn tcp(host: &str, port: u16, connect_timeout: Duration, timeout: Duration) 
     }
     let tcp = match (tcp, last) {
         (Some(t), _) => t,
-        (None, Some(e)) => return Err(e).with_context(|| format!("connect {host}:{port}")),
+        (None, Some(e)) => {
+            let hint = connect_hint(&e, port);
+            return Err(e).with_context(|| format!("connect {host}:{port} ({hint})"));
+        }
         (None, None) => bail!("{host}: no address"),
     };
     tcp.set_read_timeout(Some(timeout))?;
@@ -376,5 +399,21 @@ pub struct AgentInfo {
 impl AgentInfo {
     pub fn facts(&self) -> agent_proto::release::HostFacts {
         agent_proto::release::HostFacts::from_caps(&self.os, &self.caps)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_hints_name_the_likely_cause() {
+        use std::io::{Error, ErrorKind};
+        let h = |k| connect_hint(&Error::from(k), 7444);
+        assert!(h(ErrorKind::HostUnreachable).contains("firewall on the agent host rejects"));
+        assert!(h(ErrorKind::ConnectionRefused).contains("nothing listens on 7444"));
+        assert!(h(ErrorKind::TimedOut).contains("allow TCP 7444"));
+        // EHOSTUNREACH as the OS reports it (firewalld REJECT)
+        assert!(connect_hint(&Error::from_raw_os_error(113), 7444).contains("firewall"));
     }
 }

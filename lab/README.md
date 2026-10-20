@@ -146,6 +146,10 @@ lab/pvehost/agent-vms.sh agent [names]
 
 Stop the VMs when no test runs (`qm stop`): together they hold 28 GB of the host's memory.
 
+`lab/pvehost/agent-matrix.sh [names]` tests the installed package on each VM against the dev control plane
+(`lab/linux/e2e.sh appliance`): reset to clean-os + package, firewall rule for 7444 (firewalld), init, enrol,
+backup, incremental, restore compared with `lab/linux/manifest.py`; `agent-matrix.sh summary` prints the table.
+
 ## Server test VMs on the PVE lab host (`lab/pvehost/server-vms.sh`)
 
 | ID | Name | What | Sizing |

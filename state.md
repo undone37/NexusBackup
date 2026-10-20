@@ -795,7 +795,15 @@ their IDs. In progress:
   41 min. Fixed on the way: answer file server held the ssh session (exec in a redirected subshell), background
   jobs read the VM list from stdin, ssh jump with the lab key, Agama product id `openSUSE_Leap` and timezone
   `UTC`, agent install retried while the first boot's name resolution is not up (Leap).
-- [ ] Enrol the agents with the appliance VM 201 and run L6 (agent updates) on them
+- [x] Agent package matrix (2026-10-20, `lab/pvehost/agent-matrix.sh`, dev control plane): the .deb/.rpm agent 0.1.0
+  on all 14 VMs from clean-os: init + enrol (4-5 s), backup of /etc + a test tree (4-12 s), incremental, restore
+  of the tree identical (226 entries: owners, modes, times, xattrs, ACLs, capabilities, links, sparse, fifo) on
+  every distribution. Snapshots: btrfs on Leap 16 consistent; ext4 without LVM (Ubuntu, Debian) and LVM without
+  free extents (Alma/Rocky kickstart default: "insufficient free space (0 extents)") read live, marked not
+  consistent, as designed. Found on the way: firewalld (Alma, Rocky, Leap) rejects 7444 until the documented
+  rule is added; the job log only said "No route to host", now agent-conn names the likely cause and next step
+  (firewall / service not running / no answer)
+- [ ] L6: agent updates (deb/rpm in-band update, bundle swap + watchdog) on these VMs
 - [x] `lab/pvehost/server-vms.sh install` (2026-10-20): TrueNAS SCALE 25.10.7 (VM 240, 3.5 min) and 27.0.0-RC1
   (VM 241, 4 min; install.py unchanged) with the API answering; Windows Server 2022 Standard Evaluation (VM 242,
   14 min, SSH and QEMU guest agent). First Windows run: the agent MSI alone left PVE without the agent (no
