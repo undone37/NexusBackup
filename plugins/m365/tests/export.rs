@@ -127,7 +127,7 @@ fn eml_and_mbox() {
             .unwrap();
     assert!(r.summary.contains("4 messages as mbox (3 folders)"), "{}", r.summary);
     let mut z = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap();
-    let mut names: Vec<String> = z.file_names().map(str::to_owned).collect();
+    let mut names: Vec<String> = z.file_names().map(|n| n.unwrap().into_owned()).collect();
     names.sort();
     assert!(names.contains(&"mail/Inbox.mbox".to_owned()), "{names:?}");
     assert!(

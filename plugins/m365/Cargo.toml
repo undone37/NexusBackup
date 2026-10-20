@@ -32,7 +32,7 @@ rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"]
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tar = "0.4"
 tempfile = "3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

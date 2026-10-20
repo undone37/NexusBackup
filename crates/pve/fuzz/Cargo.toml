@@ -14,7 +14,7 @@ pve = { path = ".." }
 chunkstore = { path = "../../chunkstore" }
 tempfile = "3"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # restore-vm agent (included by path, it is a bin-only crate)
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

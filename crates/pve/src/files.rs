@@ -386,7 +386,7 @@ mod tests {
                     .collect(),
                 Format::Zip => {
                     let z = zip::ZipArchive::new(File::open(&p).unwrap()).unwrap();
-                    z.file_names().map(str::to_owned).collect()
+                    z.file_names().map(|n| n.unwrap().into_owned()).collect()
                 }
             };
             let mut names = names;
