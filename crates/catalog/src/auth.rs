@@ -4,7 +4,7 @@
 use anyhow::{anyhow, Result};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use totp_rs::{Algorithm, Secret, TOTP};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 
 pub fn hash_password(pw: &str) -> Result<String> {
     if pw.chars().count() < 12 {
@@ -46,53 +46,41 @@ pub fn new_code() -> String {
 
 /// New random TOTP secret (base32, 160 bit).
 pub fn new_totp_secret() -> String {
-    Secret::generate_secret().to_encoded().to_string()
+    Secret::generate().to_base32()
 }
 
-fn totp(secret_b32: &str, account: &str) -> Result<TOTP> {
-    let raw = Secret::Encoded(secret_b32.to_owned())
-        .to_bytes()
-        .map_err(|e| anyhow!("totp secret: {e:?}"))?;
-    TOTP::new(
-        Algorithm::SHA1,
-        6,
-        1,
-        30,
-        raw,
-        Some("NexusBackup".into()),
-        account.into(),
-    )
-    .map_err(|e| anyhow!("{e}"))
+fn totp(secret_b32: &str, account: &str) -> Result<Totp> {
+    let secret = Secret::try_from_base32(secret_b32).map_err(|e| anyhow!("totp secret: {e}"))?;
+    Builder::new()
+        .with_algorithm(Algorithm::SHA1)
+        .with_digits(6)
+        .with_skew(1)
+        .with_step_duration(30)
+        .with_secret(secret)
+        .with_issuer(Some("NexusBackup"))
+        .with_account_name(account)
+        .build()
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// `otpauth://` URI for authenticator apps (QR code).
 pub fn totp_uri(secret_b32: &str, account: &str) -> Result<String> {
-    Ok(totp(secret_b32, account)?.get_url())
+    totp(secret_b32, account)?.to_url().map_err(|e| anyhow!("{e}"))
 }
 
 /// Accepts the current code and one step of clock skew either way.
 pub fn totp_check(secret_b32: &str, code: &str) -> bool {
-    totp(secret_b32, "x").is_ok_and(|t| t.check_current(code.trim()).unwrap_or(false))
+    totp_step(secret_b32, code).is_some()
 }
 
 /// Like `totp_check`, but returns the matched 30 s step so callers can refuse
 /// replays (accept only steps greater than the last accepted one).
 pub fn totp_step(secret_b32: &str, code: &str) -> Option<u64> {
-    let t = totp(secret_b32, "x").ok()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs()
-        / 30;
-    let code = code.trim();
-    (now.saturating_sub(1)..=now + 1).find(|s| {
-        let want = t.generate(s * 30);
-        want.len() == code.len() && want.bytes().zip(code.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
-    })
+    totp(secret_b32, "x").ok()?.check_current(code.trim())
 }
 
 pub fn totp_now(secret_b32: &str) -> Result<String> {
-    totp(secret_b32, "x")?.generate_current().map_err(|e| anyhow!("{e}"))
+    Ok(totp(secret_b32, "x")?.generate_current().to_string())
 }
 
 #[cfg(test)]
@@ -118,5 +106,22 @@ mod tests {
         assert!(totp_uri(&s, "admin")
             .unwrap()
             .starts_with("otpauth://totp/NexusBackup:admin?"));
+    }
+
+    /// RFC 6238 appendix B (SHA-1 secret "12345678901234567890"): stored secrets keep their codes across
+    /// totp-rs upgrades; 32 base32 characters as new_totp_secret writes them.
+    #[test]
+    fn totp_rfc6238_vectors() {
+        let t = totp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "x").unwrap();
+        for (time, code) in [
+            (59, "287082"),
+            (1111111109, "081804"),
+            (1234567890, "005924"),
+            (2000000000, "279037"),
+        ] {
+            assert_eq!(t.generate(time).to_string(), code);
+            assert_eq!(t.check(code, time), Some(time / 30));
+        }
+        assert_eq!(new_totp_secret().len(), 32);
     }
 }
