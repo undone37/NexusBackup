@@ -275,6 +275,20 @@ RUN usermod -L root \
  && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
 
+# Smaller image: the installer ISO must stay below GitHub's 2 GiB asset limit. No GPU, Wi-Fi or audio firmware
+# (no graphical console, servers on cable), no translations (English only), no docs or man pages. Kept:
+# linux-firmware (Ethernet and storage controllers), realtek-firmware (also Realtek NICs), amd-ucode-firmware
+# (CPU microcode). rpm -e refuses if anything depends on a package. The base image's layers only shrink in the
+# rechunked image (release/rechunk.sh), not in this layered one.
+RUN rm_pkgs=$(rpm -q --qf '%{NAME}\n' nvidia-gpu-firmware amd-gpu-firmware intel-gpu-firmware atheros-firmware \
+      mt7xxx-firmware brcmfmac-firmware tiwilink-firmware nxpwireless-firmware intel-audio-firmware \
+      cirrus-audio-firmware 2>/dev/null | grep -v 'not installed' || true) \
+ && { [ -z "$rm_pkgs" ] || rpm -e $rm_pkgs; } \
+ && find /usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name en -exec rm -rf {} + \
+ && rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* \
+ && rpm -q linux-firmware realtek-firmware amd-ucode-firmware >/dev/null \
+ && for d in bnx2 bnx2x qed tigon cxgb4 rtl_nic intel/ice; do test -d "/usr/lib/firmware/$d" || { echo "missing NIC firmware $d"; exit 1; }; done
+
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world
 # write from everything shipped in /etc and /usr (base image docs excepted).
 RUN find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*' \

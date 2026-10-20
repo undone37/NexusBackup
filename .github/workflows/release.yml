@@ -88,6 +88,13 @@ jobs:
             --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             -f "$CONTAINERFILE" -t localhost/nexus-os:release "$BUILD_CONTEXT"
 
+      # layers from the final file tree: files removed from base layers are really gone (the installer ISO must
+      # stay below 2 GiB) and content-based chunks keep updates small; everything below checks and ships it
+      - name: Rechunk
+        run: |
+          release/rechunk.sh localhost/nexus-os:release localhost/nexus-os:release-chunked
+          podman tag localhost/nexus-os:release-chunked localhost/nexus-os:release
+
       - name: bootc container lint
         run: podman run --rm localhost/nexus-os:release bootc container lint
 

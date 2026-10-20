@@ -124,6 +124,10 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    then points `:stable` at the digest (skopeo, `--preserve-digests`, copied under the
    appliance policy, so an unsigned digest cannot be promoted). Appliances pick it up at
    their next check. Publish the draft release once the package signatures (step 6) are attached.
+   **Rechunk:** right after the build, `release/rechunk.sh` (bootc-base-imagectl from the AlmaLinux base image)
+   rebuilds the layers from the final file tree; what os/Containerfile removes from the base image (GPU, Wi-Fi and
+   audio firmware, translations, docs) is only then really gone, and the content-based chunks keep updates small.
+   Lab 2026-10-20: 2.09 GB / 90 layers before, 1.40 GB / 65 layers rechunked; the offline bundle 1.1 GB -> 656 MB.
 5. The `iso` workflow (`.github/workflows/iso.yml`) starts when the release workflow succeeds: it builds
    `nexusbackup-<version>-x86_64.iso` and, from the edge proxy image of the release (`edge_image`), also
    `nexusbackup-edge-<version>-x86_64.iso` with bootc-image-builder (`anaconda-iso`, config `release/iso/config.toml`)
