@@ -306,7 +306,7 @@ podman build -f os/Containerfile -t localhost/nexus-os:dev .   # appliance image
 ## Repository layout
 | Path | Content |
 |---|---|
-| `crates/chunkstore`, `crates/keyd`, `crates/catalog` | chunk store (crypto, clock, retention, GC, verify), key service, SQLite catalog and audit log |
+| `crates/chunkstore`, `crates/keyd`, `crates/catalog`, `crates/recovery-key` | chunk store (crypto, clock, retention, GC, verify), key service, SQLite catalog and audit log, recovery key words (BIP39) |
 | `crates/web-api`, `web/` | REST API and Svelte web UI |
 | `crates/scheduler` | policies, job runner, alerts, firewall allow-list |
 | `crates/pve`, `pve-plugin/` | Proxmox VE connector and node plugin (Perl, `.deb`) |

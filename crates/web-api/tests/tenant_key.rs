@@ -236,7 +236,7 @@ async fn tenant_key_quorum_show_once_replace() {
     let k = t.post(&show, &tadmin, json!({})).await;
     assert_eq!(k.status, StatusCode::OK, "{:?}", k.body);
     let key = k.body["key"].as_str().unwrap().to_owned();
-    assert_eq!(key.split('-').count(), 16);
+    assert_eq!(key.split(' ').count(), 24);
     assert_eq!(k.body["replaced"], Value::Null);
     assert_eq!(
         t.post(&show, &tadmin, json!({})).await.status,

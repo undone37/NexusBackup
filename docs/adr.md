@@ -76,7 +76,7 @@ Status of all records below: **Accepted (2026-10-08)**.
   AEAD` (a version in the magic). Like X-Wing, the combiner binds both shared secrets to the ciphertext and the
   recipient, so the box stays closed while either primitive holds. The recipient's ML-KEM key pair is derived from the
   existing 32-byte X25519 secret (`BLAKE3 derive_key(<use> ml-kem-768 v1, secret)` → 64-byte seed `d | z`), so no new
-  secret has to be stored, escrowed or typed: a tenant recovery key stays 16 groups of 4 hex digits.
+  secret has to be stored, escrowed or typed: a tenant recovery key stays 24 BIP39 words (ADR-015).
 - **Implementation:** RustCrypto `ml-kem` 0.3 (pure Rust, Apache-2.0 OR MIT, FIPS 203 final; already in the tree
   through `russh`'s `mlkem768x25519` key exchange, so `cargo deny` and the lockfile see no new crate) and
   `curve25519-dalek` 4 for the raw X25519 DH. Encapsulation uses `encapsulate_deterministic` with 32 bytes from the
@@ -99,3 +99,16 @@ Status of all records below: **Accepted (2026-10-08)**.
   `mlkem768x25519-sha256` where both sides offer it (russh).
 - **Consequences:** ~1.2 KiB more per sealed box (escrow file, export, bundle), ~1.2 KiB public keys (catalog setting,
   replication peer row); key generation and sealing take well under a millisecond.
+## ADR-015 Recovery keys as 24 BIP39 words
+- **Decision (2026-10-20, maintainer):** the appliance recovery key and the tenant recovery keys are written as 24 words
+  of the BIP39 English list: the 256-bit key, then the first byte of its SHA-256 as checksum, 11 bits per word. The
+  code is the crate `crates/recovery-key` (no dependencies besides sha2 and zeroize, so the web-api and the catalog
+  use it without linking keyd); the word list `crates/recovery-key/src/bip39-english.txt` is byte-identical to
+  bitcoin/bips `bip-0039/english.txt`. The earlier format, 16 groups of 4 hex digits, is gone (no production appliance
+  used it).
+- **Why:** the key is written down with pen and paper. Words are easier to copy than 64 hex digits (no `b`/`6` or
+  `0`/`D` confusion), the first four letters already identify a word, and the checksum catches a wrong or swapped word
+  before the key is used. Errors name the position of an unknown word, never the typed text.
+- **Consequences:** the key bytes are unchanged in meaning, so derived secrets (KEK unwrap, GRUB password, tenant X25519
+  keys) are computed exactly as before. The first-boot check asks for 3 random words. Recomputing the GRUB password
+  without `nexus-setup` needs the word list file (manual chapter 14).

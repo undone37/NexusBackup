@@ -33,7 +33,7 @@ const ITERATIONS: u32 = 10_000;
 const SALT_LEN: usize = 64;
 const HASH_LEN: usize = 64;
 
-/// The boot menu password of a recovery key (as printed: groups, any case).
+/// The boot menu password of a recovery key (as printed: 24 words, any case).
 pub fn password(recovery_key: &str) -> Result<Zeroizing<String>> {
     let rk = keyd::parse_recovery_key(recovery_key).context("recovery key")?;
     let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, &rk[..]), LABEL);
@@ -83,7 +83,9 @@ pub fn user_cfg(pw: &str) -> String {
 mod tests {
     use super::*;
 
-    const RK: &str = "abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab-abab";
+    /// 32 bytes of 0xab (the vector of the earlier hex format, so the password is unchanged)
+    const RK: &str = "produce front turtle firm rival still push install produce front turtle firm rival still \
+                      push install produce front turtle firm rival still push infant";
 
     /// Fixed vector: the manual's Python one-liner must print the same.
     #[test]
@@ -93,11 +95,11 @@ mod tests {
         assert!(pw.bytes().all(|b| ALPHABET.contains(&b)));
         assert_eq!(
             *pw,
-            *password(&RK.to_ascii_uppercase().replace('-', " ")).unwrap(),
+            *password(&RK.to_ascii_uppercase().replace(' ', "\n")).unwrap(),
             "format-insensitive"
         );
         assert_eq!(&*pw, "iohfkgkeirouljustevo", "also what the manual's Python prints");
-        assert_ne!(*pw, *password(&"cd".repeat(32)).unwrap());
+        assert_ne!(*pw, *password(&keyd::format_recovery_key(&[0xcd; 32])).unwrap());
         assert!(password("nope").is_err());
         assert_eq!(grouped("abcdefghijklmnopqrst"), "abcde fghij klmno pqrst");
     }

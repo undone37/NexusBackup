@@ -3,7 +3,7 @@
 //! copy without the appliance-wide recovery key.
 //!
 //! The tenant recovery key is 32 random bytes, written like the appliance
-//! recovery key (16 groups of 4 hex digits). It is the X25519 secret key of a
+//! recovery key (24 BIP39 words). It is the X25519 secret key of a
 //! key pair; the appliance keeps only the public key (`tenants/<t>/tenant-recovery.pub`,
 //! set by the scheduler from the catalog), so every DEK version, including
 //! versions created later by a rotation, is sealed to it without the secret:

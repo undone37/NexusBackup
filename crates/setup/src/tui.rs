@@ -635,14 +635,14 @@ impl App<'_> {
                     }
                 } else if form.handle(k) {
                     let answers: Vec<&str> = (0..3).map(|i| form.val(i)).collect();
-                    if self.s.confirm_recovery_groups(&key, &idx, &answers)? {
+                    if self.s.confirm_recovery_words(&key, &idx, &answers)? {
                         drop(key);
                         self.wipe = true;
                         self.info("Recovery key confirmed. It has been removed from the screen and memory.");
                         self.advance()?;
                         return Ok(());
                     }
-                    self.err("Groups do not match. New groups were chosen; Esc shows the key again.");
+                    self.err("Words do not match. New words were chosen; Esc shows the key again.");
                     challenge_screen(key)
                 } else {
                     Screen::Challenge { key, idx, form }
@@ -1235,29 +1235,30 @@ impl App<'_> {
             ),
 
             Screen::ShowKey { key, form } => {
-                let g = key.groups();
+                let w = key.words();
                 let mut l = vec![
-                    warn("RECOVERY KEY - shown only now. Write down all 16 groups:"),
+                    warn("RECOVERY KEY - shown only now. Write down all 24 words, with their numbers:"),
                     Line::from(""),
                 ];
-                for row in 0..4 {
+                for row in 0..6 {
                     let mut spans = vec![Span::raw("   ")];
                     for col in 0..4 {
                         let i = row * 4 + col;
                         spans.push(Span::styled(format!("{:02} ", i + 1), Style::new().fg(Color::DarkGray)));
+                        // BIP39 words have at most 8 letters
                         spans.push(Span::styled(
-                            g[i].to_string(),
+                            format!("{:<8}", w[i].as_str()),
                             Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
                         ));
-                        spans.push(Span::raw(if col < 3 { "  -  " } else { "" }));
+                        spans.push(Span::raw(if col < 3 { "    " } else { "" }));
                     }
                     l.push(Line::from(spans));
-                    l.push(Line::from(""));
                 }
                 l.extend([
-                    Line::from("Hex digits 0-9 A-F only (no letter O, no I). Keep it offline, in a safe."),
-                    Line::from("It also yields the boot menu (GRUB) password: nexus-setup grub-password."),
-                    Line::from("Next you must re-enter 3 randomly chosen groups to prove it was recorded."),
+                    Line::from(""),
+                    Line::from("Words from the BIP39 English list; the first four letters of each are enough."),
+                    Line::from("Keep it offline, in a safe. It also yields the boot menu (GRUB) password:"),
+                    Line::from("nexus-setup grub-password. Next you re-enter 3 randomly chosen words."),
                     Line::from(""),
                 ]);
                 let top = y + l.len() as u16;
@@ -1268,7 +1269,7 @@ impl App<'_> {
             Screen::Challenge { idx, form, .. } => {
                 let mut l = vec![
                     Line::from(format!(
-                        "Enter groups {}, {} and {} from your written copy (4 hex digits each).",
+                        "Enter words {}, {} and {} from your written copy (the first four letters are enough).",
                         idx[0] + 1,
                         idx[1] + 1,
                         idx[2] + 1
@@ -1288,7 +1289,7 @@ impl App<'_> {
                     warn("The key service was initialised in an earlier, interrupted run, but its"),
                     warn("recovery key was never confirmed. It cannot be shown again."),
                     Line::from(""),
-                    Line::from("If you wrote it down: type it in full (64 hex digits, dashes optional)."),
+                    Line::from("If you wrote it down: type all 24 words in order, separated by spaces."),
                     Line::from("If not: stop here and re-install the appliance. Nothing has been encrypted"),
                     Line::from("with this key yet; setup never replaces an existing key by itself."),
                     Line::from(""),
@@ -1404,7 +1405,7 @@ fn challenge_screen(key: RecoveryKey) -> Screen {
     let idx = challenge();
     let form = Form::new(
         idx.iter()
-            .map(|i| Field::text(format!("Group {:02}", i + 1), ""))
+            .map(|i| Field::text(format!("Word {:02}", i + 1), ""))
             .collect(),
     );
     Screen::Challenge { key, idx, form }

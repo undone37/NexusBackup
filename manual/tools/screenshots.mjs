@@ -951,7 +951,7 @@ async function main() {
       await shot('tenant-key');
       await ev(`$click('Show key once'); return true;`);
       await confirmOk();
-      await until(`return !!document.querySelector('dialog[open] .tkey-code')`, 'tenant key shown');
+      await until(`return !!document.querySelector('dialog[open] .tkey-words')`, 'tenant key shown');
       await shot('tenant-key-shown');
       await closeDialogs();
     }],

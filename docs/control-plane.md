@@ -948,7 +948,7 @@ Without it, anyone at the console could edit the kernel command line in GRUB (`i
 Optional second escrow of one tenant's DEKs, so that tenant can rebuild its data from its offsite copy on another
 appliance **without** the appliance recovery key (which opens every tenant).
 
-- **Key.** 32 random bytes (OS RNG), written like the appliance recovery key: 16 groups of 4 hex digits (256 bits).
+- **Key.** 32 random bytes (OS RNG), written like the appliance recovery key: 24 BIP39 words (256 bits + checksum).
   The bytes are used directly as an **X25519 secret key**; the public key is `X25519(key, basepoint)`. Key id `kid` =
   the first 16 hex digits of the public key.
 - **Generation, show once.** `tenant.recovery_key` quorum request (admin; while approvals are enabled another admin or

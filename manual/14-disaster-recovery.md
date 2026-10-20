@@ -27,7 +27,7 @@ lost (hardware failure, fire, ransomware on the management network) and how the 
 ### The recovery key
 
 During first boot the key service creates the appliance master key (KEK) and shows the **recovery key** once
-(16 groups of 4 hex digits, see [02 Installation](02-installation.md#step-4-key-service-and-recovery-key)).
+(24 words from the BIP39 English list, see [02 Installation](02-installation.md#step-4-key-service-and-recovery-key)).
 
 - Every tenant's data key (DEK) is wrapped with the KEK. The KEK itself is also stored wrapped with the recovery key
   (`kek.recovery`).
@@ -58,10 +58,15 @@ system do not offer a shell either.
 
   Type it at the GRUB prompt without the spaces. GRUB uses the US keyboard layout; the letters were chosen so that
   they are on the same keys on US, German and French keyboards (no a, m, q, w, y, z).
-- Without `nexus-setup`, Python 3 computes the same password (replace the key):
+- Without `nexus-setup`, Python 3 computes the same password. It needs the BIP39 English word list
+  ([english.txt](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt), SHA-256
+  `2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda`, also in this repository as
+  `crates/recovery-key/src/bip39-english.txt`). Replace the words:
 
   ```sh
-  python3 -c 'import hmac,hashlib,sys; k=bytes.fromhex("".join(c for c in sys.argv[1] if c not in "- ")); n=int.from_bytes(hmac.new(k,b"nexus-grub-password-v1",hashlib.sha256).digest()[:16],"big"); print("".join("bcdefghijklnoprstuvx"[n//20**i%20] for i in range(20)))' 'ABCD-1234-…'
+  python3 -c 'import hmac,hashlib,sys; W=open(sys.argv[1]).read().split(); n=0
+  for w in sys.argv[2].lower().split(): n=n*2048+[i for i,x in enumerate(W) if x==w or len(w)==4 and x.startswith(w)][0]
+  k=(n>>8).to_bytes(32,"big"); assert hashlib.sha256(k).digest()[0]==n&255,"checksum"; n=int.from_bytes(hmac.new(k,b"nexus-grub-password-v1",hashlib.sha256).digest()[:16],"big"); print("".join("bcdefghijklnoprstuvx"[n//20**i%20] for i in range(20)))' english.txt 'word1 word2 … word24'
   ```
 
 - Appliances set up before this version have no boot menu password yet. Set it once from a root shell on the console:
@@ -85,7 +90,7 @@ in its offsite copy, never other tenants' and never the appliance's key.
    approvals are enabled, a second person (another administrator or a security officer) approves it on
    **Approvals** ([10 Approvals and audit](10-approvals-and-audit.md)).
 3. After the approval, the requester opens the dialog again and clicks **Show key once** within 24 hours. The key
-   (16 groups of 4 hex digits, like the appliance recovery key) is generated at this moment and shown **once**. The
+   (24 words, like the appliance recovery key) is generated at this moment and shown **once**. The
    appliance keeps only its public part: nobody can display it again. Hand it to the customer through a safe channel
    and store it apart from the appliance recovery key.
 
@@ -480,8 +485,8 @@ It accepts one of two things.
 An administrator or a security officer can **Revoke** an approved or shown code that is no longer needed; it stops
 working at once.
 
-**The recovery key (when nobody can approve or the web interface is down).** Type the recovery key (16 groups of 4
-hex digits) at the same prompt, then the shell duration in hours (1 to 8, default 1). It is checked against the key
+**The recovery key (when nobody can approve or the web interface is down).** Type the recovery key (all 24 words
+on one line, separated by spaces) at the same prompt, then the shell duration in hours (1 to 8, default 1). It is checked against the key
 service exactly like at first boot. Use this only when the code path is impossible: the recovery key also decrypts
 every backup ([The recovery key](#the-recovery-key)).
 
@@ -656,7 +661,7 @@ Steps at the console of the new appliance (first boot wizard on tty1):
      URLs.
    - **Appliance ID:** leave it empty unless the target holds configuration backups of several appliances (the
      error message lists them; the ID is on the lost appliance's settings page and in your records).
-   - **Recovery key:** the lost appliance's key, 16 groups of 4 hex digits.
+   - **Recovery key:** the lost appliance's key, all 24 words separated by spaces.
 
    Press Enter on the last field. The wizard opens the outbound firewall for that target only, fetches the newest
    bundle, checks the recovery key against it (a wrong key changes nothing) and restores every file with its owner,

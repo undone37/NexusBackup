@@ -11,6 +11,8 @@ name = "nexus-web-api"
 path = "src/main.rs"
 
 [dependencies]
+# the written form of recovery keys (parse and checksum; not keyd, see tests/replication.rs)
+recovery-key = { path = "../recovery-key" }
 anyhow = "1"
 base64 = "0.22"
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }

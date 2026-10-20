@@ -4079,8 +4079,11 @@ on('POST', '/tenants/attach/:id/run', async (c, [id]) => {
     )
   )
     throw new HttpError(409, 'this attach is already running');
-  const hex = String(c.body.recovery_key ?? '').replace(/[^0-9a-zA-Z]/g, '');
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new HttpError(400, 'recovery_key: 64 hex digits (16 groups of 4)');
+  // keyd's format: 24 BIP39 words (the mock checks only the count; web-api also the list and the checksum)
+  const words = String(c.body.recovery_key ?? '')
+    .split(/[^a-zA-Z]+/)
+    .filter(Boolean);
+  if (words.length !== 24) throw new HttpError(400, `recovery key: 24 words expected, got ${words.length}`);
   // the key itself is never kept (web-api: sealed to the scheduler, removed when the job starts)
   const j = addJob('offsite_attach', q.params.name, { attach_quorum: q.id }, u.name);
   await audit(u.name, 'tenant.attach_offsite.run', `tenant/${q.params.name}`, { quorum_id: q.id, job: j.id });
@@ -12778,7 +12781,11 @@ function seedHolds(t: number) {
 }
 
 // ---------------------------------------------------------------- tenant recovery key (Phase 17e)
-// The appliance keeps only the public key; here a random 64-hex stand-in (kid = its first 16 digits).
+const MOCK_WORDS =
+  'abandon ability fabric harvest kitchen ladder magnet napkin orbit pencil quantum rabbit saddle table umbrella vacuum wagon yellow zebra cactus'.split(
+    ' ',
+  );
+// The appliance keeps only the public key; here a random 24-word stand-in (kid random).
 
 const TKEY_TTL = 24 * 3600;
 const tenantKeys = new Map<
@@ -12858,8 +12865,8 @@ on('POST', '/tenants/:tenant/recovery-key/:id/show', async (c, [tn, id]) => {
   const st = tkeyStatus(q);
   if (st === 'shown') throw new HttpError(409, 'this key was already shown');
   if (st !== 'approved') throw new HttpError(409, `request is ${st}`);
-  const raw = rand(32);
-  const key = Array.from({ length: 16 }, (_, i) => raw.slice(i * 4, i * 4 + 4)).join('-');
+  // ponytail: 24 random words from a few BIP39 words, no checksum; the real key comes from keyd
+  const key = Array.from({ length: 24 }, () => MOCK_WORDS[Math.floor(Math.random() * MOCK_WORDS.length)]).join(' ');
   const kid = rand(8);
   const replaced = tenantKeys.get(tenant)?.kid ?? null;
   q.state = 'executed';

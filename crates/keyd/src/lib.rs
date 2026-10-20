@@ -51,19 +51,17 @@ fn unseal(dir: &Path) -> io::Result<Key> {
     Ok(k)
 }
 
-/// 16 groups of 4 hex digits, e.g. `1a2b-3c4d-…`.
+pub use recovery_key::{word_index as recovery_word_index, WORDS as RECOVERY_WORDS};
+
+/// `k` as 24 BIP39 words (the written form of recovery keys, ADR-015; [`recovery_key::format()`]).
 pub fn format_recovery_key(k: &[u8; 32]) -> String {
-    let h = hex(k);
-    (0..16).map(|i| &h[i * 4..i * 4 + 4]).collect::<Vec<_>>().join("-")
+    recovery_key::format(k)
 }
 
-/// Inverse of [`format_recovery_key`]: 64 hex digits, case and separators (dashes, spaces) ignored.
-/// Error `InvalidInput` for anything else.
+/// Inverse of [`format_recovery_key`] ([`recovery_key::parse()`]): error `InvalidInput` naming the
+/// position of an unknown word or a failed checksum, never the typed text.
 pub fn parse_recovery_key(s: &str) -> io::Result<Key> {
-    let h: String = s.chars().filter(char::is_ascii_alphanumeric).collect();
-    parse_hex(&h.to_ascii_lowercase())
-        .map(Zeroizing::new)
-        .ok_or_else(|| err(io::ErrorKind::InvalidInput, "recovery key must be 64 hex digits"))
+    recovery_key::parse(s).map_err(|e| err(io::ErrorKind::InvalidInput, e))
 }
 
 /// First boot: creates KEK and recovery key. The returned recovery key is

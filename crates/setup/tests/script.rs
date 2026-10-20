@@ -130,7 +130,7 @@ fn recovery_key(stdout: &str) -> String {
 
 /// No file under root (nor stderr, which goes to the journal) contains the key in any spelling.
 fn assert_key_not_persisted(e: &Env, key: &str, stderr: &str) {
-    let plain = key.replace('-', "");
+    let plain = key.replace(' ', "");
     let raw = keyd::parse_recovery_key(key).unwrap();
     let needles: Vec<Vec<u8>> = vec![
         key.as_bytes().to_vec(),
@@ -316,7 +316,7 @@ fn full_run_then_refuse_then_reconfigure_network() {
         c.wait_with_output().unwrap()
     };
     let before = fs::read(e.p("etc/nexus/grub-user.cfg")).unwrap();
-    let out = install(&"00".repeat(32));
+    let out = install(&keyd::format_recovery_key(&[0; 32]));
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("recovery key rejected"));
     assert_eq!(fs::read(e.p("etc/nexus/grub-user.cfg")).unwrap(), before);

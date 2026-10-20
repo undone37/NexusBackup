@@ -102,14 +102,14 @@ pub struct RunReq {
     recovery_key: String,
 }
 
-/// `16 groups of 4 hex digits` (keyd's format), separators optional.
+/// keyd's format (24 BIP39 words), returned in its canonical spelling; the error names the
+/// position of a wrong word or the checksum, never the typed text.
 fn recovery_key(s: &str) -> ApiResult<String> {
-    let h: String = s.chars().filter(char::is_ascii_alphanumeric).collect();
-    if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) || s.len() > 200 {
-        return Err(ApiError::bad("recovery_key: 64 hex digits (16 groups of 4)"));
+    if s.len() > 400 {
+        return Err(ApiError::bad("recovery_key: 24 words expected"));
     }
-    let h = h.to_ascii_lowercase();
-    Ok((0..16).map(|i| &h[i * 4..i * 4 + 4]).collect::<Vec<_>>().join("-"))
+    let k = recovery_key::parse(s).map_err(ApiError::bad)?;
+    Ok(recovery_key::format(&k))
 }
 
 pub async fn run_attach(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>, J(r): J<RunReq>) -> ApiResult<Response> {

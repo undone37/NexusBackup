@@ -21,7 +21,7 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 
 | Path | What |
 |---|---|
-| `crates/chunkstore`, `keyd`, `catalog` | data plane core: chunk store (crypto, locks, GC), key service, SQLite catalog + audit |
+| `crates/chunkstore`, `keyd`, `catalog`, `recovery-key` | data plane core: chunk store (crypto, locks, GC), key service, SQLite catalog + audit, recovery key words (BIP39) |
 | `crates/web-api`, `web/` | REST API (axum, `openapi.json`) and the Svelte 5 UI; `web/mock/` is the mock backend for UI work |
 | `crates/scheduler` | policies, job runner (spawns the connector binaries), alerts, firewall sync |
 | `crates/pve`, `pve-plugin/` | Proxmox VE connector and the Perl node plugin (storage plugin, backup provider, SSH helper) |

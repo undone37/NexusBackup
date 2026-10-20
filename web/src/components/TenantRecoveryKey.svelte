@@ -88,7 +88,11 @@
   {#if shown}
     <p class="banner warn" role="alert">{t.tkey.once}</p>
     <div class="copyline">
-      <code class="secret tkey-code" aria-label={t.tkey.button}>{shown.key}</code>
+      <ol class="secret tkey-words" aria-label={t.tkey.button}>
+        {#each shown.key.split(' ') as w, i (i)}<li>
+            <span class="tkey-n">{String(i + 1).padStart(2, '0')}</span>{w}
+          </li>{/each}
+      </ol>
       <button type="button" class="small" onclick={() => copyText(shown!.key)}
         ><IconCopy aria-hidden="true" />{t.users.copy}</button
       >
@@ -175,9 +179,25 @@
 </Modal>
 
 <style>
-  .tkey-code {
+  /* 24 numbered words, as on the paper copy */
+  .tkey-words {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(4, max-content);
+    gap: 0.35rem 2rem;
+    margin: 0;
+    font-family: var(--mono);
     font-size: 0.95rem;
-    overflow-wrap: break-word;
+    list-style: none;
+  }
+  .tkey-n {
+    color: var(--muted);
+    margin-right: 0.6rem;
+  }
+  @media (max-width: 40rem) {
+    .tkey-words {
+      grid-template-columns: repeat(2, max-content);
+    }
   }
   .tkey-state {
     gap: 0.5rem;

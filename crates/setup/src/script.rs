@@ -178,9 +178,9 @@ pub fn run(s: &mut Setup, ans: &Answers, force_network: bool, out: &mut dyn Writ
                     let key = s.keyd_init()?;
                     writeln!(out, "RECOVERY KEY (shown once, record it now): {}", key.expose())?;
                     let idx = challenge();
-                    let groups = key.groups();
-                    let answers: Vec<&str> = idx.iter().map(|&i| groups[i].as_str()).collect();
-                    if !s.confirm_recovery_groups(&key, &idx, &answers)? {
+                    let words = key.words();
+                    let answers: Vec<&str> = idx.iter().map(|&i| words[i].as_str()).collect();
+                    if !s.confirm_recovery_words(&key, &idx, &answers)? {
                         bail!("internal error: recovery key self-check failed");
                     }
                     writeln!(out, "recovery key: confirmed")?;

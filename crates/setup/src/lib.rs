@@ -611,7 +611,8 @@ pub fn parse_nmcli_addresses(out: &str) -> Vec<IpAddr> {
 /// The recovery key while it is on screen. Never Debug/Display/Clone, zeroed on drop.
 pub struct RecoveryKey(Zeroizing<String>);
 
-pub const KEY_GROUPS: usize = 16;
+/// Words of the recovery key (BIP39, see `keyd::format_recovery_key`).
+pub const KEY_WORDS: usize = keyd::RECOVERY_WORDS;
 
 impl RecoveryKey {
     pub fn from_string(s: String) -> Self {
@@ -620,29 +621,28 @@ impl RecoveryKey {
     pub fn expose(&self) -> &str {
         &self.0
     }
-    /// 16 groups of 4 hex digits, upper-case for legibility (0/D, 6/b).
-    pub fn groups(&self) -> Vec<Zeroizing<String>> {
-        self.0
-            .split('-')
-            .map(|g| Zeroizing::new(g.to_ascii_uppercase()))
-            .collect()
+    /// The 24 words, in order.
+    pub fn words(&self) -> Vec<Zeroizing<String>> {
+        self.0.split(' ').map(|w| Zeroizing::new(w.to_owned())).collect()
     }
-    /// `idx` are 0-based group numbers; answers are compared case-insensitively.
-    pub fn check_groups(&self, idx: &[usize], answers: &[&str]) -> bool {
-        let groups = self.groups();
+    /// `idx` are 0-based word numbers; an answer is the word or its first four letters, in
+    /// any case.
+    pub fn check_words(&self, idx: &[usize], answers: &[&str]) -> bool {
+        let words = self.words();
         idx.len() == answers.len()
             && !idx.is_empty()
             && idx.iter().zip(answers).fold(true, |ok, (&i, a)| {
-                let a: String = a.chars().filter(|c| !c.is_whitespace()).collect();
-                // no early exit: every group is compared
-                ok & groups.get(i).is_some_and(|g| g.eq_ignore_ascii_case(&a))
+                let a = Zeroizing::new(a.trim().to_ascii_lowercase());
+                let want = words.get(i).and_then(|w| keyd::recovery_word_index(w));
+                // no early exit: every word is compared
+                ok & (want.is_some() && keyd::recovery_word_index(&a) == want)
             })
     }
 }
 
-/// Three distinct random group indices (0-based, sorted).
+/// Three distinct random word indices (0-based, sorted).
 pub fn challenge() -> [usize; 3] {
-    let mut v = rand::seq::index::sample(&mut rand::thread_rng(), KEY_GROUPS, 3).into_vec();
+    let mut v = rand::seq::index::sample(&mut rand::thread_rng(), KEY_WORDS, 3).into_vec();
     v.sort();
     [v[0], v[1], v[2]]
 }
@@ -1106,19 +1106,19 @@ impl Setup {
         Ok(rk)
     }
 
-    /// Re-entry of the challenged groups. On success the key is also checked
+    /// Re-entry of the challenged words. On success the key is also checked
     /// against the KEK on disk and the confirmation is recorded.
-    pub fn confirm_recovery_groups(&mut self, key: &RecoveryKey, idx: &[usize], answers: &[&str]) -> Result<bool> {
-        let groups: Vec<usize> = idx.iter().map(|i| i + 1).collect();
-        if !key.check_groups(idx, answers) {
-            self.audit("setup.keyd.challenge_failed", "keyd", json!({"groups": groups}))?;
+    pub fn confirm_recovery_words(&mut self, key: &RecoveryKey, idx: &[usize], answers: &[&str]) -> Result<bool> {
+        let words: Vec<usize> = idx.iter().map(|i| i + 1).collect();
+        if !key.check_words(idx, answers) {
+            self.audit("setup.keyd.challenge_failed", "keyd", json!({"words": words}))?;
             return Ok(false);
         }
         keyd::check_recovery_key(&self.paths.keyd_dir, key.expose())?;
         self.audit(
             "setup.keyd.confirmed",
             "keyd",
-            json!({"method": "groups", "groups": groups}),
+            json!({"method": "words", "words": words}),
         )?;
         self.grub_password(key.expose())?;
         Ok(true)
@@ -1431,17 +1431,25 @@ mod tests {
     }
 
     #[test]
-    fn recovery_key_groups() {
-        let k = RecoveryKey::from_string(keyd::format_recovery_key(&[0xab; 32]));
-        assert_eq!(k.groups().len(), KEY_GROUPS);
-        assert_eq!(k.groups()[0].as_str(), "ABAB");
-        assert!(k.check_groups(&[0, 5, 15], &["abab", "ABAB", " ab ab "]));
-        assert!(!k.check_groups(&[0, 5, 15], &["abab", "ABAB", "abac"]));
-        assert!(!k.check_groups(&[0, 5, 16], &["abab", "abab", "abab"]), "out of range");
-        assert!(!k.check_groups(&[], &[]));
+    fn recovery_key_words() {
+        // BIP39 vector: 32 zero bytes are "abandon" x 23, then "art"
+        let k = RecoveryKey::from_string(keyd::format_recovery_key(&[0; 32]));
+        assert_eq!(k.words().len(), KEY_WORDS);
+        assert_eq!(k.words()[23].as_str(), "art");
+        assert!(k.check_words(&[0, 5, 23], &["abandon", "ABAN", " Art "]));
+        assert!(!k.check_words(&[0, 5, 23], &["abandon", "aban", "arm"]));
+        assert!(
+            !k.check_words(&[0, 5, 23], &["abandon", "aba", "art"]),
+            "three letters are no prefix"
+        );
+        assert!(
+            !k.check_words(&[0, 5, 24], &["abandon", "abandon", "abandon"]),
+            "out of range"
+        );
+        assert!(!k.check_words(&[], &[]));
         for _ in 0..50 {
             let c = challenge();
-            assert!(c[0] < c[1] && c[1] < c[2] && c[2] < KEY_GROUPS);
+            assert!(c[0] < c[1] && c[1] < c[2] && c[2] < KEY_WORDS);
         }
     }
 

@@ -934,6 +934,7 @@ dependencies = [
  "crypto_box",
  "ml-kem",
  "rand 0.8.8",
+ "recovery-key",
  "rusqlite",
  "serde",
  "serde_json",
@@ -3419,6 +3420,7 @@ dependencies = [
  "libc",
  "ml-kem",
  "rand 0.8.8",
+ "recovery-key",
  "tempfile",
  "zeroize",
  "zstd",
@@ -5530,6 +5532,14 @@ dependencies = [
  "bytemuck",
  "font-types 0.12.6",
  "once_cell",
+]
+
+[[package]]
+name = "recovery-key"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]
@@ -7772,6 +7782,7 @@ dependencies = [
  "plugin-proto",
  "rand 0.8.8",
  "rcgen",
+ "recovery-key",
  "regex",
  "replication",
  "reports",

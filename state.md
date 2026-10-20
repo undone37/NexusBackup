@@ -792,6 +792,13 @@ filters and caching, release workflow, dependency updates). In progress (2026-10
   testbox failed without a log); rerun CI on main, then Dependabot #5 and #6, when it is back
 - [ ] Image, SBOM, CVE scan, packages, ISO, rescue ISO attached to the draft; maintainer signs and publishes
 
+## Recovery key as 24 BIP39 words (2026-10-20, ADR-015)
+- [x] Appliance and tenant recovery keys are 24 BIP39 English words (256 bits + checksum); hex format removed.
+  Crate `crates/recovery-key` (sha2 + zeroize only; used by keyd, catalog, web-api without linking keyd). First boot
+  asks for 3 random words; four-letter prefixes accepted; errors name the word position. BIP39 test vectors pass;
+  GRUB password unchanged for the same key bytes; manual Python one-liner verified. Tenant key dialog and screenshots.
+- [ ] Lab: first boot on the appliance VM with the new key screen (TUI layout at 80x25 not yet seen on a console)
+
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
 Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.

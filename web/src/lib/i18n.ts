@@ -3821,7 +3821,7 @@ export const en = {
     enterKey: 'Enter recovery key',
     keyTitle: (tn: string) => `Recovery key for tenant ${tn}`,
     keyIntro:
-      'The recovery key of the appliance that wrote this offsite copy (16 groups of 4 hex digits, from its first-boot sheet). It opens the escrowed tenant keys on the target; they are re-encrypted with this appliance’s keys. The recovery key is sent once, sealed to the scheduler, and never stored or logged.',
+      'The recovery key of the appliance that wrote this offsite copy (24 words, from its first-boot sheet; the first four letters of each word are enough). It opens the escrowed tenant keys on the target; they are re-encrypted with this appliance’s keys. The recovery key is sent once, sealed to the scheduler, and never stored or logged.',
     key: 'Recovery key',
     keyHint: 'Separators and case do not matter.',
     run: 'Attach now',

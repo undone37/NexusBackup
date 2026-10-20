@@ -156,17 +156,21 @@ The wizard recommends a **second person**: a security officer who approves destr
 The appliance now creates its master key (KEK). All tenant keys are wrapped with it.
 
 1. Make sure nobody else can see the screen. Press Enter to create the key.
-2. The **recovery key** appears once: 16 numbered groups of 4 hex digits (0–9, A–F). Write down all groups. Do not
-   photograph it.
+2. The **recovery key** appears once: 24 numbered English words (the BIP39 word list, 256 bits plus a checksum).
+   Write down all words with their numbers, in order. Do not photograph it. The first four letters of each word are
+   enough to identify it, so write those clearly.
 3. Type `YES` when you have written it down.
-4. Re-enter the 3 randomly chosen groups the wizard asks for. If they do not match, new groups are chosen; Esc
+4. Re-enter the 3 randomly chosen words the wizard asks for (the first four letters are enough). If they do not
+   match, new words are chosen; Esc
    shows the key again (until it is confirmed).
 
 After confirmation the key is removed from the screen and from memory. It is **never written to disk or to a
 log**. The wizard then also sets the **boot menu password** (the GRUB password that protects the kernel command line,
 see [14 Disaster recovery](14-disaster-recovery.md#boot-menu-password)). It is derived from the recovery key, so
 there is nothing else to write down. If the wizard was interrupted after the key was created but before you confirmed it, the key cannot be shown
-again: type it in full (64 hex digits, dashes optional) or reinstall the appliance (nothing has been encrypted yet).
+again: type all 24 words in order, separated by spaces, or reinstall the appliance (nothing has been encrypted yet).
+A mistyped word is reported by its position ("word 7 is not in the BIP39 list"), and the checksum catches a wrong or
+swapped word.
 
 ### Step 5: TLS certificate
 

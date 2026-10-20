@@ -78,7 +78,7 @@ backup() {
 	)
 	find "$TESTBOX" -path '*/config/*' -name '*.bundle' -printf '%p %s\n' 2>/dev/null | tail -n 3 >&2 || true
 	vm a
-	con run 'journalctl -u nexus-setup -o cat --no-pager | sed -n "s/^RECOVERY KEY[^:]*: //p" | tail -n 1' | tr -d '\r\n ' >"$A_ROOT/recovery.key"
+	con run 'journalctl -u nexus-setup -o cat --no-pager | sed -n "s/^RECOVERY KEY[^:]*: //p" | tail -n 1' | tr -d '\r\n' >"$A_ROOT/recovery.key"
 	[ -s "$A_ROOT/recovery.key" ] || die "A's recovery key not found in the setup journal"
 	log "A: recovery key saved for the lab ($A_ROOT/recovery.key)"
 }

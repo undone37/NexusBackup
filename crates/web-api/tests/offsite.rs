@@ -17,7 +17,9 @@ use tower::ServiceExt;
 use web_api::AppState;
 
 const PW: &str = "correct horse battery";
-const RK: &str = "1a2b-3c4d-5e6f-7a8b-9c0d-1e2f-3a4b-5c6d-7e8f-9a0b-1c2d-3e4f-5a6b-7c8d-9e0f-1a2b";
+/// BIP39 vector of 32 bytes 0x7f
+const RK: &str = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful \
+                  legal winner thank year wave sausage worth title";
 
 fn pw_hash() -> &'static str {
     static H: OnceLock<String> = OnceLock::new();
@@ -280,7 +282,11 @@ async fn attach_offsite_copy_two_steps() {
     let r = t.post(&run, &sam, json!({"recovery_key": "1234"})).await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     let r = t
-        .post(&run, &sam, json!({"recovery_key": RK.replace('-', " ").to_uppercase()}))
+        .post(
+            &run,
+            &sam,
+            json!({"recovery_key": RK.replace(' ', "\n").to_uppercase()}),
+        )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     let job = r.body["id"].as_i64().unwrap();

@@ -100,13 +100,12 @@ pub fn pq_public(secret: &[u8; 32]) -> String {
 }
 
 /// A new tenant recovery key: 256 random bits written like the appliance
-/// recovery key (16 groups of 4 hex digits, `keyd::format_recovery_key`), its
+/// recovery key (24 BIP39 words, `recovery_key::format`), its
 /// X25519 public key (hex; the key itself is the X25519 secret key) and, since
 /// Phase 30, the ML-KEM-768 public key derived from it (hex, [`pq_public`]).
 pub fn generate() -> (Zeroizing<String>, String, String) {
     let k = Zeroizing::new(rand::random::<[u8; 32]>());
-    let h = Zeroizing::new(hex(&k[..]));
-    let key = Zeroizing::new((0..16).map(|i| &h[i * 4..i * 4 + 4]).collect::<Vec<_>>().join("-"));
+    let key = Zeroizing::new(recovery_key::format(&k));
     let public = crypto_box::SecretKey::from_bytes(*k).public_key();
     (key, hex(public.as_bytes()), pq_public(&k))
 }
@@ -119,17 +118,9 @@ mod tests {
     fn generate_format_and_public_key() {
         let (k, p, pq) = generate();
         assert_eq!(pq.len(), 2 * 1184);
-        let groups: Vec<&str> = k.split('-').collect();
-        assert_eq!(groups.len(), 16);
-        assert!(groups
-            .iter()
-            .all(|g| g.len() == 4 && g.bytes().all(|b| b.is_ascii_hexdigit())));
-        let raw: String = groups.concat();
-        let mut sk = [0u8; 32];
-        for (i, b) in sk.iter_mut().enumerate() {
-            *b = u8::from_str_radix(&raw[2 * i..2 * i + 2], 16).unwrap();
-        }
-        let expect = crypto_box::SecretKey::from_bytes(sk).public_key();
+        assert_eq!(k.split(' ').count(), 24);
+        let sk = recovery_key::parse(&k).unwrap();
+        let expect = crypto_box::SecretKey::from_bytes(*sk).public_key();
         assert_eq!(parse_public(&p).unwrap(), *expect.as_bytes());
         assert_ne!(generate().0, k, "random");
         assert!(parse_public("zz").is_none());
