@@ -1183,6 +1183,9 @@ state.md and commits.
 - S5 Post-quantum TLS (hybrid key exchange for the web and replication endpoints); keyd wrapping is done
   (Phase 30, ADR-014).
 - S6 Moved to Phase 40 (maintainer decision 2026-10-20).
+- S7 Time servers whose NTS key exchange negotiates NTP servers at other addresses (nts.netnod.se): let the
+  firewall follow the addresses chronyd learned through NTS-KE (authenticated), for example from nexus-time's
+  status (`chronyc -c -n sources`), UDP 123 only (lab 2026-10-21).
 
 **Sources and connectors**
 - C1 VM disk file hashes for btrfs, FAT and exFAT (NTFS, ext4, XFS done); NTFS compressed / encrypted / deduplicated

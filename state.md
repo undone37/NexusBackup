@@ -855,6 +855,31 @@ their IDs. In progress:
   booted unchanged (root by UUID, API up in 30 s, 2026-10-20); deploy.sh, README and manual chapter 2 recommend
   SCSI (a virtio-blk VM did not see a hot-added disk until a reboot)
 
+## Release 0.2.0-alpha preparation (2026-10-21)
+- [x] Time servers configurable (Settings > Time, maintainer request): NTS by default, plain NTP only as an opt-in,
+  approval `time.servers`; helper `nexus-time` (nexus_time_t), nft-sync reads the included sources file. Tests:
+  web-api `tests/timesync.rs`, `test_nexus_time.py`, nftsync includes.
+- [x] Lab VM 201 (pve-test), re-deployed from 0.0.11-dev (24-word recovery key now; the hex-key 0.1 install is
+  gone; lab state backed up in the session scratchpad): `lab/pvehost/time-servers.sh` switched the servers through
+  the API with the security officer's approval: chronyd restarted with them, plain NTP without the opt-in refused
+  (400). Found and fixed on the way:
+  - `time.nts` diagnostic read the wrong chronyc column and always warned (5f653e60);
+  - the status refresh after the chronyd restart ran in initrc_t and lost its chronyc (now `nexus-time settle`);
+  - systemd could not watch the sources file for nexus-nft-sync.path (init_t read/watch added): the firewall kept
+    the old servers until the next sync;
+  - **updates of rechunked images with new SELinux types failed** ("fsetxattr(security.selinux): Invalid
+    argument"): bootc ran in unconfined_service_t without mac_admin. Now install_t (as the stock bootc units) and
+    no NoNewPrivileges on nexus-update. Lab: image A (0.0.11) -> image B with a lab-only new type (0.0.12) imported,
+    applied, booted, file labelled `nexus_labtest_t`;
+  - a refused import (pre-update checks, e.g. clock not synchronised) left `bundle.tar` behind, so every later
+    upload answered 409: the upload is discarded now (test in `test_nexus_update.py`);
+  - lab API helpers step up after sign-in when the account is risk-marked (Phase 29 unusual-hour signal at 01:00 UTC).
+- [x] Images stripped (os/slim.sh), podman kept (bootc's image store needs it; a podman-less image could not
+  update). Dependabot: #11 closed (windows-core with windows), #13 replaced (totp-rs 6 port), #14 closed (tiny-skia
+  follows iced), #12 rebased.
+- [ ] `nts.netnod.se`: its NTS key exchange hands out NTP servers at other addresses than the key-exchange host,
+  which the firewall does not let through, so it stays unreachable (also on 0.1). Phase 39 S7.
+
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 
