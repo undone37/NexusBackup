@@ -234,6 +234,15 @@ RUN dnf -y install --setopt=install_weak_deps=False greenboot \
 # (overrides /etc/greenboot/greenboot.conf). Then the update agent, diagnostics, health check
 # and their units (os/greenboot/usr only, never os/greenboot/tests).
 COPY os/etc/ /etc/
+# Hardening the drop-ins above cannot express (plan.md Phase 35, docs/cis.md): new files without world
+# access by default.
+RUN sed -i 's/^UMASK[[:space:]].*/UMASK\t\t027/' /etc/login.defs \
+ && sed -i 's/umask 022/umask 027/' /etc/bashrc /etc/profile \
+ && grep -q '^UMASK[[:space:]]*027' /etc/login.defs \
+ && ! grep -q 'umask 022' /etc/bashrc /etc/profile \
+ && grep -qx 'kernel.kptr_restrict = 1' /etc/sysctl.d/60-nexus-hardening.conf \
+ && grep -qx 'install sctp /bin/false' /etc/modprobe.d/nexus-hardening.conf \
+ && chmod 0700 /etc/ssh/sshd_config.d && chmod 0600 /etc/ssh/sshd_config.d/*.conf
 COPY os/greenboot/usr/ /usr/
 RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
       sed -i "s|ghcr.io/undone37/nexusbackup|$NEXUS_IMAGE_REPO|" /etc/containers/policy.json \

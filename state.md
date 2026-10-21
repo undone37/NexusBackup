@@ -902,7 +902,14 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Not s
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
-Benchmark PDF in tmp/ (gitignored, CIS licence). Not started; after Phase 34.
+Benchmark PDF in tmp/ (gitignored, CIS licence).
+- [x] 35a gap analysis `docs/cis.md` (2026-10-21): CIS server L1 via ComplianceAsCode, every non-passing rule with a
+  decision (37 applied but not visible to a file-tree scan, 35 deviate with reason, 10 lab check, 6 not applicable).
+- [x] 35c first part: sysctl and module hardening, no core dumps, persistent journal, sshd drop-in, banners, umask,
+  TMOUT. Image scan 161 -> 194 pass (116 -> 83 fail). Lab VM 201 0.0.17-dev: boots, greenboot ok, sysctls active,
+  modules blocked, 0 AVCs, `verify.sh exact` byte-identical, web UI negotiates X25519MLKEM768.
+- [x] `release/cis-report.sh` scans read-only from the base image (the appliance has no dnf any more).
+- [ ] 35b scan of a booted appliance; `/tmp`, `/dev/shm` noexec; 35d gate on `release/cis-passing.txt`.
 
 ## Phase 36 — Offline (air-gapped) appliance updates (added 2026-10-15)
 Scope: plan.md Phase 36 (signed update bundle as a release asset, spike: local mirror registry vs own signature
