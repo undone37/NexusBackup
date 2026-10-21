@@ -25,16 +25,16 @@ env:
 
 jobs:
   image:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
     steps:
-      - name: Runner tools
-        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
-        run: |
-          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
-          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
+      # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 } # release notes: the commits since the previous tag
 
@@ -152,7 +152,7 @@ jobs:
           echo "EDGE_REF=$NEXUS_IMAGE_REPO-edge@$d" >> "$GITHUB_ENV"
 
       - name: SBOM (syft) and metadata
-        # label=disable: the runner enforces SELinux, which refuses unlabeled bind mounts (as release/lib.sh)
+        # label=disable: on an SELinux host unlabeled bind mounts are refused (as release/lib.sh)
         run: |
           mkdir -p out
           podman run --rm --user 0 --security-opt label=disable -v "$PWD/out:/out" \
@@ -241,13 +241,13 @@ jobs:
     # The report (table + JSON) is uploaded as an artifact and attached to the draft release;
     # a critical CVE with a fixed package version fails the job (rebuild: --pull=always takes the fix).
     needs: image
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     steps:
-      - name: Runner tools
-        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
-        run: |
-          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
-          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
+      # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
 
       - name: Scan
@@ -307,13 +307,13 @@ jobs:
     # release/test-packages.sh; nothing is installed on the runner), uploaded to the draft
     # release with SHA256SUMS. Not signed: the release manager runs release/sign.sh sign-blobs.
     needs: image
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     steps:
-      - name: Runner tools
-        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
-        run: |
-          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
-          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
+      # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
 
       - name: Build (release keys from release/keys)

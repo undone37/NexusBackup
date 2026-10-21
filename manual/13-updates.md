@@ -98,8 +98,9 @@ internet access).
 
 ## Private image repository
 
-While the image repository is private (as during the 0.x test releases), the appliance needs a read-only pull
-credential to download updates. Under **Settings → Updates → Registry credential** an administrator enters a user
+The release images on `ghcr.io` are public: no credential is needed. For a private image repository (a mirror of
+your own, or the 0.x test releases before 2026-10-21), the appliance needs a read-only pull credential to download
+updates. Under **Settings → Updates → Registry credential** an administrator enters a user
 name and a token; for GitHub (`ghcr.io`) that is a personal access token with only the `read:packages` scope. The
 token is write-only: the page shows only the user name afterwards.
 

@@ -14,7 +14,8 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 - **Stop processes by PID**, never with `pkill -f` / `killall` (a pattern can hit unrelated processes).
 - **Keep `state.md` current**: tick what is done, add what is open, record lab results with numbers and dates.
   Decisions go to `plan.md` (§2 decision table or the phase section).
-- **The repository stays private** until the maintainer says otherwise; images on ghcr.io too.
+- **The repository and the ghcr.io images are public** (since 2026-10-21): everything committed, every CI log and
+  every release asset is world-readable. Nothing from `~/nexus-lab/` or a lab run goes into a commit, log or issue.
 - Prefer the smallest change that works and matches the surrounding code. No new dependency for what a few lines do.
 
 ## Layout
@@ -57,7 +58,8 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 
 The hooks run the fast part automatically; `--no-verify` skips them only for a deliberate exception (for example a
 test key). After pushing, check the CI run (`gh run list -L 3`) and fix a red run before anything else. CI runs only
-the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`). CI runs the tests with cargo-nextest (all test binaries in parallel, `.config/nextest.toml`) and the container-based MySQL, PostgreSQL and Keycloak suites in a separate `testbox` job; locally `cargo test` is fine.
+the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`). All workflows run on GitHub-hosted
+`ubuntu-24.04` runners (no self-hosted runner: a public repository would run fork pull requests on it). CI runs the tests with cargo-nextest (all test binaries in parallel, `.config/nextest.toml`) and the container-based MySQL, PostgreSQL and Keycloak suites in a separate `testbox` job; locally `cargo test` is fine.
 
 ## Conventions
 

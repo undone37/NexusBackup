@@ -1,8 +1,7 @@
 name: cve
 # Weekly grype CVE scan of the image appliances follow (the channel tag set by
 # release/promote.sh), because new CVEs appear after a release. No build: only the
-# pinned grype image runs in podman (release/cve-scan.sh); nothing is installed on the
-# runner. Scanning on every main push would need a full image build each time, so the
+# pinned grype image runs in podman (release/cve-scan.sh). Scanning on every main push would need a full image build each time, so the
 # release workflow scans each new image and this job re-checks the published one.
 on:
   schedule:
@@ -19,8 +18,10 @@ permissions:
 
 jobs:
   scan:
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     steps:
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
 
       - name: Release constants

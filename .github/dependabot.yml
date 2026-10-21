@@ -1,4 +1,4 @@
-# Weekly update PRs, grouped per ecosystem so the single self-hosted runner gets one CI run each; at night
+# Weekly update PRs, grouped per ecosystem so each gets one CI run; at night
 # (Europe/Berlin) so their CI runs do not queue in front of work on main (maintainer decision 2026-10-20).
 version: 2
 updates:

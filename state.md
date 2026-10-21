@@ -245,6 +245,11 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] Signed with the alpha key, verified with release trust, `:stable` promoted, published 2026-10-12 as a pre-release
 - [x] Installer ISO (`iso.yml`, bootc-image-builder anaconda-iso, 1.86 GB) attached to v0.0.1-alpha; `lab/appliance/iso-test.sh`: unattended UEFI install in QEMU, first boot into the nexus-setup wizard, SELinux enforcing
 - [ ] ~~Make the ghcr.io package public~~ — decided 2026-10-12: repo + package stay private for now; test appliances need a pull credential (read:packages) for updates (Phase 14 add-on)
+- [x] 2026-10-21 (maintainer decision): repository and ghcr.io images go public; all workflows moved from the
+  self-hosted runner to GitHub-hosted `ubuntu-24.04` first (a public repository would run fork pull requests on the
+  self-hosted runner). History checked for secrets before: only marked test keys, generated test certificates, AWS
+  documentation example keys and a test TOTP seed. Maintainer: flip both visibilities, remove the self-hosted runner
+  from the repository settings.
 - [ ] Offline key ceremony + standby key before beta: plan.md Phase 39 S1
 - [x] 0.2.0-alpha (2026-10-21): tag `v0.2.0-alpha` (a3f453cb) failed in the image build (slim.sh bind mount, exit 126
   under SELinux on the runner), `v0.2.0-alpha.1` (93b7d364) at the rechunk step (crun will not create a mount target

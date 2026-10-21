@@ -14,12 +14,12 @@ on:
 
 permissions:
   contents: write # upload the ISO to the release
-  packages: read # pull the (private) image
+  packages: read # pull the image (also while the package is private)
 
 jobs:
   iso:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     # the appliance and the edge proxy (docs/edge.md): same builder, same installer config
     strategy:
       max-parallel: 1
@@ -33,11 +33,11 @@ jobs:
       BIB: quay.io/centos-bootc/bootc-image-builder:latest
     steps:
       # the ISO config comes from the workflow's own commit (older tags predate release/iso/)
-      - name: Runner tools
-        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
-        run: |
-          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
-          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
+      # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
 
       - name: Image digest of the release
@@ -83,18 +83,18 @@ jobs:
   # bare-metal recovery ISO (docs/bmr.md), built from the release's own sources
   rescue:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     env:
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Check the tag
         run: '[[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }'
-      - name: Runner tools
-        # the self-hosted runner brings these (docs/release.md "Runner"); fail before a long build
-        run: |
-          missing=; for t in git gh jq podman; do command -v "$t" >/dev/null || missing="$missing $t"; done
-          [ -z "$missing" ] || { echo "::error::runner lacks:$missing (docs/release.md, Runner)"; exit 1; }
+      # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: actions/checkout@v7
         with:
           ref: ${{ env.TAG }}
@@ -111,7 +111,7 @@ jobs:
   # every file the maintainer signs and publishes, before the draft is handed over
   assets:
     needs: [iso, rescue]
-    runs-on: self-hosted
+    runs-on: ubuntu-24.04
     env:
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
