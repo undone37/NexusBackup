@@ -11,7 +11,7 @@ chacha20poly1305 = "0.11"
 chunkstore = { path = "../chunkstore" }
 crypto_box = { version = "0.9", features = ["seal"] }
 # Phase 30 hybrid sealing (keyd::hybrid, ADR-014): both already in the tree (russh uses them)
-curve25519-dalek = "4.1"
+curve25519-dalek = "5.0"
 ml-kem = { version = "0.3", features = ["hazmat"] }
 libc = "0.2"
 rand = "0.8"
