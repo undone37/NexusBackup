@@ -671,6 +671,17 @@ class Offline(Agent):
         self.assertEqual(self.calls(), [], "nothing staged")
         self.assertFalse((self.d / "offline/current").exists())
 
+    def test_import_refused_by_the_checks_discards_the_upload(self):
+        self.bundle()
+        (self.d / "checks.json").write_text(json.dumps([{"id": "time.sync", "title": "t", "status": "fail", "severity": 3,
+                                                          "detail": "clock not synchronised", "manual": "x"}]))
+        self.assertIn("pre-update checks failed", self.imp())
+        self.assertFalse((self.d / "ctl/bundle.tar").exists(), "a new upload must be possible")
+        self.assertEqual(self.calls(), [])
+        (self.d / "checks.json").unlink()
+        self.bundle()
+        self.assertIn("from the uploaded bundle", self.imp())
+
     def test_wrong_key_refused(self):
         other = self.d / "other.pem"
         self.sp.run(["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(other)], check=True)

@@ -39,6 +39,7 @@
 # the update goes ahead (a broken checker must not block the update that fixes it).
 # NEXUS_UPDATE_DIAG=off (environment or update.conf) skips the checks.
 
+import contextlib
 import datetime as dt
 import fcntl
 import base64
@@ -709,7 +710,14 @@ def tick(c, now=None):
         if req == "rollback":
             result = rollback(c)
         elif req == "import":
-            gate()
+            try:
+                gate()
+            except Refused:
+                # the upload is unusable now: without this the web-api answers every new upload with
+                # "still being processed" (lab 2026-10-21, clock not synchronised)
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(d, BUNDLE))
+                raise
             result = import_bundle(c, st)
         else:
             # updated from an uploaded bundle: no automatic online checks (an air-gapped appliance would
