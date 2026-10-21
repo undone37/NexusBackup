@@ -1033,6 +1033,19 @@ async function main() {
       await shot('network-edit', { height: 1150 });
       await closeDialogs();
     }],
+    // Settings → Time (chrony sources, NTS by default) + the dialog with a plain NTP server allowed
+    ['time', async () => {
+      await go('/settings?tab=time');
+      await until(`return document.body.innerText.includes('Sources in use') && document.body.innerText.includes('ptbtime2.ptb.de')`, 'time tab');
+      await shot('settings-time', { height: 1200 });
+      await ev(`$click('Change time servers'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[aria-label="Host name or IP address"]')`, 'time dialog');
+      await ev(`$check('label.inline-check input'); return true;`);
+      await ev(`$click('Add server', document.querySelector('dialog[open]')); return true;`);
+      await ev(`const i = [...document.querySelectorAll('dialog[open] input[aria-label="Host name or IP address"]')].pop(); i.value = 'ntp.internal.example'; i.dispatchEvent(new Event('input', { bubbles: true })); const c = [...document.querySelectorAll('dialog[open] input[aria-label="NTS"]')].pop(); if (c.checked) c.click(); return true;`);
+      await shot('time-edit', { height: 1150 });
+      await closeDialogs();
+    }],
     // Phase 17c: Settings → Vault (the demo appliance is a primary: preconditions not met)
     ['vault', async () => {
       await go('/settings?tab=vault');

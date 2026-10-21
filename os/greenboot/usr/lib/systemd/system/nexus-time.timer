@@ -1,0 +1,10 @@
+[Unit]
+Description=NexusBackup time servers: status of the chrony sources every 2 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+Unit=nexus-time.service
+
+[Install]
+WantedBy=timers.target

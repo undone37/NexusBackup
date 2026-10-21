@@ -1,0 +1,59 @@
+[Unit]
+Description=NexusBackup time servers: chrony sources from the web UI, their status
+# Started by nexus-time.path (a request from the web-api) and nexus-time.timer (status every
+# 2 minutes). docs/control-plane.md "Time servers".
+After=chronyd.service
+StartLimitIntervalSec=60
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-time tick
+# After an applied change nexus-time leaves /run/nexus-time/restart; chronyd re-reads its sources
+# only on a restart. This line runs outside nexus_time_t (the shell has no transition into it), so
+# the helper itself never controls units.
+ExecStartPost=/bin/sh -c 'if [ -e /run/nexus-time/restart ]; then rm -f /run/nexus-time/restart && systemctl try-restart chronyd.service && sleep 15 && /usr/libexec/nexus/nexus-time tick; fi'
+RuntimeDirectory=nexus-time
+RuntimeDirectoryPreserve=yes
+# root, because /etc/nexus/time is root's; SELinux (nexus_time_t) limits it to that file, its
+# control dir and chronyc. No DAC override: the request is read through the group.
+SupplementaryGroups=nexus-webapi
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0022
+TimeoutStartSec=2min
+
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus/time /etc/nexus/time
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/catalog
+InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus/ssh
+InaccessiblePaths=-/run/nexus-keyd -/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+InaccessiblePaths=-/var/lib/nexus/diag -/var/lib/nexus/tls -/var/lib/nexus/console-unlock -/var/lib/nexus/chunkstore
+
+# chronyc talks to chronyd over its unix socket only; systemctl (ExecStartPost) over PID 1's socket
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+LimitCORE=0
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM

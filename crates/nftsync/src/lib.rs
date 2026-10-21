@@ -10,8 +10,10 @@
 //! - `allowed_out_v4/v6` (addr . proto . port) from the file,
 //! - `dns_servers_v4/v6` from the `nameserver` lines of /etc/resolv.conf
 //!   (written by NetworkManager),
-//! - `nts_servers_v4/v6` from the `server`/`pool` lines with `nts` in
-//!   /etc/chrony.conf, resolved after the DNS sets are in place,
+//! - `nts_servers_v4/v6` from the `server`/`pool` lines of /etc/chrony.conf and the files it
+//!   includes (the time servers of Settings > Time, /etc/nexus/time/*.conf; NTS-KE 4460/tcp and
+//!   NTP 123/udp, plain NTP servers only if an administrator allowed them there), resolved after
+//!   the DNS sets are in place,
 //! - `bound_out_v4/v6` (addr . proto . port . oifname, Phase 22a) from the file's `roles`:
 //!   the destinations of a role (data: sources and agents; offsite; replication) that has an
 //!   interface (Settings → Network) may only leave through it; a role without one goes
@@ -364,19 +366,53 @@ pub fn parse_resolv(text: &str) -> Vec<IpAddr> {
     out
 }
 
-/// Host names (or IP literals) of `server`/`pool` lines that use NTS.
+/// Host names (or IP literals) of the `server`/`pool` lines: NTS and, where an administrator
+/// allowed them (Settings > Time), plain NTP servers (both need 123/udp; NTS also 4460/tcp).
 pub fn parse_chrony(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for l in text.lines() {
         let l = l.split(['#', '!', ';']).next().unwrap_or_default();
         let w: Vec<&str> = l.split_whitespace().collect();
-        if w.len() >= 2 && matches!(w[0], "server" | "pool") && w[2..].contains(&"nts") {
+        if w.len() >= 2 && matches!(w[0], "server" | "pool") {
             let h = w[1].to_owned();
             let ok =
                 !h.is_empty() && h.len() <= 253 && h.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:".contains(&b));
             if ok && !out.contains(&h) {
                 out.push(h);
             }
+        }
+    }
+    out
+}
+
+/// The files named by `include` lines: a file, or `<dir>/*.conf` (every `.conf` file in the
+/// directory, sorted, as chronyd's glob reads them).
+pub fn chrony_includes(text: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let w: Vec<&str> = l
+            .split(['#', '!', ';'])
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect();
+        if w.len() != 2 || w[0] != "include" {
+            continue;
+        }
+        match w[1].strip_suffix("/*.conf") {
+            Some(dir) => {
+                let mut files: Vec<_> = std::fs::read_dir(dir)
+                    .map(|rd| {
+                        rd.filter_map(Result::ok)
+                            .map(|e| e.path())
+                            .filter(|p| p.extension().is_some_and(|x| x == "conf"))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                files.sort();
+                out.extend(files);
+            }
+            None => out.push(w[1].into()),
         }
     }
     out
@@ -572,8 +608,25 @@ mod tests {
             parse_resolv(r),
             vec!["10.0.2.3".parse::<IpAddr>().unwrap(), "2001:db8::53".parse().unwrap()]
         );
-        let c = "server time.cloudflare.com iburst nts\npool pool.ntp.org iburst\n# server x nts\nserver ptbtime1.ptb.de nts iburst # c\nserver bad;rm nts\n";
-        assert_eq!(parse_chrony(c), vec!["time.cloudflare.com", "ptbtime1.ptb.de"]);
+        let c = "server time.cloudflare.com iburst nts\nserver ntp.internal iburst\n# server x nts\nserver ptbtime1.ptb.de nts iburst # c\nserver bad$(rm) nts\n";
+        assert_eq!(
+            parse_chrony(c),
+            vec!["time.cloudflare.com", "ntp.internal", "ptbtime1.ptb.de"]
+        );
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("b.conf"), "server b.example iburst nts\n").unwrap();
+        std::fs::write(d.path().join("a.conf"), "server a.example iburst\n").unwrap();
+        std::fs::write(d.path().join("a.conf.tmp"), "server tmp.example\n").unwrap();
+        let main = format!("include {}/*.conf\ninclude /etc/other.conf # c\n", d.path().display());
+        let inc = chrony_includes(&main);
+        assert_eq!(
+            inc,
+            vec![
+                d.path().join("a.conf"),
+                d.path().join("b.conf"),
+                "/etc/other.conf".into()
+            ]
+        );
     }
 
     #[test]

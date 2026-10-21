@@ -391,6 +391,16 @@ const db = {
   hardware: {} as Json,
   /** Phase 22a: nexus-net status (GET /network) */
   network: {} as Json,
+  /** Settings > Time: what nexus-time reports (GET /settings/time) */
+  time: {
+    servers: [
+      { host: 'time.cloudflare.com', nts: true },
+      { host: 'ptbtime1.ptb.de', nts: true },
+      { host: 'ptbtime2.ptb.de', nts: true },
+      { host: 'nts.netnod.se', nts: true },
+    ],
+    last: null as unknown as Json,
+  } as Json,
   /** Phase 19a: bare-metal recovery / P2V sessions (GET /rescue) */
   rescue: [] as Json[],
   /** Phase 21b setting `incident` (active or the last one) */
@@ -3647,6 +3657,10 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'network.apply':
       netExecute(p, by, qid);
+      break;
+    case 'time.servers':
+      db.time.servers = structuredClone(p.servers);
+      db.time.last = { id: null, by, quorum_id: qid ?? null, time: now(), result: 'applied', error: null };
       break;
     case 'update.apply':
       if (db.updates.available)
@@ -10528,6 +10542,55 @@ function netReader(c: { user: User | null }) {
   return u;
 }
 on('GET', '/network', (c) => (netReader(c), [200, netView()]));
+// Settings > Time (crates/web-api/src/timesync.rs): nexus-time's status, sources as chrony reports them
+function timeView() {
+  const t = now();
+  const sources = db.time.servers.map((sv: Json, i: number) => ({
+    name: sv.host,
+    state: i === 1 ? 'selected' : sv.host === 'nts.netnod.se' ? 'unreachable' : 'combined',
+    stratum: sv.host === 'nts.netnod.se' ? 0 : i === 0 ? 3 : 1,
+    reach: sv.host === 'nts.netnod.se' ? 0 : 255,
+    last_rx: sv.host === 'nts.netnod.se' ? null : 60 + i * 97,
+    offset: sv.host === 'nts.netnod.se' ? 0 : [0.000454, 0.000318, 0.000391, 0.0002][i % 4],
+    error: 0.007,
+    nts: sv.nts,
+  }));
+  return {
+    available: true,
+    stale: false,
+    scanned: t - 40,
+    servers: db.time.servers,
+    allow_ntp: db.time.servers.some((sv: Json) => !sv.nts),
+    sources,
+    tracking: { reference: 'C0356768', stratum: 2, offset: -0.000061, leap: 'Normal', synced: true },
+    chrony_error: null,
+    last: db.time.last,
+    queued: false,
+    request_pending: db.quorum.filter((q) => q.action === 'time.servers' && q.state === 'pending').pop()?.id ?? null,
+    max_servers: 8,
+  };
+}
+const timeHost = (h: string) =>
+  /^\d{1,3}(\.\d{1,3}){3}$/.test(h) ||
+  h.includes(':') ||
+  /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/.test(h);
+on('GET', '/settings/time', (c) => (netReader(c), [200, timeView()]));
+on('PUT', '/settings/time', async (c) => {
+  const u = need(netReader(c), 'admin');
+  const servers = (c.body.servers ?? []).map((sv: Json) => ({ host: String(sv.host ?? ''), nts: sv.nts !== false }));
+  const allow = c.body.allow_ntp === true;
+  if (servers.length < 1 || servers.length > 8) throw new HttpError(400, 'between 1 and 8 time servers');
+  for (const sv of servers)
+    if (!timeHost(sv.host)) throw new HttpError(400, `not a host name or address: "${sv.host}"`);
+  if (!allow && servers.some((sv: Json) => !sv.nts))
+    throw new HttpError(400, 'plain NTP servers (without NTS) need allow_ntp: an explicit opt-in');
+  if (JSON.stringify(servers) === JSON.stringify(db.time.servers)) return [200, { unchanged: true }];
+  return quorum(u, 'time.servers', {
+    servers,
+    allow_ntp: allow,
+    plain_ntp: servers.filter((sv: Json) => !sv.nts).map((sv: Json) => sv.host),
+  });
+});
 on('PUT', '/network', async (c) => {
   const u = netReader(c);
   need(u, 'admin');

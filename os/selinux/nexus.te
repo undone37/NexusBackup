@@ -36,6 +36,8 @@ policy_module(nexus, 1.0.0)
 #                                                          public key, writes its dir; no network, no keyd
 #   init_t ── nexus_disks_exec_t ─────> nexus_disks_t      root oneshot, disks: SMART, mdadm, mkfs/xfs_growfs,
 #                                                          the store's mount unit; no network, no keys
+#   init_t ── nexus_time_exec_t ──────> nexus_time_t       root oneshot, time servers: the chrony sources
+#                                                          file, chronyc; no network
 #   init_t ── nexus_net_exec_t ───────> nexus_net_t        root oneshot, network: NetworkManager keyfiles,
 #                                                          nmcli (D-Bus), netlink, ICMP echo; no TCP/UDP
 #   init_t ── nexus_consolegate_exec_t > nexus_consolegate_t  console gate on tty2 (root): unlock code or
@@ -1492,3 +1494,61 @@ neverallow nexus_index_t nexus_store_t:file { write append create unlink rename 
 neverallow nexus_index_t nexus_store_t:dir { write add_name remove_name rmdir create };
 neverallow nexus_index_t { nexus_catalog_t nexus_escrow_t nexus_downloads_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_agent_ca_t }:file { read open };
 neverallow { nexus_domain -nexus_index_t } nexus_index_var_lib_t:file { read write open };
+
+########################################
+# Time servers (Settings > Time, nexus-time.service, root oneshot, docs/control-plane.md "Time
+# servers"): writes the chrony sources file /etc/nexus/time/chrony.conf and its control dir, runs
+# chronyc (chronyc_t) for the status; no network, never restarts units itself (the unit's
+# ExecStartPost does, outside this domain). chronyd reads the file, nft-sync resolves its servers.
+
+nexus_daemon(time)
+type nexus_time_var_lib_t;	# /var/lib/nexus/time: request (web-api), status (nexus-time)
+files_type(nexus_time_var_lib_t)
+type nexus_time_conf_t;		# /etc/nexus/time: the chrony sources file (nexus-time writes, chronyd reads)
+files_type(nexus_time_conf_t)
+type nexus_time_var_run_t;	# /run/nexus-time: the restart mark for the unit's ExecStartPost
+files_type(nexus_time_var_run_t)
+gen_require(`
+	type chronyd_t;
+')
+
+# python3 with the standard library
+corecmd_exec_bin(nexus_time_t)
+libs_use_ld_so(nexus_time_t)
+libs_use_shared_libs(nexus_time_t)
+libs_read_lib_files(nexus_time_t)
+files_read_usr_files(nexus_time_t)
+files_read_etc_files(nexus_time_t)
+auth_read_passwd(nexus_time_t)
+kernel_read_kernel_sysctls(nexus_time_t)
+
+manage_dirs_pattern(nexus_time_t, nexus_time_var_lib_t, nexus_time_var_lib_t)
+manage_files_pattern(nexus_time_t, nexus_time_var_lib_t, nexus_time_var_lib_t)
+allow nexus_time_t nexus_etc_t:dir search_dir_perms;
+manage_files_pattern(nexus_time_t, nexus_time_conf_t, nexus_time_conf_t)
+manage_files_pattern(nexus_time_t, nexus_time_var_run_t, nexus_time_var_run_t)
+files_search_pids(nexus_time_t)
+
+# chronyc in its own domain (sources, authdata, tracking over chronyd's unix socket)
+chronyd_domtrans_chronyc(nexus_time_t)
+allow nexus_time_t chronyc_t:process2 { nnp_transition nosuid_transition };
+allow chronyc_t nexus_time_t:fd use;
+allow chronyc_t nexus_time_t:fifo_file rw_inherited_fifo_file_perms;
+allow chronyc_t nexus_time_t:process sigchld;
+
+# chronyd includes /etc/nexus/time/*.conf; nft-sync resolves the servers for the firewall
+allow chronyd_t nexus_etc_t:dir search_dir_perms;
+list_dirs_pattern(chronyd_t, nexus_time_conf_t, nexus_time_conf_t)
+read_files_pattern(chronyd_t, nexus_time_conf_t, nexus_time_conf_t)
+list_dirs_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
+read_files_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
+
+# web-api: request.json (tmp + rename) into the control dir, status.json read back
+allow nexus_webapi_t nexus_time_var_lib_t:dir rw_dir_perms;
+manage_files_pattern(nexus_webapi_t, nexus_time_var_lib_t, nexus_time_var_lib_t)
+
+neverallow nexus_time_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
+neverallow nexus_time_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_store_t }:file { read write append open create unlink link rename setattr };
+# only nexus-time writes the sources chronyd trusts
+neverallow { nexus_domain -nexus_time_t } nexus_time_conf_t:file { write append create unlink rename };
+neverallow { nexus_domain -nexus_time_t -nexus_webapi_t } nexus_time_var_lib_t:file { write append create unlink rename };

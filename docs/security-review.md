@@ -469,6 +469,14 @@ Reviewed with the implementation (2026-10-10):
     Still open upstream: podman/skopeo built with Go 1.26.7 (x/net, grpc, podman module findings; fixes need an
     AlmaLinux rebuild, none published on 2026-10-21; podman is a bootc dependency the appliance never runs,
     skopeo is run by bootc only for the signed update pull) and kernel fixes RHEL published before AlmaLinux.
+- **Time servers configurable (2026-10-21, Settings → Time):** a new write path to the clock (threat model T3). Gated
+  by approval `time.servers` (security officer with approvals on), audited, admin only, never tenant-scoped; plain NTP
+  only with the explicit `allow_ntp` opt-in (chrony `authselectmode prefer`, `time.nts` warns, the approver sees
+  `plain_ntp`). The root helper `nexus-time` runs without capabilities and network in `nexus_time_t`; only it may
+  write the sources file (neverallow); the chronyd restart happens in the unit's ExecStartPost, not in the domain.
+  Tests: `crates/web-api/tests/timesync.rs` (RBAC, refusals, approval before the request file),
+  `os/greenboot/tests/test_nexus_time.py`. Found on the way: `time.nts` read the wrong chronyc column and always
+  warned (fixed, fixtures now real chrony 4.8 output).
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.

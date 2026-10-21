@@ -18,6 +18,7 @@
   import Security from './settings/Security.svelte';
   import Firewall from './settings/Firewall.svelte';
   import Network from './settings/Network.svelte';
+  import Time from './settings/Time.svelte';
   import Vault from './settings/Vault.svelte';
   import Incident from './settings/Incident.svelte';
   import MalwareScan from './settings/MalwareScan.svelte';
@@ -47,6 +48,7 @@
     { id: 'security', comp: Security, allow: officer },
     { id: 'firewall', comp: Firewall, allow: officer },
     { id: 'network', comp: Network, allow: staff },
+    { id: 'time', comp: Time, allow: staff },
     { id: 'vault', comp: Vault, allow: staff },
     { id: 'incident', comp: Incident, allow: officer },
     // Phase 26: edge proxies (GET /edges is admin only)

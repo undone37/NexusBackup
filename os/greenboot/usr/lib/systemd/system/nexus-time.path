@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup time servers: requests from the web UI
+
+[Path]
+# nexus-web-api writes /var/lib/nexus/time/request.json (tmp + rename) after approval; nexus-time
+# consumes (deletes) it and records the outcome in status.json.
+PathExists=/var/lib/nexus/time/request.json
+Unit=nexus-time.service
+
+[Install]
+WantedBy=paths.target

@@ -1,0 +1,281 @@
+#!/usr/bin/python3 -I
+# NexusBackup time servers (Settings > Time, docs/control-plane.md "Time servers"): the chrony sources
+# as requested from the web UI after approval, and their live state for the page.
+#
+#   nexus-time tick      what nexus-time.service runs (nexus-time.path when the web-api queues a
+#                        request, nexus-time.timer every 2 minutes): apply a queued request, then
+#                        write status.json
+#   nexus-time status    print the status as JSON (console; changes nothing)
+#
+# Control directory (default /var/lib/nexus/time, 2770 root:nexus-webapi, tmpfiles.d/nexus.conf):
+#   request.json   written by the web-api (tmp + rename), at most 16 KiB, consumed (deleted) here:
+#                  {"id": <32 hex>, "by": <user>, "quorum_id": <int|null>,
+#                   "servers": [{"host": <name or address>, "nts": true|false}], "allow_ntp": bool}
+#   status.json    the configured servers, chrony's sources and tracking, the last request's outcome
+#                  (0644: the web-api serves it)
+#
+# The sources file (default /etc/nexus/time/chrony.conf, included by /etc/chrony.conf) holds the
+# server lines, `authselectmode` and `minsources`: NTS only = `authselectmode require` (chrony never
+# uses an unauthenticated source); with plain NTP servers, which the request must allow explicitly
+# (allow_ntp), `authselectmode prefer` (authenticated sources win whenever one is usable).
+# `minsources` is 2, or 1 with a single server. After a change this writes RUN/restart; the unit's
+# ExecStartPost restarts chronyd then (this domain cannot), and nexus-nft-sync.path re-resolves the
+# servers for the firewall.
+#
+# Runs as root in its own SELinux domain (nexus_time_t): writes the sources file and its control
+# directory, runs chronyc over chronyd's local socket; no network (IPAddressDeny=any, no inet
+# sockets in the policy). Paths and tools can be overridden through NEXUS_TIME_* environment
+# variables (tests). Stdlib only.
+
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/time",
+    "CONF": "/etc/nexus/time/chrony.conf",
+    "RUN": "/run/nexus-time",
+    "CHRONYC": "chronyc",
+    "TIMEOUT": "20",
+}
+MAX_SERVERS = 8
+MAX_REQUEST = 16 << 10
+LABEL = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+HEADER = "# NexusBackup time servers: written by nexus-time (Settings > Time); edits are replaced\n"
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_TIME_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-time: {msg}", file=sys.stderr, flush=True)
+
+
+def run(*argv):
+    """(exit code, stdout, stderr); 127 when the tool is missing. Never raises."""
+    try:
+        p = subprocess.run(
+            [cfg(argv[0].upper()), *argv[1:]],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            stdin=subprocess.DEVNULL,
+            timeout=float(cfg("TIMEOUT")),
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+        )
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return 127, "", f"{argv[0]}: not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{argv[0]}: timed out"
+
+
+class Refused(Exception):
+    """The request is invalid: nothing was changed."""
+
+
+def valid_host(h):
+    """A DNS name (letters, digits, hyphens; dots between labels) or an IPv4/IPv6 address. The
+    same rule as catalog::time::valid_host in the web-api."""
+    if not isinstance(h, str) or not 1 <= len(h) <= 253:
+        return False
+    try:
+        ipaddress.ip_address(h)
+        return True
+    except ValueError:
+        pass
+    labels = h.rstrip(".").split(".")
+    return all(LABEL.fullmatch(l) for l in labels) and not labels[-1].isdigit()
+
+
+def validate(req):
+    """[(host, nts)] of a request, or Refused."""
+    servers = req.get("servers")
+    if not isinstance(servers, list) or not 1 <= len(servers) <= MAX_SERVERS:
+        raise Refused(f"between 1 and {MAX_SERVERS} servers")
+    out = []
+    for s in servers:
+        if not isinstance(s, dict) or set(s) - {"host", "nts"} or not isinstance(s.get("nts"), bool):
+            raise Refused("each server is {host, nts}")
+        h = s.get("host")
+        if not valid_host(h):
+            raise Refused(f"not a host name or address: {str(h)[:80]!r}")
+        if any(h.lower() == o.lower() for o, _ in out):
+            raise Refused(f"{h} is listed twice")
+        out.append((h, s["nts"]))
+    if any(not nts for _, nts in out) and req.get("allow_ntp") is not True:
+        raise Refused("plain NTP servers are only accepted with allow_ntp")
+    return out
+
+
+def render(servers):
+    lines = [HEADER]
+    for h, nts in servers:
+        lines.append(f"server {h} iburst{' nts' if nts else ''}\n")
+    ntp = any(not nts for _, nts in servers)
+    lines.append("\n# only NTS sources count\n" if not ntp else
+                 "\n# plain NTP allowed by an administrator: authenticated sources are preferred\n")
+    lines.append(f"authselectmode {'prefer' if ntp else 'require'}\n")
+    lines.append(f"minsources {min(2, len(servers))}\n")
+    return "".join(lines)
+
+
+def configured(text):
+    """[(host, nts)] of the server/pool lines of the sources file."""
+    out = []
+    for l in text.splitlines():
+        w = l.split("#")[0].split()
+        if len(w) >= 2 and w[0] in ("server", "pool"):
+            out.append((w[1], "nts" in w[2:]))
+    return out
+
+
+def write_atomic(path, text, mode=0o644):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def read_json(path, limit=4 << 20):
+    try:
+        if os.path.getsize(path) > limit:
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def handle_request():
+    """Applies request.json if there is one; the outcome (for status.json) or None."""
+    p = os.path.join(cfg("DIR"), "request.json")
+    if not os.path.exists(p):
+        return None
+    req = read_json(p, MAX_REQUEST)
+    os.unlink(p)
+    if not isinstance(req, dict):
+        return {"time": int(time.time()), "result": "refused", "error": "unreadable request"}
+    out = {"id": req.get("id"), "by": req.get("by"), "quorum_id": req.get("quorum_id"), "time": int(time.time())}
+    try:
+        servers = validate(req)
+    except Refused as e:
+        log(f"request {req.get('id')} refused: {e}")
+        return {**out, "result": "refused", "error": str(e)}
+    text = render(servers)
+    try:
+        with open(cfg("CONF")) as f:
+            old = f.read()
+    except OSError:
+        old = None
+    if old == text:
+        return {**out, "result": "unchanged", "error": None}
+    write_atomic(cfg("CONF"), text)
+    os.makedirs(cfg("RUN"), exist_ok=True)
+    with open(os.path.join(cfg("RUN"), "restart"), "w"):
+        pass
+    log(f"request {req.get('id')} by {req.get('by')}: {', '.join(h + (' (NTS)' if n else ' (NTP)') for h, n in servers)}")
+    return {**out, "result": "applied", "error": None}
+
+
+def num(s):
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def sources():
+    """chronyc sources with the original names (-N), CSV: mode, state, name, stratum, poll, reach
+    (octal), last rx, adjusted offset, measured offset, error; joined with authdata (NTS or not)."""
+    rc, out, err = run("chronyc", "-c", "-N", "sources")
+    if rc != 0:
+        return None, (err or out).strip()[:200] or f"chronyc exit {rc}"
+    auth = {}
+    rc2, out2, _ = run("chronyc", "-c", "-N", "authdata")
+    if rc2 == 0:
+        # authdata -c: name, mode (NTS, SK or -), key id, type, key length, last, attempts, NAKs, cookies,
+        # cookie length
+        for r in (l.split(",") for l in out2.splitlines()):
+            if len(r) >= 2:
+                auth[r[0]] = r[1] == "NTS"
+    states = {"*": "selected", "+": "combined", "-": "not_combined", "?": "unreachable", "x": "falseticker",
+              "~": "too_variable"}
+    rows = []
+    for r in (l.split(",") for l in out.splitlines()):
+        if len(r) < 10:
+            continue
+        try:
+            reach = int(r[5], 8)
+        except ValueError:
+            reach = 0
+        rows.append({
+            "name": r[2],
+            "state": states.get(r[1], r[1]),
+            "stratum": int(r[3]) if r[3].isdigit() else None,
+            "reach": reach,
+            # 4294967295: nothing received yet
+            "last_rx": int(r[6]) if r[6].isdigit() and int(r[6]) < 0xFFFFFFFF else None,
+            "offset": num(r[7]),
+            "error": num(r[9]),
+            "nts": auth.get(r[2]),
+        })
+    return rows, None
+
+
+def tracking():
+    rc, out, _ = run("chronyc", "-c", "-n", "tracking")
+    f = out.strip().split(",")
+    if rc != 0 or len(f) < 14:
+        return None
+    stratum, leap = int(f[2]) if f[2].isdigit() else 0, f[13]
+    return {
+        "reference": f[0],
+        "stratum": stratum,
+        "offset": num(f[4]),
+        "leap": leap,
+        "synced": not leap.lower().startswith("not synchron") and stratum not in (0, 16),
+    }
+
+
+def status(last=None):
+    try:
+        with open(cfg("CONF")) as f:
+            servers = configured(f.read())
+    except OSError:
+        servers = []
+    prev = read_json(os.path.join(cfg("DIR"), "status.json")) or {}
+    src, err = sources()
+    return {
+        "scanned": int(time.time()),
+        "servers": [{"host": h, "nts": n} for h, n in servers],
+        "allow_ntp": any(not n for _, n in servers),
+        "sources": src or [],
+        "chrony_error": err,
+        "tracking": tracking(),
+        "last": last if last is not None else prev.get("last"),
+    }
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in ("tick", "status"):
+        print("usage: nexus-time tick|status", file=sys.stderr)
+        return 2
+    if argv[1] == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
+    last = handle_request()
+    write_atomic(os.path.join(cfg("DIR"), "status.json"), json.dumps(status(last)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

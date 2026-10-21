@@ -6,8 +6,8 @@
 
 use anyhow::{bail, Result};
 use nftsync::{
-    apply, desired, parse_chrony, parse_hosts, parse_resolv, resolve, resolve_hosts, script, status, Allowed, State,
-    ALLOWED_FILE, STATUS_FILE,
+    apply, chrony_includes, desired, parse_chrony, parse_hosts, parse_resolv, resolve, resolve_hosts, script, status,
+    Allowed, State, ALLOWED_FILE, STATUS_FILE,
 };
 use std::path::PathBuf;
 
@@ -65,7 +65,15 @@ fn main() -> Result<()> {
     };
     // 1. resolvers first, so the names below can be resolved
     run(desired(Some(&dns), None, None))?;
-    let ntp = parse_chrony(&std::fs::read_to_string(&chrony).unwrap_or_default());
+    let main_conf = std::fs::read_to_string(&chrony).unwrap_or_default();
+    let mut ntp = parse_chrony(&main_conf);
+    for f in chrony_includes(&main_conf) {
+        for h in parse_chrony(&std::fs::read_to_string(&f).unwrap_or_default()) {
+            if !ntp.contains(&h) {
+                ntp.push(h);
+            }
+        }
+    }
     let (nts, mut errors) = resolve(&ntp);
     let (fixed, e2) = resolve_hosts(&parse_hosts(&std::fs::read_to_string(&hosts).unwrap_or_default()));
     errors.extend(e2);

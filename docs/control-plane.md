@@ -611,6 +611,35 @@ Extra NICs, bonds (active-backup, 802.3ad), VLANs, MTU, static addresses and rou
 - **Path-MTU check**: hourly and on request the helper takes every role destination's address from `allowed.json` (≤ 64), the route's interface (`ip -j route get`) and its MTU, sends one small and one full-size ICMP echo with DF (`IP_PMTUDISC_PROBE`, connected ping socket; raw socket with `CAP_NET_RAW` as fallback) and, when only the small one passes, searches the path MTU. Results `ok | mismatch (path_mtu) | no_reply | no_route` plus the expected interface. The output chain allows echo requests to these addresses only (`probe_v4/v6`, filled by nft-sync). `nexus-diag` (no network itself) reports them as the check `network.mtu` (warning on a mismatch or a wrong interface, stale after 3 h; never an update blocker).
 - **Console**: the wizard's network step takes optional bond NICs + mode, VLAN ID and MTU (`NetConfig.link`); then it runs `nexus-net console-apply <json>` (domain transition `nexus_setup_t` → `nexus_net_t`), which replaces every `nexus-*` profile with the management interface only, without confirmation. The plain step (no link options) deletes every `nexus-*` profile and adds `nexus-mgmt` with nmcli as before; either way the interfaces of Settings → Network are gone (the helper notices).
 
+## Time servers (`web-api/src/timesync.rs`, `os/greenboot/usr/libexec/nexus/nexus-time`, threat model T3)
+The chrony sources of the appliance, configurable in Settings → Time; NTS only unless an administrator opts in to
+plain NTP.
+- **Files**: `/etc/chrony.conf` (image) has `include /etc/nexus/time/*.conf`; `/etc/nexus/time/chrony.conf`
+  (`nexus_time_conf_t`, 0644 root; shipped with the four public NTS servers) holds the `server <host> iburst [nts]`
+  lines, `authselectmode require` (NTS only) or `prefer` (plain NTP servers present: authenticated sources win
+  whenever one is usable) and `minsources 2` (1 with a single server). Only `nexus_time_t` may write it (neverallow);
+  `chronyd_t` and `nexus_nftsync_t` read it.
+- **Validation** (web-api and helper, same rules): 1–8 servers, each a DNS name (labels `[A-Za-z0-9-]`, no leading or
+  trailing hyphen, ≤ 63 characters, the last label not all digits) or an IPv4/IPv6 address; no duplicates (case
+  insensitive); `nts: false` only with `allow_ntp: true`.
+- **API**: `GET /settings/time` (admin, security officer, operator, viewer; never tenant-scoped) → `{available,
+  stale (> 10 min), scanned, servers: [{host, nts}], allow_ntp, sources: [{name, state: selected|combined|
+  not_combined|unreachable|falseticker|too_variable, stratum, reach (0-255), last_rx (s, null = none), offset (s),
+  error, nts}], tracking: {reference, stratum, offset, leap, synced} | null, chrony_error, last: {id, by, quorum_id,
+  time, result: applied|unchanged|refused, error} | null, queued, request_pending, max_servers}`. `PUT
+  /settings/time {servers, allow_ntp}` (admin): 400 on a validation error, 200 `{unchanged: true}` for the
+  configured list, otherwise gated by `time.servers` (params `{servers, allow_ntp, plain_ntp: [hosts]}`).
+- **Helper** `nexus-time` (root oneshot without capabilities, Python stdlib; SELinux `nexus_time_t`: its control dir,
+  the sources file, `/run/nexus-time`, chronyc in `chronyc_t`; no inet sockets). `nexus-time.path` on
+  `/var/lib/nexus/time/request.json` (2770 root:nexus-webapi; `{id, by, quorum_id, servers, allow_ntp}`, ≤ 16 KiB,
+  consumed), `nexus-time.timer` every 2 minutes. `tick` applies a request (validated again; `refused` changes
+  nothing), writes the sources file (tmp + rename) and `/run/nexus-time/restart` when it changed, then
+  `status.json` (0644) from `chronyc -c -N sources`, `-c -N authdata` (mode column) and `-c -n tracking`. The unit's
+  `ExecStartPost` (a shell, outside `nexus_time_t`) restarts chronyd when the mark exists and runs `tick` again
+  15 s later for fresh sources. `nexus-nft-sync.path` watches the sources file: nft-sync resolves every `server`/`pool`
+  host of chrony.conf and its includes into `nts_servers_v4/v6` (TCP 4460 and UDP 123 out).
+- **Diagnostics**: `time.sync` (tracking) and `time.nts` (authdata: warns about unauthenticated sources).
+
 ## Inbound firewall (Phase 16c, `web-api/src/firewall.rs`, `catalog::firewall`, `nftsync`)
 Outbound stays automatic (scheduler allow-list, `scheduler/src/firewall.rs`); inbound is configured per service.
 - **Registry** (`catalog::firewall::SERVICES`, fixed): `web` 8443/tcp (web UI, REST API, `/metrics` and replication: one TLS listener, ALPN selects replication, and nftables cannot see inside TLS, so they are restricted together; lock-out relevant; cannot be switched off), `icmp` (ICMP/ICMPv6 echo request, rate-limited 10/s; off by default), `ssh` 22/tcp (reserved, `available: false`: no SSH server; shown, not configurable). Backup agents and sources are pulled (outbound), so they need no inbound rule. Fixed rules, not services: loopback, established/related, IPv6 neighbour discovery, DHCP replies.

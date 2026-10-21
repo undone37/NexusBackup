@@ -297,7 +297,7 @@ way: generate a new request, install the new certificate.
   you configure (PVE API and node SSH, agents, TrueNAS, NFS/SMB servers, plugin endpoints, offsite targets,
   replication primaries, the alert webhook and SMTP relay, forwarding receivers, the identity provider). A small
   privileged helper (`nexus-nft-sync`) applies it to the firewall within seconds of a change, and every 30 minutes.
-  DNS servers and the NTS time servers are allowed automatically. **Settings → Firewall → Outbound (automatic)** shows
+  DNS servers and the time servers of **Settings → Time** are allowed automatically. **Settings → Firewall → Outbound (automatic)** shows
   the current list. Blocked connections are logged with the prefix `nexus-out-drop:`. Sources, offsite targets and
   replication primaries are bound to the interface of their role when **Settings → Network** gives the role one
   ([Network interfaces](#network-interfaces)).
@@ -363,6 +363,37 @@ starts from scratch: the interfaces added in **Settings → Network** are remove
 > against fake tools (`nmcli`, `ip`) and in the web UI against the demo backend. The run on an appliance VM with extra
 > NICs (bond + VLAN, `lab/appliance/network.sh`) is pending, and so is any test with a real LACP switch. IPv6 on the
 > management interface of the wizard is not supported (static IPv6 addresses on other interfaces are).
+
+<a id="time-servers"></a>
+
+### Time servers
+
+![Settings → Time](images/settings-time.png)
+
+The appliance's clock decides when retention locks expire, whether sign-in codes and certificates are valid and when
+jobs run. **Settings → Time** shows the clock (synchronised or not, the reference, the offset), the configured time
+servers and what the time service reports for each one: in use, combined (confirms the one in use), unreachable or
+rejected, the stratum, how many of the last 8 polls answered, the last answer and the offset. The status is
+refreshed every 2 minutes.
+
+- **Default:** four public NTS servers (`time.cloudflare.com`, `ptbtime1.ptb.de`, `ptbtime2.ptb.de`,
+  `nts.netnod.se`). NTS (Network Time Security, RFC 8915) authenticates the answers, so nobody on the network can move
+  the clock. The clock is only set when two sources agree.
+- **Change them** (administrators): **Change time servers**, up to 8 host names or IP addresses. With approvals
+  enabled the change waits for a security officer (approval `time.servers`); then the time service restarts with the
+  new servers, and the outbound firewall opens TCP 4460 (NTS key exchange) and UDP 123 to them. Allow the same in
+  your own firewalls. Use at least two servers: with a single one the clock follows it alone.
+- **Plain NTP** (without NTS) is off by default. Tick **Allow plain NTP servers** only for networks without an NTS
+  server, for example an isolated network with an internal time server, and untick **NTS** for those servers. Their
+  answers are not authenticated: whoever can change the traffic between the appliance and the server can move the
+  clock, and with it retention locks. NTS servers in the list are always preferred. **Settings → Diagnostics**
+  (`time.nts`) warns about the unauthenticated sources, and the approver sees them in the request.
+
+![Change time servers](images/time-edit.png)
+
+> **Status:** the edge proxy keeps its own fixed NTS servers. The first-boot wizard does not ask for time servers:
+> an appliance in a network without access to the public NTS servers starts unsynchronised until an administrator
+> sets internal ones here (the `clock_skew` alert and the `time.sync` diagnostic report it).
 
 <a id="management-allow-list"></a>
 

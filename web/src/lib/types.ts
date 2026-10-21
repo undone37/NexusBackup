@@ -2273,6 +2273,51 @@ export interface FirewallState {
   drops: FirewallDrop[];
 }
 
+/** Settings > Time: one configured time server. `nts: false` = plain NTP (only with allow_ntp). */
+export interface TimeServer {
+  host: string;
+  nts: boolean;
+}
+
+/** One chrony source as nexus-time last read it (`chronyc -c -N sources` + authdata). */
+export interface TimeSource {
+  name: string;
+  /** selected (in use), combined, not_combined, unreachable, falseticker, too_variable */
+  state: string;
+  stratum: number | null;
+  /** reachability register of the last 8 polls (255 = all answered) */
+  reach: number;
+  /** seconds since the last sample, null = none yet */
+  last_rx: number | null;
+  /** seconds */
+  offset: number | null;
+  error: number | null;
+  nts: boolean | null;
+}
+
+/** GET /settings/time */
+export interface TimeState {
+  available: boolean;
+  stale: boolean;
+  scanned: number | null;
+  servers: TimeServer[];
+  allow_ntp: boolean;
+  sources: TimeSource[];
+  tracking: { reference: string; stratum: number; offset: number | null; leap: string; synced: boolean } | null;
+  chrony_error: string | null;
+  last: {
+    id: string | null;
+    by: string | null;
+    quorum_id: number | null;
+    time: number;
+    result: 'applied' | 'unchanged' | 'refused';
+    error: string | null;
+  } | null;
+  queued: boolean;
+  request_pending: number | null;
+  max_servers: number;
+}
+
 /** Phase 14d: an API token (`nxt_…`); the secret is only in the create answer. */
 export interface ApiToken {
   id: number;

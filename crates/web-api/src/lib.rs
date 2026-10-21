@@ -83,6 +83,7 @@ pub mod tenant_idp;
 pub mod tenant_key;
 pub mod tenants;
 pub mod threat;
+pub mod timesync;
 pub mod tls;
 pub mod tokens;
 pub mod usage;
@@ -163,6 +164,7 @@ pub struct AppState {
     pub disks_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-net control dir (default: env `NEXUS_NET_DIR` or /var/lib/nexus/net)
     pub net_dir: std::sync::OnceLock<PathBuf>,
+    pub time_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
     pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
@@ -202,6 +204,7 @@ impl AppState {
             console_dir: std::sync::OnceLock::new(),
             disks_dir: std::sync::OnceLock::new(),
             net_dir: std::sync::OnceLock::new(),
+            time_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
@@ -752,6 +755,7 @@ pub fn router(st: St) -> Router {
         .merge(holds::routes())
         .merge(hardware::routes())
         .merge(network::routes())
+        .merge(timesync::routes())
         .merge(tenants::routes())
         .merge(approvers::routes())
         .merge(cases::routes())

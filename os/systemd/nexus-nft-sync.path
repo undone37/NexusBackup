@@ -6,6 +6,8 @@ Description=NexusBackup firewall: watch the outbound allow-list and resolver con
 PathChanged=/run/nexus-nft/allowed.json
 # rewritten by NetworkManager when the resolvers change
 PathChanged=/etc/resolv.conf
+# rewritten by nexus-time when an administrator changes the time servers (Settings > Time)
+PathChanged=/etc/nexus/time/chrony.conf
 Unit=nexus-nft-sync.service
 
 [Install]
