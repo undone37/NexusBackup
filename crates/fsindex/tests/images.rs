@@ -1296,7 +1296,14 @@ fn btrfs_subvolumes() {
             assert_eq!(vols[0].mount.as_deref(), Some("/"), "root from its own fstab");
         }
     }
-    if tool("mkfs.btrfs").is_some() {
+    // every variant needs `--subvol` (btrfs-progs 6.7; Ubuntu 24.04 has 6.6): only then must one have run
+    let subvol = tool("mkfs.btrfs")
+        .and_then(|t| Command::new(t).arg("--help").output().ok())
+        .is_some_and(|o| {
+            String::from_utf8_lossy(&o.stdout).contains("--subvol")
+                || String::from_utf8_lossy(&o.stderr).contains("--subvol")
+        });
+    if subvol {
         assert!(ran >= 1, "mkfs.btrfs ran");
     }
 }

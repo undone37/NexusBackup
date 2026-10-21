@@ -147,6 +147,9 @@ jobs:
             target
           key: cargo-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ github.job }}-
+      # the image's own MySQL brings an AppArmor profile for /usr/sbin/mysqld; it attaches by path to the
+      # testbox's mysqld (rootless containers run unconfined) and denies its certificate and messages
+      - run: if [ -e /etc/apparmor.d/usr.sbin.mysqld ]; then sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld; fi
       - run: cargo test -p mysql -p postgresql --no-fail-fast
       - run: cargo test -p web-api --test oidc_keycloak
       # the tests start their testboxes and leave them running; remove this run's (and any older run's)
@@ -163,7 +166,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - run: sudo apt-get update && sudo apt-get install -y libjson-perl libperl-critic-perl
+      # qemu-img: the instant recovery overlay tests
+      - run: sudo apt-get update && sudo apt-get install -y libjson-perl libperl-critic-perl qemu-utils
       # severity 4 with the exceptions in .perlcriticrc (Phase 39 R3)
       - run: perlcritic --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback
       - run: prove pve-plugin/t
