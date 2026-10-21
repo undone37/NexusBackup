@@ -1558,7 +1558,7 @@ neverallow { nexus_domain -nexus_time_t } nexus_time_conf_t:file { write append 
 neverallow { nexus_domain -nexus_time_t -nexus_webapi_t } nexus_time_var_lib_t:file { write append create unlink rename };
 
 ########################################
-# OS updates: nexus-update (unconfined_service_t, NoNewPrivileges=yes) runs bootc, which must run as
+# OS updates: nexus-update (unconfined_service_t) runs bootc, which must run as
 # install_t, as under the stock bootc and rpm-ostree units: importing a rechunked image writes the
 # image's SELinux labels onto the ostree objects, and a label the running policy does not know yet (a
 # type added by the next release) needs mac_admin, which install_t has and unconfined_service_t has
@@ -1570,4 +1570,3 @@ gen_require(`
 	type install_exec_t;
 ')
 domtrans_pattern(unconfined_service_t, install_exec_t, install_t)
-allow unconfined_service_t install_t:process2 { nnp_transition nosuid_transition };

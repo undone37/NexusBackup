@@ -472,11 +472,20 @@ Reviewed with the implementation (2026-10-10):
 - **Time servers configurable (2026-10-21, Settings → Time):** a new write path to the clock (threat model T3). Gated
   by approval `time.servers` (security officer with approvals on), audited, admin only, never tenant-scoped; plain NTP
   only with the explicit `allow_ntp` opt-in (chrony `authselectmode prefer`, `time.nts` warns, the approver sees
-  `plain_ntp`). The root helper `nexus-time` runs without capabilities and network in `nexus_time_t`; only it may
+  `plain_ntp`). The root helper `nexus-time` runs without network in `nexus_time_t`, which the policy grants no capability (the bounding set keeps `CAP_DAC_OVERRIDE` for chronyc in `chronyc_t`, as for nexus-diag); only it may
   write the sources file (neverallow); the chronyd restart happens in the unit's ExecStartPost, not in the domain.
   Tests: `crates/web-api/tests/timesync.rs` (RBAC, refusals, approval before the request file),
   `os/greenboot/tests/test_nexus_time.py`. Found on the way: `time.nts` read the wrong chronyc column and always
   warned (fixed, fixtures now real chrony 4.8 output).
+- **bootc in install_t (2026-10-21, `os/selinux/nexus.te`):** nexus-update (unconfined_service_t) now transitions
+  bootc, ostree and rpm-ostree (`install_exec_t`) into `install_t`, the domain the stock bootc and rpm-ostree units
+  use. That widens what the update path may do by `mac_admin` (labels the loaded policy does not know), which an
+  update that adds SELinux types needs. The trust decision stays with the signature policy (`policy.json`, release
+  keys pinned) and nexus-update's checks; only root services in unconfined_service_t could exec bootc before and
+  after. nexus-update.service no longer sets NoNewPrivileges: no_new_privs refused bootc's own transitions (mount_t
+  and others; the stock units do not set it either); it is root in unconfined_service_t either way. Lab (VM 201):
+  an offline update from 0.0.11 to an image with a type unknown to the running policy imported, booted and labelled
+  the file; 0.0.13 and 0.0.14 installed the same way.
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.

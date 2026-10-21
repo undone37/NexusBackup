@@ -14,4 +14,6 @@ ExecStart=/usr/libexec/nexus/nexus-update tick
 # /etc/nexus/update.conf is /var/lib/nexus/update/{request,window,inhibit}, which
 # nexus-update reads with O_NOFOLLOW, regular files only, 256 bytes max.
 UMask=0027
-NoNewPrivileges=yes
+# No NoNewPrivileges: bootc (install_t, os/selinux/nexus.te) mounts and labels through domain transitions
+# of its own (mount_t and others), which no_new_privs refuses; the stock bootc and rpm-ostree units do
+# not set it either. nexus-update is root in unconfined_service_t, where it changes nothing else.
