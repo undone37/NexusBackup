@@ -638,7 +638,11 @@ plain NTP.
   `status.json` (0644) from `chronyc -c -N sources`, `-c -N authdata` (mode column) and `-c -n tracking`. The unit's
   first `ExecStartPost` (a shell in `initrc_t`, outside `nexus_time_t`) renames the mark to `restarted` and restarts
   chronyd; the second runs `nexus-time settle`, which writes the status again 15 s later for the new sources. `nexus-nft-sync.path` watches the sources file: nft-sync resolves every `server`/`pool`
-  host of chrony.conf and its includes into `nts_servers_v4/v6` (TCP 4460 and UDP 123 out).
+  host of chrony.conf and its includes into `nts_servers_v4/v6` (TCP 4460 and UDP 123 out). NTS key exchange may
+  hand out NTP servers at other addresses and ports (nts.netnod.se: port 4123): `tick` and `settle` write chronyd's
+  NTP associations (`chronyc -c -n ntpdata`: `<address> <port>` per line) to `/run/nexus-time/addresses` (root's
+  runtime dir, `nexus_time_var_run_t`, only nexus-time writes it) when they change; nft-sync adds them (at most 64)
+  as UDP endpoints to `allowed_out_v4/v6`, and the path unit watches that file too. chronyd learned them over the authenticated exchange with a configured server.
 - **Diagnostics**: `time.sync` (tracking) and `time.nts` (authdata: warns about unauthenticated sources).
 
 ## Inbound firewall (Phase 16c, `web-api/src/firewall.rs`, `catalog::firewall`, `nftsync`)

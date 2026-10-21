@@ -17,6 +17,11 @@
 #   status.json    the configured servers, chrony's sources and tracking, the last request's outcome
 #                  (0644: the web-api serves it)
 #
+# RUN/addresses (root's runtime dir, not the web-api's control dir): `<address> <port>` of chronyd's NTP
+# associations, rewritten only when they change. NTS key exchange may hand out NTP servers at other
+# addresses and ports than the server's own (nts.netnod.se: port 4123); chronyd learned them over the
+# authenticated key exchange. nexus-nft-sync.path watches the file and allows them (UDP) outbound.
+#
 # The sources file (default /etc/nexus/time/chrony.conf, included by /etc/chrony.conf) holds the
 # server lines, `authselectmode` and `minsources`: NTS only = `authselectmode require` (chrony never
 # uses an unauthenticated source); with plain NTP servers, which the request must allow explicitly
@@ -239,6 +244,39 @@ def sources():
     return rows, None
 
 
+def addresses():
+    """[(address, port)] of chronyd's NTP associations (`chronyc -c -n ntpdata`: remote address, ref id,
+    remote port, ...), or None."""
+    rc, out, _ = run("chronyc", "-c", "-n", "ntpdata")
+    if rc != 0:
+        return None
+    seen = set()
+    for r in (l.split(",") for l in out.splitlines()):
+        if len(r) >= 3 and r[2].isdigit() and 0 < int(r[2]) < 65536:
+            try:
+                seen.add((str(ipaddress.ip_address(r[0])), int(r[2])))
+            except ValueError:
+                continue
+    return sorted(seen)
+
+
+def write_addresses():
+    """RUN/addresses for nexus-nft-sync, only when the set changed (each write starts a sync)."""
+    a = addresses()
+    if a is None:
+        return
+    p = os.path.join(cfg("RUN"), "addresses")
+    text = "".join(f"{x} {port}\n" for x, port in a)
+    try:
+        with open(p) as f:
+            if f.read() == text:
+                return
+    except OSError:
+        pass
+    os.makedirs(cfg("RUN"), exist_ok=True)
+    write_atomic(p, text)
+
+
 def tracking():
     rc, out, _ = run("chronyc", "-c", "-n", "tracking")
     f = out.strip().split(",")
@@ -287,9 +325,11 @@ def main(argv):
         os.unlink(mark)
         time.sleep(float(cfg("SETTLE")))
         write_atomic(os.path.join(cfg("DIR"), "status.json"), json.dumps(status()))
+        write_addresses()
         return 0
     last = handle_request()
     write_atomic(os.path.join(cfg("DIR"), "status.json"), json.dumps(status(last)))
+    write_addresses()
     return 0
 
 

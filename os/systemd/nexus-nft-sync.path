@@ -8,6 +8,8 @@ PathChanged=/run/nexus-nft/allowed.json
 PathChanged=/etc/resolv.conf
 # rewritten by nexus-time when an administrator changes the time servers (Settings > Time)
 PathChanged=/etc/nexus/time/chrony.conf
+# rewritten by nexus-time when chronyd's source addresses change (NTP servers handed out by NTS key exchange)
+PathChanged=/run/nexus-time/addresses
 Unit=nexus-nft-sync.service
 
 [Install]

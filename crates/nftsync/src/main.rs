@@ -1,4 +1,4 @@
-//! `nexus-nft-sync [--dry-run | --status] [--allowed FILE] [--hosts FILE] [--resolv FILE] [--chrony FILE] [--nft BIN]`
+//! `nexus-nft-sync [--dry-run | --status] [--allowed FILE] [--hosts FILE] [--resolv FILE] [--chrony FILE] [--time-addresses FILE] [--nft BIN]`
 //! Root oneshot (nexus-nft-sync.service): refreshes the allow-list sets of
 //! `table inet nexus` (see the crate docs). `--dry-run` prints the nft script
 //! instead of applying it; `--status` (nexus-nft-status.service, every minute)
@@ -6,8 +6,8 @@
 
 use anyhow::{bail, Result};
 use nftsync::{
-    apply, chrony_includes, desired, parse_chrony, parse_hosts, parse_resolv, resolve, resolve_hosts, script, status,
-    Allowed, State, ALLOWED_FILE, STATUS_FILE,
+    apply, chrony_includes, desired, parse_chrony, parse_hosts, parse_resolv, parse_time_endpoints, resolve,
+    resolve_hosts, script, status, Allowed, State, ALLOWED_FILE, STATUS_FILE,
 };
 use std::path::PathBuf;
 
@@ -18,6 +18,7 @@ fn main() -> Result<()> {
     let mut hosts = PathBuf::from("/etc/nexus/allowed-hosts");
     let mut resolv = PathBuf::from("/etc/resolv.conf");
     let mut chrony = PathBuf::from("/etc/chrony.conf");
+    let mut time_addresses = PathBuf::from("/run/nexus-time/addresses");
     let mut nft = PathBuf::from("/usr/sbin/nft");
     // what the last successful run put into the sets (RuntimeDirectory, tmpfs: gone after boot)
     let mut state = PathBuf::from("/run/nexus-nft-sync/state.json");
@@ -30,13 +31,14 @@ fn main() -> Result<()> {
             "--hosts" => hosts = val(),
             "--resolv" => resolv = val(),
             "--chrony" => chrony = val(),
+            "--time-addresses" => time_addresses = val(),
             "--nft" => nft = val(),
             "--state" => state = val(),
             "--status-file" => status_file = val(),
             "--status" => status_only = true,
             "--dry-run" => dry = true,
             _ => bail!(
-                "usage: nexus-nft-sync [--dry-run | --status] [--allowed F] [--hosts F] [--resolv F] [--chrony F] [--nft BIN] [--state F] [--status-file F]"
+                "usage: nexus-nft-sync [--dry-run | --status] [--allowed F] [--hosts F] [--resolv F] [--chrony F] [--time-addresses F] [--nft BIN] [--state F] [--status-file F]"
             ),
         }
     }
@@ -75,6 +77,9 @@ fn main() -> Result<()> {
         }
     }
     let (nts, mut errors) = resolve(&ntp);
+    allowed.endpoints.extend(parse_time_endpoints(
+        &std::fs::read_to_string(&time_addresses).unwrap_or_default(),
+    ));
     let (fixed, e2) = resolve_hosts(&parse_hosts(&std::fs::read_to_string(&hosts).unwrap_or_default()));
     errors.extend(e2);
     allowed.endpoints.extend(fixed);

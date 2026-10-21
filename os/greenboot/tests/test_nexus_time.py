@@ -30,6 +30,12 @@ ptbtime2.ptb.de,NTS,1,15,256,490042,0,0,8,100
 nts.netnod.se,NTS,2,15,256,129,2,0,0,0
 ntp.internal,-,0,0,0,0,0,0,0,0
 """
+# chronyc -c -n ntpdata (first columns as on VM 201; netnod's key exchange handed out port 4123)
+NTPDATA = """162.159.200.1,A29FC801,123,10.2.34.211,0A0222D3,Normal
+192.53.103.104,C0356768,123,10.2.34.211,0A0222D3,Normal
+194.58.203.197,C23ACBC5,4123,[UNSPEC],00000000,Normal
+2001:db8::7b,00000000,123,[UNSPEC],00000000,Normal
+"""
 TRACKING = ("C0356768,192.53.103.104,2,1792542272.581475099,-0.000060943,0.000072167,0.000102886,-16.699,"
             "0.004,0.044,0.013536338,0.001000352,1024.1,Normal\n")
 
@@ -61,7 +67,7 @@ class Base(unittest.TestCase):
         tool.write_text(FAKE.replace("PYTHON", sys.executable))
         tool.chmod(0o755)
         self.answer({"chronyc -c -N sources": [0, SOURCES], "chronyc -c -N authdata": [0, AUTHDATA],
-                     "chronyc -c -n tracking": [0, TRACKING]})
+                     "chronyc -c -n tracking": [0, TRACKING], "chronyc -c -n ntpdata": [0, NTPDATA]})
         self.env = {"NEXUS_TIME_DIR": str(self.d / "ctl"), "NEXUS_TIME_CONF": str(self.d / "chrony.conf"),
                     "NEXUS_TIME_RUN": str(self.d / "run"), "NEXUS_TIME_CHRONYC": str(tool),
                     "FAKE_DIR": str(self.d / "fake"), "NEXUS_TIME_SETTLE": "0"}
@@ -193,6 +199,14 @@ class Status(Base):
         self.assertTrue(s["tracking"]["synced"])
         self.assertEqual(s["tracking"]["stratum"], 2)
         self.assertIsNone(s["chrony_error"])
+
+    def test_addresses_for_the_firewall(self):
+        self.tick()
+        p = self.d / "run/addresses"
+        self.assertEqual(p.read_text(), "162.159.200.1 123\n192.53.103.104 123\n194.58.203.197 4123\n2001:db8::7b 123\n")
+        mtime = p.stat().st_mtime_ns
+        self.tick()
+        self.assertEqual(p.stat().st_mtime_ns, mtime, "unchanged addresses are not rewritten (each write starts a sync)")
 
     def test_chronyd_down(self):
         self.answer({"chronyc -c -N sources": [1, "506 Cannot talk to daemon\n"]})

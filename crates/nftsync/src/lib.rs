@@ -385,6 +385,30 @@ pub fn parse_chrony(text: &str) -> Vec<String> {
     out
 }
 
+/// The NTP endpoints nexus-time reports for chronyd's sources (`/run/nexus-time/addresses`, `<address>
+/// <port>` per line): NTS key exchange may hand out NTP servers at other addresses and ports than the
+/// server's own (nts.netnod.se: other addresses, port 4123), which chronyd learned over the authenticated
+/// exchange. UDP only; lines that are not an address and a port 1-65535 are ignored; at most 64.
+pub fn parse_time_endpoints(text: &str) -> Vec<Endpoint> {
+    let mut out: Vec<Endpoint> = text
+        .lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let addr: IpAddr = w.next()?.parse().ok()?;
+            let port: u16 = w.next()?.parse().ok()?;
+            (w.next().is_none() && port != 0 && usable(&addr)).then_some(Endpoint {
+                addr,
+                proto: Proto::Udp,
+                port,
+            })
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out.truncate(64);
+    out
+}
+
 /// The files named by `include` lines: a file, or `<dir>/*.conf` (every `.conf` file in the
 /// directory, sorted, as chronyd's glob reads them).
 pub fn chrony_includes(text: &str) -> Vec<std::path::PathBuf> {
@@ -618,6 +642,17 @@ mod tests {
         std::fs::write(d.path().join("a.conf"), "server a.example iburst\n").unwrap();
         std::fs::write(d.path().join("a.conf.tmp"), "server tmp.example\n").unwrap();
         let main = format!("include {}/*.conf\ninclude /etc/other.conf # c\n", d.path().display());
+        let ep = |a: &str, port| Endpoint {
+            addr: a.parse().unwrap(),
+            proto: Proto::Udp,
+            port,
+        };
+        assert_eq!(
+            parse_time_endpoints(
+                "194.58.203.197 4123\n162.159.200.1 123\nnot-an-ip 123\n10.0.0.1 0\n127.0.0.1 123\n2001:db8::7b 123\n194.58.203.197 4123\n10.0.0.2 123 x\n"
+            ),
+            vec![ep("162.159.200.1", 123), ep("194.58.203.197", 4123), ep("2001:db8::7b", 123)]
+        );
         let inc = chrony_includes(&main);
         assert_eq!(
             inc,

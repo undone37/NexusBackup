@@ -1506,7 +1506,7 @@ type nexus_time_var_lib_t;	# /var/lib/nexus/time: request (web-api), status (nex
 files_type(nexus_time_var_lib_t)
 type nexus_time_conf_t;		# /etc/nexus/time: the chrony sources file (nexus-time writes, chronyd reads)
 files_type(nexus_time_conf_t)
-type nexus_time_var_run_t;	# /run/nexus-time: the restart mark for the unit's ExecStartPost
+type nexus_time_var_run_t;	# /run/nexus-time: the restart mark for the unit's ExecStartPost, the source addresses (nft-sync)
 files_type(nexus_time_var_run_t)
 gen_require(`
 	type chronyd_t;
@@ -1543,9 +1543,12 @@ read_files_pattern(chronyd_t, nexus_time_conf_t, nexus_time_conf_t)
 list_dirs_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
 read_files_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
 
-# systemd watches the sources file for nexus-nft-sync.path (PathChanged: inotify)
-allow init_t nexus_time_conf_t:dir { getattr search read watch };
-allow init_t nexus_time_conf_t:file { getattr open read watch watch_reads };
+# systemd watches the sources file and the source addresses for nexus-nft-sync.path (PathChanged: inotify)
+allow init_t { nexus_time_conf_t nexus_time_var_run_t }:dir { getattr search read watch };
+allow init_t { nexus_time_conf_t nexus_time_var_run_t }:file { getattr open read watch watch_reads };
+# nft-sync adds the addresses chronyd learned through NTS key exchange (/run/nexus-time/addresses)
+list_dirs_pattern(nexus_nftsync_t, nexus_time_var_run_t, nexus_time_var_run_t)
+read_files_pattern(nexus_nftsync_t, nexus_time_var_run_t, nexus_time_var_run_t)
 
 # web-api: request.json (tmp + rename) into the control dir, status.json read back
 allow nexus_webapi_t nexus_time_var_lib_t:dir rw_dir_perms;
@@ -1553,8 +1556,8 @@ manage_files_pattern(nexus_webapi_t, nexus_time_var_lib_t, nexus_time_var_lib_t)
 
 neverallow nexus_time_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
 neverallow nexus_time_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_store_t }:file { read write append open create unlink link rename setattr };
-# only nexus-time writes the sources chronyd trusts
-neverallow { nexus_domain -nexus_time_t } nexus_time_conf_t:file { write append create unlink rename };
+# only nexus-time writes the sources chronyd trusts and the addresses the firewall opens for them
+neverallow { nexus_domain -nexus_time_t } { nexus_time_conf_t nexus_time_var_run_t }:file { write append create unlink rename };
 neverallow { nexus_domain -nexus_time_t -nexus_webapi_t } nexus_time_var_lib_t:file { write append create unlink rename };
 
 ########################################
