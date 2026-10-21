@@ -66,9 +66,13 @@ step_bootstrap() {
 	wait_up
 }
 
-wait_up() { # until the web-api answers again (reboot)
+wait_up() { # until the web-api went away (reboot started) and answers again
 	local t=0
-	sleep 20
+	# the old system may answer for a while after "Install now" (bootc finalizes before the reboot)
+	for _ in $(seq 60); do
+		curl -s -o /dev/null --max-time 5 --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/api/v1/health" || break
+		sleep 5
+	done
 	until curl -s -o /dev/null --max-time 5 --cacert "$ROOT/etc/nexus/tls/cert.pem" --resolve "nexus-m5:$PORT:127.0.0.1" "https://nexus-m5:$PORT/api/v1/health"; do
 		sleep 10
 		t=$((t + 10))
