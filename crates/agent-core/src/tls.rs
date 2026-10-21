@@ -19,8 +19,10 @@ use std::sync::Arc;
 pub const APPLIANCE_CN_PREFIX: &str = "nexus-appliance:";
 pub const AGENT_CN_PREFIX: &str = "nexus-agent:";
 
+/// ring with the post-quantum hybrid X25519MLKEM768 preferred (Phase 39 S5, crate tls-pq); an older
+/// appliance negotiates X25519.
 pub fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    tls_pq::provider_arc()
 }
 
 pub fn fingerprint(der: &[u8]) -> String {

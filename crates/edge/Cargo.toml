@@ -15,6 +15,7 @@ name = "nexus_edge"
 path = "src/lib.rs"
 
 [dependencies]
+tls-pq = { path = "../tls-pq" }
 agent-core = { path = "../agent-core" }
 agent-proto = { path = "../agent-proto" }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }

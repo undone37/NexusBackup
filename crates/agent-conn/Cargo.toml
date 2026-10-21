@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tls-pq = { path = "../tls-pq" }
 agent-proto = { path = "../agent-proto" }
 # release store + signature checks (Phase 27 agent updates)
 agent-core = { path = "../agent-core" }

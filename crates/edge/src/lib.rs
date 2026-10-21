@@ -117,9 +117,10 @@ impl Files {
     }
 }
 
-/// The rustls crypto provider (ring) used for both listeners.
+/// The rustls crypto provider used for both listeners: ring with the post-quantum hybrid
+/// X25519MLKEM768 preferred (Phase 39 S5, crate tls-pq).
 pub fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    tls_pq::provider_arc()
 }
 
 fn key_from_pem(pem: &str) -> Result<PrivateKeyDer<'static>, String> {

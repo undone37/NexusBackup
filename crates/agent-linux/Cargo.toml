@@ -15,6 +15,7 @@ name = "nexus_agent"
 path = "src/lib.rs"
 
 [dependencies]
+tls-pq = { path = "../tls-pq" }
 agent-core = { path = "../agent-core" }
 agent-proto = { path = "../agent-proto" }
 agent-ui-proto = { path = "../agent-ui-proto" }

@@ -1181,7 +1181,8 @@ state.md and commits.
 - S3 **Done 2026-10-20:** flagged snapshots: BMR/P2V refused (409, scheduler re-check; no approval route, the flag is
   cleared first); downloads administrators only (security officers start no jobs) (Phase 29).
 - S4 Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
-- S5 Post-quantum TLS (hybrid key exchange for the web and replication endpoints); keyd wrapping is done
+- S5 **Done 2026-10-21:** post-quantum TLS: X25519MLKEM768 preferred on the web UI/API, replication, agents, edge
+  and rescue check-in (crate `tls-pq`, pure Rust on ring; OpenSSL 3.5 interop tested); keyd wrapping was done before
   (Phase 30, ADR-014).
 - S6 Moved to Phase 40 (maintainer decision 2026-10-20).
 - S7 **Done 2026-10-21:** time servers whose NTS key exchange negotiates NTP servers at other addresses

@@ -123,8 +123,10 @@ pub struct Tls {
     peer: Mutex<Option<(SystemTime, Arc<ServerConfig>)>>,
 }
 
+/// ring with the post-quantum hybrid X25519MLKEM768 preferred (Phase 39 S5, crate tls-pq): browsers
+/// and nexus clients that offer it get it, everyone else X25519 as before.
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    tls_pq::provider_arc()
 }
 
 impl Tls {

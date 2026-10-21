@@ -16,8 +16,9 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// ring with the post-quantum hybrid X25519MLKEM768 preferred (Phase 39 S5, crate tls-pq).
 pub fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    tls_pq::provider_arc()
 }
 
 /// Accepts exactly the pinned certificate (and checks the handshake signature).

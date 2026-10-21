@@ -109,7 +109,7 @@ pub fn checkin(cfg: &RescueConfig, disks: &[DiskInfo]) -> Result<String, String>
     let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| format!("{addr}: {e}"))?;
     tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
     let local = tcp.local_addr().map_err(|e| e.to_string())?.ip().to_string();
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = tls_pq::provider_arc();
     let tls = ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?

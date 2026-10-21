@@ -492,6 +492,12 @@ Reviewed with the implementation (2026-10-10):
   change counts toward the weakening burst itself. New rule: an API token used from a network it was not used from
   before marks the account (a stolen token used elsewhere stops changing anything until a person clears it). Tests:
   `crates/web-api/tests/tokens.rs` `token_from_a_new_network`, `risk.rs` unit tests.
+- **Post-quantum TLS key exchange (2026-10-21, Phase 39 S5):** the hybrid X25519MLKEM768 is preferred on every TLS
+  endpoint of ours (crate `tls-pq`). Own code in a cryptographic path, so: the hybrid only adds to X25519 (both
+  secrets go into the TLS key schedule, the session is as strong as the stronger half), share lengths are checked
+  before parsing, the client's encapsulation key is validated (FIPS 203 modulus check), and the wire format is
+  checked against OpenSSL 3.5 in both directions (tests in `crates/tls-pq`). A peer without the group falls back to
+  X25519.
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.

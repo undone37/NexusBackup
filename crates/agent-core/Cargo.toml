@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "NexusBackup agents: platform-independent core (TLS/enrollment, session, chunking, cache, restore stream, update verification)"
 
 [dependencies]
+tls-pq = { path = "../tls-pq" }
 agent-proto = { path = "../agent-proto" }
 agent-ui-proto = { path = "../agent-ui-proto" }
 base64 = "0.22"

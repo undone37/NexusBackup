@@ -21,8 +21,10 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// ring with the post-quantum hybrid X25519MLKEM768 preferred (Phase 39 S5, crate tls-pq); older
+/// agents negotiate X25519.
 pub fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
+    tls_pq::provider_arc()
 }
 
 /// Enrollment: any certificate (the agent is self-signed in enrollment mode),

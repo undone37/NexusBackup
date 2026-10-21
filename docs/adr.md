@@ -92,9 +92,13 @@ Status of all records below: **Accepted (2026-10-08)**.
   appliance does not keep); peers enrolled before keep X25519-only exports until they enroll again; a secondary
   enrolling at a primary of an earlier release retries without the hybrid key. Bundles and escrow files written by
   this release need this release (or later) to open.
-- **Not covered:** TLS (agents, replication, edge, web UI) stays X25519 until the rustls provider in use (`ring`)
-  offers the X25519MLKEM768 group; `aws-lc-rs` would bring a C dependency (plan §2 pure-Rust preference; open question
-  7 of the NetBackup comparison, proposal taken). On-appliance seals (catalog credentials sealed to the scheduler,
+- **TLS (added 2026-10-21, Phase 39 S5):** the web UI/API, replication, appliance ↔ agent, the edge proxy and the
+  rescue check-in prefer the hybrid group X25519MLKEM768 (draft-ietf-tls-ecdhe-mlkem, 0x11EC) through the crate
+  `tls-pq`: a `SupportedKxGroup` for rustls's ring provider with the same pure-Rust `ml-kem` (aws-lc-rs, which ships
+  the group in rustls, would bring a C dependency; plan §2). Peers without it negotiate X25519 as before. Interop
+  tested against OpenSSL 3.5 in both directions (`crates/tls-pq/tests/openssl.rs`); browsers offer the group too.
+  Clients of third-party services (S3, SIEM forwarding, TrueNAS) keep ring's groups for now.
+- **Not covered:** On-appliance seals (catalog credentials sealed to the scheduler,
   TOTP seeds) stay as they are: they never leave the appliance. SSH to PVE/TrueNAS nodes already negotiates
   `mlkem768x25519-sha256` where both sides offer it (russh).
 - **Consequences:** ~1.2 KiB more per sealed box (escrow file, export, bundle), ~1.2 KiB public keys (catalog setting,

@@ -93,6 +93,7 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+ "tls-pq",
  "x509-parser",
  "zip",
 ]
@@ -118,6 +119,7 @@ dependencies = [
  "sha2 0.10.9",
  "socket2",
  "tempfile",
+ "tls-pq",
  "x509-parser",
 ]
 
@@ -158,6 +160,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tls-pq",
 ]
 
 [[package]]
@@ -1831,6 +1834,7 @@ dependencies = [
  "rustls",
  "sha2 0.10.9",
  "tempfile",
+ "tls-pq",
  "tokio",
  "tokio-rustls",
  "x509-parser",
@@ -5432,6 +5436,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "time",
+ "tls-pq",
  "x509-parser",
 ]
 
@@ -6883,6 +6888,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
+name = "tls-pq"
+version = "0.1.0"
+dependencies = [
+ "ml-kem",
+ "rand 0.8.8",
+ "rcgen",
+ "rustls",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "tokio"
 version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7611,6 +7628,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tempfile",
+ "tls-pq",
  "tokio",
  "tokio-rustls",
  "tokio-util",

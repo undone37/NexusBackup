@@ -11,6 +11,7 @@ name = "nexus-web-api"
 path = "src/main.rs"
 
 [dependencies]
+tls-pq = { path = "../tls-pq" }
 # the written form of recovery keys (parse and checksum; not keyd, see tests/replication.rs)
 recovery-key = { path = "../recovery-key" }
 anyhow = "1"
