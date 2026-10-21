@@ -21,7 +21,7 @@ path = "src/cfgbackup_main.rs"
 anyhow = "1"
 base64 = "0.22"
 catalog = { path = "../catalog" }
-crossterm = "0.28"
+crossterm = "0.29"
 ed25519-dalek = "3"
 keyd = { path = "../keyd" }
 libc = "0.2"
