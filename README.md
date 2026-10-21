@@ -44,14 +44,16 @@ recovery key.
 
 ### Planned sources
 
-In development or planned, in this order of the plan (`plan.md`). None of these work yet.
+In development or planned, each with its phase in `plan.md`. None of these work yet. The standalone agents aim
+at feature parity with Veeam Agent for Windows and Linux.
 
 | Source | Planned approach | Planned restores | Plan |
 |---|---|---|---|
 | **VMware ESXi** (standalone hosts, 7.0 and 8.0) | plugin `vmware-esxi`: snapshots with VMware Tools quiescing, changed block tracking (`QueryChangedDiskAreas`), datastore reads over HTTPS | to Proxmox VE (VM conversion), single files; back to ESXi later | Phase 41 |
 | **VMware vCenter** (7 and 8) | plugin `vmware-vcenter` on the same vSphere library: inventory, clusters, VMs that move between hosts, least-privilege role | as ESXi | Phase 41 |
 | **Windows bare metal** | volume images (EFI, MSR, Windows, recovery) with the layout of every backup | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | Phase 37 |
-| **Windows and Linux agents without an appliance** | standalone mode: local, USB, NFS, SMB, SFTP or S3 repository in the appliance's format, client-side schedules and triggers | from the client: files, volumes, whole machine | Phase 38 |
+| **Standalone Linux agent** (no appliance needed) | the same `nexus-agent` in standalone mode, for small sites without a backup server: entire machine, volumes or files into a local, USB, NFS, SMB, SFTP or S3 repository (same format as the appliance: deduplicated, always encrypted, 24-word recovery key, S3 Object Lock); schedules and triggers on the client; PostgreSQL and MySQL/MariaDB plugins locally; desktop UI, TUI and CLI | files and folders from the desktop UI, volumes, whole machine through the rescue ISO; later attach the repository to an appliance without a new full backup | Phase 38 |
+| **Standalone Windows agent** (no appliance needed) | the same MSI in standalone mode: entire computer, volumes or files to the same targets; backup at lock or log off, when the USB disk is connected, on idle; application-aware VSS (SQL Server, Exchange, Active Directory) with log truncation as an option; tray app | files with versions and search, volumes, bare-metal recovery (Phase 37), export as VHDX/qcow2 | Phase 38 |
 | **Microsoft SQL Server** | VSS writer with full, differential and transaction log backups (log chain, optional log truncation) | database to a point in time, to the source or another instance | Phase 38f, 42 |
 | **Oracle Database** | RMAN backups plus archive logs | database to a point in time | Phase 38f, 42 |
 | **Exchange Server, Active Directory** | application-aware VSS (full backups that truncate Exchange logs), AD system state | databases; AD objects as far as the comparison in 38a decides | Phase 38f |
