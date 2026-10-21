@@ -16,7 +16,11 @@ driver=$(podman info --format '{{.Store.GraphDriverName}}')
 conf=$(mktemp)
 trap 'rm -f "$conf"' EXIT
 printf '[storage]\ndriver = "%s"\ngraphroot = "%s"\nrunroot = "/run/containers/storage"\n' "$driver" "$storage" >"$conf"
-podman run --rm --privileged --security-opt label=disable -v "$storage:$storage" -v "$conf:/etc/containers/storage.conf:ro" \
+# the base image has /home -> var/home without /var/home: crun (the CI runner) will not create a mount target
+# through that link, so a rootless store under /home is mounted at its real path below /var
+target=$storage
+case $storage in /home/*) target=/var$storage ;; esac
+podman run --rm --privileged --security-opt label=disable -v "$storage:$target" -v "$conf:/etc/containers/storage.conf:ro" \
 	"$POLICY_CHECK_IMAGE" /usr/libexec/bootc-base-imagectl rechunk "$from" "$to"
 want=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "$from")
 have=$(podman image inspect --format '{{index .Labels "org.opencontainers.image.version"}}' "$to")

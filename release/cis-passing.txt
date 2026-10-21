@@ -33,7 +33,6 @@ coredump_disable_storage
 dir_perms_world_writable_sticky_bits
 directory_groupowner_sshd_config_d
 directory_owner_sshd_config_d
-directory_permissions_sshd_config_d
 disable_host_auth
 disable_users_coredumps
 ensure_almalinux_gpgkey_installed
