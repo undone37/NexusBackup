@@ -1198,7 +1198,8 @@ state.md and commits.
   /run/nexus-time/addresses, nft-sync allows them outbound (UDP) (lab 2026-10-21).
 
 **Sources and connectors**
-- C1 VM disk file hashes: FAT and exFAT **done 2026-10-21**; btrfs open (extents, inline and compressed data);
+- C1 VM disk file hashes: FAT and exFAT **done 2026-10-21**; btrfs **done 2026-10-21** for inline and regular extents,
+  compressed extents (zlib, zstd, lzo) open: needs decompressors in the sandboxed parser;
   NTFS, ext4, XFS done before. NTFS compressed / encrypted / deduplicated
   files unhashed (Phase 28, 31c). MD5/SHA-1 IOC lists: decided SHA-256 only for now.
 - C2 File search: **done 2026-10-21:** owner filter (`owner=`: SID, uid, uid:gid, built-in Windows names; UI field),

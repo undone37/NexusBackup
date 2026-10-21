@@ -248,8 +248,10 @@ names for SIDs / uids (the guest's SAM / `passwd`).
 queues `file_index {source, time, hashes: true}` for VM snapshots as for containers, and `nexus-pve … files <vmid>
 <time> index hashes` asks the helpers for the SHA-256 of every regular file: NTFS through the file's unnamed `$DATA`
 (compressed and encrypted attributes, and deduplicated stubs, are left unhashed: the crate would return their raw
-bytes), ext4 through `ext4-view`'s file reader, XFS through its extents (holes and unwritten extents read as zeros).
-btrfs, FAT and exFAT files stay unhashed for now. The content is read through the same pipe and caches as the
+bytes), ext4 through `ext4-view`'s file reader, XFS through its extents (holes and unwritten extents read as zeros),
+FAT and exFAT through their cluster chains (exFAT: zeros after the valid data length), btrfs through its inline and
+regular extents (holes and preallocated extents as zeros; zlib/zstd/lzo-compressed extents are not decompressed,
+those files stay unhashed). The content is read through the same pipe and caches as the
 metadata (the helper never sees a key), 1 MiB at a time, and only by the helper that owns the directory. Budget per
 helper: half of the listing's time budget and 1 TiB of content (`HashBudget`); files beyond it stay unhashed and are
 counted (`hashed_files` / `unhashed_files` per volume, `hashes` / `unhashed` in the job result). The entry frame

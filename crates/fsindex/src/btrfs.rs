@@ -2,7 +2,8 @@
 //! chunk array and the chunk tree (logical -> physical addresses on the one
 //! device), the root tree (subvolume roots, the default subvolume) and the
 //! file system trees (directory index items, inode items, inline / regular
-//! file extents for `/etc/fstab`). Single-device file systems only (a
+//! file extents for `/etc/fstab` and content hashes; compressed extents are not
+//! decompressed, those files stay unhashed). Single-device file systems only (a
 //! multi-device btrfs is reported by the probe and goes to the micro-VM).
 //!
 //! The listing starts at the default subvolume, as the micro-VM mounts it (no
@@ -443,6 +444,80 @@ impl Btrfs {
         }
     }
 
+    /// SHA-256 of a regular file's content: inline and regular extents, holes and preallocated extents as
+    /// zeros. Compressed or encrypted extents: an error (the file stays unhashed).
+    // ponytail: zlib/zstd/lzo extents unhashed (distributions that mount with compress=zstd); decompressing
+    // them needs a decompressor in the sandboxed parser.
+    pub fn hash_file(&self, tree: (u64, u8), ino: u64, size: u64) -> Result<[u8; 32], String> {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        let zeros = vec![0u8; crate::walk::HASH_READ];
+        let feed_zeros = |h: &mut sha2::Sha256, mut n: u64| {
+            while n > 0 {
+                let k = n.min(zeros.len() as u64) as usize;
+                h.update(&zeros[..k]);
+                n -= k as u64;
+            }
+        };
+        let mut pos = 0u64;
+        let mut err = None;
+        self.scan(
+            tree,
+            (ino, EXTENT_DATA, 0),
+            (ino, EXTENT_DATA, size.saturating_sub(1)),
+            &mut |k, d| {
+                let at = k.2;
+                if d.len() < 21 || d[16] != 0 || d[17] != 0 || le16(d, 18) != 0 {
+                    err = Some("btrfs: compressed or encrypted extent");
+                    return Ok(false);
+                }
+                if at < pos {
+                    err = Some("btrfs: overlapping extents");
+                    return Ok(false);
+                }
+                feed_zeros(&mut h, at - pos);
+                let left = size - at;
+                match d[20] {
+                    0 => {
+                        let n = (d.len() as u64 - 21).min(left);
+                        h.update(&d[21..21 + n as usize]);
+                        pos = at + n;
+                    }
+                    1 | 2 if d.len() >= 53 => {
+                        let (bytenr, off, n) = (le64(d, 21), le64(d, 37), le64(d, 45).min(left));
+                        if bytenr == 0 || d[20] == 2 {
+                            feed_zeros(&mut h, n); // a hole or preallocated
+                        } else {
+                            let start = bytenr.checked_add(off).ok_or("btrfs: extent")?;
+                            let mut done = 0;
+                            while done < n {
+                                let k = (n - done).min(crate::walk::HASH_READ as u64);
+                                let p = self.phys(start + done, k)?;
+                                let b = self.v.read_vec(p, k as usize).map_err(|e| e.to_string())?;
+                                if b.len() as u64 != k {
+                                    return Err("btrfs: short read".into());
+                                }
+                                h.update(&b);
+                                done += k;
+                            }
+                        }
+                        pos = at + n;
+                    }
+                    _ => {
+                        err = Some("btrfs: extent type");
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        )?;
+        if let Some(e) = err {
+            return Err(e.into());
+        }
+        feed_zeros(&mut h, size.saturating_sub(pos));
+        Ok(h.finalize().into())
+    }
+
     /// Inode of `path` (below the root directory of subvolume tree `tree`).
     fn lookup(&self, tree: (u64, u8), dir: u64, path: &str) -> Result<Option<(u64, Inode)>, String> {
         let (mut tree, mut at) = (tree, dir);
@@ -546,6 +621,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 None => (ty == 2).then_some((tree, loc.0)),
             };
             if own {
+                let mut sha = None;
                 let (kind, size, mtime, owner) = match target {
                     Some((t, d)) => match fs.inode(t, d) {
                         Ok(i) => (KIND_DIR, 0, i.mtime, format!("{}:{}", i.uid, i.gid)),
@@ -558,6 +634,17 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                         Ok(i) => {
                             let k = i.kind();
                             let o = format!("{}:{}", i.uid, i.gid);
+                            // Phase 31c / 39 C1: the content's SHA-256 (budgeted)
+                            if k == KIND_FILE && out.hashing() {
+                                if !out.hash_budget(i.size) {
+                                    info.unhashed_files += 1;
+                                } else if let Ok(h) = fs.hash_file(tree, loc.0, i.size) {
+                                    sha = Some(h);
+                                    info.hashed_files += 1;
+                                } else {
+                                    info.unhashed_files += 1;
+                                }
+                            }
                             (k, if k == KIND_FILE { i.size } else { 0 }, i.mtime, o)
                         }
                         Err(_) => {
@@ -566,7 +653,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                         }
                     },
                 };
-                if !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), None)? {
+                if !out.emit_ext(info, &path, size, mtime, kind, Some(&owner), sha.as_ref())? {
                     return Ok(());
                 }
             } else if type_kind(ty) != KIND_DIR && target.is_none() {

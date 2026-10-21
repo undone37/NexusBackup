@@ -1445,7 +1445,7 @@ fn ldm_simple_and_spanned_volumes() {
     );
 }
 
-/// Phase 31c: content hashes (SHA-256 of every regular file) on ext4, NTFS, XFS and FAT (Phase 39 C1),
+/// Phase 31c: content hashes (SHA-256 of every regular file) on ext4, NTFS, XFS, FAT and btrfs (Phase 39 C1),
 /// with 1 and 3 helpers; a budget too small leaves files unhashed and says so.
 #[test]
 fn content_hashes() {
@@ -1526,6 +1526,17 @@ fn content_hashes() {
     {
         imgs.push(fat);
     }
+    // btrfs: inline (a.txt) and regular extents (big.bin, z.dat)
+    sized(&p("btrfs.img"), 256 << 20);
+    let btrfs = |img: &str, extra: &[&str]| {
+        let mut a = vec!["-q", "-r", tree.to_str().unwrap()];
+        a.extend(extra);
+        a.push(img);
+        run("mkfs.btrfs", &a)
+    };
+    if btrfs(p("btrfs.img").to_str().unwrap(), &[]) {
+        imgs.push(p("btrfs.img"));
+    }
     let hashes = Limits {
         hashes: Some(fsindex::HashBudget {
             max_bytes: 1 << 30,
@@ -1587,6 +1598,17 @@ fn content_hashes() {
             l[0].dirs.iter().any(|r| r.rel == "docs" && !r.hashed) || l[0].dirs.is_empty(),
             "{img:?}: the directory with the unhashed file is listed again next time"
         );
+    }
+    // compressed btrfs extents are not decompressed: those files stay unhashed, never a wrong hash
+    sized(&p("zstd.img"), 256 << 20);
+    if btrfs(p("zstd.img").to_str().unwrap(), &["--compress", "zstd"]) {
+        let l = parent::list(&files(&[p("zstd.img").as_path()]), &helper(), hashes, &mut |_| false).unwrap();
+        let v = &l[0];
+        // big.bin compresses; "hashed" still holds (it means: nothing left for lack of budget)
+        assert!(v.volume.unhashed_files >= 1, "{:?}", v.volume);
+        for e in v.entries.iter().filter(|e| e.sha256.is_some()) {
+            assert_eq!(e.sha256.as_ref(), want.get(&e.path), "{e:?}");
+        }
     }
     if tool("mkfs.ext4").is_some() {
         assert!(!imgs.is_empty());

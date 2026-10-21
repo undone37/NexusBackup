@@ -594,7 +594,7 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
         }
         // Phase 31c: complete as far as hashes go (nothing left for lack of budget)
         info.hashed = out.hashing()
-            && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs" | "vfat" | "exfat")
+            && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs" | "vfat" | "exfat" | "btrfs")
             && !out.take_budget_miss();
         if info.dirty && info.state == "indexed" && info.fs != "ext4" {
             // ext4-view applies the journal; NTFS $LogFile / FAT are not replayed

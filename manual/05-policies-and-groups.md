@@ -284,7 +284,7 @@ The **Threat detection** part of a group's dialog (every source kind) has two op
   capability (version with Phase 28) compute the hashes while they read; for older agents, shares, TrueNAS
   datasets and plugin file trees the appliance computes them, and unchanged files take the hash of the previous
   snapshot. The first backup after switching it on reads the files once more from the store, so it takes longer.
-  Containers and VM disks (NTFS, ext4, XFS, FAT and exFAT volumes; not yet btrfs) are hashed together with **Index
+  Containers and VM disks (NTFS, ext4, XFS, btrfs, FAT and exFAT volumes; files btrfs stores compressed are not hashed yet) are hashed together with **Index
   files in VM/CT disks**: the
   first file index after switching it on reads every file of the guest's disks once (up to half of the job's time;
   files left over are hashed with the next snapshot), later ones only the changed folders. The list of groups shows
