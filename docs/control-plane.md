@@ -617,7 +617,8 @@ plain NTP.
 - **Files**: `/etc/chrony.conf` (image) has `include /etc/nexus/time/*.conf`; `/etc/nexus/time/chrony.conf`
   (`nexus_time_conf_t`, 0644 root; shipped with the four public NTS servers) holds the `server <host> iburst [nts]`
   lines, `authselectmode require` (NTS only) or `prefer` (plain NTP servers present: authenticated sources win
-  whenever one is usable) and `minsources 2` (1 with a single server). Only `nexus_time_t` may write it (neverallow);
+  whenever one is usable: plain NTP servers are only used while no NTS server is) and `minsources 2`, or 1 when
+  only one server of the kind in use is configured (the NTS servers if there are any). Only `nexus_time_t` may write it (neverallow);
   `chronyd_t` and `nexus_nftsync_t` read it.
 - **Validation** (web-api and helper, same rules): 1–8 servers, each a DNS name (labels `[A-Za-z0-9-]`, no leading or
   trailing hyphen, ≤ 63 characters, the last label not all digits) or an IPv4/IPv6 address; no duplicates (case
@@ -629,14 +630,14 @@ plain NTP.
   time, result: applied|unchanged|refused, error} | null, queued, request_pending, max_servers}`. `PUT
   /settings/time {servers, allow_ntp}` (admin): 400 on a validation error, 200 `{unchanged: true}` for the
   configured list, otherwise gated by `time.servers` (params `{servers, allow_ntp, plain_ntp: [hosts]}`).
-- **Helper** `nexus-time` (root oneshot without capabilities, Python stdlib; SELinux `nexus_time_t`: its control dir,
+- **Helper** `nexus-time` (root oneshot, Python stdlib; the bounding set only `CAP_DAC_OVERRIDE` for chronyc in `chronyc_t`; SELinux `nexus_time_t`: its control dir,
   the sources file, `/run/nexus-time`, chronyc in `chronyc_t`; no inet sockets). `nexus-time.path` on
   `/var/lib/nexus/time/request.json` (2770 root:nexus-webapi; `{id, by, quorum_id, servers, allow_ntp}`, ≤ 16 KiB,
   consumed), `nexus-time.timer` every 2 minutes. `tick` applies a request (validated again; `refused` changes
   nothing), writes the sources file (tmp + rename) and `/run/nexus-time/restart` when it changed, then
   `status.json` (0644) from `chronyc -c -N sources`, `-c -N authdata` (mode column) and `-c -n tracking`. The unit's
-  `ExecStartPost` (a shell, outside `nexus_time_t`) restarts chronyd when the mark exists and runs `tick` again
-  15 s later for fresh sources. `nexus-nft-sync.path` watches the sources file: nft-sync resolves every `server`/`pool`
+  first `ExecStartPost` (a shell in `initrc_t`, outside `nexus_time_t`) renames the mark to `restarted` and restarts
+  chronyd; the second runs `nexus-time settle`, which writes the status again 15 s later for the new sources. `nexus-nft-sync.path` watches the sources file: nft-sync resolves every `server`/`pool`
   host of chrony.conf and its includes into `nts_servers_v4/v6` (TCP 4460 and UDP 123 out).
 - **Diagnostics**: `time.sync` (tracking) and `time.nts` (authdata: warns about unauthenticated sources).
 

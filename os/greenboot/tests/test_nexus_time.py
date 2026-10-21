@@ -64,7 +64,7 @@ class Base(unittest.TestCase):
                      "chronyc -c -n tracking": [0, TRACKING]})
         self.env = {"NEXUS_TIME_DIR": str(self.d / "ctl"), "NEXUS_TIME_CONF": str(self.d / "chrony.conf"),
                     "NEXUS_TIME_RUN": str(self.d / "run"), "NEXUS_TIME_CHRONYC": str(tool),
-                    "FAKE_DIR": str(self.d / "fake")}
+                    "FAKE_DIR": str(self.d / "fake"), "NEXUS_TIME_SETTLE": "0"}
         self.old = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
         self.m = load()
@@ -124,6 +124,11 @@ class Validation(Base):
         mixed = self.m.render([("a.example", True), ("ntp.internal", False)])
         self.assertIn("server ntp.internal iburst\n", mixed)
         self.assertIn("authselectmode prefer\n", mixed)
+        # prefer ignores the NTP server while the NTS one works: one source must be enough
+        self.assertIn("minsources 1\n", mixed)
+        two = self.m.render([("a.example", True), ("b.example", True), ("ntp.internal", False)])
+        self.assertIn("minsources 2\n", two)
+        self.assertIn("minsources 2\n", self.m.render([("ntp1.internal", False), ("ntp2.internal", False)]))
         one = self.m.render([("ntp.internal", False)])
         self.assertIn("minsources 1\n", one)
         self.assertEqual(self.m.configured(mixed), [("a.example", True), ("ntp.internal", False)])
@@ -156,6 +161,15 @@ class Requests(Base):
 
         # a timer tick without a request keeps the last outcome
         self.assertEqual(self.tick()["last"]["result"], "refused")
+
+    def test_settle_refreshes_only_after_a_restart(self):
+        self.assertEqual(self.m.main(["nexus-time", "settle"]), 0)
+        self.assertFalse((self.d / "ctl/status.json").exists(), "no restart: nothing to do")
+        (self.d / "run").mkdir()
+        (self.d / "run/restarted").touch()
+        self.assertEqual(self.m.main(["nexus-time", "settle"]), 0)
+        self.assertFalse((self.d / "run/restarted").exists())
+        self.assertEqual(json.loads((self.d / "ctl/status.json").read_text())["sources"][1]["state"], "selected")
 
     def test_unreadable_request(self):
         (self.d / "ctl/request.json").write_text("{nope")

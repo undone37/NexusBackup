@@ -9,16 +9,21 @@ StartLimitBurst=20
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/nexus/nexus-time tick
-# After an applied change nexus-time leaves /run/nexus-time/restart; chronyd re-reads its sources
-# only on a restart. This line runs outside nexus_time_t (the shell has no transition into it), so
-# the helper itself never controls units.
-ExecStartPost=/bin/sh -c 'if [ -e /run/nexus-time/restart ]; then rm -f /run/nexus-time/restart && systemctl try-restart chronyd.service && sleep 15 && /usr/libexec/nexus/nexus-time tick; fi'
+# After an applied change nexus-time leaves /run/nexus-time/restart; chronyd re-reads its sources only
+# on a restart. The shell line runs outside nexus_time_t (initrc_t: no transition into it), so the
+# helper itself never controls units; `settle` (its own exec, back in nexus_time_t) then writes the
+# status again once chronyd has its new sources.
+ExecStartPost=/bin/sh -c 'if [ -e /run/nexus-time/restart ]; then mv -f /run/nexus-time/restart /run/nexus-time/restarted && systemctl try-restart chronyd.service; fi'
+ExecStartPost=/usr/libexec/nexus/nexus-time settle
 RuntimeDirectory=nexus-time
 RuntimeDirectoryPreserve=yes
 # root, because /etc/nexus/time is root's; SELinux (nexus_time_t) limits it to that file, its
-# control dir and chronyc. No DAC override: the request is read through the group.
+# control dir and chronyc. The request is read through the group. The bounding set is what chronyc
+# needs in its own domain (chronyc_t: its client socket in /run/chrony, 0750 chrony), as for
+# nexus-diag; the policy grants nexus_time_t no capability (lab 2026-10-21: without it chronyc
+# answered "Could not open connection to daemon").
 SupplementaryGroups=nexus-webapi
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
 AmbientCapabilities=
 UMask=0022
 TimeoutStartSec=2min

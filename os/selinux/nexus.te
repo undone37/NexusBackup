@@ -1543,6 +1543,10 @@ read_files_pattern(chronyd_t, nexus_time_conf_t, nexus_time_conf_t)
 list_dirs_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
 read_files_pattern(nexus_nftsync_t, nexus_time_conf_t, nexus_time_conf_t)
 
+# systemd watches the sources file for nexus-nft-sync.path (PathChanged: inotify)
+allow init_t nexus_time_conf_t:dir { getattr search read watch };
+allow init_t nexus_time_conf_t:file { getattr open read watch watch_reads };
+
 # web-api: request.json (tmp + rename) into the control dir, status.json read back
 allow nexus_webapi_t nexus_time_var_lib_t:dir rw_dir_perms;
 manage_files_pattern(nexus_webapi_t, nexus_time_var_lib_t, nexus_time_var_lib_t)

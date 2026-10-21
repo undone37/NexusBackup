@@ -5,6 +5,9 @@
 #   nexus-time tick      what nexus-time.service runs (nexus-time.path when the web-api queues a
 #                        request, nexus-time.timer every 2 minutes): apply a queued request, then
 #                        write status.json
+#   nexus-time settle    the unit's last ExecStartPost: after a chronyd restart (RUN/restarted, left by
+#                        the restart line) wait SETTLE seconds and write status.json again, so the page
+#                        shows the new sources; otherwise nothing
 #   nexus-time status    print the status as JSON (console; changes nothing)
 #
 # Control directory (default /var/lib/nexus/time, 2770 root:nexus-webapi, tmpfiles.d/nexus.conf):
@@ -17,12 +20,14 @@
 # The sources file (default /etc/nexus/time/chrony.conf, included by /etc/chrony.conf) holds the
 # server lines, `authselectmode` and `minsources`: NTS only = `authselectmode require` (chrony never
 # uses an unauthenticated source); with plain NTP servers, which the request must allow explicitly
-# (allow_ntp), `authselectmode prefer` (authenticated sources win whenever one is usable).
-# `minsources` is 2, or 1 with a single server. After a change this writes RUN/restart; the unit's
-# ExecStartPost restarts chronyd then (this domain cannot), and nexus-nft-sync.path re-resolves the
-# servers for the firewall.
+# (allow_ntp), `authselectmode prefer` (plain NTP servers are only used while no NTS server is usable).
+# `minsources` is 2, or 1 with a single server of the kind in use: the NTS servers if there are any (lab
+# 2026-10-21: one NTS + one NTP server with minsources 2 never synchronised). After a change this writes RUN/restart; the unit's
+# ExecStartPost renames it to RUN/restarted and restarts chronyd (this domain cannot), then runs
+# `settle`; nexus-nft-sync.path re-resolves the servers for the firewall.
 #
-# Runs as root in its own SELinux domain (nexus_time_t): writes the sources file and its control
+# Runs as root in its own SELinux domain (nexus_time_t, no capabilities; chronyc gets CAP_DAC_OVERRIDE in
+# chronyc_t for its client socket in /run/chrony): writes the sources file and its control
 # directory, runs chronyc over chronyd's local socket; no network (IPAddressDeny=any, no inet
 # sockets in the policy). Paths and tools can be overridden through NEXUS_TIME_* environment
 # variables (tests). Stdlib only.
@@ -41,6 +46,7 @@ DEFAULTS = {
     "RUN": "/run/nexus-time",
     "CHRONYC": "chronyc",
     "TIMEOUT": "20",
+    "SETTLE": "15",
 }
 MAX_SERVERS = 8
 MAX_REQUEST = 16 << 10
@@ -121,7 +127,9 @@ def render(servers):
     lines.append("\n# only NTS sources count\n" if not ntp else
                  "\n# plain NTP allowed by an administrator: authenticated sources are preferred\n")
     lines.append(f"authselectmode {'prefer' if ntp else 'require'}\n")
-    lines.append(f"minsources {min(2, len(servers))}\n")
+    # prefer selects plain NTP servers only while no NTS server is selectable: count the kind in use
+    nts = sum(1 for _, n in servers if n)
+    lines.append(f"minsources {min(2, nts or len(servers))}\n")
     return "".join(lines)
 
 
@@ -266,11 +274,19 @@ def status(last=None):
 
 
 def main(argv):
-    if len(argv) != 2 or argv[1] not in ("tick", "status"):
-        print("usage: nexus-time tick|status", file=sys.stderr)
+    if len(argv) != 2 or argv[1] not in ("tick", "settle", "status"):
+        print("usage: nexus-time tick|settle|status", file=sys.stderr)
         return 2
     if argv[1] == "status":
         print(json.dumps(status(), indent=2))
+        return 0
+    if argv[1] == "settle":
+        mark = os.path.join(cfg("RUN"), "restarted")
+        if not os.path.exists(mark):
+            return 0
+        os.unlink(mark)
+        time.sleep(float(cfg("SETTLE")))
+        write_atomic(os.path.join(cfg("DIR"), "status.json"), json.dumps(status()))
         return 0
     last = handle_request()
     write_atomic(os.path.join(cfg("DIR"), "status.json"), json.dumps(status(last)))

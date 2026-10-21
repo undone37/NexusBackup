@@ -3661,7 +3661,7 @@ export const en = {
       'Only for networks without an NTS server, for example an isolated network with an internal time server. Plain NTP answers are not authenticated: whoever can change traffic between the appliance and the server can move its clock, and with it retention locks. NTS servers in the list are always preferred. Diagnostics and the security posture report the plain NTP servers.',
     ntpWarning: (hosts: string) => `Plain NTP (not authenticated): ${hosts}`,
     minHint:
-      'At least two servers are recommended: the clock is only set when two sources agree (with a single server it follows that one).',
+      'At least two NTS servers are recommended: the clock is only set when two sources agree (with a single NTS server it follows that one). Plain NTP servers are only used while no NTS server answers.',
     firewallHint:
       'The outbound firewall opens TCP 4460 (NTS key exchange) and UDP 123 to these servers by itself; allow the same in your own firewalls.',
     approvalHint:

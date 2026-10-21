@@ -6,6 +6,7 @@
 #
 #   time-servers.sh [check]       the whole run (default)
 #   time-servers.sh status        GET /settings/time
+#   time-servers.sh set JSON      set the list (and approve), e.g. the image's four NTS servers
 #
 # env: LAB (~/nexus-lab/pvehost), PORT (28444), SERVERS (JSON list for the test, default two of the
 # image's NTS servers)
@@ -21,7 +22,9 @@ eval "$(ROOT=$ROOT PORT=$PORT "$repo/lab/e2e/m5.sh" env)"
 # shellcheck disable=SC1090
 . "$repo/lab/e2e/api-lib.sh"
 con() { "$repo/lab/appliance/con.py" run "$1"; }
-SERVERS=${SERVERS:-'[{"host":"ptbtime1.ptb.de","nts":true},{"host":"nts.netnod.se","nts":true}]'}
+# two of the image's servers whose NTP associations the firewall lets through (nts.netnod.se hands out
+# NTP servers at other addresses in its NTS key exchange: unreachable from the appliance)
+SERVERS=${SERVERS:-'[{"host":"ptbtime1.ptb.de","nts":true},{"host":"ptbtime2.ptb.de","nts":true}]'}
 
 get_time() { api admin GET /settings/time; }
 
@@ -80,5 +83,6 @@ cmd=${1:-check}
 case $cmd in
 check) step_check ;;
 status) login admin "$ADMIN_PW" "$ADMIN_TOTP" && get_time | jq . ;;
-*) sed -n 2,11p "$0" && exit 2 ;;
+set) login admin "$ADMIN_PW" "$ADMIN_TOTP" && put_time "$2" "${3:-false}" ;;
+*) sed -n 2,12p "$0" && exit 2 ;;
 esac

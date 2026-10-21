@@ -386,7 +386,8 @@ refreshed every 2 minutes.
 - **Plain NTP** (without NTS) is off by default. Tick **Allow plain NTP servers** only for networks without an NTS
   server, for example an isolated network with an internal time server, and untick **NTS** for those servers. Their
   answers are not authenticated: whoever can change the traffic between the appliance and the server can move the
-  clock, and with it retention locks. NTS servers in the list are always preferred. **Settings → Diagnostics**
+  clock, and with it retention locks. NTS servers in the list are always preferred: the plain NTP servers are only
+  used while no NTS server answers. **Settings → Diagnostics**
   (`time.nts`) warns about the unauthenticated sources, and the approver sees them in the request.
 
 ![Change time servers](images/time-edit.png)
