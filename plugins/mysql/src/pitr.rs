@@ -280,16 +280,16 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
          [ -n \"$srv\" ] || {{ echo '{server} not found' >&2; exit 127; }}\n\
          \"$srv\" --no-defaults --datadir={q} --socket={sock} --pid-file=.nexus-pitr.pid --log-error=.nexus-pitr.err \
            --skip-networking --skip-grant-tables --skip-log-bin --loose-mysqlx=0 --secure-file-priv={bq} \
-           >.nexus-pitr.out 2>&1 </dev/null &\n\
+           --loose-innodb-use-native-aio=0 >.nexus-pitr.out 2>&1 </dev/null &\n\
          pid=$!\n\
          for i in $(seq 600); do {admin} --no-defaults --socket={sock} ping >/dev/null 2>&1 && break; \
-           kill -0 $pid 2>/dev/null || {{ tail -20 .nexus-pitr.out .nexus-pitr.err >&2; exit 1; }}; sleep 1; done\n\
+           kill -0 $pid 2>/dev/null || {{ tail -n 20 .nexus-pitr.out .nexus-pitr.err >&2; exit 1; }}; sleep 1; done\n\
          set -o pipefail 2>/dev/null\n\
          TZ=UTC {binlog} --no-defaults {opts} {} | {client} --no-defaults --socket={sock} --binary-mode\n\
          rc=$?\n\
          {admin} --no-defaults --socket={sock} shutdown\n\
          while kill -0 $pid 2>/dev/null; do sleep 1; done\n\
-         [ $rc = 0 ] || {{ tail -20 .nexus-pitr.err >&2; exit $rc; }}\n\
+         [ $rc = 0 ] || {{ tail -n 20 .nexus-pitr.err >&2; exit $rc; }}\n\
          rm -rf -- .nexus-binlog .nexus-pitr.err .nexus-pitr.out .nexus-pitr.pid\n",
         list.join(" "),
         bq = sh_quote(&bdir),

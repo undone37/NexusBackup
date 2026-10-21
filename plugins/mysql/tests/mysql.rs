@@ -164,6 +164,7 @@ impl Box {
         self.sh(&format!(
             "d={dir}; {srv} --no-defaults --datadir=$d --socket=$d/q.sock --pid-file=$d/q.pid --log-error=$d/q.err \
              --skip-networking --skip-grant-tables --skip-log-bin --loose-mysqlx=0 --secure-file-priv=$d \
+             --loose-innodb-use-native-aio=0 \
              >/dev/null 2>&1 </dev/null & pid=$!; \
              for i in $(seq 120); do {admin} --no-defaults -S $d/q.sock ping >/dev/null 2>&1 && break; sleep 0.5; done; \
              {cli} --no-defaults -S $d/q.sock -N -B -e \"{sql}\"; rc=$?; {admin} --no-defaults -S $d/q.sock shutdown; \
