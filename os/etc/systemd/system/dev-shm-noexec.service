@@ -1,0 +1,14 @@
+# CIS 1.1.2.2: /dev/shm without exec. systemd mounts /dev/shm itself before any unit runs (nosuid,
+# nodev), so this remounts it early with noexec added.
+[Unit]
+Description=Remount /dev/shm noexec
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mount -o remount,nosuid,nodev,noexec /dev/shm
+
+[Install]
+WantedBy=local-fs.target

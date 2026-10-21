@@ -9,8 +9,9 @@ benchmark itself is licensed; the maintainer has a copy).
 
 `release/cis-report.sh` evaluates the profile with OpenSCAP (`oscap-chroot`) against the appliance image mounted
 read-only, from a container of the AlmaLinux bootc base image. A file tree shows packages, files and their
-contents, not the running kernel, mounts or services: those rules are marked *lab check* and need the scan of a
-booted appliance (Phase 35b).
+contents, not the running kernel, mounts or services: those rules were checked by hand on the booted lab appliance
+(Phase 35b, VM 201, 2026-10-21: mounts, service states, root's PATH) and are marked *applied* with the lab result;
+the image scan still counts them as failing (it looks for /etc/fstab lines and unit files in the tree).
 
 | Image | pass | fail | not applicable |
 |---|---|---|---|
@@ -54,11 +55,11 @@ load, no AVC denials, a PVE backup and restore is byte-identical.
 
 | CIS references | Rule (ComplianceAsCode) | Title | Decision | Reason |
 |---|---|---|---|---|
-| 1.1.2.1.1 | `partition_for_tmp` | Ensure /tmp Located On Separate Partition | lab check | mounts of the booted appliance (tmpfs /tmp and /dev/shm and their options) need the lab scan |
-| 1.1.2.2.1 | `partition_for_dev_shm` | Ensure /dev/shm is configured | lab check | mounts of the booted appliance (tmpfs /tmp and /dev/shm and their options) need the lab scan |
-| 1.1.2.2.2 | `mount_option_dev_shm_nodev` | Add nodev Option to /dev/shm | lab check | mounts of the booted appliance (tmpfs /tmp and /dev/shm and their options) need the lab scan |
-| 1.1.2.2.3 | `mount_option_dev_shm_nosuid` | Add nosuid Option to /dev/shm | lab check | mounts of the booted appliance (tmpfs /tmp and /dev/shm and their options) need the lab scan |
-| 1.1.2.2.4 | `mount_option_dev_shm_noexec` | Add noexec Option to /dev/shm | lab check | mounts of the booted appliance (tmpfs /tmp and /dev/shm and their options) need the lab scan |
+| 1.1.2.1.1 | `partition_for_tmp` | Ensure /tmp Located On Separate Partition | applied | tmpfs from tmp.mount, with the drop-in tmp.mount.d/50-nexus-noexec.conf: nosuid, nodev, noexec (lab VM 201, 2026-10-21) |
+| 1.1.2.2.1 | `partition_for_dev_shm` | Ensure /dev/shm is configured | applied | tmpfs, remounted nosuid, nodev, noexec by dev-shm-noexec.service (lab VM 201, 2026-10-21) |
+| 1.1.2.2.2 | `mount_option_dev_shm_nodev` | Add nodev Option to /dev/shm | applied | dev-shm-noexec.service; the check also looks for an /etc/fstab line, which a bootc appliance does not have (lab VM 201, 2026-10-21) |
+| 1.1.2.2.3 | `mount_option_dev_shm_nosuid` | Add nosuid Option to /dev/shm | applied | dev-shm-noexec.service; the check also looks for an /etc/fstab line, which a bootc appliance does not have (lab VM 201, 2026-10-21) |
+| 1.1.2.2.4 | `mount_option_dev_shm_noexec` | Add noexec Option to /dev/shm | applied | dev-shm-noexec.service; the check also looks for an /etc/fstab line, which a bootc appliance does not have (lab VM 201, 2026-10-21) |
 | 1.2.1, 1.2, 4.1.1 | `package_firewalld_installed` | Install firewalld Package | deviates | nftables directly (os/nftables.conf): default deny in and out, loopback accepted, allow-lists synced by nexus-nft-sync |
 | 1.4.1 | `grub2_password` | Set Boot Loader Password in grub2 | applied | nexus-grub-password installs the boot menu password into /boot at every boot (Phase 18); the image scan does not see /boot |
 | 1.4.1, 1.4, 4.1.5 | `firewalld_loopback_traffic_trusted` | Configure Firewalld to Trust Loopback Traffic | deviates | nftables directly (os/nftables.conf): default deny in and out, loopback accepted, allow-lists synced by nexus-nft-sync |
@@ -76,9 +77,9 @@ load, no AVC denials, a PVE backup and restore is byte-identical.
 | 1.5.6 | `sysctl_kernel_kptr_restrict` | Restrict Exposed Kernel Pointer Addresses Access | applied | /etc/sysctl.d/60-nexus-hardening.conf; the run-time value needs the lab scan |
 | 1.5.7 | `sysctl_kernel_yama_ptrace_scope` | Restrict usage of ptrace to descendant processes | applied | /etc/sysctl.d/60-nexus-hardening.conf; the run-time value needs the lab scan |
 | 1.6.1, 1.6.2, 1.6.3, 1.6.4, 5.1.6, 5.1.15 | `configure_custom_crypto_policy_cis` | Implement Custom Crypto Policy Modules for CIS Benchmark | deviates | open: the services use rustls with their own TLS 1.3/1.2 suites (and X25519MLKEM768), SSH to sources uses russh; the system policy stays DEFAULT until the CIS policy module is tried against PVE and TrueNAS SSH |
-| 2.1.9 | `service_nfs_disabled` | Disable Network File System (nfs) | lab check | service state of the booted appliance (rpcbind and nfs are client-side for NAS sources) |
+| 2.1.9 | `service_nfs_disabled` | Disable Network File System (nfs) | applied | nfs-server disabled and inactive (the NFS client for NAS sources does not need it; lab VM 201, 2026-10-21) |
 | 2.2.2, 2.2, 5.4.2.4 | `ensure_root_password_configured` | Ensure Authentication Required for Single User Mode | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
-| 2.2.4, 2.2, 2.1.11 | `service_rpcbind_disabled` | Disable rpcbind Service | lab check | service state of the booted appliance (rpcbind and nfs are client-side for NAS sources) |
+| 2.2.4, 2.2, 2.1.11 | `service_rpcbind_disabled` | Disable rpcbind Service | applied | rpcbind service and socket disabled and inactive (lab VM 201, 2026-10-21) |
 | 2.2.6, 2.2, 5.2.1 | `package_sudo_installed` | Install sudo Package | deviates | no sudo by design (os/slim.sh): no privilege change from a user account; root only via the console gate |
 | 2.2.6, 2.2, 5.2.7 | `ensure_pam_wheel_group_empty` | Ensure the Group Used by pam_wheel.so Module Exists on System and is Empty | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
 | 2.2.6, 2.2, 5.2.7 | `use_pam_wheel_group_for_su` | Enforce Usage of pam_wheel with Group Parameter for su Authentication | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
@@ -117,10 +118,10 @@ load, no AVC denials, a PVE backup and restore is byte-identical.
 | 5.3.2.2.7 | `accounts_password_pam_enforce_root` | Ensure PAM Enforces Password Requirements - Enforce for root User | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
 | 5.3.2.3.2 | `accounts_password_pam_pwhistory_enforce_for_root` | Ensure Password History Is Enforced for the Root User | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
 | 5.3.2.3.3 | `accounts_password_pam_pwhistory_use_authtok` | Enforce Password History with use_authtok | deviates | no local password logins: root is locked, no other account has a login shell, sshd is off; the only shell is the console gate (a one-time code after approval, or the recovery key). Web UI accounts are application accounts with their own policy (argon2id, TOTP or passkeys, lockout, dormant accounts, manual chapter 9) |
-| 5.4.2.5 | `root_path_no_dot` | Ensure that Root's Path Does Not Include Relative Paths or Null Directories | lab check | root's PATH of the console shell, checked on the booted appliance |
+| 5.4.2.5 | `root_path_no_dot` | Ensure that Root's Path Does Not Include Relative Paths or Null Directories | applied | root PATH /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin (lab VM 201, 2026-10-21) |
 | 6.1.3 | `aide_check_audit_tools` | Configure AIDE to Verify the Audit Tools | deviates | /usr is read-only and verified by bootc/ostree (composefs); a change to it is a new signed image. /etc differences are visible with `ostree admin config-diff` (support bundle). AIDE would re-hash an immutable tree |
-| 6.2.1.1 | `service_systemd-journald_enabled` | Enable systemd-journald Service | lab check | service state of the booted appliance (rpcbind and nfs are client-side for NAS sources) |
-| 6.2.1.4 | `ensure_journald_and_rsyslog_not_active_together` | Ensure journald and rsyslog Are Not Active Together | lab check | service state of the booted appliance (rpcbind and nfs are client-side for NAS sources) |
+| 6.2.1.1 | `service_systemd-journald_enabled` | Enable systemd-journald Service | applied | journald static and active (lab VM 201, 2026-10-21) |
+| 6.2.1.4 | `ensure_journald_and_rsyslog_not_active_together` | Ensure journald and rsyslog Are Not Active Together | applied | rsyslog is not installed (lab VM 201, 2026-10-21) |
 | 6.2.2.1.1 | `package_systemd-journal-remote_installed` | Install systemd-journal-remote Package | deviates | logs and audit leave through the appliance's own TLS forwarding (syslog TLS / HTTPS, manual chapter 10) |
 | 6.2.2.1.4 | `socket_systemd-journal-remote_disabled` | Disable systemd-journal-remote Socket | deviates | logs and audit leave through the appliance's own TLS forwarding (syslog TLS / HTTPS, manual chapter 10) |
 | 6.2.2.2 | `journald_disable_forward_to_syslog` | Ensure journald ForwardToSyslog is disabled | applied | /etc/systemd/journald.conf.d/50-nexus.conf; the check reads journald.conf only (lab check) |
@@ -145,6 +146,4 @@ load, no AVC denials, a PVE backup and restore is byte-identical.
 
 ## Open (Phase 35)
 
-- 35b: the scan of a booted appliance (the *lab check* rows, mount options of `/tmp` and `/dev/shm`: today nosuid and
-  nodev, not noexec).
 - 35d: the gate: `release/cis-passing.txt` as the list that must keep passing.

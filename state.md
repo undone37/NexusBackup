@@ -909,7 +909,10 @@ Benchmark PDF in tmp/ (gitignored, CIS licence).
   TMOUT. Image scan 161 -> 194 pass (116 -> 83 fail). Lab VM 201 0.0.17-dev: boots, greenboot ok, sysctls active,
   modules blocked, 0 AVCs, `verify.sh exact` byte-identical, web UI negotiates X25519MLKEM768.
 - [x] `release/cis-report.sh` scans read-only from the base image (the appliance has no dnf any more).
-- [ ] 35b scan of a booted appliance; `/tmp`, `/dev/shm` noexec; 35d gate on `release/cis-passing.txt`.
+- [x] 35b booted appliance checked by hand (2026-10-21, VM 201 on 0.0.17-dev plus the new units in /etc): `/tmp`
+  (tmp.mount drop-in) and `/dev/shm` (dev-shm-noexec.service) nosuid, nodev, noexec; rpcbind/nfs disabled, no
+  rsyslog, root PATH clean; greenboot green, 0 AVC denials, `verify.sh exact` byte-identical (362 s).
+- [ ] 35d gate on `release/cis-passing.txt`.
 
 ## Phase 36 — Offline (air-gapped) appliance updates (added 2026-10-15)
 Scope: plan.md Phase 36 (signed update bundle as a release asset, spike: local mirror registry vs own signature

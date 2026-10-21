@@ -1036,8 +1036,9 @@ Source: CIS AlmaLinux OS 10 Benchmark v1.0.0 (maintainer's copy in `tmp/`, not i
 refers to recommendation numbers and our own short titles only, never to CIS text).
 
 - Status 2026-10-21: 35a done (`docs/cis.md`, 0 rules unclassified), 35c first part done (sysctl, modules, core
-  dumps, journal, sshd drop-in, banners, umask, shell timeout; 161 -> 194 passing rules; lab VM 201 green); 35b (scan
-  of a booted appliance, `/tmp` and `/dev/shm` noexec) and 35d (gate on `release/cis-passing.txt`) open.
+  dumps, journal, sshd drop-in, banners, umask, shell timeout; 161 -> 194 passing rules; lab VM 201 green); 35b done
+  by hand on the booted lab appliance (no oscap in the image): `/tmp` and `/dev/shm` noexec, service states, root's
+  PATH; 35d (gate on `release/cis-passing.txt`) open.
 - **35a Gap analysis:** every recommendation of the Level 1 Server profile, and Level 2 where it fits an appliance,
   classified as *applied*, *not applicable* (with the reason, e.g. no GUI, immutable bootc `/usr`, no interactive
   users) or *deviates* (with the reason and the compensating control, e.g. SELinux domains per service, nftables
