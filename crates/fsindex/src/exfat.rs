@@ -95,8 +95,47 @@ impl Ex {
     }
 }
 
-/// One directory: (name, is_dir, size, mtime, first cluster, no FAT chain, data length).
-type Item = (String, bool, u64, i64, u32, bool, u64);
+impl Ex {
+    /// SHA-256 of a file's `size` bytes: the cluster chain up to the valid data length, zeros after it
+    /// (exFAT reads unwritten preallocated space as zeros). Streamed cluster by cluster.
+    fn hash_file(&self, first: u32, nofat: bool, size: u64, valid: u64) -> Result<[u8; 32], String> {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        let mut done = 0u64;
+        let mut c = first;
+        let mut steps = 0u64;
+        while done < valid {
+            let off = self.cluster_off(c)?;
+            let n = self.cs.min(valid - done);
+            h.update(self.v.read_vec(off, n as usize).map_err(|e| e.to_string())?);
+            done += n;
+            steps += 1;
+            if steps > self.count as u64 {
+                return Err("exfat: cluster chain loops".into());
+            }
+            if done < valid {
+                c = if nofat {
+                    c.checked_add(1).ok_or("exfat: cluster chain")?
+                } else {
+                    match self.next(c)? {
+                        n if !(2..0xffff_fff7).contains(&n) => return Err("exfat: broken cluster chain".into()),
+                        n => n,
+                    }
+                };
+            }
+        }
+        let zeros = vec![0u8; crate::walk::HASH_READ];
+        while done < size {
+            let n = (size - done).min(zeros.len() as u64) as usize;
+            h.update(&zeros[..n]);
+            done += n as u64;
+        }
+        Ok(h.finalize().into())
+    }
+}
+
+/// One directory entry: (name, is_dir, size, mtime, first cluster, no FAT chain, data length, valid data length).
+type Item = (String, bool, u64, i64, u32, bool, u64, u64);
 
 fn entries(data: &[u8], label: &mut Option<String>) -> (Vec<Item>, u64) {
     let mut out = Vec::new();
@@ -147,6 +186,7 @@ fn entries(data: &[u8], label: &mut Option<String>) -> (Vec<Item>, u64) {
                     le32(st, 20),
                     st[1] & 2 != 0,
                     size,
+                    le64(st, 8).min(size),
                 ));
                 i += 32 * (sec + 1);
                 continue;
@@ -184,7 +224,7 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             first = false;
         }
         info.skipped_entries += bad;
-        for (name, dir, size, mtime, cl, nofat, len) in items {
+        for (name, dir, size, mtime, cl, nofat, len, valid) in items {
             if name.is_empty() || name.contains('/') || name == "." || name == ".." {
                 info.skipped_entries += 1;
                 continue;
@@ -195,7 +235,22 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
                 continue;
             }
             let kind = if dir { KIND_DIR } else { KIND_FILE };
-            if !out.emit(info, &path, if dir { 0 } else { size }, mtime, kind)? {
+            // Phase 39 C1: content hash (same budget as ext4/NTFS/XFS)
+            let mut sha = None;
+            if !dir && out.hashing() {
+                if !out.hash_budget(size) {
+                    info.unhashed_files += 1;
+                } else {
+                    match ex.hash_file(cl, nofat, size, valid) {
+                        Ok(h) => {
+                            sha = Some(h);
+                            info.hashed_files += 1;
+                        }
+                        Err(_) => info.unhashed_files += 1,
+                    }
+                }
+            }
+            if !out.emit_ext(info, &path, if dir { 0 } else { size }, mtime, kind, None, sha.as_ref())? {
                 return Ok(());
             }
             if dir && cl != 0 {

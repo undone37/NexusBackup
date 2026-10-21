@@ -527,6 +527,16 @@ fn exfat_entries() {
     let free = (0..cs / 32).map(|i| root + i * 32).find(|&o| data[o] == 0).unwrap();
     let mut entries = set("Fotos Sommer", true, cs as u64, free_cl as u32, ts);
     entries.extend(set("a-very-long-file-name-over-fifteen.txt", false, 123, 0, ts));
+    // Phase 39 C1: a file with data (second to last cluster) and one whose valid data length is
+    // shorter than its size (the rest reads as zeros)
+    let data_cl = count; // the second to last cluster: unused too
+    let body: Vec<u8> = (0..300u32).map(|i| (i % 7) as u8 + b'a').collect();
+    let at = heap + (data_cl - 2) * cs;
+    data[at..at + body.len()].copy_from_slice(&body);
+    entries.extend(set("notes.txt", false, 300, data_cl as u32, ts));
+    let mut short = set("prealloc.bin", false, 500, data_cl as u32, ts);
+    short[32 + 8..32 + 16].copy_from_slice(&100u64.to_le_bytes()); // valid data length 100 of 500
+    entries.extend(short);
     data[free..free + entries.len()].copy_from_slice(&entries);
     let inner = set("IMG_0001.JPG", false, 4_000_000, 0, ts);
     data[sub..sub + inner.len()].copy_from_slice(&inner);
@@ -546,10 +556,38 @@ fn exfat_entries() {
         [
             ("Fotos Sommer".into(), 1, 0),
             ("Fotos Sommer/IMG_0001.JPG".into(), 0, 4_000_000),
-            ("a-very-long-file-name-over-fifteen.txt".into(), 0, 123)
+            ("a-very-long-file-name-over-fifteen.txt".into(), 0, 123),
+            ("notes.txt".into(), 0, 300),
+            ("prealloc.bin".into(), 0, 500)
         ]
     );
     assert!(v.entries.iter().all(|e| e.mtime == MTIME));
+
+    // content hashes: the data cluster, zeros after the valid data length; files without a
+    // cluster (cluster 0 but a size) stay unhashed
+    use sha2::Digest;
+    let hashes = Limits {
+        hashes: Some(fsindex::HashBudget {
+            max_bytes: 1 << 30,
+            max_secs: 600,
+        }),
+        ..Default::default()
+    };
+    let src = files(&[img.as_path()]);
+    let l = parent::list(&src, &helper(), hashes, &mut |_| false).unwrap();
+    let v = &l[0];
+    let sha = |p: &str| v.entries.iter().find(|e| e.path == p).and_then(|e| e.sha256);
+    assert_eq!(sha("notes.txt"), Some(sha2::Sha256::digest(&body).into()));
+    let mut pre = body[..100].to_vec();
+    pre.resize(500, 0);
+    assert_eq!(sha("prealloc.bin"), Some(sha2::Sha256::digest(&pre).into()));
+    assert_eq!(sha("a-very-long-file-name-over-fifteen.txt"), None);
+    assert_eq!(
+        (v.volume.hashed_files, v.volume.unhashed_files),
+        (2, 2),
+        "{:?}",
+        v.volume
+    );
 }
 
 // --------------------------------------------------------------- LVM
@@ -1407,7 +1445,7 @@ fn ldm_simple_and_spanned_volumes() {
     );
 }
 
-/// Phase 31c: content hashes (SHA-256 of every regular file) on ext4, NTFS and XFS,
+/// Phase 31c: content hashes (SHA-256 of every regular file) on ext4, NTFS, XFS and FAT (Phase 39 C1),
 /// with 1 and 3 helpers; a budget too small leaves files unhashed and says so.
 #[test]
 fn content_hashes() {
@@ -1469,6 +1507,24 @@ fn content_hashes() {
         &["-q", "-p", p("proto").to_str().unwrap(), p("xfs.img").to_str().unwrap()],
     ) {
         imgs.push(p("xfs.img"));
+    }
+    // Phase 39 C1: FAT, filled by mtools
+    let fat = p("fat.img");
+    if run("mkfs.vfat", &["-C", fat.to_str().unwrap(), "16384"])
+        && run(
+            "mcopy",
+            &[
+                "-s",
+                "-i",
+                fat.to_str().unwrap(),
+                tree.join("docs").to_str().unwrap(),
+                tree.join("empty").to_str().unwrap(),
+                tree.join("deep").to_str().unwrap(),
+                "::/",
+            ],
+        )
+    {
+        imgs.push(fat);
     }
     let hashes = Limits {
         hashes: Some(fsindex::HashBudget {

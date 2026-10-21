@@ -888,6 +888,7 @@ their IDs. In progress:
   before).
 - [x] Phase 39 O1: the configuration backup also goes to the second offsite target.
 - [x] Phase 39 S5: post-quantum TLS (X25519MLKEM768) on our endpoints, interop with OpenSSL 3.5 both ways.
+- [x] Phase 39 C1 (part): content hashes of files on FAT and exFAT volumes in VM disks (btrfs still open).
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

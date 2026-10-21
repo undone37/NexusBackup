@@ -52,7 +52,22 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             }
             let kind = if e.is_dir() { KIND_DIR } else { KIND_FILE };
             let size = if kind == KIND_FILE { e.len() } else { 0 };
-            if !out.emit(info, &path, size, unix(e.modified()), kind)? {
+            // Phase 39 C1: content hash through the crate's reader (same budget as ext4/NTFS/XFS)
+            let mut sha = None;
+            if kind == KIND_FILE && out.hashing() {
+                if !out.hash_budget(size) {
+                    info.unhashed_files += 1;
+                } else {
+                    match crate::walk::hash_reader(e.to_file(), size) {
+                        Ok(h) => {
+                            sha = Some(h);
+                            info.hashed_files += 1;
+                        }
+                        Err(_) => info.unhashed_files += 1,
+                    }
+                }
+            }
+            if !out.emit_ext(info, &path, size, unix(e.modified()), kind, None, sha.as_ref())? {
                 return Ok(());
             }
             if kind == KIND_DIR {

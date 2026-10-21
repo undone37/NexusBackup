@@ -72,6 +72,24 @@ pub struct Out<'a> {
 /// Bytes read at a time when hashing a file.
 pub const HASH_READ: usize = 1 << 20;
 
+/// SHA-256 of the first `size` bytes of `r` (a short read is an error), read in [`HASH_READ`] pieces.
+pub fn hash_reader(mut r: impl std::io::Read, size: u64) -> Result<[u8; 32], String> {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; HASH_READ];
+    let mut done = 0u64;
+    while done < size {
+        let want = (size - done).min(HASH_READ as u64) as usize;
+        let n = r.read(&mut buf[..want]).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("short read".into());
+        }
+        h.update(&buf[..n]);
+        done += n as u64;
+    }
+    Ok(h.finalize().into())
+}
+
 impl Out<'_> {
     /// Whether hashes were asked for.
     pub fn hashing(&self) -> bool {
@@ -575,7 +593,9 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
             }
         }
         // Phase 31c: complete as far as hashes go (nothing left for lack of budget)
-        info.hashed = out.hashing() && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs") && !out.take_budget_miss();
+        info.hashed = out.hashing()
+            && matches!(info.fs.as_str(), "ntfs" | "ext4" | "xfs" | "vfat" | "exfat")
+            && !out.take_budget_miss();
         if info.dirty && info.state == "indexed" && info.fs != "ext4" {
             // ext4-view applies the journal; NTFS $LogFile / FAT are not replayed
             info.reason = Some("crash-consistent snapshot: changes of the last seconds may be missing".into());
