@@ -617,13 +617,15 @@ which only the recovery key unwraps. Nobody can read the bundle without the reco
 
 Where it goes:
 
-- to the offsite target of **every tenant** (except deactivated tenants), below `config/<appliance ID>/` (one file
+- to the offsite target of **every tenant** (except deactivated tenants), and to its second offsite target when it has
+  one, below `config/<appliance ID>/` (one file
   per run, named by its time). Each target keeps the newest bundle of each of the last **14 days** and of each of the
   last **12 months**; with S3 Object Lock every bundle is locked for 14 days, the monthly ones for six months;
 - the newest one stays on the appliance for **Download latest**.
 
 **Configuration → Settings → Backup of this appliance** (administrators and security officers) shows the last
-successful run, the newest bundle, the appliance ID, every offsite target with its last upload, and the recent runs.
+successful run, the newest bundle, the appliance ID, every offsite target (second targets marked as such) with its
+last upload, and the recent runs.
 Administrators can **Run now** (for example after larger changes) and **Download latest** (needs the download
 permission; audited as `download.get`; no approval, because the bundle is useless without the recovery key). Keep a
 downloaded copy with your disaster recovery records, especially when no tenant has an offsite target.

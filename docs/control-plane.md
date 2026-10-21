@@ -1092,7 +1092,8 @@ Daily sealed bundle of the appliance configuration, so a replacement appliance c
 - **Jobs.** `config_backup` (appliance job, daily `Config::config_backup` = `daily 02:30`, "Run now" in Settings):
   writes the request (`{id, appliance}`), waits for `status.json` of that id (`config_backup_timeout_secs`, 30 min).
   The appliance id is the setting `appliance_id` (16 hex digits, created on the first run; restored with the catalog).
-  On success one `config_upload {target, appliance, created}` per tenant with an offsite target (not deactivated):
+  On success one `config_upload {target, appliance, created[, n: 2]}` per tenant and offsite target (not deactivated;
+  `n: 2` for the second target, job files `offsite2.json`, alert `config_backup:<tenant>:2`):
   `nexus-offsite <job cfg> config-put latest.bundle <id> <created>` → `config/<id>/<created>.bundle`, then retention
   `offsite::config` (newest per day for 14 days + per month for 12 months, `chunkstore::retention::keep`); with
   Object Lock put locked for 14 days, monthly keepers extended to the monthly lock; deleting a locked bundle is

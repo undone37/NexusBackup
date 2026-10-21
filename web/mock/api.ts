@@ -10168,7 +10168,14 @@ on('GET', '/diagnostics/:id', (c, [id]) => {
 });
 
 // ---- appliance configuration backup (Settings -> Backup of this appliance)
-const cfgTargets = () => db.tenants.filter((x) => x.offsite?.remote).map((x) => x.name);
+// [tenant, target]: the offsite target and, Phase 39 O1, the second one
+const cfgTargets = (): [string, 1 | 2][] =>
+  db.tenants
+    .filter((x) => x.offsite?.remote)
+    .flatMap((x) => [
+      [x.name, 1] as [string, 1 | 2],
+      ...(x.offsite?.second?.remote ? [[x.name, 2] as [string, 1 | 2]] : []),
+    ]);
 const CFG_FILES = 14;
 function cfgBackupDone(j: Job, t: number) {
   const c = db.cfgBackup;
@@ -10187,11 +10194,17 @@ function cfgBackupDone(j: Job, t: number) {
     sha256: c.latest.sha256,
     files: CFG_FILES,
   };
-  for (const target of cfgTargets())
-    addJob('config_upload', '-', { target, appliance: c.appliance_id, created: t, backup_job: j.id }, 'scheduler', {
-      plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
-      duration: 3,
-    });
+  for (const [target, n] of cfgTargets())
+    addJob(
+      'config_upload',
+      '-',
+      { target, ...(n === 2 ? { n } : {}), appliance: c.appliance_id, created: t, backup_job: j.id },
+      'scheduler',
+      {
+        plan: [`uploaded config/${c.appliance_id}/${t}.bundle (${c.latest.bytes} bytes)`],
+        duration: 3,
+      },
+    );
 }
 function seedCfgBackup(t: number) {
   for (const d of [2, 1]) {
@@ -10235,10 +10248,11 @@ on('GET', '/settings/config-backup', (c) => {
       last_success: okAt((j) => j.kind === 'config_backup'),
       running: jobs.some((j) => j.kind === 'config_backup' && ['queued', 'running'].includes(j.state)),
       latest: db.cfgBackup.latest,
-      targets: cfgTargets().map((tenant) => {
-        const mine = (j: Job) => j.kind === 'config_upload' && j.params.target === tenant;
+      targets: cfgTargets().map(([tenant, target]) => {
+        const mine = (j: Job) =>
+          j.kind === 'config_upload' && j.params.target === tenant && (j.params.n ?? 1) === target;
         const l = last(mine);
-        return { tenant, last: l && cfgRun(l), last_ok: okAt(mine) };
+        return { tenant, target, last: l && cfgRun(l), last_ok: okAt(mine) };
       }),
       runs: jobs.slice(-20).reverse().map(cfgRun),
     },

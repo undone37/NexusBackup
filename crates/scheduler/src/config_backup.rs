@@ -5,11 +5,13 @@
 //!   ([`Config::config_backup_dir`]); `nexus-config-backup.path` starts the root
 //!   helper, which seals the bundle to keyd's public key and answers in
 //!   `status.json` + `latest.bundle`. The scheduler never sees the key files.
-//! - on success one `config_upload {target, appliance, created}` per tenant with an
-//!   offsite target: `nexus-offsite config-put` uploads `latest.bundle` to
-//!   `config/<appliance-id>/<created>.bundle` and keeps 14 daily + 12 monthly.
-//! - alerts (warning): `config_backup` (bundle not made), `config_backup:<tenant>`
-//!   (upload to that tenant's target failed); each resolves after the next success.
+//! - on success one `config_upload {target, appliance, created[, n: 2]}` per tenant and
+//!   offsite target (the second target too, Phase 39 O1): `nexus-offsite config-put`
+//!   uploads `latest.bundle` to `config/<appliance-id>/<created>.bundle` and keeps 14
+//!   daily + 12 monthly.
+//! - alerts (warning): `config_backup` (bundle not made), `config_backup:<tenant>` and
+//!   `config_backup:<tenant>:2` (upload to that tenant's first / second target failed);
+//!   each resolves after the next success.
 //!
 //! - after `nexus-setup restore-config` (same KEK as the lost appliance) the setting
 //!   [`REKEY_PENDING`] lists the tenants with an offsite target: no local DEK is created
@@ -42,8 +44,12 @@ pub const LATEST: &str = "latest.bundle";
 pub const REKEY_PENDING: &str = "config_restore_keys";
 const REKEY_RETRY_SECS: i64 = 3600;
 
-pub(crate) fn upload_alert_key(tenant: &str) -> String {
-    format!("{ALERT}:{tenant}")
+pub(crate) fn upload_alert_key(tenant: &str, n: u8) -> String {
+    if n == 2 {
+        format!("{ALERT}:{tenant}:2")
+    } else {
+        format!("{ALERT}:{tenant}")
+    }
 }
 
 /// Writes the helper request (tmp + rename; group nexus-catalog through the setgid dir).
@@ -204,15 +210,18 @@ impl Scheduler {
                 let target = p["target"].as_str().context("target missing")?;
                 let appliance = p["appliance"].as_str().context("appliance missing")?;
                 let created = p["created"].as_i64().context("created missing")?;
+                let n = upload_target(p);
                 let o = self
-                    .offsite_cfg(target)?
-                    .with_context(|| format!("tenant {target} has no offsite target"))?;
+                    .offsite_cfg_n(target, n)?
+                    .with_context(|| format!("tenant {target} has no offsite target {n}"))?;
                 let jd = self.job_dir(job.id);
-                let files = self.offsite_files(target, &o, &jd, 1)?;
+                let files = self.offsite_files(target, &o, &jd, n)?;
                 let step = Step::Cli {
                     bin: self.cfg.offsite_bin.clone(),
                     args: vec![
-                        jd.join("offsite.json").to_string_lossy().into_owned(),
+                        jd.join(format!("{}.json", crate::offsite_prefix(n)))
+                            .to_string_lossy()
+                            .into_owned(),
                         "config-put".into(),
                         dir.join(LATEST).to_string_lossy().into_owned(),
                         appliance.into(),
@@ -221,7 +230,12 @@ impl Scheduler {
                     alert: None,
                     capture: false,
                 };
-                (format!("config_upload:{target}"), vec![step], files)
+                let key = if n == 2 {
+                    format!("config_upload:{target}:2")
+                } else {
+                    format!("config_upload:{target}")
+                };
+                (key, vec![step], files)
             }
             _ => return Ok(None),
         };
@@ -263,15 +277,21 @@ impl Scheduler {
         }
         if job.kind == "config_upload" {
             let t = job.params["target"].as_str().unwrap_or_default();
+            let n = upload_target(&job.params);
             if ok {
-                return self.resolve(&upload_alert_key(t));
+                return self.resolve(&upload_alert_key(t, n));
             }
+            let which = if n == 2 {
+                "second offsite target"
+            } else {
+                "offsite target"
+            };
             return self.raise(
                 "warning",
                 ALERT,
-                &upload_alert_key(t),
+                &upload_alert_key(t, n),
                 &format!(
-                    "the configuration backup could not be uploaded to the offsite target of tenant {t} (job {}): {why}",
+                    "the configuration backup could not be uploaded to the {which} of tenant {t} (job {}): {why}",
                     job.id
                 ),
                 None,
@@ -294,14 +314,25 @@ impl Scheduler {
         for (t, _) in self.tenants()? {
             // a deactivated tenant's target gets nothing (its offsite runs are paused too)
             let off = catalog::tenants::disabled(&self.db.conn(), &t)?;
-            if !off && self.offsite_cfg(&t).ok().flatten().is_some() {
-                self.insert_job(
-                    "config_upload",
-                    "-",
-                    &json!({"target": t, "appliance": appliance, "created": created, "backup_job": job.id}),
-                )?;
+            for n in [1u8, 2] {
+                if !off && self.offsite_cfg_n(&t, n).ok().flatten().is_some() {
+                    let mut p = json!({"target": t, "appliance": appliance, "created": created, "backup_job": job.id});
+                    if n == 2 {
+                        p["n"] = json!(2);
+                    }
+                    self.insert_job("config_upload", "-", &p)?;
+                }
             }
         }
         Ok(())
+    }
+}
+
+/// The offsite target of a `config_upload` (`n`: 2 = the tenant's second target; absent: the first).
+fn upload_target(p: &Value) -> u8 {
+    if p["n"] == 2 {
+        2
+    } else {
+        1
     }
 }

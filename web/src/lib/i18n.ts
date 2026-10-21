@@ -2340,6 +2340,7 @@ export const en = {
       latestInfo: (size: string, files: number, ago: string) => `${size}, ${files} files, made ${ago}`,
       applianceId: 'Appliance ID',
       applianceIdHint: 'Folder on the offsite targets: config/<appliance ID>/',
+      second: 'second offsite target',
       run: 'Run now',
       running: 'Running…',
       started: 'Configuration backup started.',

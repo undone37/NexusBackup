@@ -1208,7 +1208,8 @@ state.md and commits.
   (2026-01) but is unreleased: move to ntfs 0.5 when it is published (2026-10-21).
 
 **Storage and offsite**
-- O1 Configuration backups to the second offsite target as well (today the first only) (Phase 30).
+- O1 **Done 2026-10-21:** configuration backups to the second offsite target as well (own job, alert key
+  `config_backup:<tenant>:2`, own row in Settings) (Phase 30).
 
 **Web UI**
 - U1 In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14).

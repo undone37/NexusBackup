@@ -15,7 +15,7 @@ use axum::extract::State;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use catalog::rusqlite::{Connection, OptionalExtension};
+use catalog::rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -86,31 +86,38 @@ fn view(st: &St, c: &Connection) -> ApiResult<Value> {
         |r| r.get(0),
     )?;
     let mut targets = Vec::new();
-    let names: Vec<String> = c
+    // every tenant's first and second offsite target (Phase 39 O1: the bundle goes to both)
+    let names: Vec<(String, bool)> = c
         .prepare(
-            "SELECT name FROM tenants WHERE json_valid(offsite) AND json_type(offsite, '$.remote') = 'object'
-         ORDER BY name",
+            "SELECT name, json_type(offsite, '$.second.remote') = 'object' FROM tenants
+             WHERE json_valid(offsite) AND json_type(offsite, '$.remote') = 'object' ORDER BY name",
         )?
-        .query_map([], |r| r.get(0))?
+        .query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false))))?
         .collect::<Result<_, _>>()?;
-    for t in names {
-        let last: Option<Value> = c
-            .query_row(
+    for (t, second) in names {
+        for n in [1i64, 2].into_iter().filter(|n| *n == 1 || second) {
+            // config_upload params carry `n: 2` for the second target, nothing for the first
+            let of_n = "COALESCE(json_extract(params, '$.n'), 1) = ?2";
+            let last: Option<Value> = c
+                .query_row(
+                    &format!(
+                        "SELECT {COLS} FROM jobs WHERE kind = 'config_upload' AND json_extract(params, '$.target') = ?1
+                         AND {of_n} ORDER BY id DESC LIMIT 1"
+                    ),
+                    params![t, n],
+                    job_row,
+                )
+                .optional()?;
+            let ok: Option<i64> = c.query_row(
                 &format!(
-                    "SELECT {COLS} FROM jobs WHERE kind = 'config_upload' AND json_extract(params, '$.target') = ?1
-                     ORDER BY id DESC LIMIT 1"
+                    "SELECT MAX(finished) FROM jobs WHERE kind = 'config_upload' AND state = 'ok'
+                     AND json_extract(params, '$.target') = ?1 AND {of_n}"
                 ),
-                [&t],
-                job_row,
-            )
-            .optional()?;
-        let ok: Option<i64> = c.query_row(
-            "SELECT MAX(finished) FROM jobs WHERE kind = 'config_upload' AND state = 'ok'
-             AND json_extract(params, '$.target') = ?1",
-            [&t],
-            |r| r.get(0),
-        )?;
-        targets.push(json!({"tenant": t, "last": last, "last_ok": ok}));
+                params![t, n],
+                |r| r.get(0),
+            )?;
+            targets.push(json!({"tenant": t, "target": n, "last": last, "last_ok": ok}));
+        }
     }
     Ok(json!({
         "appliance_id": catalog::setting(c, "appliance_id")?,

@@ -2129,7 +2129,8 @@ export interface ConfigBackupStatus {
   last_success: number | null;
   running: boolean;
   latest: { appliance: string; created: number; bytes: number; sha256: string | null; files: number | null } | null;
-  targets: { tenant: string; last: ConfigBackupRun | null; last_ok: number | null }[];
+  /** `target`: 1 = the tenant's offsite target, 2 = its second one */
+  targets: { tenant: string; target: 1 | 2; last: ConfigBackupRun | null; last_ok: number | null }[];
   runs: ConfigBackupRun[];
 }
 

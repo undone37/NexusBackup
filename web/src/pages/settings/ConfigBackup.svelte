@@ -101,10 +101,12 @@
               </tr>
             </thead>
             <tbody>
-              {#each st.targets as x (x.tenant)}
+              {#each st.targets as x (`${x.tenant}-${x.target}`)}
                 {@const c = chip(x.last)}
                 <tr>
-                  <td>{x.tenant}</td>
+                  <td
+                    >{x.tenant}{#if x.target === 2}<span class="muted"> · {t.settings.cfgb.second}</span>{/if}</td
+                  >
                   <td
                     >{#if c && x.last}<span class="chip {c.c}">{c.l}</span>
                       <a href={href(`/jobs/${x.last.id}`)}>{fmtTime(x.last.finished ?? x.last.created)}</a

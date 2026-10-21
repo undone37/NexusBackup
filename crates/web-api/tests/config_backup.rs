@@ -176,6 +176,27 @@ async fn status_run_now_and_download() {
         "only tenants with an offsite target"
     );
     assert_eq!(v.body["targets"].as_array().unwrap().len(), 1);
+    assert_eq!(v.body["targets"][0]["target"], 1);
+    // Phase 39 O1: a second target is its own row, with its own last upload
+    t.st.cat
+        .conn()
+        .execute_batch(
+            "UPDATE tenants SET offsite = '{\"remote\":{\"type\":\"local\",\"path\":\"/x\"},\"second\":{\"remote\":{\"type\":\"local\",\"path\":\"/y\"}}}' WHERE name = 'acme';
+             INSERT INTO jobs (kind, tenant, params, state, created, finished, requested_by)
+               VALUES ('config_upload', '-', '{\"target\":\"acme\",\"n\":2}', 'ok', 10, 20, 'scheduler');",
+        )
+        .unwrap();
+    let v = t.call(Method::GET, BASE, &sam).await;
+    let rows = v.body["targets"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        (rows[1]["target"].as_i64(), rows[1]["last_ok"].as_i64()),
+        (Some(2), Some(20))
+    );
+    assert!(
+        rows[0]["last_ok"].is_null(),
+        "the first target's uploads are counted apart"
+    );
     // no bundle yet
     assert_eq!(
         t.call(Method::GET, &format!("{BASE}/download"), &alice).await.status,

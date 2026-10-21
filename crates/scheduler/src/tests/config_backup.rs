@@ -106,6 +106,48 @@ fn backup_then_upload_to_every_target() {
     assert_eq!(s.appliance_id().unwrap(), appliance);
 }
 
+/// Phase 39 O1: a tenant with a second offsite target gets the bundle on both, each with
+/// its own job files (`offsite2.json`), job key and alert.
+#[test]
+fn upload_to_the_second_target_too() {
+    let (e, mut s) = config_env(true);
+    let p = e.d.path().to_owned();
+    e.db.conn()
+        .execute(
+            "UPDATE tenants SET offsite = ?1 WHERE name = 't1'",
+            [json!({"remote": {"type": "local", "path": p.join("box")},
+                    "second": {"remote": {"type": "local", "path": p.join("box2")}}})
+            .to_string()],
+        )
+        .unwrap();
+    manual(&s, "config_backup", "-", json!({}));
+    let h = helper(e.cfg.config_backup_dir.clone(), "done");
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    h.join().unwrap();
+    assert_eq!(count(&s, "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload'"), 2);
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload' AND json_extract(params, '$.n') = 2"
+        ),
+        1
+    );
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(30)).unwrap();
+    assert_eq!(
+        count(
+            &s,
+            "SELECT COUNT(*) FROM jobs WHERE kind = 'config_upload' AND state = 'ok'"
+        ),
+        2
+    );
+    let calls = fs::read_to_string(p.join("offsite-calls")).unwrap();
+    assert!(calls.contains("/offsite.json config-put"), "{calls}");
+    assert!(calls.contains("/offsite2.json config-put"), "{calls}");
+    assert_eq!(crate::config_backup::upload_alert_key("t1", 2), "config_backup:t1:2");
+}
+
 #[test]
 fn failures_raise_keyed_warnings_that_resolve() {
     let (e, mut s) = config_env(false);

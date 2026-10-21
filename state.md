@@ -886,6 +886,7 @@ their IDs. In progress:
   Windows SIDs as names; guest account names still open.
 - [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
   before).
+- [x] Phase 39 O1: the configuration backup also goes to the second offsite target.
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

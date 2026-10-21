@@ -2348,7 +2348,7 @@ impl Scheduler {
 
     /// Offsite target `n` of a tenant (Phase 30: 1 = `tenants.offsite`, 2 = its
     /// `second`), secrets opened; `None` without a remote.
-    fn offsite_cfg_n(&self, tenant: &str, n: u8) -> Result<Option<Value>> {
+    pub(crate) fn offsite_cfg_n(&self, tenant: &str, n: u8) -> Result<Option<Value>> {
         let o: Option<String> = self
             .db
             .conn()
@@ -3825,7 +3825,7 @@ fn offsite_target(v: &Value, n: u8) -> Option<Value> {
 }
 
 /// Job file name prefix of offsite target `n`.
-fn offsite_prefix(n: u8) -> &'static str {
+pub(crate) fn offsite_prefix(n: u8) -> &'static str {
     if n == 2 {
         "offsite2"
     } else {
