@@ -248,9 +248,10 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [ ] Offline key ceremony + standby key before beta: plan.md Phase 39 S1
 - [x] 0.2.0-alpha (2026-10-21): tag `v0.2.0-alpha` (a3f453cb) failed in the image build (slim.sh bind mount, exit 126
   under SELinux on the runner), `v0.2.0-alpha.1` (93b7d364) at the rechunk step (crun will not create a mount target
-  through the base image's /home -> var/home link); neither has a release. `v0.2.0-alpha.2` (805db64d, full CI
-  green): release.yml green (image, CVE, packages; CIS gate passed), draft with notes; iso.yml running. Maintainer:
-  sign and publish; decide whether to delete the two unreleased tags.
+  through the base image's /home -> var/home link), `v0.2.0-alpha.2` (805db64d) in iso.yml (bootc-image-builder:
+  "no dnf in container"; its draft holds image, CVE report and packages but no ISO). Fixed; `v0.2.0-alpha.3`
+  (d9a0da0d) with dnf kept in the image. Maintainer: sign and publish alpha.3; decide on the three unreleased tags
+  and the alpha.2 draft.
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
 Decisions: plan.md §2 (UI redesign, dashboard KPIs, OIDC + JIT provisioning, branding, UI deps). Contract: docs/phase12-contract.md
