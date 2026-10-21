@@ -246,6 +246,11 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
 - [x] Installer ISO (`iso.yml`, bootc-image-builder anaconda-iso, 1.86 GB) attached to v0.0.1-alpha; `lab/appliance/iso-test.sh`: unattended UEFI install in QEMU, first boot into the nexus-setup wizard, SELinux enforcing
 - [ ] ~~Make the ghcr.io package public~~ — decided 2026-10-12: repo + package stay private for now; test appliances need a pull credential (read:packages) for updates (Phase 14 add-on)
 - [ ] Offline key ceremony + standby key before beta: plan.md Phase 39 S1
+- [x] 0.2.0-alpha (2026-10-21): tag `v0.2.0-alpha` (a3f453cb) failed in the image build (slim.sh bind mount, exit 126
+  under SELinux on the runner), `v0.2.0-alpha.1` (93b7d364) at the rechunk step (crun will not create a mount target
+  through the base image's /home -> var/home link); neither has a release. `v0.2.0-alpha.2` (805db64d, full CI
+  green): release.yml green (image, CVE, packages; CIS gate passed), draft with notes; iso.yml running. Maintainer:
+  sign and publish; decide whether to delete the two unreleased tags.
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
 Decisions: plan.md §2 (UI redesign, dashboard KPIs, OIDC + JIT provisioning, branding, UI deps). Contract: docs/phase12-contract.md
