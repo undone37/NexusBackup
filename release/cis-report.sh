@@ -3,7 +3,7 @@
 # throw-away container of the AlmaLinux bootc base image (POLICY_CHECK_IMAGE, release/config.env)
 # installs openscap-scanner, openscap-utils and scap-security-guide and evaluates the CIS server level 1
 # profile with oscap-chroot against the appliance image mounted read-only (--mount type=image): the
-# appliance image has no dnf (os/slim.sh). Nothing is installed on the host and no image is changed.
+# appliance image installs nothing at run time (os/slim.sh). Nothing is installed on the host and no image is changed.
 # Gate (Phase 35d): every rule in release/cis-passing.txt must still pass, else exit 4 naming the
 # regressions. Other failures do not fail it: a file tree cannot show kernel, boot or service state
 # (docs/cis.md has every rule with its decision). Rules that pass now but are not in the list are printed

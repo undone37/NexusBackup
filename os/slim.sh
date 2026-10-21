@@ -12,7 +12,10 @@
 # /sysroot/ostree/bootc/storage through podman on every upgrade: without it `bootc upgrade` fails, lab
 # 2026-10-21), python3 standard library (nexus-update, nexus-diag, greenboot checks), grub2/shim/
 # bootupd, xfsprogs/e2fsprogs/dosfstools/util-linux (`bootc install` formats from the image itself),
-# erofs-utils (composefs), NetworkManager, nftables, chrony, audit, selinux, microcode, NIC firmware.
+# erofs-utils (composefs), NetworkManager, nftables, chrony, audit, selinux, microcode, NIC firmware; and dnf
+# with its Python modules, although nothing on the appliance installs packages (/usr is read-only):
+# bootc-image-builder resolves the installer ISO's packages with the image's own dnf ("no dnf in container",
+# release v0.2.0-alpha.2, 2026-10-21).
 set -euo pipefail
 
 remove=(
@@ -44,10 +47,9 @@ remove=(
 	# file systems and volume managers the appliance does not create (data array: mdadm + XFS)
 	exfatprogs btrfs-progs lvm2 lvm2-libs device-mapper-persistent-data device-mapper-event
 	device-mapper-event-libs
-	# package management: /usr is read-only, updates are whole signed images
-	dnf dnf-data python3-dnf python3-hawkey python3-libdnf python3-libcomps libcomps
+	# Python modules nothing of ours imports (dnf stays: see above)
 	python3-setuptools python3-requests python3-urllib3 python3-idna python3-charset-normalizer python3-pyyaml
-	python3-pexpect python3-ptyprocess python3-packaging python3-file-magic python3-dbus python3-rpm
+	python3-pexpect python3-ptyprocess python3-packaging python3-file-magic python3-dbus
 	gawk-all-langpacks glibc-gconv-extra
 	"$@"
 )
@@ -65,5 +67,6 @@ for d in bnx2 bnx2x qed tigon cxgb4 rtl_nic intel/ice; do
 	test -d "/usr/lib/firmware/$d" || { echo "slim.sh: missing NIC firmware $d" >&2; exit 1; }
 done
 command -v skopeo podman bootc ostree mkfs.xfs mkfs.vfat sfdisk >/dev/null
-! command -v dnf sudo >/dev/null
+! command -v sudo >/dev/null
+command -v dnf >/dev/null
 echo "slim.sh: $(rpm -qa | wc -l) packages left" >&2
