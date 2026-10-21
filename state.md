@@ -250,8 +250,9 @@ Decisions (user, 2026-10-11, plan.md §2): local Graph mock now, real M365 test 
   under SELinux on the runner), `v0.2.0-alpha.1` (93b7d364) at the rechunk step (crun will not create a mount target
   through the base image's /home -> var/home link), `v0.2.0-alpha.2` (805db64d) in iso.yml (bootc-image-builder:
   "no dnf in container"; its draft holds image, CVE report and packages but no ISO). Fixed; `v0.2.0-alpha.3`
-  (d9a0da0d) with dnf kept in the image. Maintainer: sign and publish alpha.3; decide on the three unreleased tags
-  and the alpha.2 draft.
+  (d9a0da0d) with dnf kept in the image: release.yml (CIS gate passed) and iso.yml green, draft complete (appliance
+  ISO 1.55 GB, edge ISO 1.83 GB, rescue ISO, packages, SBOM, CVE report). Maintainer: sign and publish alpha.3;
+  decide on the three unreleased tags and the alpha.2 draft.
 
 ## Phase 12 — Professional UI, KPI dashboard, OIDC (started 2026-10-11)
 Decisions: plan.md §2 (UI redesign, dashboard KPIs, OIDC + JIT provisioning, branding, UI deps). Contract: docs/phase12-contract.md
