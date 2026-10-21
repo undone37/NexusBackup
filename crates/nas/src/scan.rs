@@ -694,6 +694,15 @@ pub fn scan(
         fatal: Mutex::new(None),
     };
     let done = AtomicBool::new(false);
+    // C7: machine progress lines (`progress {json}`, part "scan") for the job page, every
+    // chunkstore::progress::EVERY; the item comes from the calling thread (nexus-nas main)
+    let template = chunkstore::progress::Line {
+        part: Some("scan".into()),
+        part_index: Some(1),
+        parts: Some(1),
+        ..Default::default()
+    }
+    .with_item();
     std::thread::scope(|sc| {
         let workers: Vec<_> = (0..opts.threads.clamp(1, 256))
             .map(|_| {
@@ -705,8 +714,19 @@ pub fn scan(
             .collect();
         sc.spawn(|| {
             let mut last = Instant::now();
+            let mut last_line = Instant::now();
             while !done.load(Relaxed) {
                 std::thread::sleep(Duration::from_millis(200));
+                if last_line.elapsed() >= chunkstore::progress::EVERY {
+                    last_line = Instant::now();
+                    let st = &s.stats;
+                    chunkstore::progress::Line {
+                        entries: Some(st.entries.load(Relaxed)),
+                        done: Some(st.bytes_read.load(Relaxed)),
+                        ..template.clone()
+                    }
+                    .print();
+                }
                 if last.elapsed() >= Duration::from_secs(30) {
                     last = Instant::now();
                     let st = &s.stats;
@@ -728,6 +748,13 @@ pub fn scan(
         }
         done.store(true, Relaxed);
     });
+    // the final state of the part, from the calling thread
+    chunkstore::progress::Line {
+        entries: Some(s.stats.entries.load(Relaxed)),
+        done: Some(s.stats.bytes_read.load(Relaxed)),
+        ..template
+    }
+    .print();
     if let Some(e) = s.fatal.lock().unwrap().take() {
         return Err(e);
     }

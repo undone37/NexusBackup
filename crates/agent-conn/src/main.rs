@@ -760,7 +760,16 @@ fn update_release(cfg: &Config) -> Result<()> {
     if let Err(e) = update::push_release(&mut s, rel, &plan, u.rollback, &mut |sent, total| {
         if last.elapsed() >= Duration::from_secs(2) || sent == total {
             last = Instant::now();
-            println!("progress {}", json!({"bytes": sent, "bytes_total": total}));
+            // machine line on stderr for the job page (the former stdout JSON had other field names and
+            // was dropped by the scheduler, Phase 39 C7)
+            chunkstore::progress::Line {
+                part: Some("agent release".into()),
+                done: Some(sent),
+                total: Some(total),
+                ..Default::default()
+            }
+            .with_item()
+            .print();
         }
     }) {
         let msg = format!("{e:#}");

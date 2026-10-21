@@ -884,6 +884,8 @@ their IDs. In progress:
   API-token-from-a-new-network rule (catalog v47 `token_networks`); manual chapters 9 and 10, screenshots.
 - [x] Phase 39 C2 (part): file search owner filter (index protocol `owners`, API `owner=`, UI field), well-known
   Windows SIDs as names; guest account names still open.
+- [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
+  before).
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

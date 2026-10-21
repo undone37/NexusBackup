@@ -88,8 +88,9 @@ impl Line {
         }
     }
 
-    /// This line with the thread's item context ([`start_item`]).
-    fn with_item(mut self) -> Line {
+    /// This line with the thread's item context ([`start_item`]); take it on the item's thread
+    /// when another thread (a monitor) prints the lines.
+    pub fn with_item(mut self) -> Line {
         ITEM.with(|c| {
             if let Some(i) = &*c.borrow() {
                 self.item = Some(i.item.clone());

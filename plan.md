@@ -1200,7 +1200,9 @@ state.md and commits.
   (Phase 19, 33).
 - C5 VMware vSphere: moved to Phase 41 (2026-10-21).
 - C6 Instant rollback for containers (Phase 30).
-- C7 Progress lines for nexus-nas and the plugin host (today log only) (Phase 31 lab notes).
+- C7 **Done 2026-10-21:** progress lines for nexus-nas (part `scan`: entries, bytes read; the share is the item) and the
+  plugin host (the plugin's text as the part); the plugin host's and the agent release push's former lines were not
+  machine lines and were dropped by the scheduler (Phase 31 lab notes).
 - C8 `ntfs` 0.4.0 (file index) pins binrw 0.11.3, which Rust 1.99 reports as future-incompatible (unnamed `...`
   argument, private extern crate re-export; rust-lang/rust#145544, #127909). ntfs master replaced binrw with zerocopy
   (2026-01) but is unreleased: move to ntfs 0.5 when it is published (2026-10-21).

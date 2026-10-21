@@ -319,7 +319,11 @@ fn main() -> Result<()> {
                 full_read: cfg.full_read,
             };
             let before = store.written();
+            // C7: the share is the job's one item (progress lines of the scan carry it)
+            let mut item = chunkstore::progress::item(&nas::source_name(cfg.source_id), None, 1, 1);
             let o = backup::backup(&store, &root, &spec, &log)?;
+            item.ok();
+            drop(item);
             let new = store.written().since(before);
             let r = &o.report;
             for e in &r.errors {

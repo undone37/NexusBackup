@@ -267,13 +267,30 @@ impl LogSink<'_> {
             (self.out)("plugin: [… further plugin log dropped (limit) …]");
         }
     }
+    /// The plugin's progress as a machine line (`progress {json}` on stderr, docs/control-plane.md
+    /// "Live progress"): the text is the part, `done`/`total` as the plugin counts them (0 total:
+    /// unknown). The former `progress d/t: text` log line was not JSON, so the scheduler dropped it
+    /// (Phase 39 C7).
     pub fn progress(&mut self, done: u64, total: u64, text: &str) {
-        if self.last_progress.is_some_and(|t| t.elapsed().as_secs() < 10) {
+        if self
+            .last_progress
+            .is_some_and(|t| t.elapsed() < chunkstore::progress::EVERY)
+        {
             return;
         }
         self.last_progress = Some(Instant::now());
-        (self.out)(&format!("progress {done}/{total}: {}", escape(text, 200)));
+        progress_line(done, total, text).print();
     }
+}
+
+pub(crate) fn progress_line(done: u64, total: u64, text: &str) -> chunkstore::progress::Line {
+    chunkstore::progress::Line {
+        part: Some(escape(text, 64)).filter(|p| !p.is_empty()),
+        done: Some(done),
+        total: (total > 0).then_some(total),
+        ..Default::default()
+    }
+    .with_item()
 }
 
 enum Open {
@@ -344,6 +361,8 @@ pub struct Params<'a> {
 
 /// Runs one backup (one plugin process = one snapshot of `p.source`).
 pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Result<Report> {
+    // the source is the job's item (progress lines carry it)
+    chunkstore::progress::name_item(p.source, None);
     let base = load_base(store, p.source).context("loading the base snapshot")?;
     let written = store.written();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
@@ -683,6 +702,27 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
 mod tests {
     use super::*;
     use chunkstore::{Keyring, Options};
+
+    #[test]
+    fn plugin_progress_is_a_machine_line() {
+        let (_, lines) = chunkstore::progress::capture(|| {
+            chunkstore::progress::name_item("plugin-1-db", None);
+            progress_line(5, 10, "dumping db").print();
+            progress_line(7, 0, "").print();
+        });
+        assert_eq!(lines[1].item.as_deref(), Some("plugin-1-db"));
+        assert_eq!(
+            (lines[1].part.as_deref(), lines[1].done, lines[1].total),
+            (Some("dumping db"), Some(5), Some(10))
+        );
+        assert_eq!(
+            (lines[2].part.as_deref(), lines[2].total),
+            (None, None),
+            "no text, unknown total"
+        );
+        let wire = lines[1].render();
+        assert!(chunkstore::progress::Line::parse(wire.trim_end()).is_some(), "{wire}");
+    }
 
     #[test]
     fn push_chunker_matches_store_file() {

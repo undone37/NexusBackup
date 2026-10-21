@@ -109,7 +109,17 @@ fn scan_is_deterministic_and_complete() {
         setxattr(&share.join("docs/README.txt"), "user.note", b"v1") && setxattr(&share.join("docs"), "user.dir", b"d");
     let root = mount::open_local(&share).unwrap();
     let st = store(&d.path().join("store"));
-    let (one, r1) = scan::scan(&st, &root, &opts(1), None, &quiet).unwrap();
+    // C7: the scan reports its part for the job page (`progress {json}`, item from the caller)
+    let ((one, r1), lines) = chunkstore::progress::capture(|| {
+        chunkstore::progress::name_item("share-7", None);
+        scan::scan(&st, &root, &opts(1), None, &quiet).unwrap()
+    });
+    let last = lines.last().expect("a progress line");
+    assert_eq!(
+        (last.part.as_deref(), last.item.as_deref()),
+        (Some("scan"), Some("share-7"))
+    );
+    assert_eq!(last.entries, Some(r1.entries));
     let (many, r8) = scan::scan(&st, &root, &opts(8), None, &quiet).unwrap();
     assert_eq!(one, many, "same tree with 1 and 8 threads");
     assert_eq!(r1.entries, r8.entries);
