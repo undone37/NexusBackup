@@ -40,7 +40,7 @@ fn keyd(dir: &Path) -> PathBuf {
     let sock = dir.join("keyd.sock");
     let l = UnixListener::bind(&sock).unwrap();
     let d = dir.to_owned();
-    std::thread::spawn(move || keyd::serve(l, &d, me()));
+    std::thread::spawn(move || keyd::serve(l, &d, keyd::Peers::only(me())));
     sock
 }
 

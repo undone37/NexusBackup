@@ -18,7 +18,7 @@ fn keyd(dir: &Path) -> (String, PathBuf) {
     let l = UnixListener::bind(&sock).unwrap();
     // SAFETY: getuid has no preconditions and cannot fail.
     let (dir, me) = (dir.to_owned(), unsafe { libc::getuid() });
-    std::thread::spawn(move || keyd::serve(l, &dir, me));
+    std::thread::spawn(move || keyd::serve(l, &dir, keyd::Peers::only(me)));
     (rk, sock)
 }
 
@@ -139,7 +139,7 @@ fn rekey_after_config_restore() {
     let l = UnixListener::bind(&sock_c).unwrap();
     // SAFETY: getuid has no preconditions and cannot fail.
     let (dir, me) = (kc.clone(), unsafe { libc::getuid() });
-    std::thread::spawn(move || keyd::serve(l, &dir, me));
+    std::thread::spawn(move || keyd::serve(l, &dir, keyd::Peers::only(me)));
     let (ok, out) = run(&config(root, "c", &sock_c, &box_), &["rekey"]);
     assert!(ok, "{out}");
     assert!(out.contains("1 snapshots indexed"), "{out}");
