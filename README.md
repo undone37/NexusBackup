@@ -42,6 +42,25 @@ recovery key.
 | MySQL / MariaDB (plugin) | dumps; physical backup plus binlog | restore, point in time |
 | Microsoft 365 (plugin) | Microsoft Graph: mailboxes, OneDrive, SharePoint libraries, Teams, Entra ID export | download; restore to the original or another user, site or team; export as eml/mbox/PST |
 
+### Planned sources
+
+In development or planned, in this order of the plan (`plan.md`). None of these work yet.
+
+| Source | Planned approach | Planned restores | Plan |
+|---|---|---|---|
+| **VMware ESXi** (standalone hosts, 7.0 and 8.0) | plugin `vmware-esxi`: snapshots with VMware Tools quiescing, changed block tracking (`QueryChangedDiskAreas`), datastore reads over HTTPS | to Proxmox VE (VM conversion), single files; back to ESXi later | Phase 41 |
+| **VMware vCenter** (7 and 8) | plugin `vmware-vcenter` on the same vSphere library: inventory, clusters, VMs that move between hosts, least-privilege role | as ESXi | Phase 41 |
+| **Windows bare metal** | volume images (EFI, MSR, Windows, recovery) with the layout of every backup | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | Phase 37 |
+| **Windows and Linux agents without an appliance** | standalone mode: local, USB, NFS, SMB, SFTP or S3 repository in the appliance's format, client-side schedules and triggers | from the client: files, volumes, whole machine | Phase 38 |
+| **Microsoft SQL Server** | VSS writer with full, differential and transaction log backups (log chain, optional log truncation) | database to a point in time, to the source or another instance | Phase 38f, 42 |
+| **Oracle Database** | RMAN backups plus archive logs | database to a point in time | Phase 38f, 42 |
+| **Exchange Server, Active Directory** | application-aware VSS (full backups that truncate Exchange logs), AD system state | databases; AD objects as far as the comparison in 38a decides | Phase 38f |
+| **Microsoft Hyper-V** (Windows Server 2019 to 2025) | host-level VM backups with Resilient Change Tracking, production checkpoints | full VM, to Proxmox VE, single files | Phase 42 |
+| **XCP-ng / XenServer** | XAPI snapshots with changed block tracking, VDI export | full VM, to Proxmox VE, single files | Phase 42 |
+
+Log backups that already work: PostgreSQL WAL archiving and MySQL/MariaDB binlogs (point-in-time restore, table
+above). SQL Server transaction logs and Oracle archive logs are part of the planned work above.
+
 ### Storage and security
 - **Storage:**
   - content-defined chunking with per-tenant keyed chunk IDs;
@@ -118,11 +137,12 @@ recovery key.
   diagnostics bundle and self-checks.
 
 ## What it does not do
-- **Hypervisors other than Proxmox VE:** no VMware (only a design document), Hyper-V, Nutanix, XCP-ng or OpenStack.
+- **Hypervisors other than Proxmox VE:** no VMware, Hyper-V or XCP-ng yet (planned, see "Planned sources"), and no
+  Nutanix or OpenStack.
 - **Cloud:** no AWS, Azure or GCP VMs, cloud PaaS databases, Kubernetes, Salesforce or Google Workspace.
 - **Tape and NDMP:** none, and no archive storage classes (Glacier Deep Archive and similar).
-- **Databases other than PostgreSQL and MySQL/MariaDB** are not handled natively: no Oracle, SQL Server (log chain
-  or point in time), SAP HANA or DB2. On Windows, VSS takes copy-only snapshots and never truncates logs.
+- **Databases other than PostgreSQL and MySQL/MariaDB** are not handled natively yet: Oracle and SQL Server (log
+  chain, point in time) are planned; SAP HANA and DB2 are not. On Windows, VSS takes copy-only snapshots and never truncates logs.
 - **Windows:**
   - file-level backups only, no block-level change tracking;
   - no bare-metal recovery (Linux only);
@@ -184,11 +204,11 @@ any cell. Detailed reviews: [Veeam](docs/veeam-comparison.md), [Cohesity](docs/c
 | **Deployment** | appliance image (ISO / VM) | software on Windows or a Linux appliance | appliances, virtual edition, SaaS | appliances, SaaS control plane | primary + media servers, appliances | software, HyperScale appliances, SaaS | Debian-based server |
 | **Proxmox VE VMs** | native (backup provider API, dirty bitmaps) | native | as a storage target for PVE's own backups | no native support documented | KVM agentless (11.1+), no PVE-specific integration | native | native (reference implementation) |
 | **Proxmox VE containers** | yes | no | through PVE's own backups | not documented | not documented | not documented | yes |
-| **VMware, Hyper-V, Nutanix** | no | yes | yes | yes | yes | yes | no |
+| **VMware, Hyper-V, Nutanix** | VMware and Hyper-V planned | yes | yes | yes | yes | yes | no |
 | **Physical Windows / Linux** | agents (file level on Windows) | agents | agents | agents | clients | agents | Linux client only |
 | **Bare-metal recovery** | Linux only | yes | yes | yes | yes | yes | no |
 | **Microsoft 365** | plugin, untested against a real tenant | separate product | yes | yes | separate SaaS | yes | no |
-| **Databases** | PostgreSQL, MySQL/MariaDB | broad | broad | broad | broad | broad | no (file level only) |
+| **Databases** | PostgreSQL, MySQL/MariaDB; SQL Server and Oracle planned | broad | broad | broad | broad | broad | no (file level only) |
 | **Dedup + encryption** | per tenant, always encrypted | yes | yes | yes | yes | yes | yes (client-side encryption optional) |
 | **Immutability** | extend-only locks, S3 Object Lock | hardened repository, Object Lock | WORM (DataLock) | immutable by design | WORM storage, Object Lock | WORM, Object Lock | no native lock |
 | **Multi-person approval** | yes, for all destructive actions | four-eyes for selected actions | quorum | quorum authorization | multi-person authorization | multi-person authorization | no |

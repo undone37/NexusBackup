@@ -916,6 +916,10 @@ Scope: plan.md Phase 41 (plugins `vmware-esxi` and `vmware-vcenter` on a shared 
 in a nested ESXi 7.0U3/8.0U3 lab on pve-test first, vCenter needs a VCSA ISO and evaluation licences; CBT
 incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Not started.
 
+## Phase 42 — Further hypervisors and databases (added 2026-10-21)
+Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle
+RMAN and archive logs, log backups on their own schedule); listed in the README under "Planned sources". Not started.
+
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
 Benchmark PDF in tmp/ (gitignored, CIS licence).

@@ -1315,6 +1315,23 @@ only if the spike shows it is needed).
 - UI, manual chapter, compatibility matrix rows, docs/plugin-system.md entry; lab e2e like `lab/truenas/e2e.sh`.
 Not started.
 
+### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
+
+Sources listed as planned in the README, beyond Phases 37, 38 and 41. Each one starts with a short design note in
+`docs/` (API, change tracking, consistency, licences and a lab plan) before code.
+- **Microsoft Hyper-V** (Windows Server 2019 to 2025, standalone and failover clusters): host-level VM backups through
+  WMI with production checkpoints and Resilient Change Tracking, as a plugin or as a mode of the Windows agent
+  (decided in the design note); restore as a Hyper-V VM, to Proxmox VE, or single files.
+- **XCP-ng / XenServer:** XAPI snapshots, changed block tracking on VDIs (NBD export), VM metadata; restore to the pool,
+  to Proxmox VE, or single files. Lab: nested XCP-ng on pve-test.
+- **Microsoft SQL Server** beyond the agent's VSS path (Phase 38f): full, differential and transaction log backups
+  with an unbroken log chain, point-in-time restore to the source or another instance, Always On secondaries.
+- **Oracle Database:** RMAN through a plugin (backup sets into the chunk store, archive logs on a short schedule),
+  point-in-time restore; licensing of the lab instance (Oracle Database Free) to check first.
+- **Log backups** as their own schedule for every database source (SQL Server transaction logs, Oracle archive logs,
+  as PostgreSQL WAL and MySQL binlogs already have), with the recoverable range shown per snapshot.
+Not started.
+
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
 ---
