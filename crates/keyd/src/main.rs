@@ -11,7 +11,9 @@ const USAGE: &str = "usage:
   keyd recover <dir>                    recovery key on stdin, re-seal KEK
   keyd tenant-create <dir> <tenant>
   keyd tenant-rotate <dir> <tenant>
-  keyd serve <dir> <socket> <allow-user>   allow-user: name or uid of chunkstore
+  keyd serve <dir> <socket> <allow-user> [read-only-group]
+                                        allow-user: name or uid of chunkstore; that user's processes
+                                        with primary group read-only-group only fetch keyrings
   keyd export-escrow <dir> <tenant> <out-dir>   wrapped KEK + tenant DEKs for the offsite copy
   keyd replica-pubkey <dir>             X25519 key a replication primary seals DEK exports to (hex)";
 
@@ -36,6 +38,23 @@ fn resolve_uid(user: &str) -> io::Result<u32> {
     Ok(unsafe { (*pw).pw_uid })
 }
 
+fn resolve_gid(group: &str) -> io::Result<u32> {
+    if let Ok(gid) = group.parse() {
+        return Ok(gid);
+    }
+    let name = CString::new(group).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad group"))?;
+    // SAFETY: as in resolve_uid: NUL-terminated name, resolved before any thread starts.
+    let gr = unsafe { libc::getgrnam(name.as_ptr()) };
+    if gr.is_null() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("unknown group {group}"),
+        ));
+    }
+    // SAFETY: `gr` is non-null and points to getgrnam's static entry, not overwritten since the call above.
+    Ok(unsafe { (*gr).gr_gid })
+}
+
 fn run(args: &[String]) -> io::Result<()> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
@@ -47,8 +66,11 @@ fn run(args: &[String]) -> io::Result<()> {
         ["recover", dir] => keyd::recover(Path::new(dir), &stdin_line()?)?,
         ["tenant-create", dir, t] => println!("{t}: DEK v{}", keyd::create_tenant(Path::new(dir), t)?),
         ["tenant-rotate", dir, t] => println!("{t}: DEK v{}", keyd::rotate_tenant(Path::new(dir), t)?),
-        ["serve", dir, socket, user] => {
-            let uid = resolve_uid(user)?;
+        ["serve", dir, socket, user, rest @ ..] if rest.len() <= 1 => {
+            let peers = keyd::Peers {
+                uid: resolve_uid(user)?,
+                read_only_gid: rest.first().map(|g| resolve_gid(g)).transpose()?,
+            };
             let _ = std::fs::remove_file(socket);
             let listener = UnixListener::bind(socket)?;
             // umask 077 made it 0600; the chunkstore user connects via group nexus-keyd
@@ -59,7 +81,7 @@ fn run(args: &[String]) -> io::Result<()> {
                     eprintln!("keyd: warning: cannot publish the configuration backup key: {e}");
                 }
             }
-            keyd::serve(listener, Path::new(dir), uid)?;
+            keyd::serve(listener, Path::new(dir), peers)?;
         }
         ["export-escrow", dir, tenant, out] => {
             for (name, bytes) in keyd::export_escrow(Path::new(dir), tenant)? {

@@ -5,7 +5,7 @@ ConditionPathExists=/var/lib/nexus/keyd/kek.recovery
 
 [Service]
 Type=exec
-ExecStart=/usr/libexec/nexus/keyd serve /var/lib/nexus/keyd /run/nexus-keyd/keyd.sock nexus-chunkstore
+ExecStart=/usr/libexec/nexus/keyd serve /var/lib/nexus/keyd /run/nexus-keyd/keyd.sock nexus-chunkstore nexus-index
 User=nexus-keyd
 Group=nexus-keyd
 Restart=on-failure

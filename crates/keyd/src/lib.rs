@@ -608,7 +608,8 @@ pub fn harden_process() {
     }
 }
 
-fn peer_uid(s: &UnixStream) -> io::Result<u32> {
+/// uid and primary gid of the connected process.
+fn peer_cred(s: &UnixStream) -> io::Result<(u32, u32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `cred` and `len` are valid, exclusive locals and `len` is the exact size of `cred` (ucred),
@@ -625,7 +626,30 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(cred.uid)
+    Ok((cred.uid, cred.gid))
+}
+
+/// Who may talk to keyd: the scheduler's uid; a process of that uid whose primary group is
+/// `read_only_gid` (nexus-index, Phase 39 S4) only fetches keyrings, nothing that creates, exports,
+/// imports or changes keys. A process cannot change its primary group without CAP_SETGID.
+// ponytail: the index still shares the scheduler's uid (stores are 0700 nexus-chunkstore); a uid of its
+// own needs group-readable stores on every existing appliance.
+#[derive(Clone, Copy, Debug)]
+pub struct Peers {
+    /// The only uid keyd answers (nexus-chunkstore).
+    pub uid: u32,
+    /// Primary gid of that uid's read-only processes (nexus-index).
+    pub read_only_gid: Option<u32>,
+}
+
+impl Peers {
+    /// Full access for `uid`, no read-only group.
+    pub fn only(uid: u32) -> Peers {
+        Peers {
+            uid,
+            read_only_gid: None,
+        }
+    }
 }
 
 /// Protocol (one request per connection, only the allowed uid):
@@ -648,28 +672,36 @@ fn peer_uid(s: &UnixStream) -> io::Result<u32> {
 ///
 /// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
-pub fn serve(listener: UnixListener, dir: &Path, allow_uid: u32) -> io::Result<()> {
+pub fn serve(listener: UnixListener, dir: &Path, peers: Peers) -> io::Result<()> {
     for conn in listener.incoming() {
-        if let Err(e) = handle(conn?, dir, allow_uid) {
+        if let Err(e) = handle(conn?, dir, peers) {
             eprintln!("keyd: request rejected: {e}");
         }
     }
     Ok(())
 }
 
-fn handle(mut s: UnixStream, dir: &Path, allow_uid: u32) -> io::Result<()> {
-    let uid = peer_uid(&s)?;
-    if uid != allow_uid {
+fn handle(mut s: UnixStream, dir: &Path, peers: Peers) -> io::Result<()> {
+    let (uid, gid) = peer_cred(&s)?;
+    if uid != peers.uid {
         return Err(err(
             io::ErrorKind::PermissionDenied,
             format!("peer uid {uid} not allowed"),
         ));
     }
+    let read_only = peers.read_only_gid == Some(gid);
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
     s.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut r = BufReader::new(&s);
     let mut line = String::new();
     (&mut r).take(256).read_line(&mut line)?;
+    // read-only peers: the plain keyring fetch `<tenant>\n` and nothing else
+    if read_only && (line.trim_end_matches('\n').contains(' ') || line.starts_with("replica-pubkey")) {
+        return Err(err(
+            io::ErrorKind::PermissionDenied,
+            format!("peer gid {gid} may only fetch keyrings"),
+        ));
+    }
     // zeroized: an `attach-escrow` body carries the recovery key
     let body = Zeroizing::new(match body_len(&line)? {
         Some(n) => {
@@ -1052,7 +1084,7 @@ mod tests {
         let dir = d.path().to_owned();
         let srv = std::thread::spawn(move || {
             for _ in 0..4 {
-                let _ = handle(l.accept().unwrap().0, &dir, me);
+                let _ = handle(l.accept().unwrap().0, &dir, Peers::only(me));
             }
         });
         assert!(fetch_keyring(&sock, "newco").is_err(), "plain get does not create");
@@ -1092,7 +1124,7 @@ mod tests {
         let dir = b.path().to_owned();
         let srv = std::thread::spawn(move || {
             for _ in 0..4 {
-                let _ = handle(l.accept().unwrap().0, &dir, me);
+                let _ = handle(l.accept().unwrap().0, &dir, Peers::only(me));
             }
         });
         assert!(
@@ -1146,7 +1178,7 @@ mod tests {
         let dir = b.path().to_owned();
         // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
-        std::thread::spawn(move || serve(l, &dir, uid));
+        std::thread::spawn(move || serve(l, &dir, Peers::only(uid)));
         let deks: Vec<_> = esc.iter().filter(|(n, _)| n.starts_with("tenants/")).cloned().collect();
         assert_eq!(request_import_wrapped(&sock, "acme", &deks).unwrap(), vec![1, 2]);
         assert_eq!(
@@ -1282,7 +1314,7 @@ mod tests {
             let dir = dir.to_owned();
             let t = std::thread::spawn(move || {
                 for _ in 0..n {
-                    let _ = handle(l.accept().unwrap().0, &dir, me);
+                    let _ = handle(l.accept().unwrap().0, &dir, Peers::only(me));
                 }
             });
             (sock, t)
@@ -1318,7 +1350,7 @@ mod tests {
         let dir = d.path().to_owned();
         let srv = std::thread::spawn(move || {
             for _ in 0..5 {
-                let _ = handle(l.accept().unwrap().0, &dir, me);
+                let _ = handle(l.accept().unwrap().0, &dir, Peers::only(me));
             }
         });
         let (key, public) = tenant_key::generate();
@@ -1363,13 +1395,43 @@ mod tests {
         let me = unsafe { libc::getuid() };
         let t = std::thread::spawn(move || {
             for _ in 0..2 {
-                let _ = handle(l.accept().unwrap().0, &dir, me);
+                let _ = handle(l.accept().unwrap().0, &dir, Peers::only(me));
             }
         });
         let (v, ts) = request_dek_age(&sock, "acme").unwrap();
         assert!(v == 2 && ts > 1_000_000, "the rotated version is current");
         assert!(request_dek_age(&sock, "nobody").is_err());
         t.join().unwrap();
+    }
+
+    #[test]
+    fn read_only_group_only_fetches_keyrings() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        create_tenant(d.path(), "acme").unwrap();
+        let sock = d.path().join("keyd.sock");
+        // SAFETY: getuid and getgid have no preconditions and cannot fail.
+        let (me, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let peers = Peers {
+            uid: me,
+            read_only_gid: Some(gid),
+        };
+        for (req, ok) in [
+            ("acme", true),
+            ("ensure acme", false),
+            ("ensure newtenant", false),
+            ("escrow acme", false),
+            ("replica-pubkey", false),
+        ] {
+            let l = UnixListener::bind(&sock).unwrap();
+            let dir = d.path().to_owned();
+            let t = std::thread::spawn(move || handle(l.accept().unwrap().0, &dir, peers));
+            let r = request_keyring(&sock, req, "acme");
+            assert_eq!(r.is_ok(), ok, "{req}");
+            assert_eq!(t.join().unwrap().is_ok(), ok, "{req}");
+            fs::remove_file(&sock).unwrap();
+        }
+        assert!(versions(d.path(), "newtenant").unwrap().is_empty(), "no DEK created");
     }
 
     #[test]
@@ -1383,7 +1445,7 @@ mod tests {
         for (allow, ok) in [(me, true), (me + 1, false)] {
             let l = UnixListener::bind(&sock).unwrap();
             let dir = d.path().to_owned();
-            let t = std::thread::spawn(move || handle(l.accept().unwrap().0, &dir, allow));
+            let t = std::thread::spawn(move || handle(l.accept().unwrap().0, &dir, Peers::only(allow)));
             let r = fetch_keyring(&sock, "acme");
             assert_eq!(r.is_ok(), ok);
             assert_eq!(t.join().unwrap().is_ok(), ok);
