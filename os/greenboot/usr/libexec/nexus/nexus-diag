@@ -225,15 +225,15 @@ def time_sync():
 
 
 def time_nts():
-    # authdata: name, ip, mode, key id, type, key length, last, ...; mode NTS for NTS sources
+    # authdata -c: name (address with -n), mode (NTS, SK or -), key id, type, key length, last, ...
     rc, out, err = run("chronyc", "-c", "-n", "authdata")
     if rc == 127:
         return "skip", 1, "chronyc not installed"
     if rc != 0:
         return "warn", 2, f"chronyc authdata failed: {(err or out).strip()[:200]}"
     rows = [l.split(",") for l in out.strip().splitlines() if l.count(",") >= 3]
-    nts = [r for r in rows if r[2] == "NTS"]
-    other = [r[0] for r in rows if r[2] != "NTS"]
+    nts = [r for r in rows if r[1] == "NTS"]
+    other = [r[0] for r in rows if r[1] != "NTS"]
     if not nts:
         return "warn", 2, "no NTS-authenticated time source"
     d = f"{len(nts)} NTS source(s)"

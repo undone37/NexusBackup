@@ -39,7 +39,8 @@ sys.exit(rc)
 
 TRACKING_OK = "C0A80001,192.168.0.1,2,1760000000.0,0.000012,0.000001,0.000010,1.0,0.0,0.1,0.01,0.001,64.0,Normal\n"
 TRACKING_BAD = "00000000,0.0.0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1.0,1.0,0.0,Not synchronised\n"
-AUTH_OK = "time.cloudflare.com,162.159.200.1,NTS,1,15,256,33,0,0,0\nptbtime1.ptb.de,192.53.103.108,NTS,1,15,256,33,0,0,0\n"
+# chronyc -c -n authdata as chrony 4.8 prints it (lab VM 201, 2026-10-21): address, mode, key id, ...
+AUTH_OK = "162.159.200.1,NTS,2,30,128,16891,0,0,8,64\n192.53.103.108,NTS,1,15,256,490043,0,0,8,100\n"
 
 
 def load(name, path):
@@ -255,7 +256,7 @@ class Checks(Host):
         self_signed(self.d / "cert.pem", 10)
         self.answers.update({
             "chronyc -c -n tracking": [0, TRACKING_BAD],
-            "chronyc -c -n authdata": [0, "pool.example,1.2.3.4,-,0,0,0,0,0,0,0\n"],
+            "chronyc -c -n authdata": [0, "1.2.3.4,-,0,0,0,0,0,0,0,0\n"],
             "nft list set inet nexus allowed_out_v6": [1, ""],
             "systemctl is-active --quiet nexus-keyd.service": [3, ""],
             "systemctl list-units --failed": [0, "nexus-scheduler.service loaded failed failed NexusBackup scheduler\n"],
