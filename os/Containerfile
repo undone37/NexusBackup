@@ -289,7 +289,10 @@ RUN usermod -L root \
 # Only the packages the appliance runs (os/slim.sh: firmware, translations, docs and unused base packages);
 # also keeps the installer ISO below GitHub's 2 GiB asset limit. The base image's layers only shrink in the
 # rechunked image (release/rechunk.sh), not in this layered one.
-RUN --mount=type=bind,source=os/slim.sh,target=/tmp/slim.sh bash /tmp/slim.sh
+COPY os/slim.sh /tmp/slim.sh
+# a COPY, not a bind mount: on an SELinux build host (the CI runner) the build container may not read a
+# bind-mounted file (release v0.2.0-alpha failed with exit 126)
+RUN bash /tmp/slim.sh && rm /tmp/slim.sh
 
 # COPY keeps the build host's modes (umask 002 → 0664/0775): strip group/world
 # write from everything shipped in /etc and /usr (base image docs excepted).

@@ -57,9 +57,13 @@ RUN dnf -y upgrade --refresh \
  && command -v nft nmtui chronyd >/dev/null
 
 # Only the packages the edge runs: the appliance's list (os/slim.sh) plus NFS, RAID and disk-health tools
-RUN --mount=type=bind,source=os/slim.sh,target=/tmp/slim.sh bash /tmp/slim.sh \
+COPY os/slim.sh /tmp/slim.sh
+# a COPY, not a bind mount: on an SELinux build host (the CI runner) the build container may not read a
+# bind-mounted file (release v0.2.0-alpha failed with exit 126)
+RUN bash /tmp/slim.sh \
       nfs-utils rpcbind gssproxy quota quota-nls mdadm smartmontools smartmontools-selinux nvme-cli \
-      qemu-img qemu-kvm-core qemu-kvm-common edk2-ovmf seabios-bin seavgabios-bin ipxe-roms-qemu
+      qemu-img qemu-kvm-core qemu-kvm-common edk2-ovmf seabios-bin seavgabios-bin ipxe-roms-qemu \
+ && rm /tmp/slim.sh
 
 COPY os/edge/sysusers.conf /usr/lib/sysusers.d/nexus-edge.conf
 COPY os/edge/tmpfiles.conf /usr/lib/tmpfiles.d/nexus-edge.conf
