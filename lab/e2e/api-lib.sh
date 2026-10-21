@@ -50,6 +50,14 @@ login() {
 		jq -r .csrf >"$S/$u.csrf"
 	expect 200 "login $u"
 	log "logged in as $u"
+	# a risk mark (Phase 29, e.g. a sign-in at an hour the account has not used): the first change of the
+	# session answers 428 until it re-authenticates, as the web UI's step-up dialog does
+	if api "$u" GET /auth/me | jq -e '.step_up != null and .step_up.done == false' >/dev/null; then
+		code=$(fresh_code "$u" "$sec")
+		api "$u" POST /auth/step-up "$(jq -nc --arg p "$pw" --arg t "$code" '{current_password:$p,current_totp:$t}')" >/dev/null
+		expect 200 "step-up $u"
+		log "stepped up as $u (risk mark: $(api "$u" GET /auth/me | jq -r '.step_up.reason'))"
+	fi
 }
 
 # wait_job USER ID [timeout s] -> final job JSON
