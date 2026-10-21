@@ -877,8 +877,11 @@ their IDs. In progress:
 - [x] Images stripped (os/slim.sh), podman kept (bootc's image store needs it; a podman-less image could not
   update). Dependabot: #11 closed (windows-core with windows), #13 replaced (totp-rs 6 port), #14 closed (tiny-skia
   follows iced), #12 rebased.
-- [ ] `nts.netnod.se`: its NTS key exchange hands out NTP servers at other addresses than the key-exchange host,
-  which the firewall does not let through, so it stays unreachable (also on 0.1). Phase 39 S7.
+- [x] `nts.netnod.se` was never reachable (also on 0.1): its NTS key exchange hands out NTP servers at other
+  addresses and on port 4123. nexus-time reports chronyd's NTP associations, nft-sync allows them (Phase 39 S7).
+  Lab 0.0.16-dev: all four default servers usable.
+- [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
+  the audit log.
 
 ## Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
