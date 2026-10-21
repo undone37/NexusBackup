@@ -179,6 +179,25 @@ fn versions_rules_paths_retention_paging() {
         .collect();
     assert!(owners.contains(&("/home/ann/cv.pdf", Some("1000:1000"))), "{owners:?}");
     assert!(owners.contains(&("D:/Data/x.pdf", None)), "{owners:?}");
+    // C2: owner filter, a uid alone matches any group, uid:gid and SIDs exactly
+    let by_owner = |o: &str| {
+        let r = s
+            .search(&SearchReq {
+                tenant: "acme".into(),
+                owners: Some(vec![o.into()]),
+                limit: 50,
+                ..Default::default()
+            })
+            .unwrap();
+        let mut p: Vec<String> = r.hits.iter().map(|h| h.path.clone()).collect();
+        p.sort();
+        p
+    };
+    assert_eq!(by_owner("1000"), ["/home/ann/cv.pdf"]);
+    assert_eq!(by_owner("1000:1000"), ["/home/ann/cv.pdf"]);
+    assert!(by_owner("100").is_empty(), "a uid is not a prefix");
+    assert!(by_owner("1000:1").is_empty());
+    assert!(by_owner("S-1-5-32-544").is_empty());
     let del = s
         .search(&SearchReq {
             tenant: "acme".into(),

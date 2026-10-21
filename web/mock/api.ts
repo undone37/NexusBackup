@@ -7412,8 +7412,25 @@ on('GET', '/files/search', async (c) => {
   if (limit < 1 || limit > 200) throw new HttpError(400, 'limit: 1..=200');
   const cursor = q.get('cursor');
   if (cursor !== null && !/^\d+$/.test(cursor)) throw new HttpError(400, 'cursor: as returned in next');
+  // C2: owners; well-known Windows group names become their SIDs (crates/web-api/src/filesearch.rs)
+  const WK: Record<string, string> = {
+    everyone: 'S-1-1-0',
+    system: 'S-1-5-18',
+    administrators: 'S-1-5-32-544',
+    users: 'S-1-5-32-545',
+  };
+  const owners = (q.get('owner') ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .map((x) => WK[x.toLowerCase()] ?? x);
+  if (owners.some((o) => !/^(S-1(-\d{1,10})+|\d{1,10}(:\d{1,10})?)$/.test(o)))
+    throw new HttpError(400, 'owners: a SID (S-1-5-…), uid:gid or a uid');
+  const ownerOk = (o: string | undefined) =>
+    !owners.length || (!!o && owners.some((x) => (/^\d+$/.test(x) ? o.startsWith(`${x}:`) : o === x)));
   const filtered =
     exts.length ||
+    owners.length ||
     smin !== undefined ||
     smax !== undefined ||
     mfrom !== undefined ||
@@ -7427,6 +7444,7 @@ on('GET', '/files/search', async (c) => {
   const re = text ? globRe(how === 'path' ? text.replace(/^\/+/, '') : text, false) : null;
   const { docs, snaps } = tenantIndex(tenant);
   const verOk = (v: Json) =>
+    ownerOk(v.owner) &&
     (smin === undefined || v.size >= smin) &&
     (smax === undefined || v.size <= smax) &&
     (mfrom === undefined || v.mtime >= mfrom) &&

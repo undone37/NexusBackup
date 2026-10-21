@@ -1191,7 +1191,9 @@ state.md and commits.
 **Sources and connectors**
 - C1 VM disk file hashes for btrfs, FAT and exFAT (NTFS, ext4, XFS done); NTFS compressed / encrypted / deduplicated
   files unhashed (Phase 28, 31c). MD5/SHA-1 IOC lists: decided SHA-256 only for now.
-- C2 File search: owner filter (web-api parameter + UI); SID and uid resolved to names (31c).
+- C2 File search: **done 2026-10-21:** owner filter (`owner=`: SID, uid, uid:gid, built-in Windows names; UI field),
+  names of Windows' well-known SIDs. Open: names of domain/local accounts and Linux users from the guest (SAM, AD,
+  /etc/passwd of the snapshot) (31c).
 - C3 Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
   volumes (31c).
 - C4 M365 item metadata search (sender, recipients) for cases: plugin contract change, design in docs/m365.md

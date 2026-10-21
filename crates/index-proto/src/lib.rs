@@ -29,7 +29,7 @@ pub const DEFAULT_LIMIT: usize = 50;
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     /// File search (web-api); answer: [`SearchResp`].
-    Search(SearchReq),
+    Search(Box<SearchReq>),
     /// Something changed in the tenant's store (commit, deletion, hold): sync soon.
     /// Sent by the scheduler; answer: `{"queued": tenant}`.
     Sync {
@@ -119,6 +119,10 @@ pub struct SearchReq {
     /// latest modification time, unix seconds (inclusive); absent: no upper bound
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtime_to: Option<i64>,
+    /// owners (C2): a Windows SID (`S-1-5-…`), a Linux `uid:gid`, or a uid alone (any group);
+    /// absent or empty: any. The web-api turns well-known Windows group names into their SIDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Vec<String>>,
     /// `file` | `dir`; absent: both
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
@@ -137,6 +141,18 @@ fn default_limit() -> usize {
     DEFAULT_LIMIT
 }
 
+/// An owner filter value: `S-1-<digits>(-<digits>)*`, `<uid>:<gid>` or `<uid>` (decimal, at most 10 digits each).
+pub fn owner_ok(o: &str) -> bool {
+    let num = |x: &str| (1..=10).contains(&x.len()) && x.bytes().all(|b| b.is_ascii_digit());
+    if let Some(rest) = o.strip_prefix("S-1-") {
+        return o.len() <= 184 && rest.split('-').all(num);
+    }
+    match o.split_once(':') {
+        Some((u, g)) => num(u) && num(g),
+        None => num(o),
+    }
+}
+
 impl SearchReq {
     /// The checks both sides make (web-api before forwarding, the service again).
     pub fn validate(&self) -> Result<(), String> {
@@ -148,9 +164,18 @@ impl SearchReq {
             || self.size_max.is_some()
             || self.mtime_from.is_some()
             || self.mtime_to.is_some()
+            || self.owners.as_ref().is_some_and(|o| !o.is_empty())
             || self.deleted == Deleted::Only;
         if self.q.trim().is_empty() && !filtered {
-            return Err("q: a search term or a filter (extension, size, time, deleted) is needed".into());
+            return Err("q: a search term or a filter (extension, size, time, owner, deleted) is needed".into());
+        }
+        for o in self.owners.iter().flatten() {
+            if !owner_ok(o) {
+                return Err(format!("owners: a SID (S-1-5-…), uid:gid or a uid, not {o:?}"));
+            }
+        }
+        if self.owners.as_ref().is_some_and(|o| o.len() > 16) {
+            return Err("owners: at most 16".into());
         }
         if !(1..=MAX_LIMIT).contains(&self.limit) {
             return Err(format!("limit: 1..={MAX_LIMIT}"));
@@ -433,6 +458,22 @@ mod tests {
         assert!(bad(&|r| r.ext = Some(vec![".pdf".into()])));
         assert!(bad(&|r| r.kinds = Some(vec!["disk".into()])));
         assert!(bad(&|r| r.entry = Some("x".into())));
+        assert!(bad(&|r| r.owners = Some(vec!["root".into()])));
+        assert!(bad(&|r| r.owners = Some(vec!["S-1-5-x".into()])));
+        assert!(bad(&|r| r.owners = Some(vec!["1000:".into()])));
+        assert!(bad(&|r| r.owners = Some((0..17).map(|i| i.to_string()).collect())));
+        for o in ["S-1-5-32-544", "S-1-5-21-1-2-3-1001", "1000:1000", "0"] {
+            let mut r = ok.clone();
+            r.owners = Some(vec![o.into()]);
+            assert!(r.validate().is_ok(), "{o}");
+        }
+        let only_owner = SearchReq {
+            tenant: "t".into(),
+            owners: Some(vec!["1000".into()]),
+            limit: 10,
+            ..Default::default()
+        };
+        assert!(only_owner.validate().is_ok(), "an owner alone is a filter");
         assert!(bad(&|r| (r.size_min, r.size_max) = (Some(5), Some(1))));
         let mut only = ok.clone();
         only.q.clear();

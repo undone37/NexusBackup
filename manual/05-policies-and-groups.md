@@ -242,7 +242,10 @@ directly. Only the metadata of changed volumes and folders is read again, so the
 minutes. Linux paths are shown with their mount points from the guest's `/etc/fstab`, Windows paths with the drive
 letters from the guest's registry (`C:` for the system volume when the registry does not say). The index also keeps
 each file's owner (Windows account SID, Linux user and group number); the search API returns it with each version
-of a hit (`versions[].owner`).
+of a hit (`versions[].owner`, with `owner_name` for Windows' built-in accounts and groups). **Find files** filters by
+owner (**More filters → Owner**): a Linux uid (any group) or `uid:gid`, a Windows SID, or a built-in Windows name
+such as `Administrators`, `SYSTEM` or `Users` (API: `owner=`, comma separated). Names of domain and local accounts and
+of Linux users are not resolved yet; search by SID or uid.
 Volumes the parser cannot read (BitLocker or LUKS encryption, ReFS, Storage Spaces, striped or RAID-5 dynamic volumes)
 are skipped and reported per snapshot (**partly indexed** on the Snapshots page and in the search). Only snapshots
 taken while the setting is on are indexed. Turning it on or off is recorded in the audit log (`group.index_files`).

@@ -45,9 +45,42 @@ pub struct SearchQuery {
     mtime_from: Option<i64>,
     mtime_to: Option<i64>,
     entry: Option<String>,
+    /// C2: comma-separated SIDs, uid:gid, uids or well-known Windows group names
+    owner: Option<String>,
     deleted: Option<String>,
     limit: Option<usize>,
     cursor: Option<String>,
+}
+
+/// Well-known Windows SIDs (the same on every Windows system) and their names. Domain and local
+/// account SIDs need the guest's account database and stay as SIDs.
+// ponytail: well-known SIDs only; names of domain/local accounts and Linux uids need the guest's SAM,
+// AD or /etc/passwd from the snapshot (Phase 39 C2 rest)
+const WELL_KNOWN: &[(&str, &str)] = &[
+    ("S-1-1-0", "Everyone"),
+    ("S-1-3-0", "CREATOR OWNER"),
+    ("S-1-5-18", "SYSTEM"),
+    ("S-1-5-19", "LOCAL SERVICE"),
+    ("S-1-5-20", "NETWORK SERVICE"),
+    ("S-1-5-32-544", "Administrators"),
+    ("S-1-5-32-545", "Users"),
+    ("S-1-5-32-546", "Guests"),
+    ("S-1-5-32-551", "Backup Operators"),
+    (
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        "TrustedInstaller",
+    ),
+];
+
+fn well_known_name(sid: &str) -> Option<&'static str> {
+    WELL_KNOWN.iter().find(|(s, _)| *s == sid).map(|(_, n)| *n)
+}
+
+fn sid_of(name: &str) -> Option<&'static str> {
+    WELL_KNOWN
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(name))
+        .map(|(s, _)| *s)
 }
 
 fn unavailable(e: std::io::Error) -> ApiError {
@@ -151,6 +184,7 @@ pub async fn search(State(st): State<St>, ctx: Ctx, Q(f): Q<SearchQuery>) -> Api
         mtime_from: f.mtime_from,
         mtime_to: f.mtime_to,
         entry: f.entry.clone(),
+        owners: list(&f.owner).map(|v| v.into_iter().map(|o| sid_of(&o).map_or(o, str::to_owned)).collect()),
         deleted,
         limit: f.limit.unwrap_or(index_proto::DEFAULT_LIMIT),
         cursor: f.cursor.clone(),
@@ -168,7 +202,7 @@ pub async fn search(State(st): State<St>, ctx: Ctx, Q(f): Q<SearchQuery>) -> Api
     let resp: SearchResp = if sources.as_ref().is_some_and(std::vec::Vec::is_empty) {
         SearchResp::default()
     } else {
-        serde_json::from_value(call(&st, Request::Search(req)).await?)
+        serde_json::from_value(call(&st, Request::Search(Box::new(req))).await?)
             .map_err(|e| ApiError(StatusCode::BAD_GATEWAY, format!("nexus-index answer: {e}")))?
     };
     Ok(Json(enrich(&st, &tenant, resp)?))
@@ -212,7 +246,8 @@ fn enrich(st: &St, tenant: &str, resp: SearchResp) -> ApiResult<Value> {
                         .filter(|t| *t >= v.first as i64 && v.gone.is_none_or(|g| *t < g as i64))
                         .filter(|t| idx.is_some_and(|i| i.contains(t)))
                         .collect();
-                    json!({"size": v.size, "mtime": v.mtime, "first": v.first, "gone": v.gone, "times": held, "owner": v.owner})
+                    json!({"size": v.size, "mtime": v.mtime, "first": v.first, "gone": v.gone, "times": held, "owner": v.owner,
+                           "owner_name": v.owner.as_deref().and_then(well_known_name)})
                 })
                 .collect();
             json!({"source": h.source, "path": h.path, "browse": h.browse, "kind": h.kind, "versions": versions})

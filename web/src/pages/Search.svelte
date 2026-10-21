@@ -56,7 +56,9 @@
   let modFrom = $state('');
   let modTo = $state('');
   let entry = $state(qp('entry'));
-  let more = $state(!!(kinds0.length || qp('ext') || qp('entry') || qp('deleted')));
+  // C2: owners (SID, uid:gid, uid, or a well-known Windows group name the server turns into its SID)
+  let owner = $state(qp('owner'));
+  let more = $state(!!(kinds0.length || qp('ext') || qp('entry') || qp('deleted') || qp('owner')));
   let deleted = $state(qp('deleted') || 'any');
 
   let busy = $state(false);
@@ -117,6 +119,11 @@
     mtime_from: day(modFrom, false),
     mtime_to: day(modTo, true),
     entry,
+    owner: owner
+      .split(/[,;]+/)
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .join(','),
     deleted: deleted === 'any' ? undefined : deleted,
   });
   // an empty query is fine when a filter narrows the search
@@ -128,6 +135,7 @@
         params.size_max !== undefined ||
         params.mtime_from !== undefined ||
         params.mtime_to !== undefined ||
+        !!params.owner ||
         params.deleted === 'only'),
   );
   const paramQs = $derived(qs(params));
@@ -246,6 +254,7 @@
     modFrom = '';
     modTo = '';
     entry = '';
+    owner = '';
     deleted = 'any';
   }
 
@@ -467,6 +476,18 @@
         <select id="s-entry" bind:value={entry}>
           {#each ['', 'file', 'dir'] as x (x)}<option value={x}>{t.search.entries[x]}</option>{/each}
         </select>
+      </div>
+      <div class="field">
+        <label for="s-owner">{t.search.ownerFilter}</label>
+        <input
+          id="s-owner"
+          bind:value={owner}
+          spellcheck="false"
+          autocapitalize="none"
+          placeholder="1000, S-1-5-21-…, Administrators"
+          aria-describedby="s-owner-hint"
+        />
+        <div class="hint" id="s-owner-hint">{t.search.ownerHint}</div>
       </div>
       <div class="field">
         <label for="s-deleted">{t.search.deleted}</label>

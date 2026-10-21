@@ -132,6 +132,19 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
         let lc: Vec<String> = e.iter().map(|x| x.to_lowercase()).collect();
         must.push((Occur::Must, set(f.ext, &lc)));
     }
+    if let Some(o) = r.owners.as_ref().filter(|o| !o.is_empty()) {
+        // a uid alone: any group (`uid:gid` is what the Linux walkers store)
+        let (uids, exact): (Vec<&String>, Vec<&String>) = o.iter().partition(|x| x.bytes().all(|b| b.is_ascii_digit()));
+        let mut any: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        if !exact.is_empty() {
+            let exact: Vec<String> = exact.into_iter().cloned().collect();
+            any.push((Occur::Should, set(f.owner, &exact)));
+        }
+        for uid in uids {
+            any.push((Occur::Should, regex(&format!("{uid}:[0-9]+"), f.owner)?));
+        }
+        must.push((Occur::Must, Box::new(BooleanQuery::new(any))));
+    }
     let u = |v: Option<u64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_u64(field, v)));
     let i = |v: Option<i64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_i64(field, v)));
     if r.size_min.is_some() || r.size_max.is_some() {

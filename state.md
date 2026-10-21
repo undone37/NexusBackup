@@ -882,6 +882,8 @@ their IDs. In progress:
   Lab 0.0.16-dev: all four default servers usable.
 - [x] Phase 39 S2: risk signal thresholds as the gated setting `risk` (Settings → Security → Risk signal rules), the
   API-token-from-a-new-network rule (catalog v47 `token_networks`); manual chapters 9 and 10, screenshots.
+- [x] Phase 39 C2 (part): file search owner filter (index protocol `owners`, API `owner=`, UI field), well-known
+  Windows SIDs as names; guest account names still open.
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

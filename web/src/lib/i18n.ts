@@ -1832,6 +1832,9 @@ export const en = {
     } as Record<string, string>,
     ext: 'Extensions',
     extHint: 'Comma separated, without dots, e.g. pdf, docx',
+    ownerFilter: 'Owner',
+    ownerHint:
+      'Linux: a uid (any group) or uid:gid. Windows: a SID, or a built-in group such as Administrators, SYSTEM or Users. Comma separated.',
     sizeMin: 'Size from',
     sizeMax: 'Size up to',
     sizeUnit: 'Size unit',
