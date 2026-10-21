@@ -387,7 +387,7 @@ account or an insider at work. The rules are fixed and deterministic:
 | Signal | Rule | Severity |
 |---|---|---|
 | Unusual hour | a sign-in at an hour of day (UTC, plus or minus one hour) the account has not used in the last 90 days, once it has at least 10 sign-ins of history | warning |
-| Weakening burst | 5 or more weakening requests within one hour: switching approvals off, cutting retention in a policy, changing the management allow-list, firewall or forwarding, deleting offsite or replication settings, vault or keep-until changes, releasing holds | critical |
+| Weakening burst | 5 or more weakening requests within one hour: switching approvals off, cutting retention in a policy, changing the management allow-list, firewall or forwarding, deleting offsite or replication settings, vault or keep-until changes, releasing holds, time servers with plain NTP | critical |
 | Bulk deletes | 10 or more delete requests within one hour (snapshots, sources, groups, agents, tenants, policies) | critical |
 | Download volume | downloads in 24 hours above ten times the account's median daily volume of the last 30 days, and above 1 GiB | warning |
 

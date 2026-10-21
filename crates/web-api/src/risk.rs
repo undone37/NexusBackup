@@ -6,7 +6,7 @@
 //!   has at least 10 sign-ins of history (`login_hours`) -> warning;
 //! - **weakening burst** ([`observe`], every audit record): 5 or more requests
 //!   in one hour that weaken protection (approvals off, retention cuts, allow-
-//!   list / firewall / forwarding / anomaly / session / passkey policy changes,
+//!   list / firewall / forwarding / anomaly / session / passkey policy changes, plain NTP time servers,
 //!   offsite target removals, replication deletes, hold releases, keep limits,
 //!   tenant deactivation) -> critical;
 //! - **bulk deletes**: 10 or more delete requests in one hour (snapshots,
@@ -110,7 +110,11 @@ pub fn classify(action: &str, details: &Value) -> Option<Kind> {
     };
     if DELETES.contains(&a) {
         Some(Kind::Delete)
-    } else if WEAKENING.contains(&a) || (a == "policy.update" && retention_cut(p)) {
+    } else if WEAKENING.contains(&a)
+        || (a == "policy.update" && retention_cut(p))
+        // unauthenticated time sources: the clock that retention locks run on can be moved
+        || (a == crate::timesync::ACTION && p["plain_ntp"].as_array().is_some_and(|v| !v.is_empty()))
+    {
         Some(Kind::Weakening)
     } else {
         None
@@ -472,5 +476,16 @@ mod tests {
             "the execution after an approval is not counted again"
         );
         assert_eq!(classify("group.update", &json!({})), None);
+        assert_eq!(
+            classify(
+                "quorum.request",
+                &req("time.servers", json!({"plain_ntp": ["ntp.internal"]}))
+            ),
+            Some(Kind::Weakening)
+        );
+        assert_eq!(
+            classify("quorum.request", &req("time.servers", json!({"plain_ntp": []}))),
+            None
+        );
     }
 }
