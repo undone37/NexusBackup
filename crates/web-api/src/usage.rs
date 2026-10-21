@@ -29,7 +29,8 @@ pub async fn usage(State(st): State<St>, ctx: Ctx, Q(q): Q<UsageQ>) -> ApiResult
     if from > now {
         return Err(ApiError::bad("month: lies in the future"));
     }
-    let to = end.min(now.max(from + 1));
+    // the period is [from, to): up to and including the current second
+    let to = end.min((now + 1).max(from + 1));
     let scope = match (ctx.scope(), q.tenant.as_deref().filter(|t| !t.is_empty())) {
         (Some(own), Some(t)) if t != own => return Err(ApiError::forbidden()),
         (Some(own), _) => Some(own.to_owned()),
