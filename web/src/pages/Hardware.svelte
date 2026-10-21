@@ -129,6 +129,12 @@
     (hw?.disks ?? []).filter((d) => d.role === 'empty' && d.serial && (!a?.used_dev_size || d.size >= a.used_dev_size));
   const diskLabel = (d: HwDisk) => t.hw.diskOption(d.name, d.model ?? '?', d.serial ?? '?', fmtBytes(d.size));
   const managed = (a: HwArray) => a.role === 'data' || a.role === 'metadata';
+  // U1: from a disk row to its array's card (replace, spare) below
+  function toArray(name: string) {
+    const el = document.getElementById(`hw-a-${name}`)?.closest('article');
+    el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    el?.querySelector('button')?.focus({ preventScroll: true });
+  }
   const growable = (a: HwArray) => (a.level === 'raid5' || a.level === 'raid6') && a.state === 'clean' && !a.degraded;
   function openOp(kind: OpKind, a: HwArray) {
     opKind = kind;
@@ -286,7 +292,9 @@
                   <span class="chip {roleCls[d.role] ?? 'plain'}" title={t.hw.roleHints[d.role]}
                     >{t.hw.roles[d.role] ?? d.role}</span
                   >
-                  {#if d.array}<div class="muted small mono">{d.array}</div>{/if}
+                  {#if d.array}<div class="small mono">
+                      <button type="button" class="link" onclick={() => toArray(d.array!)}>{d.array}</button>
+                    </div>{/if}
                   {#if d.why}<div class="muted small">{d.why}</div>{/if}
                 </td>
                 <td><span class="chip {h.cls}">{h.text}</span></td>
@@ -308,6 +316,11 @@
                   <td colspan="9">
                     <div class="issues">
                       {#each d.issues as i, n (n)}<span class="chip {sevCls[i.severity]}">{i.message}</span>{/each}
+                      {#if d.array && d.issues.some((i) => i.severity !== 'info') && hw.arrays.some((a) => a.name === d.array && managed(a))}
+                        <button type="button" class="link small" onclick={() => toArray(d.array!)}
+                          >{t.hw.toArray(d.array)}</button
+                        >
+                      {/if}
                     </div>
                   </td>
                 </tr>

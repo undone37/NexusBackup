@@ -2920,6 +2920,7 @@ export const en = {
     temp: 'Temperature',
     keyAttrs: 'Key attributes',
     selfTest: 'Last self-test',
+    toArray: (a: string) => `Replace or add a spare in ${a}`,
     details: 'Details',
     detailsLabel: (d: string) => `SMART details of ${d}`,
     types: { hdd: 'HDD', ssd: 'SSD', nvme: 'NVMe' } as Record<string, string>,

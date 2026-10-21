@@ -1213,7 +1213,8 @@ state.md and commits.
   `config_backup:<tenant>:2`, own row in Settings) (Phase 30).
 
 **Web UI**
-- U1 In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14).
+- U1 In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14). 2026-10-21: Hardware
+  disk rows link to their array card (replace, spare); Search got the owner filter (C2); Plugins reviewed, no change.
 
 **Release and CI**
 - R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
