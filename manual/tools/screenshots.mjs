@@ -999,6 +999,8 @@ async function main() {
     ['access', async () => {
       await go('/settings?tab=security');
       await shot('settings-security', { height: 2000 });
+      await ev(`document.querySelector('#sec-risk')?.closest('section').scrollIntoView({ block: 'center' }); return true;`);
+      await shot('settings-risk-rules', { scrolled: true });
       await go('/account');
       await shot('account-sessions');
       await go('/users');

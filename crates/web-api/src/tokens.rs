@@ -242,6 +242,7 @@ fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> 
             params![tok.id, now, ip],
         )?;
     }
+    crate::risk::token_use(&c, tok.id, &tok.name, user.id, ip)?;
     user.role = effective(&tok.scope, &user.role).0;
     // tokens never download (not on the allow-list either), whatever the account's privilege
     user.can_download = false;

@@ -12,7 +12,14 @@
 //! - **bulk deletes**: 10 or more delete requests in one hour (snapshots,
 //!   sources, groups, policies, agents, tenants) -> critical;
 //! - **download volume**: bytes downloaded in 24 h above 10 times the account's
-//!   median daily volume of the last 30 days, and above 1 GiB -> warning.
+//!   median daily volume of the last 30 days, and above 1 GiB -> warning;
+//! - **API token from a new network** ([`token_use`], every token request): a
+//!   token used from a network (/24 for IPv4, /48 for IPv6) it was not used from
+//!   before, once it has been used from one -> warning.
+//!
+//! The numbers are [`Thresholds`] (catalog setting `risk`, Settings → Security;
+//! the constants below are the defaults). Changing them is gated
+//! (`settings.risk`); a change that loosens a rule counts as weakening.
 //!
 //! A signal raises `user_risk` and marks the account for 24 h
 //! (`users.risk_since/risk_until/risk_reason`). While marked, the first changing
@@ -29,7 +36,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use catalog::rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const ALERT_KIND: &str = "user_risk";
@@ -44,11 +51,91 @@ pub const DOWNLOAD_FACTOR: u64 = 10;
 pub const DOWNLOAD_FLOOR: u64 = 1 << 30;
 const MANAGERS: &[&str] = &["admin", "security_officer"];
 
+/// The catalog setting holding [`Thresholds`] and the gated action that changes it.
+pub const SETTING: &str = "risk";
+pub const ACTION: &str = "settings.risk";
+
+/// The tunable numbers of the rules; missing fields take the defaults.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct Thresholds {
+    /// weakening requests within an hour that mark the account (2-50)
+    pub weakening_burst: usize,
+    /// delete requests within an hour (2-200)
+    pub delete_burst: usize,
+    /// 24-hour downloads above this multiple of the daily median (2-1000)
+    pub download_factor: u64,
+    /// ... and above this many MiB (64-1048576)
+    pub download_floor_mib: u64,
+    /// days of sign-in hours the unusual-hour rule compares with (14-365)
+    pub hour_baseline_days: i64,
+    /// sign-ins needed before the unusual-hour rule applies (3-100)
+    pub hour_min_sign_ins: i64,
+    /// the API-token-from-a-new-network rule
+    pub token_networks: bool,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds {
+            weakening_burst: WEAKENING_BURST,
+            delete_burst: DELETE_BURST,
+            download_factor: DOWNLOAD_FACTOR,
+            download_floor_mib: DOWNLOAD_FLOOR >> 20,
+            hour_baseline_days: BASELINE_DAYS,
+            hour_min_sign_ins: MIN_SIGN_INS,
+            token_networks: true,
+        }
+    }
+}
+
+impl Thresholds {
+    /// The stored setting, or the defaults (none stored, or unreadable: never weaker than the defaults
+    /// because of a broken value).
+    pub fn load(c: &Connection) -> Thresholds {
+        catalog::setting(c, SETTING)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str::<Thresholds>(&v).ok())
+            .filter(|t| t.validate().is_ok())
+            .unwrap_or_default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let check = |name: &str, v: u64, lo: u64, hi: u64| {
+            if (lo..=hi).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} must be between {lo} and {hi}"))
+            }
+        };
+        check("weakening_burst", self.weakening_burst as u64, 2, 50)?;
+        check("delete_burst", self.delete_burst as u64, 2, 200)?;
+        check("download_factor", self.download_factor, 2, 1000)?;
+        check("download_floor_mib", self.download_floor_mib, 64, 1 << 20)?;
+        check("hour_baseline_days", self.hour_baseline_days.max(0) as u64, 14, 365)?;
+        check("hour_min_sign_ins", self.hour_min_sign_ins.max(0) as u64, 3, 100)
+    }
+
+    /// Whether `self` detects less than `old` in any rule (higher counts or volumes, fewer days of
+    /// baseline, more history needed, a rule switched off).
+    pub fn loosens(&self, old: &Thresholds) -> bool {
+        self.weakening_burst > old.weakening_burst
+            || self.delete_burst > old.delete_burst
+            || self.download_factor > old.download_factor
+            || self.download_floor_mib > old.download_floor_mib
+            || self.hour_baseline_days < old.hour_baseline_days
+            || self.hour_min_sign_ins > old.hour_min_sign_ins
+            || (old.token_networks && !self.token_networks)
+    }
+}
+
 pub fn routes() -> Router<St> {
     Router::new()
         .route("/auth/step-up", post(step_up))
         .route("/risk", get(list))
         .route("/users/{id}/risk/clear", post(clear))
+        .route("/settings/risk", get(get_settings).put(put_settings))
 }
 
 /// What a request does, for the burst rules.
@@ -114,6 +201,7 @@ pub fn classify(action: &str, details: &Value) -> Option<Kind> {
         || (a == "policy.update" && retention_cut(p))
         // unauthenticated time sources: the clock that retention locks run on can be moved
         || (a == crate::timesync::ACTION && p["plain_ntp"].as_array().is_some_and(|v| !v.is_empty()))
+        || (a == ACTION && p["loosens"] == true)
     {
         Some(Kind::Weakening)
     } else {
@@ -130,14 +218,14 @@ fn median(mut v: Vec<u64>) -> u64 {
 }
 
 /// The download rule: `days` = bytes per earlier day with downloads (30 days).
-pub fn download_over(last_24h: u64, days: Vec<u64>) -> bool {
-    last_24h > DOWNLOAD_FLOOR && last_24h > DOWNLOAD_FACTOR.saturating_mul(median(days))
+pub fn download_over(t: &Thresholds, last_24h: u64, days: Vec<u64>) -> bool {
+    last_24h > t.download_floor_mib << 20 && last_24h > t.download_factor.saturating_mul(median(days))
 }
 
 /// The unusual-hour rule over the account's recent sign-in hours (`hour -> count`).
-pub fn unusual_hour(hour: i64, hours: &[(i64, i64)]) -> bool {
+pub fn unusual_hour(t: &Thresholds, hour: i64, hours: &[(i64, i64)]) -> bool {
     let total: i64 = hours.iter().map(|(_, n)| n).sum();
-    if total < MIN_SIGN_INS {
+    if total < t.hour_min_sign_ins {
         return false;
     }
     let near = [(hour + 23) % 24, hour, (hour + 1) % 24];
@@ -183,21 +271,25 @@ pub fn mark(c: &Connection, user_id: i64, rule: &str, severity: &str, why: &str)
 /// A new session of `user_id` (local, passkey or OIDC sign-in): the
 /// unusual-hour rule, then the hour joins the baseline.
 pub fn sign_in(c: &Connection, user_id: i64) -> ApiResult<()> {
+    let t = Thresholds::load(c);
     let now = catalog::now();
     let hour = (now.rem_euclid(86_400)) / 3600;
     let hours: Vec<(i64, i64)> = c
         .prepare("SELECT hour, count FROM login_hours WHERE user_id = ?1 AND last_seen >= ?2")?
-        .query_map(params![user_id, now - BASELINE_DAYS * 86_400], |r| {
+        .query_map(params![user_id, now - t.hour_baseline_days * 86_400], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?
         .collect::<Result<_, _>>()?;
-    if unusual_hour(hour, &hours) {
+    if unusual_hour(&t, hour, &hours) {
         mark(
             c,
             user_id,
             "sign_in_hour",
             "warning",
-            &format!("signed in at {hour:02}:xx UTC, an hour it has not used in {BASELINE_DAYS} days"),
+            &format!(
+                "signed in at {hour:02}:xx UTC, an hour it has not used in {} days",
+                t.hour_baseline_days
+            ),
         )?;
     }
     c.execute(
@@ -221,6 +313,7 @@ pub fn observe(c: &Connection, actor: &str, action: &str, details: &Value) -> Ap
     else {
         return Ok(());
     };
+    let t = Thresholds::load(c);
     let now = catalog::now();
     // the audit actor may carry a suffix (impersonation, API token)
     let rows: Vec<(i64, String, String)> = c
@@ -241,7 +334,7 @@ pub fn observe(c: &Connection, actor: &str, action: &str, details: &Value) -> Ap
             })
             .count();
         match k {
-            Kind::Weakening if n >= WEAKENING_BURST => mark(
+            Kind::Weakening if n >= t.weakening_burst => mark(
                 c,
                 user_id,
                 "weakening",
@@ -251,7 +344,7 @@ pub fn observe(c: &Connection, actor: &str, action: &str, details: &Value) -> Ap
                     details["action"].as_str().unwrap_or(action)
                 ),
             )?,
-            Kind::Delete if n >= DELETE_BURST => mark(
+            Kind::Delete if n >= t.delete_burst => mark(
                 c,
                 user_id,
                 "deletes",
@@ -277,7 +370,7 @@ pub fn observe(c: &Connection, actor: &str, action: &str, details: &Value) -> Ap
             *days.entry(ts.div_euclid(86_400)).or_default() += b;
         }
     }
-    if download_over(last, days.into_values().collect()) {
+    if download_over(&t, last, days.into_values().collect()) {
         mark(
             c,
             user_id,
@@ -286,6 +379,98 @@ pub fn observe(c: &Connection, actor: &str, action: &str, details: &Value) -> Ap
             &format!("downloaded {} MiB within 24 hours, far more than usual", last >> 20),
         )?;
     }
+    Ok(())
+}
+
+/// The network of a client address for the token rule: /24 (IPv4) or /48 (IPv6); None for anything
+/// that is not an address ("unknown" without a socket).
+pub fn network_of(ip: &str) -> Option<String> {
+    match ip.parse::<std::net::IpAddr>().ok()? {
+        std::net::IpAddr::V4(v) => {
+            let o = v.octets();
+            Some(format!("{}.{}.{}.0/24", o[0], o[1], o[2]))
+        }
+        std::net::IpAddr::V6(v) => {
+            let s = v.segments();
+            Some(format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2]))
+        }
+    }
+}
+
+/// Every request with an API token: the new-network rule. A token's first network is its baseline;
+/// a later network it was not used from before marks the account (warning). One insert per new
+/// network, nothing for a known one.
+pub fn token_use(c: &Connection, token_id: i64, token_name: &str, user_id: i64, ip: &str) -> ApiResult<()> {
+    let Some(net) = network_of(ip) else {
+        return Ok(());
+    };
+    let known: Vec<String> = c
+        .prepare("SELECT net FROM token_networks WHERE token_id = ?1")?
+        .query_map([token_id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    if known.contains(&net) {
+        return Ok(());
+    }
+    c.execute(
+        "INSERT OR IGNORE INTO token_networks (token_id, net, first_seen) VALUES (?1, ?2, ?3)",
+        params![token_id, net, catalog::now()],
+    )?;
+    if !known.is_empty() && Thresholds::load(c).token_networks {
+        mark(
+            c,
+            user_id,
+            "token_network",
+            "warning",
+            &format!("API token {token_name} used from {net}, a network it was not used from before"),
+        )?;
+    }
+    Ok(())
+}
+
+/// Settings → Security: the thresholds (administrators and security officers, never tenant-scoped).
+async fn get_settings(State(st): State<St>, ctx: Ctx) -> ApiResult<Json<Value>> {
+    ctx.require(MANAGERS)?;
+    if ctx.scope().is_some() {
+        return Err(ApiError::forbidden());
+    }
+    let c = st.cat.conn();
+    let pending: Option<i64> = c
+        .query_row(
+            "SELECT id FROM quorum WHERE action = ?1 AND state = 'pending' ORDER BY id DESC LIMIT 1",
+            [ACTION],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(Json(json!({
+        "thresholds": Thresholds::load(&c),
+        "defaults": Thresholds::default(),
+        "request_pending": pending,
+    })))
+}
+
+/// PUT /settings/risk {thresholds}: validated, then gated (`settings.risk`; loosening counts as weakening).
+async fn put_settings(State(st): State<St>, ctx: Ctx, J(r): J<Value>) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    ctx.require(&["admin"])?;
+    if ctx.scope().is_some() {
+        return Err(ApiError::forbidden());
+    }
+    let new: Thresholds =
+        serde_json::from_value(r["thresholds"].clone()).map_err(|e| ApiError::bad(format!("thresholds: {e}")))?;
+    new.validate().map_err(ApiError::bad)?;
+    let old = Thresholds::load(&st.cat.conn());
+    if new == old {
+        return Ok(Json(json!({"unchanged": true})).into_response());
+    }
+    let params = json!({"thresholds": new, "old": old, "loosens": new.loosens(&old)});
+    crate::quorum::gate(&st, &ctx, ACTION, "risk", params)
+}
+
+/// Quorum execution of `settings.risk`.
+pub fn execute(c: &Connection, p: &Value) -> ApiResult<()> {
+    let t: Thresholds = serde_json::from_value(p["thresholds"].clone()).map_err(|e| ApiError::bad(e.to_string()))?;
+    t.validate().map_err(ApiError::bad)?;
+    catalog::set_setting(c, SETTING, &serde_json::to_string(&t).map_err(|e| anyhow::anyhow!(e))?)?;
     Ok(())
 }
 
@@ -442,14 +627,85 @@ mod tests {
 
     #[test]
     fn rules() {
-        assert!(!unusual_hour(3, &[(9, 5)]), "too little history");
-        assert!(unusual_hour(3, &[(9, 6), (10, 6)]));
-        assert!(!unusual_hour(3, &[(2, 6), (10, 6)]), "a neighbouring hour counts");
-        assert!(!unusual_hour(0, &[(23, 12)]), "wraps around midnight");
-        assert!(!download_over(2 << 30, vec![1 << 30]), "within 10 times the median");
-        assert!(download_over(3 << 30, vec![100 << 20, 200 << 20, 300 << 20]));
-        assert!(!download_over(900 << 20, vec![]), "below the floor");
-        assert!(download_over(2 << 30, vec![]), "no history: the floor");
+        let t = Thresholds::default();
+        assert!(!unusual_hour(&t, 3, &[(9, 5)]), "too little history");
+        assert!(unusual_hour(&t, 3, &[(9, 6), (10, 6)]));
+        assert!(!unusual_hour(&t, 3, &[(2, 6), (10, 6)]), "a neighbouring hour counts");
+        assert!(!unusual_hour(&t, 0, &[(23, 12)]), "wraps around midnight");
+        assert!(!download_over(&t, 2 << 30, vec![1 << 30]), "within 10 times the median");
+        assert!(download_over(&t, 3 << 30, vec![100 << 20, 200 << 20, 300 << 20]));
+        assert!(!download_over(&t, 900 << 20, vec![]), "below the floor");
+        assert!(download_over(&t, 2 << 30, vec![]), "no history: the floor");
+        let lax = Thresholds {
+            download_floor_mib: 4096,
+            ..Thresholds::default()
+        };
+        assert!(!download_over(&lax, 2 << 30, vec![]), "a higher floor from the setting");
+    }
+
+    #[test]
+    fn thresholds_validate_and_loosen() {
+        let req = |a: &str, p: Value| json!({"action": a, "params": p});
+        let d = Thresholds::default();
+        assert!(d.validate().is_ok());
+        assert!(Thresholds {
+            weakening_burst: 1,
+            ..d.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(Thresholds {
+            download_floor_mib: 10,
+            ..d.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(Thresholds {
+            hour_baseline_days: 400,
+            ..d.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(Thresholds {
+            delete_burst: 20,
+            ..d.clone()
+        }
+        .loosens(&d));
+        assert!(Thresholds {
+            hour_baseline_days: 30,
+            ..d.clone()
+        }
+        .loosens(&d));
+        assert!(Thresholds {
+            token_networks: false,
+            ..d.clone()
+        }
+        .loosens(&d));
+        assert!(!Thresholds {
+            delete_burst: 5,
+            weakening_burst: 3,
+            ..d.clone()
+        }
+        .loosens(&d));
+        // missing fields take the defaults
+        let partial: Thresholds = serde_json::from_value(json!({"delete_burst": 20})).unwrap();
+        assert_eq!((partial.delete_burst, partial.weakening_burst), (20, WEAKENING_BURST));
+        assert!(serde_json::from_value::<Thresholds>(json!({"nope": 1})).is_err());
+        assert_eq!(
+            classify("quorum.request", &req("settings.risk", json!({"loosens": true}))),
+            Some(Kind::Weakening)
+        );
+        assert_eq!(
+            classify("quorum.request", &req("settings.risk", json!({"loosens": false}))),
+            None
+        );
+    }
+
+    #[test]
+    fn networks() {
+        assert_eq!(network_of("192.0.2.77").as_deref(), Some("192.0.2.0/24"));
+        assert_eq!(network_of("2001:db8:1:2::5").as_deref(), Some("2001:db8:1::/48"));
+        assert_eq!(network_of("unknown"), None);
         let req = |a: &str, p: Value| json!({"action": a, "params": p});
         assert_eq!(
             classify("quorum.request", &req("approvals.disable", json!({}))),

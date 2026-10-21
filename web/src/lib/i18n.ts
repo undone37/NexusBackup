@@ -3612,6 +3612,19 @@ export const en = {
       'One per line: network/prefix via next hop ("10.30.0.0/16 via 10.0.20.1"), or just the network for an on-link route. A data network without a gateway needs none.',
     keepInDraft: 'Keep in draft',
   },
+  riskSettings: {
+    title: 'Risk signal rules',
+    hint: 'The numbers behind the risk signals listed below. A signal marks the account for 24 hours: each of its sessions re-authenticates before its next change, and its API tokens change nothing. Every change here needs approval when approvals are enabled; one that makes a rule fire less often counts as weakening.',
+    weakening: 'Weakening requests within an hour',
+    deletes: 'Delete requests within an hour',
+    factor: 'Downloads in 24 hours above this multiple of the daily median',
+    floor: 'and above (MiB)',
+    baseline: 'Sign-in hours compared over (days)',
+    minSignIns: 'Sign-ins needed before unusual hours count',
+    tokens: 'Mark an account when one of its API tokens is used from a new network (/24 or /48)',
+    defaults: (d: string) => `Defaults: ${d}`,
+    pending: (id: number) => `Change waiting for approval #${id}`,
+  },
   timeSync: {
     intro:
       'The time servers this appliance synchronises its clock with. The clock decides when retention locks expire, whether sign-in codes and certificates are valid and when jobs run, so every change needs approval when approvals are enabled. By default only NTS (Network Time Security) servers are used: their answers are authenticated, so nobody on the network can move the clock.',
@@ -4588,7 +4601,7 @@ export const en = {
     },
     risk: {
       title: 'Accounts marked by risk signals',
-      lede: 'A risk signal (sign-in at an unusual hour, several weakening requests or deletes within an hour, an unusual download volume) marks the account for 24 hours: each session must confirm the owner before its first change, and its API tokens cannot change anything. Clear the mark once the owner confirmed it was them.',
+      lede: 'A risk signal (sign-in at an unusual hour, several weakening requests or deletes within an hour, an unusual download volume, an API token used from a new network) marks the account for 24 hours: each session must confirm the owner before its first change, and its API tokens cannot change anything. Clear the mark once the owner confirmed it was them.',
       account: 'Account',
       since: 'Since',
       until: 'Until',

@@ -880,6 +880,8 @@ their IDs. In progress:
 - [x] `nts.netnod.se` was never reachable (also on 0.1): its NTS key exchange hands out NTP servers at other
   addresses and on port 4123. nexus-time reports chronyd's NTP associations, nft-sync allows them (Phase 39 S7).
   Lab 0.0.16-dev: all four default servers usable.
+- [x] Phase 39 S2: risk signal thresholds as the gated setting `risk` (Settings → Security → Risk signal rules), the
+  API-token-from-a-new-network rule (catalog v47 `token_networks`); manual chapters 9 and 10, screenshots.
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

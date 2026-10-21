@@ -2273,6 +2273,24 @@ export interface FirewallState {
   drops: FirewallDrop[];
 }
 
+/** Phase 39 S2: the numbers of the risk-signal rules (Settings > Security). */
+export interface RiskThresholds {
+  weakening_burst: number;
+  delete_burst: number;
+  download_factor: number;
+  download_floor_mib: number;
+  hour_baseline_days: number;
+  hour_min_sign_ins: number;
+  token_networks: boolean;
+}
+
+/** GET /settings/risk */
+export interface RiskSettings {
+  thresholds: RiskThresholds;
+  defaults: RiskThresholds;
+  request_pending: number | null;
+}
+
 /** Settings > Time: one configured time server. `nts: false` = plain NTP (only with allow_ntp). */
 export interface TimeServer {
   host: string;

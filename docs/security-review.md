@@ -486,6 +486,12 @@ Reviewed with the implementation (2026-10-10):
   and others; the stock units do not set it either); it is root in unconfined_service_t either way. Lab (VM 201):
   an offline update from 0.0.11 to an image with a type unknown to the running policy imported, booted and labelled
   the file; 0.0.13 and 0.0.14 installed the same way.
+- **Risk signal thresholds and the API token network rule (2026-10-21, Phase 39 S2):** the numbers of the risk rules
+  became a setting, which is a way to blunt detection: every change is gated (`settings.risk`), out-of-range values
+  are refused, an unreadable stored value falls back to the defaults (never weaker by accident), and a loosening
+  change counts toward the weakening burst itself. New rule: an API token used from a network it was not used from
+  before marks the account (a stolen token used elsewhere stops changing anything until a person clears it). Tests:
+  `crates/web-api/tests/tokens.rs` `token_from_a_new_network`, `risk.rs` unit tests.
 - **`cargo deny check`** with the new `deny.toml`: advisories / bans / licenses / sources **ok**.
   - **Licenses:** only permissive or weak-copyleft licenses compatible with AGPL-3.0.
   - **Sources:** crates.io only, no git dependencies.

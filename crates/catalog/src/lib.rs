@@ -1001,12 +1001,24 @@ CREATE TABLE psa_state (
   rule TEXT PRIMARY KEY, last_ok INTEGER, failing_since INTEGER, last_error TEXT);
 "#;
 
+/// v47: risk signals, API token networks (Phase 39 S2): the networks (/24, /48) each token was
+/// used from; the first one is the baseline, a new one later marks the account. Dropped with the
+/// token.
+const SCHEMA_V47: &str = r#"
+CREATE TABLE token_networks (
+    token_id   INTEGER NOT NULL REFERENCES api_tokens(id) ON DELETE CASCADE,
+    net        TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    PRIMARY KEY (token_id, net)
+);
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47,
 ];
 
 /// Placeholder password hash of accounts without a password (pending

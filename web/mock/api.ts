@@ -391,6 +391,16 @@ const db = {
   hardware: {} as Json,
   /** Phase 22a: nexus-net status (GET /network) */
   network: {} as Json,
+  /** Phase 39 S2: risk-signal thresholds (GET /settings/risk) */
+  risk: {
+    weakening_burst: 5,
+    delete_burst: 10,
+    download_factor: 10,
+    download_floor_mib: 1024,
+    hour_baseline_days: 90,
+    hour_min_sign_ins: 10,
+    token_networks: true,
+  } as Json,
   /** Settings > Time: what nexus-time reports (GET /settings/time) */
   time: {
     servers: [
@@ -3657,6 +3667,9 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       break;
     case 'network.apply':
       netExecute(p, by, qid);
+      break;
+    case 'settings.risk':
+      db.risk = structuredClone(p.thresholds);
       break;
     case 'time.servers':
       db.time.servers = structuredClone(p.servers);
@@ -10574,6 +10587,54 @@ const timeHost = (h: string) =>
   /^\d{1,3}(\.\d{1,3}){3}$/.test(h) ||
   h.includes(':') ||
   /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$/.test(h);
+const RISK_DEFAULTS = {
+  weakening_burst: 5,
+  delete_burst: 10,
+  download_factor: 10,
+  download_floor_mib: 1024,
+  hour_baseline_days: 90,
+  hour_min_sign_ins: 10,
+  token_networks: true,
+};
+on('GET', '/settings/risk', (c) => {
+  const u = need(c.user, 'admin', 'security_officer');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  return [
+    200,
+    {
+      thresholds: db.risk,
+      defaults: RISK_DEFAULTS,
+      request_pending: db.quorum.filter((q) => q.action === 'settings.risk' && q.state === 'pending').pop()?.id ?? null,
+    },
+  ];
+});
+on('PUT', '/settings/risk', async (c) => {
+  const u = need(c.user, 'admin');
+  if (u.tenant) throw new HttpError(403, 'forbidden');
+  const th = { ...RISK_DEFAULTS, ...(c.body.thresholds ?? {}) };
+  const ranges: Record<string, [number, number]> = {
+    weakening_burst: [2, 50],
+    delete_burst: [2, 200],
+    download_factor: [2, 1000],
+    download_floor_mib: [64, 1048576],
+    hour_baseline_days: [14, 365],
+    hour_min_sign_ins: [3, 100],
+  };
+  for (const [k, [lo, hi]] of Object.entries(ranges))
+    if (!(th[k as keyof typeof th] >= lo && th[k as keyof typeof th] <= hi))
+      throw new HttpError(400, `${k} must be between ${lo} and ${hi}`);
+  if (JSON.stringify(th) === JSON.stringify(db.risk)) return [200, { unchanged: true }];
+  const o = db.risk;
+  const loosens =
+    th.weakening_burst > o.weakening_burst ||
+    th.delete_burst > o.delete_burst ||
+    th.download_factor > o.download_factor ||
+    th.download_floor_mib > o.download_floor_mib ||
+    th.hour_baseline_days < o.hour_baseline_days ||
+    th.hour_min_sign_ins > o.hour_min_sign_ins ||
+    (o.token_networks && !th.token_networks);
+  return quorum(u, 'settings.risk', { thresholds: th, old: structuredClone(o), loosens });
+});
 on('GET', '/settings/time', (c) => (netReader(c), [200, timeView()]));
 on('PUT', '/settings/time', async (c) => {
   const u = need(netReader(c), 'admin');

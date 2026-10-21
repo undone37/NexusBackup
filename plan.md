@@ -1175,7 +1175,8 @@ state.md and commits.
 **Security**
 - S1 Offline key ceremony with a standby key; rotate away from the alpha key before the first beta
   (0.0.1-alpha release).
-- S2 Risk signals: the "first API token use from a new network" rule; thresholds as settings instead of constants
+- S2 **Done 2026-10-21:** risk signals: the "API token from a new network" rule (/24, /48; `token_networks`,
+  catalog v47); thresholds as the gated setting `risk` (Settings → Security; loosening counts as weakening)
   (Phase 29).
 - S3 **Done 2026-10-20:** flagged snapshots: BMR/P2V refused (409, scheduler re-check; no approval route, the flag is
   cleared first); downloads administrators only (security officers start no jobs) (Phase 29).

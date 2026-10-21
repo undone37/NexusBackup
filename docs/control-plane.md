@@ -1236,7 +1236,15 @@ At most 50 devices per account are kept.
   in policy updates, management allow-list / firewall / forwarding changes, offsite or replication deletes, vault /
   keep changes, hold releases) → critical; (c) >= 10 delete requests within one hour (snapshots, sources, groups,
   agents, tenants, policies) → critical; (d) downloads in 24 h above max(10 x the account's median daily volume over
-  30 days, 1 GiB) → warning.
+  30 days, 1 GiB) → warning; (e) an API token used from a network (/24, /48) it was not used from before, once it has
+  a first network (`token_networks`, catalog v47, one insert per new network) → warning. Weakening (b) also
+  includes `time.servers` with plain NTP servers and `settings.risk` that loosens a rule.
+- Thresholds (Phase 39 S2): catalog setting `risk` = `{weakening_burst 2-50, delete_burst 2-200, download_factor
+  2-1000, download_floor_mib 64-1048576, hour_baseline_days 14-365, hour_min_sign_ins 3-100, token_networks}`;
+  missing fields take the defaults (5, 10, 10, 1024, 90, 10, true), an unreadable value falls back to them. `GET
+  /settings/risk` (admins, security officers; never tenant-scoped) → `{thresholds, defaults, request_pending}`; `PUT
+  /settings/risk {thresholds}` (admins) → 400 out of range, 200 `{unchanged}`, else gated `settings.risk` with params
+  `{thresholds, old, loosens}`.
 - A signal raises `user_risk` (security category, key `user_risk:<user id>:<rule>`) and marks the account for 24 h
   (`users.risk_since`, `risk_until`, `risk_reason`).
 - While marked, the first non-GET request of each session answers **428** `{"error": "step-up required: …"}` until

@@ -4,7 +4,7 @@
   import { session } from '../../lib/session.svelte';
   import { href } from '../../lib/router.svelte';
   import { t } from '../../lib/i18n';
-  import type { PasskeySettings, SecuritySettings, SessionInfo } from '../../lib/types';
+  import type { PasskeySettings, RiskSettings, RiskThresholds, SecuritySettings, SessionInfo } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import SessionTable from '../../components/SessionTable.svelte';
   import RiskMarks from '../../components/RiskMarks.svelte';
@@ -25,6 +25,9 @@
   const isAdmin = $derived(session.user?.role === 'admin');
   // Phase 30: role elevation needs a second person
   let elevApproval = $state(false);
+  // Phase 39 S2: thresholds of the risk-signal rules (gated; loosening counts as weakening)
+  let risk: RiskSettings | null = $state(null);
+  let rf = $state<RiskThresholds | null>(null);
 
   async function load() {
     try {
@@ -37,6 +40,8 @@
       elevApproval = cur.elevation.settings.approval;
       pk = await get<PasskeySettings>('/settings/passkeys');
       pkf = { ...pk.policy };
+      risk = await get<RiskSettings>('/settings/risk');
+      rf = { ...risk.thresholds };
       if (isAdmin) sessions = await get<SessionInfo[]>('/sessions');
       error = null;
     } catch (e) {
@@ -76,6 +81,21 @@
   async function saveDek(e: SubmitEvent) {
     e.preventDefault();
     if (await act(put('/settings/dek-rotation', { days: Number(dekDays) }), t.saved)) load();
+  }
+  async function saveRisk(e: SubmitEvent) {
+    e.preventDefault();
+    if (!rf) return;
+    const n = (v: unknown) => Number(v);
+    const thresholds = {
+      ...rf,
+      weakening_burst: n(rf.weakening_burst),
+      delete_burst: n(rf.delete_burst),
+      download_factor: n(rf.download_factor),
+      download_floor_mib: n(rf.download_floor_mib),
+      hour_baseline_days: n(rf.hour_baseline_days),
+      hour_min_sign_ins: n(rf.hour_min_sign_ins),
+    };
+    if (await act(put('/settings/risk', { thresholds }), t.saved)) load();
   }
   async function saveElevation(e: SubmitEvent) {
     e.preventDefault();
@@ -251,6 +271,47 @@
       {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
     </form>
   </section>
+
+  {#if risk && rf}
+    <section class="card settings-section" aria-labelledby="sec-risk">
+      <div class="card-head">
+        <h2 id="sec-risk">{t.riskSettings.title}</h2>
+        {#if risk.request_pending}<a class="chip warn" href={href(`/quorum?id=${risk.request_pending}`)}
+            >{t.riskSettings.pending(risk.request_pending)}</a
+          >{/if}
+      </div>
+      <p>{t.riskSettings.hint}</p>
+      <form onsubmit={saveRisk}>
+        <fieldset disabled={!isAdmin}>
+          <div class="form-grid">
+            {#each [['weakening_burst', t.riskSettings.weakening, 2, 50], ['delete_burst', t.riskSettings.deletes, 2, 200], ['download_factor', t.riskSettings.factor, 2, 1000], ['download_floor_mib', t.riskSettings.floor, 64, 1048576], ['hour_baseline_days', t.riskSettings.baseline, 14, 365], ['hour_min_sign_ins', t.riskSettings.minSignIns, 3, 100]] as [key, label, min, max] (key)}
+              <div class="field">
+                <label for="risk-{key}">{label}</label>
+                <input
+                  id="risk-{key}"
+                  type="number"
+                  min={min as number}
+                  max={max as number}
+                  step="1"
+                  bind:value={(rf as unknown as Record<string, number>)[key as string]}
+                  required
+                />
+              </div>
+            {/each}
+          </div>
+          <label class="inline-check"
+            ><input type="checkbox" bind:checked={rf.token_networks} />{t.riskSettings.tokens}</label
+          >
+          <div class="hint">
+            {t.riskSettings.defaults(
+              `${risk.defaults.weakening_burst} / ${risk.defaults.delete_burst} per hour, ${risk.defaults.download_factor}x and ${risk.defaults.download_floor_mib} MiB, ${risk.defaults.hour_baseline_days} days, ${risk.defaults.hour_min_sign_ins} sign-ins`,
+            )}
+          </div>
+        </fieldset>
+        {#if isAdmin}<div class="form-actions"><button type="submit" class="primary">{t.save}</button></div>{/if}
+      </form>
+    </section>
+  {/if}
 
   <RiskMarks />
 

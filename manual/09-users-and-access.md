@@ -382,7 +382,8 @@ copies your browser's identification from the same network is not noticed.
 ### Risk signals and step-up
 
 The appliance watches what privileged accounts do and marks an account when its behaviour looks like a stolen
-account or an insider at work. The rules are fixed and deterministic:
+account or an insider at work. The rules are deterministic; their numbers (shown here with the defaults) are set in
+**Settings → Security → Risk signal rules**:
 
 | Signal | Rule | Severity |
 |---|---|---|
@@ -390,6 +391,7 @@ account or an insider at work. The rules are fixed and deterministic:
 | Weakening burst | 5 or more weakening requests within one hour: switching approvals off, cutting retention in a policy, changing the management allow-list, firewall or forwarding, deleting offsite or replication settings, vault or keep-until changes, releasing holds, time servers with plain NTP | critical |
 | Bulk deletes | 10 or more delete requests within one hour (snapshots, sources, groups, agents, tenants, policies) | critical |
 | Download volume | downloads in 24 hours above ten times the account's median daily volume of the last 30 days, and above 1 GiB | warning |
+| API token from a new network | one of the account's API tokens is used from a network (/24 for IPv4, /48 for IPv6) it was not used from before; its first network is the baseline. Can be switched off | warning |
 
 A signal raises the alert `user_risk` (security category, forwarded to the SIEM) and **marks the account for 24
 hours**. While it is marked:
@@ -412,6 +414,14 @@ nobody clears their own mark). If it was not the owner: disable the account, end
 mode if needed ([14 Disaster recovery](14-disaster-recovery.md#incident-mode)).
 
 ![Accounts marked by risk signals](images/settings-risk-marks.png)
+
+**Risk signal rules** (administrators change, security officers see): the counts per hour, the download factor and
+floor, the days of sign-in history and the sign-ins needed before unusual hours count, and the API token rule. Values
+outside the shown ranges are refused. Every change needs approval when approvals are enabled (`settings risk`); a
+change that makes a rule fire less often (a higher count, a shorter history, the token rule off) also counts toward
+the weakening burst.
+
+![Risk signal rules](images/settings-risk-rules.png)
 
 > **Status:** Implemented in Phase 29 (API tests, demo backend). Single sign-on accounts have no local password: they
 > cannot complete the step-up in this version; clear their mark after checking with the owner.

@@ -67,6 +67,7 @@ pub const WEB_ACTIONS: &[&str] = &[
     "disks.grow",
     crate::network::ACTION,
     crate::timesync::ACTION,
+    crate::risk::ACTION,
     catalog::vault::ENABLE,
     catalog::vault::RESTORE,
     catalog::tenants::DISABLE_ACTION,
@@ -459,6 +460,7 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         // and for nexus-time (timesync::after_approve)
         crate::timesync::ACTION => {}
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
+        crate::risk::ACTION => crate::risk::execute(c, p)?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
         a if a.starts_with("security.") => crate::access::execute(c, a, p)?,
         crate::firewall::ACTION => crate::firewall::execute(c, p)?,

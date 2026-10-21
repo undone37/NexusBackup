@@ -3,6 +3,7 @@
 //! disabled users, revocation and the audit actor.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use catalog::rusqlite::params;
@@ -172,6 +173,20 @@ impl T {
 
     async fn bearer(&self, method: Method, path: &str, tok: &str, body: Option<Value>) -> R {
         self.call(method, path, Some(Auth::Bearer(tok)), body).await
+    }
+
+    /// GET with the token from a client address (the risk rule's networks).
+    async fn bearer_from(&self, path: &str, tok: &str, ip: &str) -> StatusCode {
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .header(header::HOST, "nexus.test")
+            .header(header::AUTHORIZATION, format!("Bearer {tok}"))
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::new(ip.parse().unwrap(), 50000)));
+        self.app.clone().oneshot(req).await.unwrap().status()
     }
 
     async fn dash(&self, tok: &str) -> StatusCode {
@@ -475,4 +490,85 @@ async fn expired_wrong_and_disabled() {
         .execute("UPDATE users SET activation_hash = NULL WHERE name = 'alice'", [])
         .unwrap();
     assert_eq!(t.dash(&tok).await, StatusCode::OK);
+}
+
+/// Phase 39 S2: a token used from a network it was not used from before marks the account; the
+/// token's first network is the baseline; the rule can be switched off (gated, counts as weakening).
+#[tokio::test]
+async fn token_from_a_new_network() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let tok = t.token("alice", &alice, "auto", "read").await;
+    let marks =
+        || -> i64 { t.one("SELECT COUNT(*) FROM alerts WHERE kind = 'user_risk' AND key LIKE '%:token_network'") };
+    assert_eq!(
+        t.bearer_from("/api/v1/dashboard", &tok, "192.0.2.10").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.bearer_from("/api/v1/dashboard", &tok, "192.0.2.99").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        marks(),
+        0,
+        "the first network is the baseline, the same /24 is no new network"
+    );
+    assert_eq!(
+        t.bearer_from("/api/v1/dashboard", &tok, "198.51.100.7").await,
+        StatusCode::OK,
+        "reading stays"
+    );
+    assert_eq!(marks(), 1);
+    let (sev, msg): (String, String) =
+        t.st.cat
+            .conn()
+            .query_row(
+                "SELECT severity, message FROM alerts WHERE key LIKE '%:token_network'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!(sev, "warning");
+    assert!(msg.contains("API token auto used from 198.51.100.0/24"), "{msg}");
+    let nets: i64 = t.one("SELECT COUNT(*) FROM token_networks");
+    assert_eq!(nets, 2);
+
+    // switched off (approvals off here: applied at once, audited as weakening): no new mark
+    catalog::set_setting(&t.st.cat.conn(), "approvals_enabled", "false").unwrap();
+    t.st.cat
+        .conn()
+        .execute("UPDATE users SET risk_since = NULL, risk_until = NULL", [])
+        .unwrap();
+    let r = t
+        .call(
+            Method::PUT,
+            "/api/v1/settings/risk",
+            Some(Auth::Session(&alice)),
+            Some(json!({"thresholds": {"token_networks": false}})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let d: String = t.one("SELECT details FROM audit WHERE action = 'settings.risk'");
+    assert!(d.contains("\"loosens\":true"), "{d}");
+    assert_eq!(
+        t.bearer_from("/api/v1/dashboard", &tok, "203.0.113.5").await,
+        StatusCode::OK
+    );
+    assert_eq!(marks(), 1);
+    let g = t
+        .call(Method::GET, "/api/v1/settings/risk", Some(Auth::Session(&alice)), None)
+        .await;
+    assert_eq!(g.body["thresholds"]["token_networks"], false);
+    assert_eq!(g.body["defaults"]["delete_burst"], 10);
+    // out of range: refused at once
+    let r = t
+        .call(
+            Method::PUT,
+            "/api/v1/settings/risk",
+            Some(Auth::Session(&alice)),
+            Some(json!({"thresholds": {"delete_burst": 1}})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }

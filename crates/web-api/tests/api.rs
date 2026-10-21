@@ -3768,6 +3768,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/hardware.rs"),
         include_str!("../src/network.rs"),
         include_str!("../src/timesync.rs"),
+        include_str!("../src/risk.rs"),
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
         include_str!("../src/vault.rs"),
@@ -4082,6 +4083,9 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/network/confirm", "/api/v1/network/confirm".into(), Some(json!({"id": "x", "keep": true})), 'N'),
         ("POST", "/network/mtu-check", "/api/v1/network/mtu-check".into(), e(), 'N'),
         ("GET", "/settings/time", "/api/v1/settings/time".into(), none(), 'N'),
+        // risk signal thresholds are the provider's
+        ("GET", "/settings/risk", "/api/v1/settings/risk".into(), none(), 'N'),
+        ("PUT", "/settings/risk", "/api/v1/settings/risk".into(), Some(json!({"thresholds": {}})), 'N'),
         ("PUT", "/settings/time", "/api/v1/settings/time".into(), Some(json!({"servers": [{"host": "a.example", "nts": true}]})), 'N'),
         ("POST", "/tenants/{name}/deactivate", "/api/v1/tenants/acme/deactivate".into(), Some(json!({"reason": "x"})), 'N'),
         ("POST", "/tenants/{name}/reactivate", "/api/v1/tenants/acme/reactivate".into(), e(), 'N'),
