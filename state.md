@@ -890,7 +890,9 @@ their IDs. In progress:
 - [x] Phase 39 S5: post-quantum TLS (X25519MLKEM768) on our endpoints, interop with OpenSSL 3.5 both ways.
 - [x] Phase 39 C1 (part): content hashes of files on FAT and exFAT volumes in VM disks ; btrfs too (inline and regular extents; compressed extents stay unhashed).
 - [x] Phase 39 S4 (part): keyd answers nexus-index (primary group `nexus-index`) only keyring fetches; its own uid
-  stays open (group-readable stores needed).
+  stays open (group-readable stores needed). Lab 2026-10-21 (VM 201, 0.0.18-dev offline bundle): keyd runs with
+  the read-only group, file search answers (index fetched the keyring), backups as before; getgrnam's userdb read
+  denial silenced (dontaudit, like the configuration backup).
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

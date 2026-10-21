@@ -1331,6 +1331,8 @@ allow nexus_cfgbackup_t self:capability dac_read_search;
 auth_read_passwd(nexus_cfgbackup_t)
 # the user lookup tries systemd-userdb before the files (30 denials per run on VM 201, 2026-10-21); the files answer
 dontaudit nexus_cfgbackup_t systemd_userdbd_runtime_t:dir { search read };
+# keyd resolves its read-only group at start (getgrnam; nss merges systemd-userdb into groups); /etc/group answers
+dontaudit nexus_keyd_t systemd_userdbd_runtime_t:dir { search read };
 kernel_read_kernel_sysctls(nexus_cfgbackup_t)
 files_read_etc_files(nexus_cfgbackup_t)
 # its control dir: consumes request.json, writes status.json / latest.json / latest.bundle
