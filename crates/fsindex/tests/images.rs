@@ -1599,16 +1599,19 @@ fn content_hashes() {
             "{img:?}: the directory with the unhashed file is listed again next time"
         );
     }
-    // compressed btrfs extents are not decompressed: those files stay unhashed, never a wrong hash
-    sized(&p("zstd.img"), 256 << 20);
-    if btrfs(p("zstd.img").to_str().unwrap(), &["--compress", "zstd"]) {
-        let l = parent::list(&files(&[p("zstd.img").as_path()]), &helper(), hashes, &mut |_| false).unwrap();
-        let v = &l[0];
-        // big.bin compresses; "hashed" still holds (it means: nothing left for lack of budget)
-        assert!(v.volume.unhashed_files >= 1, "{:?}", v.volume);
-        for e in v.entries.iter().filter(|e| e.sha256.is_some()) {
-            assert_eq!(e.sha256.as_ref(), want.get(&e.path), "{e:?}");
+    // compressed btrfs extents (zlib, zstd) are decompressed; lzo ones stay unhashed, never a wrong hash
+    for (algo, all) in [("zlib", true), ("zstd", true), ("lzo", false)] {
+        let img = p(&format!("{algo}.img"));
+        sized(&img, 256 << 20);
+        if !btrfs(img.to_str().unwrap(), &["--compress", algo]) {
+            continue;
         }
+        let l = parent::list(&files(&[img.as_path()]), &helper(), hashes, &mut |_| false).unwrap();
+        let v = &l[0];
+        for e in v.entries.iter().filter(|e| e.sha256.is_some()) {
+            assert_eq!(e.sha256.as_ref(), want.get(&e.path), "{algo}: {e:?}");
+        }
+        assert_eq!(v.volume.unhashed_files == 0, all, "{algo}: {:?}", v.volume);
     }
     if tool("mkfs.ext4").is_some() {
         assert!(!imgs.is_empty());

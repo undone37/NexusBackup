@@ -2,8 +2,8 @@
 //! chunk array and the chunk tree (logical -> physical addresses on the one
 //! device), the root tree (subvolume roots, the default subvolume) and the
 //! file system trees (directory index items, inode items, inline / regular
-//! file extents for `/etc/fstab` and content hashes; compressed extents are not
-//! decompressed, those files stay unhashed). Single-device file systems only (a
+//! file extents for `/etc/fstab` and content hashes; zlib and zstd extents are
+//! decompressed, lzo ones not). Single-device file systems only (a
 //! multi-device btrfs is reported by the probe and goes to the micro-VM).
 //!
 //! The listing starts at the default subvolume, as the micro-VM mounts it (no
@@ -444,10 +444,9 @@ impl Btrfs {
         }
     }
 
-    /// SHA-256 of a regular file's content: inline and regular extents, holes and preallocated extents as
-    /// zeros. Compressed or encrypted extents: an error (the file stays unhashed).
-    // ponytail: zlib/zstd/lzo extents unhashed (distributions that mount with compress=zstd); decompressing
-    // them needs a decompressor in the sandboxed parser.
+    /// SHA-256 of a regular file's content: inline and regular extents (plain, zlib or zstd), holes and
+    /// preallocated extents as zeros. lzo-compressed or encrypted extents: an error (the file stays unhashed).
+    // ponytail: no lzo (rare: not a default anywhere); add a decoder when a guest needs it.
     pub fn hash_file(&self, tree: (u64, u8), ino: u64, size: u64) -> Result<[u8; 32], String> {
         use sha2::Digest;
         let mut h = sha2::Sha256::new();
@@ -467,8 +466,9 @@ impl Btrfs {
             (ino, EXTENT_DATA, size.saturating_sub(1)),
             &mut |k, d| {
                 let at = k.2;
-                if d.len() < 21 || d[16] != 0 || d[17] != 0 || le16(d, 18) != 0 {
-                    err = Some("btrfs: compressed or encrypted extent");
+                // zlib (1) and zstd (3) are decompressed; lzo (2), encryption, other encodings are not
+                if d.len() < 21 || !matches!(d[16], 0 | 1 | 3) || d[17] != 0 || le16(d, 18) != 0 {
+                    err = Some("btrfs: lzo-compressed or encrypted extent");
                     return Ok(false);
                 }
                 if at < pos {
@@ -477,7 +477,15 @@ impl Btrfs {
                 }
                 feed_zeros(&mut h, at - pos);
                 let left = size - at;
+                let (comp, ram) = (d[16], le64(d, 8));
                 match d[20] {
+                    0 if comp != 0 => {
+                        // the rest of the file is zeros if the content is shorter (feed_zeros below)
+                        let b = decompress(comp, &d[21..], ram)?;
+                        let n = (b.len() as u64).min(left);
+                        h.update(&b[..n as usize]);
+                        pos = at + n;
+                    }
                     0 => {
                         let n = (d.len() as u64 - 21).min(left);
                         h.update(&d[21..21 + n as usize]);
@@ -487,6 +495,22 @@ impl Btrfs {
                         let (bytenr, off, n) = (le64(d, 21), le64(d, 37), le64(d, 45).min(left));
                         if bytenr == 0 || d[20] == 2 {
                             feed_zeros(&mut h, n); // a hole or preallocated
+                        } else if comp != 0 {
+                            // the whole compressed extent, then the referenced part of its content
+                            let disk = le64(d, 29);
+                            if disk > MAX_COMPRESSED {
+                                return Err("btrfs: compressed extent too large".into());
+                            }
+                            let b = self
+                                .v
+                                .read_vec(self.phys(bytenr, disk)?, disk as usize)
+                                .map_err(|e| e.to_string())?;
+                            let b = decompress(comp, &b, ram)?;
+                            let part = usize::try_from(off)
+                                .ok()
+                                .and_then(|o| b.get(o..o.checked_add(n as usize)?))
+                                .ok_or("btrfs: compressed extent range")?;
+                            h.update(part);
                         } else {
                             let start = bytenr.checked_add(off).ok_or("btrfs: extent")?;
                             let mut done = 0;
@@ -534,6 +558,29 @@ impl Btrfs {
         }
         Ok(Some((at, self.inode(tree, at)?)))
     }
+}
+
+/// btrfs compresses at most 128 KiB of file data per extent.
+const MAX_UNCOMPRESSED: u64 = 128 << 10;
+/// A compressed extent never takes more disk than its content.
+const MAX_COMPRESSED: u64 = MAX_UNCOMPRESSED;
+
+/// Content of a zlib (1) or zstd (3) compressed extent, `ram` bytes as its item says.
+fn decompress(comp: u8, b: &[u8], ram: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    if ram > MAX_UNCOMPRESSED {
+        return Err("btrfs: compressed extent size".into());
+    }
+    let mut out = Vec::with_capacity(ram as usize);
+    let r = match comp {
+        1 => flate2::read::ZlibDecoder::new(b).take(ram).read_to_end(&mut out),
+        // btrfs pads the zstd frame to the sector size: one frame, the padding after it is ignored
+        3 => zstd::stream::read::Decoder::new(b).and_then(|d| d.single_frame().take(ram).read_to_end(&mut out)),
+        _ => return Err("btrfs: compression type".into()),
+    };
+    r.map_err(|e| format!("btrfs: decompress: {e}"))?;
+    // `ram` is rounded up to the sector size; the callers check the range they take
+    Ok(out)
 }
 
 /// The `btrfs_dir_item`s of one item: (name, location key, type).
