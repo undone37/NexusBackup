@@ -891,7 +891,7 @@ their IDs. In progress:
 - [x] Phase 39 C1 (part): content hashes of files on FAT and exFAT volumes in VM disks ; btrfs too (inline and regular extents, zlib and zstd decompressed; lzo unhashed).
 - [x] Phase 39 S4 (part): keyd answers nexus-index (primary group `nexus-index`) only keyring fetches; its own uid
   stays open (group-readable stores needed). Lab 2026-10-21 (VM 201, 0.0.18-dev offline bundle): keyd runs with
-  the read-only group, file search answers (index fetched the keyring), backups as before; getgrnam's userdb read
+  the read-only group, file search answers (index fetched the keyring), `verify.sh exact` byte-identical (371 s); getgrnam's userdb read
   denial silenced (dontaudit, like the configuration backup).
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
