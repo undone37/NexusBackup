@@ -4,8 +4,10 @@
 # installs openscap-scanner, openscap-utils and scap-security-guide and evaluates the CIS server level 1
 # profile with oscap-chroot against the appliance image mounted read-only (--mount type=image): the
 # appliance image has no dnf (os/slim.sh). Nothing is installed on the host and no image is changed.
-# Never fails on rule results: a file tree cannot show kernel, boot or service state, so the report is a
-# review aid, not a gate.
+# Gate (Phase 35d): every rule in release/cis-passing.txt must still pass, else exit 4 naming the
+# regressions. Other failures do not fail it: a file tree cannot show kernel, boot or service state
+# (docs/cis.md has every rule with its decision). Rules that pass now but are not in the list are printed
+# so the list can be extended.
 #
 #   release/cis-report.sh LOCAL-IMAGE [OUT-DIR]     e.g. localhost/nexus-os:release (default out/)
 set -euo pipefail
@@ -30,3 +32,13 @@ podman run --rm --user 0 --network host --security-opt label=disable \
 	grep -c "^Result.*fail" /out/cis.txt | sed "s/^/fail: /"
 	grep -c "^Result.*notapplicable" /out/cis.txt | sed "s/^/not applicable: /"
 '
+
+# rule results as "id result" lines (oscap's text output has CRLF)
+tr -d '\r' <"$out/cis.txt" | awk -F'\t' '$1=="Rule"{r=$2; sub(/.*content_rule_/,"",r)} $1=="Result"{print r, $2}' >"$out/cis-results.txt"
+base="$(dirname "$0")/cis-passing.txt"
+regressed=$(grep -v '^#' "$base" | while read -r rule; do
+	grep -qx "$rule pass" "$out/cis-results.txt" || echo "$rule"
+done)
+new=$(awk '$2=="pass"{print $1}' "$out/cis-results.txt" | grep -vxFf <(grep -v '^#' "$base") || true)
+[ -z "$new" ] || printf 'passing, not yet in %s:\n%s\n' "$base" "$new"
+[ -z "$regressed" ] || die "CIS regression, these rules passed before: $(echo $regressed)"

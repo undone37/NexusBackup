@@ -111,9 +111,9 @@ jobs:
           podman run --rm "$img" sh -c 'systemctl is-enabled nexus-update.timer greenboot-healthcheck.service &&
             test "$(systemctl is-enabled bootc-fetch-apply-updates.timer)" = masked'
 
-      - name: CIS report (OpenSCAP, informational)
-        # a throw-away container of the image evaluates the CIS server L1 profile; never a gate
-        continue-on-error: true
+      - name: CIS report and gate (OpenSCAP)
+        # a throw-away container of the image evaluates the CIS server L1 profile; fails when a rule of
+        # release/cis-passing.txt no longer passes (Phase 35d)
         run: release/cis-report.sh localhost/nexus-os:release out/cis
 
       - uses: actions/upload-artifact@v7

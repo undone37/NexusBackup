@@ -912,7 +912,9 @@ Benchmark PDF in tmp/ (gitignored, CIS licence).
 - [x] 35b booted appliance checked by hand (2026-10-21, VM 201 on 0.0.17-dev plus the new units in /etc): `/tmp`
   (tmp.mount drop-in) and `/dev/shm` (dev-shm-noexec.service) nosuid, nodev, noexec; rpcbind/nfs disabled, no
   rsyslog, root PATH clean; greenboot green, 0 AVC denials, `verify.sh exact` byte-identical (362 s).
-- [ ] 35d gate on `release/cis-passing.txt`.
+- [x] 35d gate: `release/cis-report.sh` fails on a rule of `release/cis-passing.txt` that no longer passes (tested on
+  the 0.0.17-dev scan: passes; one rule forced to fail: exit 1 naming it); the release.yml step is no longer
+  continue-on-error.
 
 ## Phase 36 — Offline (air-gapped) appliance updates (added 2026-10-15)
 Scope: plan.md Phase 36 (signed update bundle as a release asset, spike: local mirror registry vs own signature

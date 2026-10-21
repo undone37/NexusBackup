@@ -207,13 +207,14 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
   `--pull=always`, so a rebuild picks up the fixed package. Critical CVEs without a fix and
   all lower severities are in the report but do not fail the release. Review them before
   publishing.
-- **CIS report (informational):** the image job runs `release/cis-report.sh
-  localhost/nexus-os:release out/cis`. A throw-away container of the image installs
-  `openscap-scanner` + `scap-security-guide` and evaluates the CIS server level 1 profile
-  (`cis-report.html`, `cis-results.xml`, uploaded as the `cis-report` artifact). The image is
-  not changed (`podman run --rm`). Rules about the kernel, boot loader, mounts and running
-  services cannot be judged in a container, so the report never fails the workflow. Use it
-  as a review aid.
+- **CIS report and gate (Phase 35):** the image job runs `release/cis-report.sh
+  localhost/nexus-os:release out/cis`. A container of the AlmaLinux bootc base image installs
+  `openscap-scanner` + `scap-security-guide` and evaluates the CIS server level 1 profile against
+  the image mounted read-only (`cis-report.html`, `cis-results.xml`, `cis-results.txt`, uploaded
+  as the `cis-report` artifact). The release fails when a rule listed in
+  `release/cis-passing.txt` no longer passes. Other failures do not fail it (kernel, mounts and
+  running services cannot be judged from a file tree; `docs/cis.md` has every rule with its
+  decision). The script prints rules that pass but are not in the list yet: add them there.
 - **Weekly re-scan:** `.github/workflows/cve.yml` scans the published channel tag
   (`:stable`, or any tag via `gh workflow run cve.yml -f tag=vX.Y.Z`) every Monday, because
   new CVEs are published after a release. It does not build anything. CI does not scan on
