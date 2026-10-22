@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -393,7 +394,16 @@ impl<R: Read> Read for ShaRead<R> {
 }
 
 pub(crate) fn sync_dir(dir: &Path) -> io::Result<()> {
-    File::open(dir)?.sync_all()
+    #[cfg(unix)]
+    return File::open(dir)?.sync_all();
+    // ponytail: Windows (standalone agents, Phase 38c) cannot open a directory for flushing; files are flushed
+    // before their rename and NTFS journals the rename itself. A crash may still lose the last renames: the
+    // next backup re-sends what is missing, verify finds the rest.
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
 }
 
 /// tmp + fsync + rename + fsync(dir): the file is either old or new, never torn.
@@ -453,6 +463,7 @@ impl Store {
         }
         // A crashed predecessor may have renamed chunks into place without syncing
         // their directories; we reuse such chunks without re-syncing, so flush once here.
+        #[cfg(unix)]
         // SAFETY: the File temporary is open until the end of the statement, so the fd is valid during syncfs.
         if unsafe { libc::syncfs(File::open(&root)?.as_raw_fd()) } != 0 {
             return Err(io::Error::last_os_error());

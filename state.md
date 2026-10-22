@@ -955,4 +955,6 @@ format on disk/USB/NFS/SMB/SFTP/S3, image and file backups, client triggers, app
 restores, UI/CLI, import into an appliance). All in this repository.
 - [x] 38a comparison `docs/veeam-agent-comparison.md` (2026-10-22, Veeam Agent 13 for Windows and Linux): 14 areas,
   scope and order for 38b-38j (38b+38c, 38e, 38d with 37, 38f, 38g, 38h, 38i, 38j); no CBT driver, no kernel module.
-- [ ] 38b + 38c standalone mode and local repository (next).
+- [x] 38b + 38c first step (2026-10-22): standalone backup/list/restore into a directory repository on Linux
+  (`nexus-agent repo …`), recovery words, incremental via the metadata cache; chunkstore builds for Windows.
+- [ ] 38b + 38c rest: Windows CLI, retention and GC, repository lock, network targets (SFTP/S3), then 38e.

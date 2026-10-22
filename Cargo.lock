@@ -106,11 +106,13 @@ dependencies = [
  "agent-ui-proto",
  "base64 0.22.1",
  "blake3",
+ "chunkstore",
  "fastcdc",
  "hex",
  "libc",
  "postcard",
  "rcgen",
+ "recovery-key",
  "regex",
  "ring",
  "rustls",
@@ -121,6 +123,7 @@ dependencies = [
  "tempfile",
  "tls-pq",
  "x509-parser 0.18.1",
+ "zeroize",
 ]
 
 [[package]]

@@ -439,6 +439,25 @@ machine on empty disks or as a Proxmox VM (P2V), boot the **rescue ISO** from th
 [06 Restores: Bare-metal recovery](06-restores.md#bare-metal-recovery-linux-hosts). LUKS, md RAID and ZFS root layouts are not recreated automatically;
 Secure Boot must be off (the ISO is not signed yet).
 
+## Standalone mode (preview): backups without an appliance
+
+> **Status:** first step of Phase 38 (docs/agent-standalone.md). Commands only, run by root, no schedule yet (use a
+> systemd timer or cron), no automatic cleanup of old snapshots, the repository is a directory (a local or USB disk,
+> or a mounted NFS/SMB share). An agent can be enrolled with an appliance and use a standalone repository too.
+
+```sh
+nexus-agent repo init /mnt/usb/nexus           # prints the 24-word recovery key once: write it down
+nexus-agent repo backup /mnt/usb/nexus /home /etc
+nexus-agent repo list /mnt/usb/nexus
+nexus-agent repo restore /mnt/usb/nexus <time> /srv/restore --path home/ann --overwrite never
+```
+
+The repository has the appliance's format: deduplicated, compressed and always encrypted. The machine keeps the
+repository key under `/var/lib/nexus-agent/standalone/`, so backups run without input. On another machine (after a
+disk loss), `echo "<24 words>" | nexus-agent repo open /mnt/usb/nexus` opens it and keeps the key from then on.
+Without the machine and without the words nobody can read the repository. Backups use snapshots where the file
+system allows (LVM, ZFS, btrfs) like managed backups; only changed files are read again.
+
 ## Re-enrolling, moving, removing
 
 - **Host reinstalled or `/etc/nexus-agent` lost:** ask for a **New token** on the appliance (the agent keeps its id,

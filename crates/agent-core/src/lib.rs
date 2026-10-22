@@ -15,6 +15,7 @@ pub mod limit;
 pub mod releases;
 pub mod restore;
 pub mod server;
+pub mod standalone;
 pub mod tls;
 pub mod ui;
 pub mod update;

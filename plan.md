@@ -1143,6 +1143,10 @@ in this repository and uses the same crates as the appliance; the agents get the
   targets, schedules and triggers, application-aware processing, restores, recovery media, management (standalone,
   managed), security, limits. Each feature: has / partial / missing here, with effort. It fixes the scope of 38b-38j;
   the list below is the starting point, not the result.
+- **Status 2026-10-22:** first step of 38b/38c done (docs/agent-standalone.md): `agent_core::standalone`, Linux
+  CLI `nexus-agent repo init|open|backup|list|restore`, repository = chunk store in a directory (chunkstore builds
+  for Windows now), key wrapped under 24 recovery words, own state directory. Next: Windows CLI, retention + GC,
+  38e schedules and triggers.
 - **38b Two modes, one agent:** *managed* (today: the appliance pulls, its policies apply) and *standalone* (the
   agent schedules and writes itself). A standalone agent can later be attached to an appliance without a new full
   backup (38i).
