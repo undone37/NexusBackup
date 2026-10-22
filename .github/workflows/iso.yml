@@ -20,6 +20,7 @@ jobs:
   iso:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     # the appliance and the edge proxy (docs/edge.md): same builder, same installer config
     strategy:
       max-parallel: 1
@@ -84,6 +85,7 @@ jobs:
   rescue:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     env:
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -112,6 +114,7 @@ jobs:
   assets:
     needs: [iso, rescue]
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     env:
       TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

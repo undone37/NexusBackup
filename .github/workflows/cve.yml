@@ -19,6 +19,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       # Ubuntu 24.04 forbids unprivileged user namespaces (AppArmor); rootless podman needs them
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

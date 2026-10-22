@@ -26,6 +26,7 @@ env:
 jobs:
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
       web: ${{ steps.diff.outputs.web }}
@@ -68,6 +69,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -90,6 +92,7 @@ jobs:
     needs: [changes, lint]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
       - name: Free disk space
@@ -106,7 +109,9 @@ jobs:
             target
           key: cargo-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ github.job }}-
-      - run: command -v qemu-img >/dev/null || { sudo apt-get update && sudo apt-get install -y qemu-utils; }
+      # a stuck mirror (2026-10-22: 45 min in apt-get update) fails fast and the job retries nothing else
+      - run: command -v qemu-img >/dev/null || { sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y qemu-utils; }
+        timeout-minutes: 10
       # Ubuntu 24.04 runners forbid unprivileged user namespaces (AppArmor); the plugin
       # sandbox tests start real sandboxes (the appliance allows them, docs/plugin-system.md)
       - run: |
@@ -129,6 +134,7 @@ jobs:
     needs: [changes, lint]
     if: needs.changes.outputs.testbox == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
       - name: Free disk space
@@ -164,10 +170,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.plugin == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       # qemu-img: the instant recovery overlay tests
-      - run: sudo apt-get update && sudo apt-get install -y libjson-perl libperl-critic-perl qemu-utils
+      - run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install -y libjson-perl libperl-critic-perl qemu-utils
+        timeout-minutes: 10
       # severity 4 with the exceptions in .perlcriticrc (Phase 39 R3)
       - run: perlcritic --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback
       - run: prove pve-plugin/t
@@ -175,6 +183,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.os == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s os/greenboot/tests
@@ -185,6 +194,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults: { run: { working-directory: web } }
     steps:
       - uses: actions/checkout@v7
@@ -201,6 +211,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
       - name: Free disk space
@@ -231,6 +242,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     # audit-check reports through a check run
     permissions: { contents: read, checks: write }
     steps:

@@ -26,6 +26,7 @@ env:
 jobs:
   image:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       image: ${{ steps.push.outputs.image }}
@@ -242,6 +243,7 @@ jobs:
     # a critical CVE with a fixed package version fails the job (rebuild: --pull=always takes the fix).
     needs: image
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
       - name: Free disk space
@@ -308,6 +310,7 @@ jobs:
     # release with SHA256SUMS. Not signed: the release manager runs release/sign.sh sign-blobs.
     needs: image
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     steps:
       # the hosted runner's disk: drop preinstalled SDKs nothing here uses (about 30 GB)
       - name: Free disk space
