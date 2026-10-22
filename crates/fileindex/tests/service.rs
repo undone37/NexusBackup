@@ -210,6 +210,10 @@ fn versions_rules_paths_retention_paging() {
     assert!(by_owner("100").is_empty(), "a uid is not a prefix");
     assert!(by_owner("1000:1").is_empty());
     assert!(by_owner("S-1-5-32-544").is_empty());
+    // C2: by the guest's account name, case-insensitive; a name the guest does not know finds nothing
+    assert_eq!(by_owner("ann"), ["/home/ann/cv.pdf"]);
+    assert_eq!(by_owner("ANN"), ["/home/ann/cv.pdf"]);
+    assert!(by_owner("bob").is_empty());
     let del = s
         .search(&SearchReq {
             tenant: "acme".into(),

@@ -297,6 +297,14 @@
             "description": "files or folders only"
           },
           {
+            "name": "owner",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "owners, comma separated: an account name as the guest names it (case-insensitive), a Linux uid (any group) or uid:gid, a Windows SID, or a well-known Windows name (Administrators, SYSTEM, Users, Everyone)"
+          },
+          {
             "name": "deleted",
             "in": "query",
             "schema": {

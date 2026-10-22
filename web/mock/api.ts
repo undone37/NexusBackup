@@ -7434,10 +7434,17 @@ on('GET', '/files/search', async (c) => {
     .map((x) => x.trim())
     .filter(Boolean)
     .map((x) => WK[x.toLowerCase()] ?? x);
-  if (owners.some((o) => !/^(S-1(-\d{1,10})+|\d{1,10}(:\d{1,10})?)$/.test(o)))
-    throw new HttpError(400, 'owners: a SID (S-1-5-…), uid:gid or a uid');
-  const ownerOk = (o: string | undefined) =>
-    !owners.length || (!!o && owners.some((x) => (/^\d+$/.test(x) ? o.startsWith(`${x}:`) : o === x)));
+  // an id, or (Phase 39 C2) an account name as the guest names it
+  const isId = (o: string) => /^(S-1(-\d{1,10})+|\d{1,10}(:\d{1,10})?)$/.test(o);
+  if (owners.some((o) => !isId(o) && (o.startsWith('S-1-') || o.includes(':') || o.length > 64)))
+    throw new HttpError(400, 'owners: a SID (S-1-5-…), uid:gid, a uid or an account name');
+  const ownerOk = (o: string | undefined, name: string | undefined) =>
+    !owners.length ||
+    owners.some((x) =>
+      !isId(x)
+        ? !!name && name.toLowerCase() === x.toLowerCase()
+        : !!o && (/^\d+$/.test(x) ? o.startsWith(`${x}:`) : o === x),
+    );
   const filtered =
     exts.length ||
     owners.length ||
@@ -7454,7 +7461,7 @@ on('GET', '/files/search', async (c) => {
   const re = text ? globRe(how === 'path' ? text.replace(/^\/+/, '') : text, false) : null;
   const { docs, snaps } = tenantIndex(tenant);
   const verOk = (v: Json) =>
-    ownerOk(v.owner) &&
+    ownerOk(v.owner, v.owner_name) &&
     (smin === undefined || v.size >= smin) &&
     (smax === undefined || v.size <= smax) &&
     (mfrom === undefined || v.mtime >= mfrom) &&

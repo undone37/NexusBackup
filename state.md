@@ -896,7 +896,8 @@ their IDs. In progress:
   API-token-from-a-new-network rule (catalog v47 `token_networks`); manual chapters 9 and 10, screenshots.
 - [x] Phase 39 C2 (part): file search owner filter (index protocol `owners`, API `owner=`, UI field), well-known
   Windows SIDs as names; 2026-10-22 guest account names (Linux `/etc/passwd`, Windows SAM local accounts) through
-  the encrypted fsindex report into the index (`owner_name`, index format 2); domain accounts stay SIDs.
+  the encrypted fsindex report into the index (`owner_name`, index format 2), also as owner filter values
+  (`owner=alice`, case-insensitive); domain accounts stay SIDs.
 - [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
   before).
 - [x] Phase 39 O1: the configuration backup also goes to the second offsite target.

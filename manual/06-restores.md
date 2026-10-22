@@ -453,8 +453,9 @@ press, and **Enter** searches at once.
 3. Optionally narrow it to one **Source** (`vm-100`, `host-…`, `share-…`) or one **Protection group**.
 4. **More filters** offers the **Source kind** (VMs, containers, agents, NAS, shares, plugins), **Extensions**
    (`pdf, docx`, without dots), a size range (**Size from / up to** with a unit), the modification time
-   (**Modified from / until**), the **Type** (files only, folders only) and **Deleted files** (show all, only
-   deleted, hide deleted). With a filter set, the text may stay empty: for example all `.pst` files above 2 GiB,
+   (**Modified from / until**), the **Type** (files only, folders only), the **Owner** (files on VM disks: an account
+   name as the guest names it, such as `alice`, a Linux uid or `uid:gid`, a Windows SID, or a built-in group such as
+   Administrators; comma separated) and **Deleted files** (show all, only deleted, hide deleted). With a filter set, the text may stay empty: for example all `.pst` files above 2 GiB,
    or everything deleted in the last week. **Reset filters** clears them.
 
 ![Search results for budget* in tenant acme, one row expanded to its version timeline](images/search.png)

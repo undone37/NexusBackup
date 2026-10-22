@@ -133,9 +133,16 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
         must.push((Occur::Must, set(f.ext, &lc)));
     }
     if let Some(o) = r.owners.as_ref().filter(|o| !o.is_empty()) {
+        // account names (Phase 39 C2): the guest's name, case-insensitive
+        let (ids, names): (Vec<&String>, Vec<&String>) = o.iter().partition(|x| index_proto::owner_id(x));
         // a uid alone: any group (`uid:gid` is what the Linux walkers store)
-        let (uids, exact): (Vec<&String>, Vec<&String>) = o.iter().partition(|x| x.bytes().all(|b| b.is_ascii_digit()));
+        let (uids, exact): (Vec<&String>, Vec<&String>) =
+            ids.into_iter().partition(|x| x.bytes().all(|b| b.is_ascii_digit()));
         let mut any: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        if !names.is_empty() {
+            let lc: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+            any.push((Occur::Should, set(f.owner_name_lc, &lc)));
+        }
         if !exact.is_empty() {
             let exact: Vec<String> = exact.into_iter().cloned().collect();
             any.push((Occur::Should, set(f.owner, &exact)));

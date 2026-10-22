@@ -49,6 +49,8 @@ pub struct Fields {
     pub owner: Field,
     /// Phase 39 C2: the guest's name for that owner (stored only)
     pub owner_name: Field,
+    /// the same, lowercased, for the owner filter by name (indexed only)
+    pub owner_name_lc: Field,
 }
 
 pub fn schema() -> (Schema, Fields) {
@@ -76,6 +78,7 @@ pub fn schema() -> (Schema, Fields) {
         okey: b.add_u64_field("okey", INDEXED),
         owner: b.add_text_field("owner", STRING | STORED),
         owner_name: b.add_text_field("owner_name", STORED),
+        owner_name_lc: b.add_text_field("owner_name_lc", STRING),
     };
     (b.build(), f)
 }
@@ -310,6 +313,7 @@ impl TenantIndex {
         }
         if let Some(n) = &v.owner_name {
             d.add_text(f.owner_name, n);
+            d.add_text(f.owner_name_lc, n.to_lowercase());
         }
         d
     }

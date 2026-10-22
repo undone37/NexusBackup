@@ -1205,8 +1205,8 @@ state.md and commits.
 - C2 File search: **done 2026-10-21:** owner filter (`owner=`: SID, uid, uid:gid, built-in Windows names; UI field),
   names of Windows' well-known SIDs; **2026-10-22:** owner names from the guest itself (`/etc/passwd` of a Linux root
   file system, local accounts of the Windows SAM), kept in the encrypted per-snapshot report, resolved by nexus-index
-  at ingest (index format 2: one rebuild). Open: domain account names (AD is not on the member's disk), a name as
-  owner filter value (31c).
+  at ingest (index format 2: one rebuild), and names as owner filter values (case-insensitive). Open: domain account
+  names (AD is not on the member's disk) (31c).
 - C3 Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
   volumes (31c).
 - C4 M365 item metadata search (sender, recipients) for cases: plugin contract change, design in docs/m365.md

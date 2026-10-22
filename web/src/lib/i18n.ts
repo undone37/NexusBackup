@@ -1834,7 +1834,7 @@ export const en = {
     extHint: 'Comma separated, without dots, e.g. pdf, docx',
     ownerFilter: 'Owner',
     ownerHint:
-      'Linux: a uid (any group) or uid:gid. Windows: a SID, or a built-in group such as Administrators, SYSTEM or Users. Comma separated.',
+      'An account name as the guest names it (alice), a Linux uid (any group) or uid:gid, a Windows SID, or a built-in group such as Administrators, SYSTEM or Users. Comma separated.',
     sizeMin: 'Size from',
     sizeMax: 'Size up to',
     sizeUnit: 'Size unit',

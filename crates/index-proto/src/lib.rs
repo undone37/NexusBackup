@@ -141,8 +141,8 @@ fn default_limit() -> usize {
     DEFAULT_LIMIT
 }
 
-/// An owner filter value: `S-1-<digits>(-<digits>)*`, `<uid>:<gid>` or `<uid>` (decimal, at most 10 digits each).
-pub fn owner_ok(o: &str) -> bool {
+/// An owner id: `S-1-<digits>(-<digits>)*`, `<uid>:<gid>` or `<uid>` (decimal, at most 10 digits each).
+pub fn owner_id(o: &str) -> bool {
     let num = |x: &str| (1..=10).contains(&x.len()) && x.bytes().all(|b| b.is_ascii_digit());
     if let Some(rest) = o.strip_prefix("S-1-") {
         return o.len() <= 184 && rest.split('-').all(num);
@@ -151,6 +151,17 @@ pub fn owner_ok(o: &str) -> bool {
         Some((u, g)) => num(u) && num(g),
         None => num(o),
     }
+}
+
+/// An owner filter value: an [`owner_id`], or an account name as the guest names it (Phase 39 C2: up to 64
+/// characters, no control characters, no `:` and no `S-1-` prefix, which would be an id).
+pub fn owner_ok(o: &str) -> bool {
+    owner_id(o)
+        || (!o.is_empty()
+            && o.chars().count() <= 64
+            && !o.starts_with("S-1-")
+            && !o.contains(':')
+            && !o.chars().any(char::is_control))
 }
 
 impl SearchReq {
@@ -171,7 +182,9 @@ impl SearchReq {
         }
         for o in self.owners.iter().flatten() {
             if !owner_ok(o) {
-                return Err(format!("owners: a SID (S-1-5-…), uid:gid or a uid, not {o:?}"));
+                return Err(format!(
+                    "owners: a SID (S-1-5-…), uid:gid, a uid or an account name, not {o:?}"
+                ));
             }
         }
         if self.owners.as_ref().is_some_and(|o| o.len() > 16) {
@@ -461,11 +474,20 @@ mod tests {
         assert!(bad(&|r| r.ext = Some(vec![".pdf".into()])));
         assert!(bad(&|r| r.kinds = Some(vec!["disk".into()])));
         assert!(bad(&|r| r.entry = Some("x".into())));
-        assert!(bad(&|r| r.owners = Some(vec!["root".into()])));
         assert!(bad(&|r| r.owners = Some(vec!["S-1-5-x".into()])));
         assert!(bad(&|r| r.owners = Some(vec!["1000:".into()])));
+        assert!(bad(&|r| r.owners = Some(vec!["a:b".into()])));
+        assert!(bad(&|r| r.owners = Some(vec!["ann\n".into()])));
+        assert!(bad(&|r| r.owners = Some(vec!["x".repeat(65)])));
         assert!(bad(&|r| r.owners = Some((0..17).map(|i| i.to_string()).collect())));
-        for o in ["S-1-5-32-544", "S-1-5-21-1-2-3-1001", "1000:1000", "0"] {
+        for o in [
+            "S-1-5-32-544",
+            "S-1-5-21-1-2-3-1001",
+            "1000:1000",
+            "0",
+            "root",
+            "Jürgen Müller",
+        ] {
             let mut r = ok.clone();
             r.owners = Some(vec![o.into()]);
             assert!(r.validate().is_ok(), "{o}");
