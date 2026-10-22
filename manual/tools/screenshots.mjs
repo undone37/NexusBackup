@@ -1686,6 +1686,13 @@ async function main() {
       await login('so');
       await go('/cases');
       await until(`return document.body.innerText.includes('matter-2026-17')`, 'case list');
+      // Phase 39 C4: a new case by sender and recipient
+      await ev(`$click('New case'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[id$="-s"]')`, 'new case dialog');
+      await ev(`$fill('dialog[open] input[id$="-n"]', 'matter-2026-21'); $fill('dialog[open] input[id$="-s"]', '@rival.example'); $fill('dialog[open] input[id$="-r"]', 'alice@'); return true;`);
+      await settle();
+      await shot('case-new', { height: 1000 });
+      await closeDialogs();
       await ev(`$rowClick('matter-2026-17', 'Open'); return true;`);
       await until(`return document.body.innerText.includes('Matched snapshots') && !!$button('Hold matched snapshots')`, 'case detail');
       await ev(`$click('Hold matched snapshots'); return true;`);

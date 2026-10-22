@@ -1209,8 +1209,10 @@ state.md and commits.
   names (AD is not on the member's disk) (31c).
 - C3 Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
   volumes (31c).
-- C4 M365 item metadata search (sender, recipients) for cases: plugin contract change, design in docs/m365.md
-  (Phase 19, 33).
+- C4 M365 item metadata search (sender, recipients) for cases: **done 2026-10-22** (plugin protocol v1.10
+  `ItemMeta` with `caps` in the backup params, sealed side file `itemmeta` per snapshot carried over for unchanged
+  mails, case criteria `sender` / `recipient`; docs/m365.md). Open: the instant search (nexus-index) does not use the
+  records; mails carried over from older snapshots have none (Phase 19, 33).
 - C5 VMware vSphere: moved to Phase 41 (2026-10-21).
 - C6 Instant rollback for containers (Phase 30).
 - C7 **Done 2026-10-21:** progress lines for nexus-nas (part `scan`: entries, bytes read; the share is the item) and the

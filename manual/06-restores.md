@@ -1047,12 +1047,17 @@ matching items, puts them on legal hold and exports the items.
 
 - **New case**: tenant, a name (unique in the tenant), an optional description and the search: **Search for** is a
   part of the item name or a pattern with `*` and `?` (with a `/` the whole path, e.g. `mail/Inbox/*invoice*`).
+  **Sender contains** and **Recipient (To, Cc, Bcc) contains** narrow it to mails with such an address (part of an
+  address, case-insensitive, e.g. `@rival.example`); with one of them **Search for** may stay empty (all mails).
   **Sources**: **Microsoft 365** (every user, site, team and group of the tenant, the default) or **All sources of
   the tenant**; optionally a snapshot date range. **Create and search** saves the case and starts its search.
+
+  ![New case: all mails from an address at rival.example to alice](images/case-new.png)
+
 - What is searched: the file name index of every snapshot. For Microsoft 365 that is the folder, the **subject**
   (the mail's file name) and the date of each mail, calendar item and contact, and the names of OneDrive,
-  SharePoint and Teams files. Sender, recipients and the message text are **not** searched (see
-  [Limits](#case-limits)).
+  SharePoint and Teams files; for mails also the **sender and recipients** the appliance records with each backup.
+  The message text is **not** searched (see [Limits](#case-limits)).
 - The case page lists the **matched snapshots** with the number of matched items and their hold, and the matched
   items of the last search (up to 2000). **Search again** repeats the search with the saved criteria, for example
   after new backups.
@@ -1066,8 +1071,10 @@ matching items, puts them on legal hold and exports the items.
 
 ### Case limits
 
-- Item names only: a Microsoft 365 search by sender, recipient or text needs an item metadata index, which the
-  appliance does not build yet (docs/m365.md "Compliance search and cases").
+- Sender and recipients exist only for mails backed up by an appliance that records them (since the
+  release after 0.2.0-alpha.3); mails that older backups hold, and that later backups took over unchanged, have
+  none, so an address criterion does not find them. A search by name finds them as before. The message text is not
+  searched (docs/m365.md "Compliance search and cases").
 - Case entries in the audit log (`case.create`, `case.view`, `case.search`, `case.hold`, `case.export`,
   `case.close`) are not shown in the tenant's own audit view, so an investigation is not announced to the tenant's
   admins. The holds (with their reason) and the export jobs are ordinary ones that the tenant's admins can see:

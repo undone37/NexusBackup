@@ -63,6 +63,13 @@ pub struct Criteria {
     pub to: Option<u64>,
     #[serde(default)]
     pub case_sensitive: bool,
+    /// Phase 39 C4: mails whose sender address contains this (case-insensitive; M365 snapshots taken by a
+    /// v1.10 host carry sender and recipients)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    /// mails with a To, Cc or Bcc address containing this
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
 }
 
 fn m365() -> Option<String> {
@@ -71,6 +78,19 @@ fn m365() -> Option<String> {
 
 impl Criteria {
     fn check(&mut self) -> ApiResult<()> {
+        for (k, v) in [("sender", &mut self.sender), ("recipient", &mut self.recipient)] {
+            if let Some(s) = v.take() {
+                let s = s.trim().to_lowercase();
+                if s.len() > 254 || s.chars().any(char::is_control) {
+                    return Err(ApiError::bad(format!("criteria.{k}: at most 254 characters")));
+                }
+                *v = Some(s).filter(|s| !s.is_empty());
+            }
+        }
+        // a sender or recipient alone: every mail name
+        if self.query.trim().is_empty() && (self.sender.is_some() || self.recipient.is_some()) {
+            self.query = "*".into();
+        }
         let q = self.query.trim();
         if q.is_empty() || q.len() > 256 || q.contains('\0') {
             return Err(ApiError::bad("criteria.query: 1..=256 characters"));
@@ -101,6 +121,8 @@ impl Criteria {
             ("source", self.source.as_ref().map(|s| json!(s))),
             ("from", self.from.map(|f| json!(f))),
             ("to", self.to.map(|t| json!(t))),
+            ("sender", self.sender.as_ref().map(|s| json!(s))),
+            ("recipient", self.recipient.as_ref().map(|s| json!(s))),
         ] {
             if let Some(v) = v {
                 p[k] = v;

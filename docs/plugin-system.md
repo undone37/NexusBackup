@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"), additive v1.9 (2026-10-13, download with conversion, see "v1.9"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"), additive v1.9 (2026-10-13, download with conversion, see "v1.9"), additive v1.10 (2026-10-22, item metadata, see "v1.10"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -344,3 +344,20 @@ Additive; `api: 1` unchanged.
 - Tested: `crates/plugin-proto` (wire indices, output limits), `crates/plugin-host` (staging bounds, packing),
   `crates/scheduler` (plan without secrets), `crates/web-api/tests/plugins.rs` (params against the schema),
   `plugins/m365/tests/export.rs` (in-process and the real binary in the sandbox).
+
+## v1.10 — item metadata (2026-10-22, Phase 39 C4)
+Additive; `api: 1` unchanged.
+- The host lists the optional messages it accepts in the backup params: **`caps: ["item_meta"]`**
+  (`plugin_proto::CAP_ITEM_META`; SDK `Ctx::has_cap`). Older hosts list nothing, so a plugin sends the new message
+  only when it is listed (an older host would stop the backup at the unknown frame).
+- **`ItemMeta { path, json }`** (plugin → host, backup only; appended after `Output`, wire index 28): a JSON object
+  of at most 16 KiB about the file just written at `path` in this backup (`check` refuses empty or NUL paths,
+  non-objects and larger records; the host refuses a path not written as a file in this backup and a second record
+  for one path). The host keeps the base snapshot's record for every `Unchanged` path and writes all records after
+  the commit as the sealed side file `itemmeta` (`plugin_proto::ITEM_META_FILE`, a JSON object path → record;
+  never offsite or replicated). SDK: `Sink::item_meta(path, &json)`.
+- Used by: Microsoft 365 mail (sender, recipients, subject, date, message id, attachment names), read by the case
+  search (`file_search` with `sender` / `recipient`).
+- Tested: `crates/plugin-proto` (wire index, limits), `plugins/m365/tests/m365.rs` (records after a full backup,
+  carried over in the incremental, one per mail), `crates/scheduler` (search by sender and recipient),
+  `crates/web-api/tests/phase33.rs` (case criteria).

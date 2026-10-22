@@ -907,6 +907,9 @@ their IDs. In progress:
   stays open (group-readable stores needed). Lab 2026-10-21 (VM 201, 0.0.18-dev offline bundle): keyd runs with
   the read-only group, file search answers (index fetched the keyring), `verify.sh exact` byte-identical (371 s); getgrnam's userdb read
   denial silenced (dontaudit, like the configuration backup).
+- [x] Phase 39 C4: M365 cases by sender and recipient (plugin protocol v1.10 `ItemMeta`, side file `itemmeta`,
+  carried over for unchanged mails; criteria `sender` / `recipient`; Cases page fields). Tested against the Graph
+  mock; the instant search does not use the records yet.
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

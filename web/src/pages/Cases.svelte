@@ -73,6 +73,8 @@
     from: '',
     to: '',
     cs: false,
+    sender: '',
+    recipient: '',
   });
   function openNew() {
     f = {
@@ -84,6 +86,8 @@
       from: '',
       to: '',
       cs: false,
+      sender: '',
+      recipient: '',
     };
     newOpen = true;
   }
@@ -98,6 +102,8 @@
       from: day(f.from, false),
       to: day(f.to, true),
       case_sensitive: f.cs,
+      sender: f.sender.trim() || undefined,
+      recipient: f.recipient.trim() || undefined,
     };
     const r = await act(
       post<CaseInfo>('/cases', { tenant: f.tenant, name: f.name.trim(), description: f.description, criteria }),
@@ -180,6 +186,10 @@
       <dd class="mono">{one.criteria.query}</dd>
       <dt>{t.cases.prefix}</dt>
       <dd>{t.cases.prefixes[one.criteria.source_prefix ?? ''] ?? one.criteria.source_prefix}</dd>
+      {#if one.criteria.sender}<dt>{t.cases.sender}</dt>
+        <dd class="mono">{one.criteria.sender}</dd>{/if}
+      {#if one.criteria.recipient}<dt>{t.cases.recipient}</dt>
+        <dd class="mono">{one.criteria.recipient}</dd>{/if}
       {#if one.criteria.from || one.criteria.to}
         <dt>{t.cases.from} / {t.cases.to}</dt>
         <dd>
@@ -358,7 +368,7 @@
         id="{id}-q"
         class="mono"
         bind:value={f.query}
-        required
+        required={!f.sender.trim() && !f.recipient.trim()}
         maxlength="256"
         autocomplete="off"
         spellcheck="false"
@@ -366,6 +376,33 @@
       />
       <div class="hint" id="{id}-q-hint">{t.cases.queryHint}</div>
     </div>
+    <div class="form-grid">
+      <div class="field">
+        <label for="{id}-s">{t.cases.sender}</label>
+        <input
+          id="{id}-s"
+          class="mono"
+          bind:value={f.sender}
+          maxlength="254"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="{id}-a-hint"
+        />
+      </div>
+      <div class="field">
+        <label for="{id}-r">{t.cases.recipient}</label>
+        <input
+          id="{id}-r"
+          class="mono"
+          bind:value={f.recipient}
+          maxlength="254"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="{id}-a-hint"
+        />
+      </div>
+    </div>
+    <div class="field"><div class="hint" id="{id}-a-hint">{t.cases.addrHint}</div></div>
     <div class="form-grid">
       <div class="field">
         <label for="{id}-p">{t.cases.prefix}</label>
@@ -385,7 +422,10 @@
     <label class="inline-check"><input type="checkbox" bind:checked={f.cs} />{t.cases.caseSensitive}</label>
     <div class="form-actions">
       <button type="button" onclick={() => (newOpen = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy || !f.tenant || !f.name.trim() || !f.query.trim()}
+      <button
+        type="submit"
+        class="primary"
+        disabled={busy || !f.tenant || !f.name.trim() || !(f.query.trim() || f.sender.trim() || f.recipient.trim())}
         >{t.cases.create}</button
       >
     </div>

@@ -343,6 +343,29 @@ fn mailbox_and_onedrive_full_incremental_and_formats() {
         "report, new.txt, renamed notes.txt — big.bin is not downloaded again"
     );
     assert!(find(&s2, "mail/Inbox/", "Brand new").is_some());
+    // Phase 39 C4: sender and recipients of every mail, sealed with the snapshot; unchanged mails keep theirs
+    let meta = |t| -> BTreeMap<String, serde_json::Value> {
+        let b = h
+            .store()
+            .read_snap_file(&src(&guest), t, plugin_sdk::proto::ITEM_META_FILE)
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(&b).unwrap()
+    };
+    let (m1, m2) = (meta(b1.time), meta(b2.time));
+    let (hello, rec) = m1.iter().find(|(p, _)| p.contains("Hello ~")).unwrap();
+    assert_eq!(rec["from"], "alice@contoso.test");
+    assert_eq!(rec["to"], serde_json::json!(["bob@contoso.test"]));
+    assert_eq!(rec["subject"], "Hello");
+    assert_eq!(m2[hello], *rec, "carried over for the unchanged mail");
+    assert!(m2.keys().any(|p| p.contains("Brand new")), "the new mail has one");
+    assert_eq!(
+        m2.len(),
+        s2.keys()
+            .filter(|p| p.starts_with("mail/") && p.ends_with(".eml"))
+            .count(),
+        "one per mail"
+    );
     assert!(find(&s2, "mail/", "Invoice 42").is_none(), "deleted");
     assert!(find(&s2, "mail/Inbox/", "Re: Hello").is_some() && find(&s2, "mail/Sent Items/", "Re: Hello").is_none());
     assert!(find(&s2, "mail/Inbox/Projects%2F2026/", "Plan v2").is_some());

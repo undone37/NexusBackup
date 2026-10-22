@@ -3628,7 +3628,7 @@ checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 
 [[package]]
 name = "m365-plugin"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

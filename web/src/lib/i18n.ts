@@ -2606,6 +2606,10 @@ export const en = {
     from: 'Snapshots from',
     to: 'Snapshots until',
     caseSensitive: 'Case-sensitive',
+    sender: 'Sender contains',
+    recipient: 'Recipient (To, Cc, Bcc) contains',
+    addrHint:
+      'Mail only, part of an address, case-insensitive (e.g. @rival.example). Mails backed up by appliance versions that did not record senders and recipients yet are not found by these.',
     create: 'Create and search',
     created: (n: string) => `Case ${n} created; the search runs.`,
     state: { open: 'open', closed: 'closed' } as Record<string, string>,

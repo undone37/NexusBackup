@@ -764,6 +764,27 @@ async fn cases_search_hold_export_close() {
         json!({"query": "*Invoice 4711*", "case_sensitive": false, "limit": 2000, "case_id": id,
                "source_prefix": "plugin-m365-", "from": 50})
     );
+    // Phase 39 C4: by sender / recipient alone (the name pattern becomes *), lowercased into the job
+    let r = t
+        .post(
+            "/api/v1/cases",
+            &sam,
+            json!({"tenant": "acme", "name": "matter-2026-18",
+                   "criteria": {"query": "", "sender": " Eve@Rival.example ", "recipient": "@contoso"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let p: Value = serde_json::from_str(&t.one::<String>(&format!(
+        "SELECT params FROM jobs WHERE id = {}",
+        r.body["job_id"].as_i64().unwrap()
+    )))
+    .unwrap();
+    assert_eq!(
+        (&p["query"], &p["sender"], &p["recipient"]),
+        (&json!("*"), &json!("eve@rival.example"), &json!("@contoso"))
+    );
+    let bad = json!({"tenant": "acme", "name": "matter-x", "criteria": {"query": "a", "sender": "a\u{7}b"}});
+    assert_eq!(t.post("/api/v1/cases", &sam, bad).await.status, StatusCode::BAD_REQUEST);
     assert_eq!(
         t.post("/api/v1/cases", &alice, body.clone()).await.status,
         StatusCode::CONFLICT,
@@ -875,5 +896,5 @@ async fn cases_search_hold_export_close() {
     );
     assert_eq!(n, 0);
     let r = t.get("/api/v1/cases?tenant=acme", &sam).await;
-    assert_eq!(r.body.as_array().unwrap().len(), 1);
+    assert_eq!(r.body.as_array().unwrap().len(), 2, "matter-2026-17 and -18");
 }

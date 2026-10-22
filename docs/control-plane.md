@@ -1409,7 +1409,8 @@ search was never built). Tables `cases (id, tenant, name, description, criteria,
 closed_*, last_job, searched_at, truncated)` and `case_snapshots (case_id, source, time, items, hold_id)`.
 Roles: admins and security officers, appliance-wide sessions only (no tenant roles, no API tokens).
 - `GET /cases?tenant=`, `POST /cases {tenant, name, description?, criteria: {query, source_prefix? (default
-  "plugin-m365-", "" = all), source?, from?, to?, case_sensitive?}}` (201 with `job_id`), `GET /cases/{id}` (adds
+  "plugin-m365-", "" = all), source?, from?, to?, case_sensitive?, sender?, recipient?}}` (201 with `job_id`; sender /
+  recipient: part of a mail address, lowercased, matched against the snapshots' `itemmeta` records, Phase 39 C4), `GET /cases/{id}` (adds
   `snapshot_list` with holds and `matches` of the last finished search), `POST /cases/{id}/search` (409 while the last
   search runs or the case is closed), `POST /cases/{id}/hold {reason}` (security officers; `holds::hold_one` on every
   matched snapshot with reason `case <name>: <reason>`, the active hold recorded as `hold_id`), `POST

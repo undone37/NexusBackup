@@ -177,6 +177,21 @@ impl Sink {
         send(&self.chan, &Message::SnapshotMeta { json: meta.to_string() })
     }
 
+    /// v1.10: searchable metadata of the file just written at `path` (a JSON object ≤ 16 KiB, once per file);
+    /// send it only when `ctx.has_cap(plugin_proto::CAP_ITEM_META)`: an older host stops the backup.
+    pub fn item_meta(&mut self, path: &str, meta: &serde_json::Value) -> Result<()> {
+        if !meta.is_object() {
+            bail!("item metadata must be a JSON object");
+        }
+        send(
+            &self.chan,
+            &Message::ItemMeta {
+                path: path.to_owned(),
+                json: meta.to_string(),
+            },
+        )
+    }
+
     /// Metadata of these paths in the base snapshot (missing paths are omitted).
     pub fn base(&mut self, paths: &[Vec<u8>]) -> Result<Vec<BaseEntry>> {
         if !self.has_base || paths.is_empty() {

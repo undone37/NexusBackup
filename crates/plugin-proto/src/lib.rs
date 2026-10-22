@@ -368,6 +368,17 @@ pub enum Message {
         /// The bytes, at most [`MAX_DATA`].
         bytes: Vec<u8>,
     },
+    // v1.10 (appended after `Output`)
+    /// Backup only (plugin → host): searchable metadata of the item last written at `path` (e.g. a mail's
+    /// sender and recipients, Phase 39 C4): a JSON object of at most [`MAX_ITEM_META`] bytes, kept sealed
+    /// with the snapshot (never offsite) and carried over for `Unchanged` items. A plugin sends it only when
+    /// the backup params' `caps` list `item_meta` (older hosts do not know it and would stop the backup).
+    ItemMeta {
+        /// Path of the item, as in `FileBegin`.
+        path: String,
+        /// The JSON object as text.
+        json: String,
+    },
 }
 
 /// Upper bound of one export output file (`Output.offset + len`): 64 GiB.
@@ -380,6 +391,12 @@ pub const MAX_WARNING_SAMPLE: usize = 1024;
 
 /// Largest `SnapshotMeta` JSON in bytes (16 KiB).
 pub const MAX_SNAPSHOT_META: usize = 16 << 10;
+/// Largest [`Message::ItemMeta`] JSON (v1.10).
+pub const MAX_ITEM_META: usize = 16 << 10;
+/// The sealed per-snapshot side file holding the [`Message::ItemMeta`] records: a JSON object, path → record.
+pub const ITEM_META_FILE: &str = "itemmeta";
+/// What a v1.10 host lists in the backup params' `caps`.
+pub const CAP_ITEM_META: &str = "item_meta";
 
 fn bad(msg: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.into())
@@ -502,6 +519,15 @@ pub fn check(m: &Message) -> io::Result<()> {
                 || !serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v.is_object()) =>
         {
             Err(bad("snapshot metadata: a JSON object of at most 16 KiB"))
+        }
+        Message::ItemMeta { path, json }
+            if path.is_empty()
+                || path.len() > MAX_PATH
+                || path.contains('\0')
+                || json.len() > MAX_ITEM_META
+                || !serde_json::from_str::<serde_json::Value>(json).is_ok_and(|v| v.is_object()) =>
+        {
+            Err(bad("item metadata: a path and a JSON object of at most 16 KiB"))
         }
         _ => Ok(()),
     }
@@ -921,6 +947,29 @@ mod tests {
             assert!(bad(n, 0), "{n:?}");
         }
         assert!(bad("x", MAX_OUTPUT_FILE - 9) && bad("x", u64::MAX));
+    }
+
+    /// v1.10: `ItemMeta` is appended after `Output` (28); a path and a small JSON object only.
+    #[test]
+    fn item_meta() {
+        let m = Message::ItemMeta {
+            path: "mail/Inbox/Hello.eml".into(),
+            json: r#"{"from":"a@b.test","to":["c@d.test"]}"#.into(),
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &m).unwrap();
+        assert_eq!(buf[4], 28, "wire index: after Output (27)");
+        assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        let bad = |path: &str, json: &str| {
+            check(&Message::ItemMeta {
+                path: path.into(),
+                json: json.into(),
+            })
+            .is_err()
+        };
+        assert!(bad("", "{}") && bad("a\0b", "{}") && bad("x", "[1]") && bad("x", "{"));
+        assert!(bad("x", &format!(r#"{{"a":"{}"}}"#, "x".repeat(MAX_ITEM_META))));
+        assert!(!bad("x", "{}"));
     }
 
     /// v1.5 tags are a new appended variant: a v1.4 plugin's `Guests` frame is byte

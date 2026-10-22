@@ -20,7 +20,7 @@ use anyhow::{bail, Context, Result};
 use chunkstore::store::{CDC_AVG, CDC_MAX, CDC_MIN};
 use chunkstore::{ChunkId, FileEntry, Index, Store, TreeEntry, TreeKind};
 use plugin_proto::{BaseEntry, BaseInfo, Message, Meta, Op, API, MAX_BATCH, MAX_FRAME, STREAMS_DIR};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Upper bounds the host enforces beyond the protocol's per-message limits.
@@ -127,6 +127,26 @@ pub fn load_base(store: &Store, source: &str) -> Result<Option<Base>> {
         sorted: std::cell::OnceCell::new(),
         state: read_state(store, &m)?,
     }))
+}
+
+/// The backup params as the plugin sees them: the host's own plus `caps`, the optional messages this host
+/// accepts (v1.10: [`plugin_proto::CAP_ITEM_META`]).
+fn with_caps(params: &serde_json::Value) -> serde_json::Value {
+    let mut p = params.clone();
+    if let Some(o) = p.as_object_mut() {
+        o.insert("caps".into(), serde_json::json!([plugin_proto::CAP_ITEM_META]));
+    }
+    p
+}
+
+/// The item metadata of a committed snapshot (path → record); empty when it has none.
+pub fn read_item_meta(store: &Store, source: &str, time: u64) -> Result<BTreeMap<String, serde_json::Value>> {
+    Ok(
+        match store.read_snap_file(source, time, plugin_proto::ITEM_META_FILE)? {
+            Some(b) => serde_json::from_slice(&b).context("item metadata")?,
+            None => BTreeMap::new(),
+        },
+    )
 }
 
 /// The state blob stored with a snapshot.
@@ -381,7 +401,7 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
         kind: p.kind.to_owned(),
         op: Op::Backup,
         config: p.config.to_owned(),
-        params: p.params.to_string(),
+        params: with_caps(&p.params).to_string(),
         base: base.as_ref().map(|b| BaseInfo { time: b.time }),
         state: base.as_ref().and_then(|b| b.state.clone()),
     })?;
@@ -392,6 +412,12 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
     };
     let mut entries: Vec<TreeEntry> = Vec::new();
     let mut seen: HashMap<Vec<u8>, TreeKind> = HashMap::new();
+    // v1.10: item metadata by path, the base snapshot's carried over for unchanged items
+    let mut item_meta: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let base_meta = match &base {
+        Some(b) => read_item_meta(store, p.source, b.time)?,
+        None => BTreeMap::new(),
+    };
     let mut streams: Vec<FileEntry> = Vec::new();
     let mut stream_names: HashSet<String> = HashSet::new();
     let mut touched: HashSet<ChunkId> = HashSet::new();
@@ -543,6 +569,9 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                 }
                 r.unchanged += 1;
                 seen.insert(path.clone(), b.kind.clone());
+                if let Some(m) = base_meta.get(&shown) {
+                    item_meta.insert(shown.clone(), m.clone());
+                }
                 let mut e = b.clone();
                 e.ctime_ns = meta.ctime_ns;
                 e.inode = meta.inode;
@@ -586,6 +615,15 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
                     if r.warning_samples.len() < plugin_proto::MAX_WARNING_SAMPLES {
                         r.warning_samples.push(x);
                     }
+                }
+            }
+            Message::ItemMeta { path, json } => {
+                if !seen.get(path.as_bytes()).is_some_and(|k| *k == TreeKind::File) {
+                    return Err(peer.violation("ItemMeta for an item not written in this backup"));
+                }
+                let v = serde_json::from_str(&json).map_err(|_| peer.violation("ItemMeta: bad JSON"))?;
+                if item_meta.insert(path, v).is_some() {
+                    return Err(peer.violation("ItemMeta sent twice for one item"));
                 }
             }
             Message::SnapshotMeta { json } => {
@@ -635,6 +673,14 @@ pub fn run(store: &Store, peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&
         ));
     }
     let m = store.commit_snapshot(p.source, r.time, &idx)?;
+    if !item_meta.is_empty() {
+        // ponytail: one JSON object for the whole snapshot (about 0.5 KiB per mail); split it when mailboxes
+        // with millions of items make it slow to read
+        let data = serde_json::to_vec(&item_meta)?;
+        store
+            .write_snap_file(p.source, r.time, plugin_proto::ITEM_META_FILE, &data)
+            .context("writing the item metadata")?;
+    }
     let id = format!("{}/{}", r.source, r.time);
     log.left = usize::MAX;
     (log.out)(&format!(
@@ -695,6 +741,7 @@ pub(crate) fn msg_name(m: &Message) -> &'static str {
         Message::Warnings { .. } => "Warnings",
         Message::SnapshotMeta { .. } => "SnapshotMeta",
         Message::Output { .. } => "Output",
+        Message::ItemMeta { .. } => "ItemMeta",
     }
 }
 

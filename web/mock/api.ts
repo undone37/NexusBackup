@@ -12769,7 +12769,12 @@ on('POST', '/cases', async (c) => {
   find(db.tenants, (x) => x.name === b.tenant, 'tenant');
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(String(b.name)))
     throw new HttpError(400, 'name: [A-Za-z0-9._-]{1,64}');
-  const q = String(b.criteria?.query ?? '').trim();
+  const addr = (k: string) =>
+    String(b.criteria?.[k] ?? '')
+      .trim()
+      .toLowerCase() || undefined;
+  const [sender, recipient] = [addr('sender'), addr('recipient')];
+  const q = String(b.criteria?.query ?? '').trim() || (sender || recipient ? '*' : '');
   if (!q || q.length > 256) throw new HttpError(400, 'criteria.query: 1..=256 characters');
   if (db.cases.some((x) => x.tenant === b.tenant && x.name === b.name))
     throw new HttpError(409, 'a case of this name exists in the tenant');
@@ -12778,6 +12783,8 @@ on('POST', '/cases', async (c) => {
   if (prefix) criteria.source_prefix = prefix;
   for (const k of ['source', 'from', 'to'])
     if (b.criteria[k] !== undefined && b.criteria[k] !== null) criteria[k] = b.criteria[k];
+  if (sender) criteria.sender = sender;
+  if (recipient) criteria.recipient = recipient;
   const cs: Json = {
     id: nextId(),
     tenant: b.tenant,

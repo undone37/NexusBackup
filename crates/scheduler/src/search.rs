@@ -14,7 +14,7 @@ use catalog::rusqlite::{params, OptionalExtension};
 use chunkstore::names::kind_name;
 use chunkstore::{Manifest, NameIndex, Store};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Mutex;
@@ -168,6 +168,9 @@ pub struct Query {
     pub from: Option<u64>,
     pub to: Option<u64>,
     pub limit: usize,
+    /// Phase 39 C4 (cases): the item metadata's sender / a To, Cc or Bcc address contains this (lowercase)
+    pub sender: Option<String>,
+    pub recipient: Option<String>,
 }
 
 impl Query {
@@ -199,6 +202,13 @@ impl Query {
             Some(s) => bail!("invalid source_prefix {s:?}"),
             None => None,
         };
+        let addr = |k: &str| -> Result<Option<String>> {
+            match p[k].as_str().map(|s| s.trim().to_lowercase()) {
+                Some(s) if s.len() > 254 || s.chars().any(char::is_control) => bail!("{k}: at most 254 characters"),
+                s => Ok(s.filter(|s| !s.is_empty())),
+            }
+        };
+        let (sender, recipient) = (addr("sender")?, addr("recipient")?);
         let limit = p["limit"].as_u64().map_or(DEFAULT_LIMIT, |l| l as usize);
         if !(1..=MAX_LIMIT).contains(&limit) {
             bail!("limit: 1..={MAX_LIMIT}");
@@ -211,7 +221,34 @@ impl Query {
             from: p["from"].as_u64(),
             to: p["to"].as_u64(),
             limit,
+            sender,
+            recipient,
         })
+    }
+
+    /// Whether the snapshots' item metadata is needed.
+    fn by_meta(&self) -> bool {
+        self.sender.is_some() || self.recipient.is_some()
+    }
+
+    /// Whether an item's metadata record matches the sender / recipient criteria.
+    fn meta_hit(&self, rec: Option<&Value>) -> bool {
+        if !self.by_meta() {
+            return true;
+        }
+        let Some(r) = rec else { return false };
+        let has = |v: &Value, want: &str| match v {
+            Value::String(s) => s.to_lowercase().contains(want),
+            Value::Array(a) => a
+                .iter()
+                .any(|x| x.as_str().is_some_and(|s| s.to_lowercase().contains(want))),
+            _ => false,
+        };
+        self.sender.as_deref().is_none_or(|w| has(&r["from"], w))
+            && self
+                .recipient
+                .as_deref()
+                .is_none_or(|w| ["to", "cc", "bcc"].iter().any(|k| has(&r[*k], w)))
     }
 
     fn hit(&self, path: &str) -> bool {
@@ -237,11 +274,12 @@ impl Query {
 /// (path, kind, size, mtime) of one snapshot; `None` = no name index
 type Hits = Option<Vec<(String, u8, u64, i64)>>;
 
-/// Matches of one snapshot, at most `limit` (+1 to notice that there were more).
-fn scan(q: &Query, names: &NameIndex) -> Vec<(String, u8, u64, i64)> {
+/// Matches of one snapshot, at most `limit` (+1 to notice that there were more); `meta`: the snapshot's
+/// item metadata when the query needs it.
+fn scan(q: &Query, names: &NameIndex, meta: &BTreeMap<String, Value>) -> Vec<(String, u8, u64, i64)> {
     let mut out = Vec::new();
     for (p, size, mtime, kind) in names.iter() {
-        if q.hit(p) {
+        if q.hit(p) && q.meta_hit(meta.get(p)) {
             out.push((p.to_owned(), kind, size, mtime));
             if out.len() > q.limit {
                 break;
@@ -249,6 +287,17 @@ fn scan(q: &Query, names: &NameIndex) -> Vec<(String, u8, u64, i64)> {
         }
     }
     out
+}
+
+/// The item metadata of a snapshot (path → record, [`plugin_proto::ITEM_META_FILE`]); empty when it has
+/// none or cannot be read (its items then match no sender / recipient criterion).
+fn item_meta(store: &Store, m: &Manifest) -> BTreeMap<String, Value> {
+    store
+        .read_snap_file(&m.source, m.time, plugin_proto::ITEM_META_FILE)
+        .ok()
+        .flatten()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Runs a search; the JSON result of a `file_search` job (docs/control-plane.md).
@@ -272,9 +321,14 @@ pub fn search(store: &Store, q: &Query, budget: Duration) -> std::io::Result<Val
                 if i >= snaps.len() || t0.elapsed() > budget {
                     break;
                 }
+                let meta = if q.by_meta() {
+                    item_meta(store, &snaps[i])
+                } else {
+                    BTreeMap::new()
+                };
                 match store.names_or_build(&snaps[i]) {
                     Ok(n) => {
-                        let _ = tx.send((i, n.map(|n| scan(q, &n))));
+                        let _ = tx.send((i, n.map(|n| scan(q, &n, &meta))));
                     }
                     Err(e) => {
                         failed.lock().unwrap().get_or_insert(e);
@@ -552,6 +606,62 @@ mod tests {
 
     /// `cargo test -p scheduler --release search_benchmark -- --ignored --nocapture`:
     /// 100 snapshots × 200k names (plan 15g target: < 10 s on the dev box).
+    #[test]
+    fn sender_and_recipient_from_item_metadata() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(d.path());
+        let tree = |v: Vec<TreeEntry>| [("tree", Index::Tree { entries: v })];
+        let src = "plugin-m365-1-u.alice";
+        s.commit_snapshot(
+            src,
+            1,
+            &tree(vec![
+                entry("mail/Inbox/Offer.eml", 5, 10),
+                entry("mail/Inbox/Lunch.eml", 5, 10),
+                entry("mail/Inbox/Old.eml", 5, 10),
+            ]),
+        )
+        .unwrap();
+        let meta = json!({
+            "mail/Inbox/Offer.eml": {"from": "eve@rival.test", "to": ["alice@contoso.test"], "cc": ["Bob@x.test"]},
+            "mail/Inbox/Lunch.eml": {"from": "bob@contoso.test", "to": ["alice@contoso.test"], "bcc": ["carol@x.test"]},
+        });
+        s.write_snap_file(src, 1, plugin_proto::ITEM_META_FILE, meta.to_string().as_bytes())
+            .unwrap();
+        let find = |p: Value| {
+            let r = search(&s, &Query::from_params(&p).unwrap(), BUDGET).unwrap();
+            let mut v: Vec<String> = r["matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["path"].as_str().unwrap().to_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        // substring, case-insensitive; Old.eml has no record (an older host) and matches no address criterion
+        assert_eq!(find(json!({"query": "*", "sender": "RIVAL"})), ["mail/Inbox/Offer.eml"]);
+        assert_eq!(
+            find(json!({"query": "*", "recipient": "carol@"})),
+            ["mail/Inbox/Lunch.eml"]
+        );
+        assert_eq!(
+            find(json!({"query": "*", "recipient": "bob@x"})),
+            ["mail/Inbox/Offer.eml"]
+        );
+        assert_eq!(
+            find(json!({"query": "*", "recipient": "alice@contoso.test"})),
+            ["mail/Inbox/Lunch.eml", "mail/Inbox/Offer.eml"]
+        );
+        assert!(find(json!({"query": "*", "sender": "eve", "recipient": "carol"})).is_empty());
+        assert_eq!(
+            find(json!({"query": "*.eml"})).len(),
+            3,
+            "without address criteria: by name only"
+        );
+        assert!(Query::from_params(&json!({"query": "a", "sender": "x\ny"})).is_err());
+    }
+
     #[test]
     #[ignore]
     fn search_benchmark() {

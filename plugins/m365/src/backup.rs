@@ -775,7 +775,15 @@ impl Run<'_, '_> {
                 .g
                 .get_bytes(&format!("/users/{}/messages/{}/$value", enc(u), seg(&id)), &h)
             {
-                Ok(mime) => self.out.bytes(&path, &xid, &it, &mime)?,
+                Ok(mime) => {
+                    self.out.bytes(&path, &xid, &it, &mime)?;
+                    // Phase 39 C4: sender and recipients for case searches (a v1.10 host)
+                    if self.ctx.has_cap(plugin_sdk::proto::CAP_ITEM_META) {
+                        if let Some(m) = crate::mail::item_meta(&mime) {
+                            self.out.sink.item_meta(&path, &m)?;
+                        }
+                    }
+                }
                 Err(e) => {
                     self.item_failed(&path, e)?;
                 }

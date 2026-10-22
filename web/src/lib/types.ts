@@ -1517,6 +1517,9 @@ export interface CaseCriteria {
   from?: number | null;
   to?: number | null;
   case_sensitive?: boolean;
+  /** Phase 39 C4: mails whose sender / a To, Cc or Bcc address contains this (lowercase) */
+  sender?: string | null;
+  recipient?: string | null;
 }
 
 /** Phase 33: GET /cases, GET /cases/{id} (the latter with snapshot_list and matches). */

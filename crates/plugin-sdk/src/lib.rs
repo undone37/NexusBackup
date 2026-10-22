@@ -164,6 +164,14 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// Whether the host accepts the optional message `cap` (the backup params' `caps`, v1.10:
+    /// [`plugin_proto::CAP_ITEM_META`]); older hosts list none.
+    pub fn has_cap(&self, cap: &str) -> bool {
+        self.params["caps"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|x| x == cap))
+    }
+
     /// Sends a line to the job log (escaped and truncated by the host). Never log
     /// secrets. Send errors are ignored.
     pub fn log(&self, level: Level, text: impl Into<String>) {

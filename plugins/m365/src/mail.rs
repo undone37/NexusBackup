@@ -64,6 +64,53 @@ fn first_address(a: Option<&Address>) -> Option<String> {
     a?.iter().find_map(|x| x.address().map(str::to_owned))
 }
 
+/// Searchable metadata of a mail (Phase 39 C4, sent to the host as item metadata): sender, recipients
+/// (addresses, lowercased), subject, date, message id, attachment names; `None` when the MIME does not parse.
+/// Kept under the protocol's 16 KiB: long lists are cut, recipients and attachments first.
+pub fn item_meta(eml: &[u8]) -> Option<serde_json::Value> {
+    let m = MessageParser::default().parse(eml)?;
+    let cut = |s: &str, n: usize| s.trim().chars().take(n).collect::<String>();
+    let addrs = |a: Option<&Address>| -> Vec<String> {
+        a.map(|a| {
+            a.iter()
+                .filter_map(|x| x.address())
+                .map(|s| cut(s, 254).to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default()
+    };
+    let mut lists = [
+        ("to", addrs(m.to())),
+        ("cc", addrs(m.cc())),
+        ("bcc", addrs(m.bcc())),
+        (
+            "attachments",
+            m.attachments()
+                .filter_map(|p| p.attachment_name())
+                .map(|n| cut(n, 255))
+                .filter(|n| !n.is_empty())
+                .collect(),
+        ),
+    ];
+    let head = serde_json::json!({
+        "from": addrs(m.from()).into_iter().next(),
+        "subject": m.subject().map(|s| cut(s, 1000)),
+        "date": m.date().map(mail_parser::DateTime::to_timestamp),
+        "message_id": m.message_id().map(|s| cut(s, 500)),
+    });
+    loop {
+        let mut v = head.clone();
+        for (k, l) in &lists {
+            v[*k] = serde_json::json!(l);
+        }
+        if v.to_string().len() <= plugin_sdk::proto::MAX_ITEM_META {
+            return Some(v);
+        }
+        // the longest list loses its last entry
+        lists.iter_mut().max_by_key(|(_, l)| l.len())?.1.pop()?;
+    }
+}
+
 /// Appends one message to an mbox: the `From ` line, the message with CRLF → LF and
 /// `>*From ` lines quoted with one more `>` (mboxrd), a final newline and a blank line.
 pub fn mbox_append(out: &mut impl Write, eml: &[u8]) -> io::Result<()> {
@@ -338,6 +385,23 @@ fn attachment(i: usize, name: &str, mime: &str, data: Vec<u8>, cid: Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn item_meta_stays_within_the_protocol_limit() {
+        let to: Vec<String> = (0..2000).map(|i| format!("user{i}@example.test")).collect();
+        let eml = format!(
+            "From: Ann <ANN@Example.test>\r\nTo: {}\r\nSubject: Q4\r\nMessage-ID: <x@y>\r\n\r\nbody\r\n",
+            to.join(", ")
+        );
+        let m = item_meta(eml.as_bytes()).unwrap();
+        assert!(m.to_string().len() <= plugin_sdk::proto::MAX_ITEM_META);
+        assert_eq!(m["from"], "ann@example.test", "lowercased, kept");
+        assert_eq!(m["subject"], "Q4");
+        let n = m["to"].as_array().unwrap().len();
+        assert!(n > 100 && n < 2000, "{n} recipients kept");
+        assert_eq!(m["to"][0], "user0@example.test", "the first ones are kept");
+        assert!(item_meta(b"").is_none() || item_meta(b"").is_some_and(|m| m["from"].is_null()));
+    }
 
     fn get(p: &[(u16, Val)], id: u16) -> Option<&Val> {
         p.iter().find(|x| x.0 == id).map(|x| &x.1)
