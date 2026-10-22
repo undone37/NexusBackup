@@ -152,6 +152,17 @@ impl<R: HiveRead> Hive<R> {
         Ok(())
     }
 
+    /// The subkeys of the key at `off`: (name, offset).
+    pub fn subkeys(&mut self, off: u32) -> Result<Vec<(String, u32)>, String> {
+        let k = self.key(off)?;
+        if k.subkeys == 0 {
+            return Ok(Vec::new());
+        }
+        let mut offs = Vec::new();
+        self.subkey_offsets(k.subkey_list, 0, &mut offs)?;
+        offs.into_iter().map(|o| Ok((self.key(o)?.name, o))).collect()
+    }
+
     /// The subkey `name` (case-insensitive) of the key at `off`.
     fn subkey(&mut self, off: u32, want: &str) -> Result<Option<u32>, String> {
         let k = self.key(off)?;
@@ -269,6 +280,57 @@ pub fn drive_letters<R: HiveRead>(r: R) -> Result<Vec<(String, String)>, String>
     Ok(out)
 }
 
+/// The local accounts of a SAM hive (Phase 39 C2): (SID, user name), sorted. The machine SID ends the `V`
+/// value of `SAM\Domains\Account`; each `Users\<RID in hex>` key's `V` value holds the user name.
+/// Domain accounts are not in the SAM (their names stay unresolved).
+pub fn local_accounts<R: HiveRead>(r: R) -> Result<Vec<(String, String)>, String> {
+    let mut h = Hive::open(r)?;
+    let Some(acct) = h.find("SAM\\Domains\\Account")? else {
+        return Ok(Vec::new());
+    };
+    let v = h
+        .values(acct)?
+        .into_iter()
+        .find(|v| v.name == "V")
+        .ok_or("SAM: no account domain V")?;
+    let sid = machine_sid(&v.data).ok_or("SAM: no machine SID")?;
+    let Some(users) = h.find("SAM\\Domains\\Account\\Users")? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (key, off) in h.subkeys(users)? {
+        // `Names` and anything else that is not a RID
+        let Some(rid) = (key.len() == 8).then(|| u32::from_str_radix(&key, 16).ok()).flatten() else {
+            continue;
+        };
+        if let Some(v) = h.values(off)?.into_iter().find(|v| v.name == "V") {
+            if let Some(n) = user_name(&v.data) {
+                out.push((format!("{sid}-{rid}"), n));
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// `S-1-5-21-a-b-c` from the last 24 bytes of the account domain's `V` value.
+fn machine_sid(d: &[u8]) -> Option<String> {
+    let s = d.get(d.len().checked_sub(24)?..)?;
+    (s[..8] == [1, 4, 0, 0, 0, 0, 0, 5] && le32(s, 8) == 21)
+        .then(|| format!("S-1-5-21-{}-{}-{}", le32(s, 12), le32(s, 16), le32(s, 20)))
+}
+
+/// The user name of a user's `V` value: entry 1 of its (offset, length, flags) table, offsets after 0xcc.
+fn user_name(d: &[u8]) -> Option<String> {
+    let (off, len) = (le32(d, 0x0c) as usize, le32(d, 0x10) as usize);
+    if len == 0 || len > 512 || len % 2 != 0 {
+        return None;
+    }
+    let raw = d.get(0xcc + off..(0xcc + off).checked_add(len)?)?;
+    let n = name(raw, false);
+    (!n.chars().any(char::is_control)).then_some(n)
+}
+
 /// (name, type, data) of a value for [`build`].
 #[doc(hidden)]
 pub type TestValue<'a> = (&'a str, u32, Vec<u8>);
@@ -337,11 +399,36 @@ pub fn build(keys: &[(&str, Vec<TestValue>)]) -> Vec<u8> {
     }
     let mut b = B { bins: b"hbin".to_vec() };
     b.bins.resize(32, 0);
-    let mut subs = Vec::new();
-    for (name, vals) in keys {
+    // `\`-separated paths make nested keys (parents without values are added); deepest first, so a
+    // key's subkeys exist when it is written
+    let mut tree: std::collections::BTreeMap<String, Vec<u32>> = std::collections::BTreeMap::new();
+    for (path, vals) in keys {
+        let mut at = String::new();
+        for c in path.split('\\') {
+            at = if at.is_empty() {
+                c.to_string()
+            } else {
+                format!("{at}\\{c}")
+            };
+            tree.entry(at.clone()).or_default();
+        }
         let vs: Vec<u32> = vals.iter().map(|(n, t, d)| b.value(n, *t, d)).collect();
-        subs.push(b.key(name, &[], &vs));
+        tree.get_mut(*path).unwrap().extend(vs);
     }
+    let parent = |p: &str| p.rsplit_once('\\').map(|(a, _)| a.to_string()).unwrap_or_default();
+    let mut paths: Vec<String> = tree.keys().cloned().collect();
+    paths.sort_by_key(|p| std::cmp::Reverse(p.matches('\\').count()));
+    let mut offs: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for p in &paths {
+        let subs: Vec<u32> = offs.iter().filter(|(q, _)| parent(q) == *p).map(|(_, o)| *o).collect();
+        let name = p.rsplit('\\').next().unwrap();
+        offs.insert(p.clone(), b.key(name, &subs, &tree[p]));
+    }
+    let subs: Vec<u32> = offs
+        .iter()
+        .filter(|(q, _)| !q.contains('\\'))
+        .map(|(_, o)| *o)
+        .collect();
     let root = b.key("ROOT", &subs, &[]);
     let size = b.bins.len().div_ceil(4096) * 4096;
     b.bins.resize(size, 0);
@@ -362,6 +449,29 @@ pub fn build(keys: &[(&str, Vec<TestValue>)]) -> Vec<u8> {
     base[508..512].copy_from_slice(&x.to_le_bytes());
     base.extend(b.bins);
     base
+}
+
+/// A user's `V` value for [`build`]: the (offset, length) table with the name as entry 1.
+#[doc(hidden)]
+pub fn user_v(name: &str) -> Vec<u8> {
+    let n: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut v = vec![0u8; 0xcc];
+    v[0x0c..0x10].copy_from_slice(&8u32.to_le_bytes());
+    v[0x10..0x14].copy_from_slice(&(n.len() as u32).to_le_bytes());
+    v.extend([0u8; 8]);
+    v.extend(n);
+    v
+}
+
+/// The account domain's `V` value for [`build`], ending with the machine SID `S-1-5-21-a-b-c`.
+#[doc(hidden)]
+pub fn domain_v(a: u32, b: u32, c: u32) -> Vec<u8> {
+    let mut v = vec![0u8; 0x30];
+    v.extend([1, 4, 0, 0, 0, 0, 0, 5]);
+    for x in [21, a, b, c] {
+        v.extend(x.to_le_bytes());
+    }
+    v
 }
 
 /// `MountedDevices` data of a GPT partition / dynamic volume (`guid` as text).
@@ -395,6 +505,38 @@ mod tests {
 
     fn utf16(s: &str) -> Vec<u8> {
         s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn local_accounts_from_the_sam() {
+        let hive = build(&[
+            ("SAM\\Domains\\Account", vec![("V", 3, domain_v(111, 222, 333))]),
+            (
+                "SAM\\Domains\\Account\\Users\\000001F4",
+                vec![("V", 3, user_v("Administrator"))],
+            ),
+            (
+                "SAM\\Domains\\Account\\Users\\000003E9",
+                vec![("V", 3, user_v("Jürgen"))],
+            ),
+            // a hostile entry: the name points outside its value
+            (
+                "SAM\\Domains\\Account\\Users\\000003EA",
+                vec![("V", 3, vec![0xff; 0x20])],
+            ),
+            ("SAM\\Domains\\Account\\Users\\Names\\Administrator", vec![]),
+        ]);
+        assert_eq!(
+            local_accounts(hive.as_slice()).unwrap(),
+            [
+                ("S-1-5-21-111-222-333-1001".to_string(), "Jürgen".to_string()),
+                ("S-1-5-21-111-222-333-500".to_string(), "Administrator".to_string()),
+            ]
+        );
+        // a SYSTEM hive (no SAM key): nothing
+        assert!(local_accounts(build(&[("Select", vec![])]).as_slice())
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

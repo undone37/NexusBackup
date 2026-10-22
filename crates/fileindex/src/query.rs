@@ -278,6 +278,7 @@ pub fn run(ix: &TenantIndex, r: &SearchReq) -> Result<(Vec<Hit>, Option<String>)
                     first: u(d, f.first),
                     gone: Some(u(d, f.gone)).filter(|g| *g != 0),
                     owner: d.get_first(f.owner).and_then(|v| v.as_str()).map(str::to_owned),
+                    owner_name: d.get_first(f.owner_name).and_then(|v| v.as_str()).map(str::to_owned),
                 })
                 .collect(),
         });

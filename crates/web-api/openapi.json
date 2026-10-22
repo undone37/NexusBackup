@@ -85,6 +85,13 @@
                           "null"
                         ],
                         "description": "owner of the version (Windows SID or uid:gid; VM disks), null when not recorded"
+                      },
+                      "owner_name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "the owner's name: from the guest (/etc/passwd, SAM local accounts) or a well-known Windows SID; null when unknown"
                       }
                     }
                   }

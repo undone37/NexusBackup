@@ -58,9 +58,18 @@ fn touch(p: &Path, t: i64) {
 }
 
 /// The sample tree: (path, kind, size).
+const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\nann:x:1000:1000:Ann:/home/ann:/bin/bash\n";
+
+/// The accounts [`PASSWD`] names.
+fn passwd_accounts() -> Vec<(String, String)> {
+    vec![("0".into(), "root".into()), ("1000".into(), "ann".into())]
+}
+
 fn sample(root: &Path, fstab: &str) -> Vec<(String, u8, u64)> {
     let files = [
         ("etc/fstab", fstab.as_bytes().to_vec()),
+        // Phase 39 C2: account names for the owner column
+        ("etc/passwd", PASSWD.as_bytes().to_vec()),
         ("home/ann/report 2026.txt", b"quarterly numbers".to_vec()),
         ("home/ann/Projekte/ünïcödé.md", vec![b'x'; 70_000]),
         ("var/lib/mysql/ibdata1", vec![7; 4096]),
@@ -385,6 +394,7 @@ fn gpt_disk_with_ext4_root_and_fat_esp_plus_ntfs_disk() {
         root.entries
     );
     assert_eq!(root.volume.uuid.as_deref(), Some(ext_uuid));
+    assert_eq!(root.volume.accounts, passwd_accounts(), "names from /etc/passwd");
     // Phase 31c: owners uid:gid (mkfs.ext4 -d keeps the files' owners)
     let me = {
         use std::os::unix::fs::MetadataExt;
@@ -899,7 +909,7 @@ fn ntfs_img(img: &Path, size: u64, label: &str, files: &[(&str, Vec<u8>)]) -> bo
 /// with a data volume (by disk signature and offset).
 #[test]
 fn windows_drive_letters_from_the_system_hive() {
-    use fsindex::regf::{build, dmio};
+    use fsindex::regf::{build, dmio, domain_v, user_v};
     let d = tempfile::tempdir().unwrap();
     let p = |n: &str| d.path().join(n);
     let (sys_g, data_g) = (
@@ -922,6 +932,14 @@ fn windows_drive_letters_from_the_system_hive() {
         "System",
         &[
             ("Windows/System32/config/SYSTEM", hive),
+            // Phase 39 C2: local account names
+            (
+                "Windows/System32/config/SAM",
+                build(&[
+                    ("SAM\\Domains\\Account", vec![("V", 3, domain_v(7, 8, 9))]),
+                    ("SAM\\Domains\\Account\\Users\\000003E9", vec![("V", 3, user_v("ann"))]),
+                ]),
+            ),
             ("Windows/System32/kernel32.dll", vec![1; 100]),
         ],
     ) || !ntfs_img(
@@ -978,6 +996,10 @@ fn windows_drive_letters_from_the_system_hive() {
     let l = list(&[&disk, &disk1]);
     let sys = vol(&l, "vda1");
     assert!(sys.volume.windows, "{:?}", sys.volume);
+    assert_eq!(
+        sys.volume.accounts,
+        [("S-1-5-21-7-8-9-1001".to_string(), "ann".to_string())]
+    );
     assert_eq!(sys.volume.drives.len(), 3, "{:?}", sys.volume.drives);
     assert_eq!(vol(&l, "vdb1").volume.partuuid.as_deref(), Some("1234abcd-01"));
     let mut vols: Vec<Volume> = l.iter().map(|x| x.volume.clone()).collect();
@@ -1081,6 +1103,7 @@ fn xfs_directory_formats() {
         let mut vols = vec![v.volume.clone()];
         fsindex::mapping::assign(&mut vols);
         assert_eq!(vols[0].mount.as_deref(), Some("/"), "{name}: root from its own fstab");
+        assert_eq!(v.volume.accounts, passwd_accounts(), "{name}: /etc/passwd");
         assert!(!v.dirs.is_empty(), "{name}: directory records");
     }
     if tool("mkfs.xfs").is_some() {
@@ -1294,6 +1317,7 @@ fn btrfs_subvolumes() {
             let mut vols = vec![v.volume.clone()];
             fsindex::mapping::assign(&mut vols);
             assert_eq!(vols[0].mount.as_deref(), Some("/"), "root from its own fstab");
+            assert_eq!(v.volume.accounts, passwd_accounts(), "/etc/passwd");
         }
     }
     // every variant needs `--subvol` (btrfs-progs 6.7; Ubuntu 24.04 has 6.6): only then must one have run

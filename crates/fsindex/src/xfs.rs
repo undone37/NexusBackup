@@ -575,6 +575,16 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             }
         }
     }
+    // Phase 39 C2: account names for the owner column (helper 0 alone)
+    if out.owns("", 0) {
+        if let Ok(Some((_, f))) = fs.lookup("etc/passwd") {
+            if f.kind() == KIND_FILE && f.size <= crate::PASSWD_MAX {
+                if let Ok(t) = fs.read_file(&f, crate::PASSWD_MAX) {
+                    info.accounts = crate::passwd_accounts(&String::from_utf8_lossy(&t));
+                }
+            }
+        }
+    }
     // directory records: inodes sit where the AG geometry puts them (no shared lookup
     // structure as NTFS's $MFT record), a grown volume changes the geometry
     out.dir_basis(

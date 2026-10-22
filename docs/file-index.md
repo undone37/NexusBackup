@@ -233,7 +233,7 @@ striped and a RAID-5 volume; the second disk missing). Fuzz target `ldm_db`.
 **Owners (Phase 31c).** The helper records each entry's owner: NTFS the owner SID of the security descriptor its
 `$STANDARD_INFORMATION` security id names (`$Secure:$SDS`, read once per volume and helper, at most 32 MiB, the 256
 KiB mirror blocks skipped, every entry's self offset and length checked; NTFS 1.x files without a security id have
-none), ext4 / XFS / btrfs `uid:gid` (numbers: the guest's `/etc/passwd` is not consulted); FAT and exFAT have none.
+none), ext4 / XFS / btrfs `uid:gid`; FAT and exFAT have none.
 The entry frame carries it (`E`: an `extra` byte, then `[u8 len][owner]`); the parent accepts only `A-Z a-z 0-9 - :`
 up to 184 bytes. The name index stores owners as **v3** (context `names3:<source>/<time>`: the v2 columns plus a
 table of owner texts and per entry its position + 1, 0 = none), written only when there are owners, so the previous
@@ -241,8 +241,17 @@ release keeps reading every v1/v2 snapshot and fails cleanly on a v3 one (no mis
 refuse owner columns that do not match the entries. Directories taken over and volumes reused carry their owners
 from the previous name index. The search index (`nexus-index`, crate `fileindex`) stores the owner per file version
 (stored field, the schema change rebuilds the tenant indexes once) and returns it with each version of a hit
-(`versions[].owner`). Not yet: a search filter by owner (needs the web-api parameter and the UI, Phase 33 area) and
-names for SIDs / uids (the guest's SAM / `passwd`).
+(`versions[].owner`); the owner filter is `owner=` (Phase 39 C2).
+
+**Owner names (Phase 39 C2).** Helper 0 reads the guest's own account names into the volume info
+(`Volume.accounts`, (owner id, name)): `/etc/passwd` of an ext4 / XFS / btrfs root (at most 256 KiB; well-formed
+lines only, names up to 64 bytes without control characters) by uid, and the SAM hive of a Windows system volume
+(`Windows/System32/config/SAM`: the machine SID from `SAM\Domains\Account`'s `V` value, each
+`Users\<RID>` key's `V` value for the name) by full SID. They travel in the volume JSON and are stored only in the
+encrypted per-snapshot report (`fsindex` snapshot file), never in the plaintext catalog. nexus-index merges the
+accounts of all volumes of a snapshot and stores the name with each file version it ingests (`owner_name`, index
+format 2: one rebuild after the update); the API returns it (`versions[].owner_name`, else the well-known SID's
+name). Domain accounts stay SIDs (their names live in AD, not on the member's disk).
 
 **Content hashes of VM disk files (Phase 31c).** For groups with `index_files` and `file_hashes` the scheduler
 queues `file_index {source, time, hashes: true}` for VM snapshots as for containers, and `nexus-pve … files <vmid>

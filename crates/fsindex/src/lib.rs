@@ -118,6 +118,10 @@ pub struct Volume {
     /// Windows system volume: the drive letters of its SYSTEM hive (`D:`, `win_id`)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drives: Vec<(String, String)>,
+    /// Phase 39 C2: the guest's own accounts as (owner id, name): uids of `/etc/passwd` on a Linux root
+    /// file system, local account SIDs of the SAM hive on a Windows system volume
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<(String, String)>,
     /// where the guest mounts it (set by the parent, [`mapping`]): `/`, `/home`,
     /// `C:`; `None`: shown as its label or `vol<N>`
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -193,6 +197,26 @@ pub struct Entry {
     pub owner: Option<String>,
     /// Phase 31c: SHA-256 of a regular file's content (when hashes were asked for)
     pub sha256: Option<[u8; 32]>,
+}
+
+/// `/etc/passwd` read for account names: at most this many bytes.
+pub const PASSWD_MAX: u64 = 256 << 10;
+
+/// (uid, name) of each well-formed `/etc/passwd` line (Phase 39 C2); names with control characters or
+/// longer than 64 bytes are left out.
+pub fn passwd_accounts(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split(':');
+            let (name, _, uid) = (f.next()?, f.next()?, f.next()?);
+            let ok = !name.is_empty() && name.len() <= 64 && !name.chars().any(char::is_control);
+            (ok && uid.parse::<u32>().is_ok()).then(|| (uid.to_string(), name.to_string()))
+        })
+        .collect();
+    out.sort();
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
 }
 
 /// Whether an owner text is one the walkers write (SID or `uid:gid`): checked by
@@ -328,6 +352,19 @@ pub fn dm_name(vg: &str, lv: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passwd_names_by_uid() {
+        let t = "root:x:0:0:root:/root:/bin/bash\n# comment\nann:x:1000:1000::/home/ann:/bin/sh\n\
+                 bad:x:notanumber:0::/:/x\n:x:5:5::/:/x\nevil\u{1b}[2J:x:6:6::/:/x\nann2:x:1000:1000::/:/x\nshort:x\n";
+        assert_eq!(
+            passwd_accounts(t),
+            [
+                ("0".to_string(), "root".to_string()),
+                ("1000".to_string(), "ann".to_string())
+            ]
+        );
+    }
 
     #[test]
     fn parts_own_every_directory_once() {

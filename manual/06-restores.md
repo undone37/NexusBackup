@@ -467,12 +467,17 @@ time; **Load more** fetches the next ones, sorted by path.
 
 The arrow at the start of a row opens its **version timeline**: one line per version (size, modification time,
 **First seen** in which snapshot, **Until** the snapshot that no longer has it, or **current**), with the snapshots
-that hold it. For files on VM disks the timeline also shows the **Owner** (Windows: the owner's SID,
-well-known ones such as SYSTEM, Administrators or TrustedInstaller by name; Linux: `uid:gid`). Pick the snapshot (default: the newest holding that version), then:
+that hold it. For files on VM disks the timeline also shows the **Owner** by name where the guest itself names it:
+Linux users from the guest's `/etc/passwd`, Windows local accounts from its SAM, and well-known Windows accounts
+such as SYSTEM, Administrators or TrustedInstaller. Domain accounts show their SID (their names are in Active
+Directory, not on the member's disk), unknown Linux ids their `uid:gid`; the id is in the cell's tooltip. Names come
+from the snapshot that first held the version. Pick the snapshot (default: the newest holding that version), then:
 
 - **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
 - **Download** packs the file as a tar archive (needs the download permission);
 - **Restore…** (host snapshots) opens the [restore to a host](#restore-files-to-a-host-agents) dialog for this path.
+
+![A file on a Linux VM disk: its version with the owner alice, named by the guest's /etc/passwd](images/search-owner.png)
 
 A version whose snapshots were all deleted by retention says **snapshot deleted** and has no actions. Below the
 versions, a strip shows every local snapshot of the source, oldest on the left: green indexed, amber waiting or partly

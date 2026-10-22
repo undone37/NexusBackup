@@ -135,6 +135,9 @@ fn versions_rules_paths_retention_paging() {
         version: 1,
         volumes: vec![vol("vda1", "/"), vol("vda2", "/home")],
     };
+    // C2: the root file system's /etc/passwd names uid 1000 (the file sits on the other volume)
+    let mut rep = rep;
+    rep.volumes[0].volume.accounts = vec![("0".into(), "root".into()), ("1000".into(), "ann".into())];
     store
         .write_snap_file("vm-100", 160, fsindex::REPORT_FILE, &serde_json::to_vec(&rep).unwrap())
         .unwrap();
@@ -175,10 +178,19 @@ fn versions_rules_paths_retention_paging() {
     let owners: Vec<_> = ext
         .hits
         .iter()
-        .map(|h| (h.path.as_str(), h.versions[0].owner.as_deref()))
+        .map(|h| {
+            (
+                h.path.as_str(),
+                h.versions[0].owner.as_deref(),
+                h.versions[0].owner_name.as_deref(),
+            )
+        })
         .collect();
-    assert!(owners.contains(&("/home/ann/cv.pdf", Some("1000:1000"))), "{owners:?}");
-    assert!(owners.contains(&("D:/Data/x.pdf", None)), "{owners:?}");
+    assert!(
+        owners.contains(&("/home/ann/cv.pdf", Some("1000:1000"), Some("ann"))),
+        "{owners:?}"
+    );
+    assert!(owners.contains(&("D:/Data/x.pdf", None, None)), "{owners:?}");
     // C2: owner filter, a uid alone matches any group, uid:gid and SIDs exactly
     let by_owner = |o: &str| {
         let r = s

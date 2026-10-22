@@ -55,6 +55,11 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             info.fstab = Some(String::from_utf8_lossy(&t).into_owned());
         }
     }
+    // Phase 39 C2: account names for the owner column (helper 0 alone)
+    let small = out.owns("", 0) && fs.metadata("/etc/passwd").is_ok_and(|m| m.len() <= crate::PASSWD_MAX);
+    if let Some(Ok(t)) = small.then(|| fs.read("/etc/passwd")) {
+        info.accounts = crate::passwd_accounts(&String::from_utf8_lossy(&t));
+    }
     let mut stack: Vec<(PathBuf, String, usize)> = vec![(PathBuf::new("/"), String::new(), 0)];
     while let Some((dir, rel, depth)) = stack.pop() {
         if !out.walks(&rel, depth) {

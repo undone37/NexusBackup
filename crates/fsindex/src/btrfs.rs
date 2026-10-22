@@ -618,6 +618,16 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
             }
         }
     }
+    // Phase 39 C2: account names for the owner column (helper 0 alone)
+    if out.owns("", 0) {
+        if let Ok(Some((ino, f))) = fs.lookup(tree, root_dir, "etc/passwd") {
+            if f.kind() == KIND_FILE && f.size <= crate::PASSWD_MAX {
+                if let Ok(t) = fs.read_file(tree, ino, f.size, crate::PASSWD_MAX) {
+                    info.accounts = crate::passwd_accounts(&String::from_utf8_lossy(&t));
+                }
+            }
+        }
+    }
     // (tree, directory inode, path, depth)
     let mut stack: Vec<((u64, u8), u64, String, usize)> = vec![(tree, root_dir, String::new(), 0)];
     let mut visited = HashSet::from([(tree.0, root_dir)]);

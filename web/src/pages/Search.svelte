@@ -342,17 +342,6 @@
   const stateText = (x: IndexSnap) =>
     t.search.stateAt(fmtTime(x.time), t.search.states[x.state] ?? x.state, x.reason ?? '');
   const newest = (h: FileHit): FileVersion => h.versions[0];
-  // ponytail: well-known SIDs only; domain accounts stay SIDs until the index resolves names
-  const SIDS: Record<string, string> = {
-    'S-1-5-18': 'SYSTEM',
-    'S-1-5-19': 'LOCAL SERVICE',
-    'S-1-5-20': 'NETWORK SERVICE',
-    'S-1-5-32-544': 'Administrators',
-    'S-1-5-32-545': 'Users',
-    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464': 'TrustedInstaller',
-    '0:0': 'root',
-  };
-  const ownerName = (o: string) => SIDS[o] ?? o;
 </script>
 
 <div class="page-head">
@@ -667,7 +656,7 @@
                             {:else}<span class="chip ok plain">{t.search.current}</span>{/if}
                           </td>
                           {#if h.versions.some((x) => x.owner)}
-                            <td class="mono small" title={v.owner ?? ''}>{v.owner ? ownerName(v.owner) : ''}</td>
+                            <td class="mono small" title={v.owner ?? ''}>{v.owner_name ?? v.owner ?? ''}</td>
                           {/if}
                           <td>
                             {#if v.times.length > 1}

@@ -7333,6 +7333,7 @@ function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> 
             first: s.time,
             gone: null,
             times: [s.time],
+            ...(vm ? vmOwner(e.path, win) : {}),
           });
       }
     }
@@ -7361,6 +7362,15 @@ function tenantIndex(tenant: string): { docs: Doc[]; snaps: Map<string, Json[]> 
     }
   }
   return { docs, snaps };
+}
+// Phase 31c / 39 C2: VM disks record owners; the guest's /etc/passwd or SAM names them
+function vmOwner(path: string, win: boolean): { owner: string; owner_name: string } {
+  const user = /(?:home|Users)\/([a-z]+)/.exec(path)?.[1];
+  if (win)
+    return user
+      ? { owner: 'S-1-5-21-3623811015-3361044348-30300820-1001', owner_name: user }
+      : { owner: 'S-1-5-18', owner_name: 'SYSTEM' };
+  return user ? { owner: '1000:1000', owner_name: user } : { owner: '0:0', owner_name: 'root' };
 }
 function wordsMatch(q: string, path: string): boolean {
   const toks = path

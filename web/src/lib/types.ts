@@ -980,6 +980,8 @@ export interface FileVersion {
   times: number[];
   /** owner (Windows SID or `uid:gid`; VM disks, Phase 31c), null / absent when not recorded */
   owner?: string | null;
+  /** the guest's name for the owner (its /etc/passwd or SAM, or a well-known Windows SID; Phase 39 C2) */
+  owner_name?: string | null;
 }
 
 /** One hit of GET /files/search: a path in one source with its versions (newest first). */

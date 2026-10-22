@@ -22,8 +22,8 @@ use tantivy::schema::{
 };
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
-/// Format of the documents and the payload; another value rebuilds.
-pub const VERSION: u32 = 1;
+/// Format of the documents and the payload; another value rebuilds (2: owner names, Phase 39 C2).
+pub const VERSION: u32 = 2;
 const WRITER_BYTES: usize = 64 << 20;
 /// More new snapshots than this at once: rebuild the source instead of appending.
 const MAX_APPEND: usize = 4;
@@ -47,6 +47,8 @@ pub struct Fields {
     pub okey: Field,
     /// Phase 31c: the owner of the version (stored only)
     pub owner: Field,
+    /// Phase 39 C2: the guest's name for that owner (stored only)
+    pub owner_name: Field,
 }
 
 pub fn schema() -> (Schema, Fields) {
@@ -73,6 +75,7 @@ pub fn schema() -> (Schema, Fields) {
         fkey: b.add_u64_field("fkey", INDEXED | FAST),
         okey: b.add_u64_field("okey", INDEXED),
         owner: b.add_text_field("owner", STRING | STORED),
+        owner_name: b.add_text_field("owner_name", STORED),
     };
     (b.build(), f)
 }
@@ -131,8 +134,9 @@ pub fn rules_hash(r: &SourceRules) -> u64 {
 
 /// Turns name-index paths of one snapshot into guest paths.
 pub enum Guest {
-    /// VM snapshot with a volume report (crate fsindex mapping)
-    Vm(fsindex::mapping::Mapper),
+    /// VM snapshot with a volume report (crate fsindex mapping), and the guest's account names by owner
+    /// id (uid, SID) from that report
+    Vm(fsindex::mapping::Mapper, HashMap<String, String>),
     /// `/` + path; a Windows agent's `C/Users/…` becomes `C:/Users/…`
     Plain { windows: bool },
 }
@@ -143,7 +147,8 @@ impl Guest {
             if let Ok(Some(b)) = r.read_snap_file(source, time, fsindex::REPORT_FILE) {
                 if let Ok(rep) = serde_json::from_slice::<fsindex::Report>(&b) {
                     let vols: Vec<fsindex::Volume> = rep.volumes.into_iter().map(|v| v.volume).collect();
-                    return Guest::Vm(fsindex::mapping::Mapper::new(&vols));
+                    let names = vols.iter().flat_map(|v| v.accounts.iter().cloned()).collect();
+                    return Guest::Vm(fsindex::mapping::Mapper::new(&vols), names);
                 }
             }
         }
@@ -158,9 +163,20 @@ impl Guest {
         Guest::Plain { windows }
     }
 
+    /// The guest's name for an owner (`S-1-5-21-…-1001`, or `uid:gid` by its uid), if it has one.
+    pub fn owner_name(&self, owner: &str) -> Option<&str> {
+        let Guest::Vm(_, names) = self else { return None };
+        let id = if owner.starts_with("S-") {
+            owner
+        } else {
+            owner.split(':').next()?
+        };
+        names.get(id).map(String::as_str)
+    }
+
     pub fn path(&self, browse: &str) -> String {
         match self {
-            Guest::Vm(m) => {
+            Guest::Vm(m, _) => {
                 let g = m.guest(browse);
                 if g == browse {
                     format!("/{browse}")
@@ -187,6 +203,7 @@ struct Open {
     mtime: i64,
     kind: u8,
     owner: Option<String>,
+    owner_name: Option<String>,
 }
 
 pub struct TenantIndex {
@@ -291,6 +308,9 @@ impl TenantIndex {
         if let Some(o) = &v.owner {
             d.add_text(f.owner, o);
         }
+        if let Some(n) = &v.owner_name {
+            d.add_text(f.owner_name, n);
+        }
         d
     }
 
@@ -321,6 +341,7 @@ impl TenantIndex {
                     mtime,
                     kind,
                     owner: names.owner(i).map(str::to_owned),
+                    owner_name: names.owner(i).and_then(|o| g.owner_name(o)).map(str::to_owned),
                 },
             );
         }
@@ -469,6 +490,10 @@ impl TenantIndex {
             mtime: d.get_first(self.f.mtime).and_then(|v| v.as_i64()).unwrap_or_default(),
             kind: u(self.f.kind) as u8,
             owner: d.get_first(self.f.owner).and_then(|v| v.as_str()).map(str::to_owned),
+            owner_name: d
+                .get_first(self.f.owner_name)
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
         }
     }
 

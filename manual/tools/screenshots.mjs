@@ -547,6 +547,13 @@ async function main() {
       await until(`return document.body.innerText.includes('budget-2026-q4-draft.xlsx')`, 'deleted files', 30000);
       await settle();
       await shot('search-filters', { height: 1000 });
+      // Phase 39 C2: files on a Linux VM disk with their owners by name (the guest's /etc/passwd)
+      await go('/search?tenant=acme&q=old-notes*');
+      await until(`return document.body.innerText.includes('old-notes.txt')`, 'VM search results', 30000);
+      await settle();
+      await ev(`document.querySelector('tbody tr button[aria-expanded]').click(); return true;`);
+      await until(`return !!document.querySelector('table.versions') && document.querySelector('table.versions').innerText.includes('alice')`, 'owner names');
+      await shot('search-owner', { height: 900 });
     }],
     ['plugin-restores', async () => {
       await go(`/snapshots?source=plugin-postgresql-${data.pgId}`);

@@ -369,7 +369,9 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
     // Phase 31c: the drive letters of the system volume (helper 0 alone; a broken or
     // missing hive leaves the letters out, the volume is still `C:`)
     if info.windows && out.owns("", 0) {
-        info.drives = drives(&ntfs, &mut fs).unwrap_or_default();
+        info.drives = hive(&ntfs, &mut fs, "SYSTEM", |h| crate::regf::drive_letters(h)).unwrap_or_default();
+        // Phase 39 C2: local account names for the owner column
+        info.accounts = hive(&ntfs, &mut fs, "SAM", |h| crate::regf::local_accounts(h)).unwrap_or_default();
     }
     Ok(())
 }
@@ -421,7 +423,7 @@ fn hash_data(f: &NtfsFile, fs: &mut Padded, size: u64) -> Result<[u8; 32], Strin
     Ok(h.finalize().into())
 }
 
-/// The SYSTEM hive of the volume, read in place through the file's `$DATA`.
+/// A hive of the volume, read in place through the file's `$DATA`.
 struct HiveFile<'a, 'n, 'f> {
     v: ntfs::attribute_value::NtfsAttributeValue<'n, 'f>,
     fs: &'a mut Padded,
@@ -450,14 +452,20 @@ impl crate::regf::HiveRead for HiveFile<'_, '_, '_> {
     }
 }
 
-/// `MountedDevices` of `Windows/System32/config/SYSTEM` ([`crate::regf::drive_letters`]).
-fn drives(ntfs: &Ntfs, fs: &mut Padded) -> Result<Vec<(String, String)>, String> {
+/// The hive `Windows/System32/config/<name>`, read by `read` ([`crate::regf::drive_letters`],
+/// [`crate::regf::local_accounts`]).
+fn hive<T>(
+    ntfs: &Ntfs,
+    fs: &mut Padded,
+    hive: &str,
+    read: impl FnOnce(HiveFile) -> Result<T, String>,
+) -> Result<T, String> {
     let e = |e: ntfs::NtfsError| e.to_string();
     // the index is sorted by NTFS' upcase table; for these ASCII names (and nearly all others)
     // simple uppercasing orders the same, without reading the 128 KiB $UpCase
     let up = |s: &str| s.chars().flat_map(char::to_uppercase).collect::<String>();
     let mut rec = ROOT;
-    for name in ["WINDOWS", "SYSTEM32", "CONFIG", "SYSTEM"] {
+    for name in ["WINDOWS", "SYSTEM32", "CONFIG", hive] {
         let dir = ntfs.file(fs, rec).map_err(e)?;
         index_root_ok(&dir, fs)?;
         let idx = dir.directory_index(fs).map_err(e)?;
@@ -472,10 +480,10 @@ fn drives(ntfs: &Ntfs, fs: &mut Padded) -> Result<Vec<(String, String)>, String>
         rec = hit.file_reference().file_record_number();
     }
     let f = ntfs.file(fs, rec).map_err(e)?;
-    let item = f.data(fs, "").ok_or("SYSTEM hive without data")?.map_err(e)?;
+    let item = f.data(fs, "").ok_or("hive without data")?.map_err(e)?;
     let attr = item.to_attribute().map_err(e)?;
     let v = attr.value(fs).map_err(e)?;
-    crate::regf::drive_letters(HiveFile { v, fs })
+    read(HiveFile { v, fs })
 }
 
 #[cfg(test)]

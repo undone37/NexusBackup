@@ -52,10 +52,9 @@ pub struct SearchQuery {
     cursor: Option<String>,
 }
 
-/// Well-known Windows SIDs (the same on every Windows system) and their names. Domain and local
-/// account SIDs need the guest's account database and stay as SIDs.
-// ponytail: well-known SIDs only; names of domain/local accounts and Linux uids need the guest's SAM,
-// AD or /etc/passwd from the snapshot (Phase 39 C2 rest)
+/// Well-known Windows SIDs (the same on every Windows system) and their names. Local accounts and Linux
+/// uids get their names from the guest itself (the index's `owner_name`, Phase 39 C2).
+// ponytail: domain accounts stay as SIDs (their names are in AD, not on the member's disk)
 const WELL_KNOWN: &[(&str, &str)] = &[
     ("S-1-1-0", "Everyone"),
     ("S-1-3-0", "CREATOR OWNER"),
@@ -247,7 +246,7 @@ fn enrich(st: &St, tenant: &str, resp: SearchResp) -> ApiResult<Value> {
                         .filter(|t| idx.is_some_and(|i| i.contains(t)))
                         .collect();
                     json!({"size": v.size, "mtime": v.mtime, "first": v.first, "gone": v.gone, "times": held, "owner": v.owner,
-                           "owner_name": v.owner.as_deref().and_then(well_known_name)})
+                           "owner_name": v.owner_name.as_deref().or_else(|| v.owner.as_deref().and_then(well_known_name))})
                 })
                 .collect();
             json!({"source": h.source, "path": h.path, "browse": h.browse, "kind": h.kind, "versions": versions})

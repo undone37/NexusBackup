@@ -244,6 +244,9 @@ pub struct Version {
     /// `S-1-5-21-…`, Linux `uid:gid`), as of the version's first snapshot
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// the guest's own name for that owner (Phase 39 C2: `/etc/passwd`, local accounts of the SAM)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_name: Option<String>,
 }
 
 /// One file (or directory) of one source, with its versions, newest first.
