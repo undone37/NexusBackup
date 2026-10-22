@@ -579,7 +579,8 @@ fn chunked_update_from_the_release_store() {
 
     let arch = nexus_agent::update::arch();
     let name = format!("linux-{arch}/nexus-agent");
-    let new = fake_elf("0.2.0", 3_500_000);
+    // larger than one protocol frame: the chunked path has no 8 MiB ceiling
+    let new = fake_elf("0.2.0", agent_proto::MAX_FRAME + 1_000_000);
     let store = d.path().join("store");
     signer.write_release(&store, "0.2.0", &[(&name, "binary", "linux", arch, &new)]);
     Signer::new().write_release(&store, "0.3.0", &[(&name, "binary", "linux", arch, &new)]);
@@ -615,12 +616,12 @@ fn chunked_update_from_the_release_store() {
     s.close();
     assert_eq!(fs::read(&exe).unwrap(), b"the running build");
 
-    // the real thing: 4 chunks, swap, `.prev`, pending until the new version listens
+    // the real thing: 9 chunks of 1 MiB, swap, `.prev`, pending until the new version listens
     let (mut s, _) = connect();
     let mut progress = vec![];
     update::push_release(&mut s, rel, &p, false, &mut |a, b| progress.push((a, b))).unwrap();
     s.close();
-    assert_eq!(progress.len(), 4);
+    assert_eq!(progress.len(), new.len().div_ceil(update::CHUNK));
     assert_eq!(progress.last(), Some(&(new.len() as u64, new.len() as u64)));
     assert_eq!(fs::read(&exe).unwrap(), new);
     assert_eq!(

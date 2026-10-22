@@ -95,8 +95,6 @@ for t in "${targets[@]}"; do
 	lrun cargo build --locked -p agent-linux --release --target "$t"
 done
 
-# self-update sends the binary in one protocol frame (agent-proto MAX_FRAME = 8 MiB)
-limit=$((8 * 1024 * 1024 - 4096))
 for t in "${targets[@]}"; do
 	bin=target/linux-container/$t/release/nexus-agent
 	case $t in
@@ -104,7 +102,6 @@ for t in "${targets[@]}"; do
 	aarch64-*) arch=arm64 elf='ARM aarch64' ;;
 	esac
 	size=$(stat -c %s "$bin")
-	[ "$size" -lt "$limit" ] || die "$bin is $size bytes, self-update frame limit is $limit"
 	desc=$(lrun file -b "$bin")
 	[[ $desc == *static* && $desc == *"$elf"* ]] || die "$bin: $desc"
 	grep -aq "NEXUS-AGENT-VERSION=$version" "$bin" || die "$bin carries no version marker $version"

@@ -40,12 +40,6 @@ CC_x86_64_unknown_linux_musl=$cc \
 bin=target/$TARGET/release/nexus-agent
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/agent-linux/Cargo.toml | head -1)
 size=$(stat -c %s "$bin")
-# self-update sends the binary in one protocol frame (agent-proto MAX_FRAME = 8 MiB)
-limit=$((8 * 1024 * 1024 - 4096))
-[ "$size" -lt "$limit" ] || {
-	echo "binary is $size bytes, self-update frame limit is $limit" >&2
-	exit 1
-}
 file "$bin" | grep -q 'static' || {
 	echo "$bin is not statically linked" >&2
 	exit 1

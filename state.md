@@ -979,7 +979,7 @@ restores, UI/CLI, import into an appliance). All in this repository.
   clean-os): `repo init`, backup with VSS (all writers ok), incremental (USN: 2 new chunks, the unchanged 3 MB file
   reused), `repo list`, restore of the first snapshot (old content, no later file), service installed while not
   enrolled ran the job and pruned, UI pipe `jobs` / `run_job` (unknown job refused, run started within seconds).
-  nexus-agent.exe 7941 KiB of the 8188 KiB self-update frame limit (97 %): the next feature needs a size cut.
+  nexus-agent.exe 7941 KiB (the 8 MiB frame check turned out stale, see below).
   VM 201 on 0.0.19-dev: greenboot green, 0 AVCs, /dev/shm noexec, sshd_config.d 0700, index rebuilt for format 2,
   owner filter by name `owner=root` works; `verify.sh exact` byte-identical (386 s).
 - [x] 2026-10-22 maintainer request: PVE guests by name everywhere in the web UI, the id muted next to it
@@ -989,8 +989,10 @@ restores, UI/CLI, import into an appliance). All in this repository.
 - [x] 2026-10-22 lab VM 201: "Check now" staged the channel's 0.0.1-alpha over 0.0.19-dev and the page kept
   "Last check 2 d ago" during the check: fixed (no older release staged, "checking" state). VM 201 still has that
   0.0.1-alpha staged (download-only, never applied automatically); the next image will not offer it.
-- [ ] nexus-agent.exe self-update in several frames (Phase 27 protocol): the binary is 7941 KiB of the 8188 KiB
-  frame (opt-level z only saves 375 KiB and slows hashing); chunked UpdateBegin/UpdateChunk removes the ceiling.
-  Needed before the agent grows again; lab L6/L7 cover the update path.
+- [x] nexus-agent.exe size ceiling (2026-10-23): not a protocol limit any more. Agents since 0.1.0-alpha (protocol
+  v1.8, Windows and Linux) take updates as `UpdateBegin`/`UpdateChunk` in 1 MiB pieces (up to `MAX_UPDATE`, 512 MiB);
+  only 0.0.1-alpha agents need the single `Update` frame, and the appliance refuses a binary above 8 MiB for them
+  with "update it by hand once". The stale 8 MiB checks in `agent-windows/build.sh`, `build-bundle.sh`,
+  `release/packages.sh` and `tests/dist.rs` are removed; the interop test now updates with a 9 MB binary (9 chunks).
 - [ ] 38 rest: SFTP/S3 copy against the lab testboxes, lock/log-off and wake
   triggers, 38d with 37, TUI jobs view, restores from the UI (38g).

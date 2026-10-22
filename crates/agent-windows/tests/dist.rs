@@ -17,7 +17,6 @@ fn built_exe_is_pe_x64_carries_its_version_and_verifies_with_the_test_key() {
         agent_core::update::embedded_version(&exe).unwrap(),
         env!("CARGO_PKG_VERSION")
     );
-    assert!(exe.len() < agent_proto::MAX_FRAME - 4096, "fits one update frame");
     let sig = std::fs::read(dir.join("nexus-agent.exe.sig")).expect("sign it with the TEST key");
     let key =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/testkey/TEST-cosign.pub"))

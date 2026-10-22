@@ -10,8 +10,7 @@
 #   --clippy    also run clippy -D warnings for the Windows target (CI)
 #
 # Output: target/agent-dist/windows/{nexus-agent.exe,nexus-agent.exe.sig,nexus-agent.version,
-# release-keys/,README.md}. The binary must stay below the 8 MiB protocol frame (in-band
-# self-update sends it in one frame).
+# release-keys/,README.md}. No size limit: agents since 0.1.0 (protocol v1.8) take updates in 1 MiB chunks.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -65,11 +64,6 @@ run cargo build --locked -p agent-windows --release --target "$TARGET"
 bin=target/windows-container/$TARGET/release/nexus-agent-windows.exe
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/agent-windows/Cargo.toml | head -1)
 size=$(stat -c %s "$bin")
-limit=$((8 * 1024 * 1024 - 4096))
-[ "$size" -lt "$limit" ] || {
-	echo "binary is $size bytes, self-update frame limit is $limit" >&2
-	exit 1
-}
 # only system DLLs may be imported (no libgcc / winpthread DLLs next to the exe)
 dlls=$(run x86_64-w64-mingw32-objdump -p "$bin" | sed -n 's/^\s*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
 for d in $dlls; do
@@ -103,5 +97,5 @@ if [ $sign = 1 ]; then
 	release/sign.sh sign-blob "$out/nexus-agent.exe" "$out/nexus-agent.exe.sig"
 fi
 echo "$version" >"$out/nexus-agent.version"
-echo "nexus-agent.exe $version: $size bytes ($((size / 1024)) KiB, limit $limit); imports: $(echo $dlls)"
+echo "nexus-agent.exe $version: $size bytes ($((size / 1024)) KiB); imports: $(echo $dlls)"
 echo "output: $out"
