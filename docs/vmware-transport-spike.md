@@ -152,8 +152,49 @@ HTTPS `/folder` with `Range` from the appliance (VM 201) on the same bridge:
 | 64 random 4 MiB ranges, sequential | 12 (312 ms each) |
 
 The workstation (through a router) measured the same (28 / 46.5 / 14.2), so `hostd` is the limit. A nested host on
-old hardware is a lower bound; a real host is expected to be faster **(verify on real hardware)**. Option A is enough
-for incrementals and small VMs; fulls of large VMs are the case for option B.
+old hardware is a lower bound; a real host is expected to be faster **(verify on real hardware)**.
+
+**CBT works, the datastore read of a running VM does not** (Debian 12 guest nx-cbt, 16 GB thin disk, CBT on in the
+`.vmx`; `lab/pvehost/esxi.sh guest` and `cbt`, control side `esxi_cbt.py` with pyvmomi):
+
+- `QueryChangedDiskAreas` after 512 MB new data and 103 MB overwritten in the guest: 648 MB in 126 extents (the
+  writes plus file system metadata). The answer takes under a second.
+- With `changeId = "*"` it reports the whole partition (16.16 GB) although the thin disk has 3.9 GB allocated: a
+  first full read cannot rely on it to skip unallocated space.
+- **`/folder` refuses the base disk of a powered-on VM, also while a snapshot exists**: HTTP 500, hostd logs
+  "Error creating Reader: Failed to lock file". The VMX holds the base disk open (VMFS lock mode 2); `dd` on the ESXi
+  shell gets "Device or resource busy" as well. Option A as written therefore only works for powered-off VMs.
+- `VirtualMachineSnapshot.ExportSnapshot` (an NFC lease on the snapshot) is not supported on a standalone host
+  (`vmodl.fault.NotSupported`); it needs vCenter.
+
+That leaves, without VDDK, a **hot-add proxy**: the snapshot's base disk attached to a small proxy VM on the same
+host and read there as a block device, with the extents from `QueryChangedDiskAreas`. This is what VDDK's `hotadd`
+transport does, done with plain vSphere API calls (`ReconfigVM_Task` adds the base disk as
+`independent_nonpersistent` at SCSI 0:1, then removes it again without a file operation). **Tested and passed**
+(2026-10-23, `esxi.sh hotadd`, proxy nx-proxy with 2 vCPU on the same host, 4 reader threads):
+
+| Read on the proxy | Data | Time | MB/s |
+|---|---|---|---|
+| full, snapshot cbt1 | 16.16 GB | 38.7 s | 418 |
+| incremental, CBT extents since cbt1 (124 extents) | 657 MB | 2.0 s | 336 |
+| check: full read at cbt2 against cbt1 plus the incremental | 16.16 GB | 37.6 s | 0 mismatched 1 MiB blocks |
+
+The disk attaches while nx-cbt keeps running with its snapshot (the VMX's lock allows a second read-only opener; the
+shell `dd` does not get one). About 12 GB of the 16 GB thin disk are unallocated and read fast, so the incremental
+figure is the better guide for real data. That is more than ten times the `/folder` path.
+
+In the lab the proxy is a plain Debian VM (only to answer whether hot-add works); a product proxy would be the
+appliance's own AlmaLinux bootc image in a proxy role (same signed updates, SELinux policy and hardening).
+
+Consequences for the design (to be decided in plan.md Phase 41):
+
+- **Transport: hot-add proxy, no VDDK.** One proxy VM per ESXi host (or per cluster with shared datastores, through
+  vCenter later). The proxy reads the extents and sends chunks to the appliance like an agent does.
+- `/folder` stays only for powered-off VMs and for the small files (`.vmx`, `.nvram`, descriptors).
+- A full backup cannot use `changeId = "*"` to skip free space on this disk; reading the whole disk is cheap on the
+  proxy (unallocated blocks), and identical zero chunks deduplicate.
+- Open: vSAN and vVols (hot-add is expected to work, verify), NFS datastores, a proxy on a different host than the
+  VM (needs shared storage), quiesced snapshots with VMware Tools, CBT reset after storage vMotion.
 
 ## Spike steps (for the maintainer's lab)
 

@@ -928,7 +928,16 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   from VM 201 one stream 26.7 MB/s, 4 parallel ranges 41 MB/s, 64 x 4 MiB random ranges 12 MB/s (312 ms each); from
   the workstation the same (28 / 46.5 / 14.2 MB/s), so `hostd` is the limit, not the network. Below the pass
   criterion "full of 200 GB under 4 hours" (needs about 14 MB/s: met with parallel ranges, 2 TB is not).
-- [ ] CBT: a real guest on datastore1, `QueryChangedDiskAreas` after a snapshot, incremental read time.
+- [x] CBT (2026-10-23): Debian guest nx-cbt (16 GB thin, CBT in the `.vmx`); `QueryChangedDiskAreas` after 512 MB new
+  + 103 MB overwritten: 649 MB in 124 extents, under a second. `changeId "*"` reports the whole partition, not the
+  3.9 GB allocated. **`/folder` cannot read the base disk of a running VM** (HTTP 500, hostd "Failed to lock file",
+  also with a snapshot); `ExportSnapshot` needs vCenter.
+- [x] Hot-add proxy without VDDK (2026-10-23, `esxi.sh hotadd`): the snapshot's base disk attached read-only
+  (independent-nonpersistent) to proxy VM nx-proxy on the same host: full 16.16 GB in 38.7 s (418 MB/s), incremental
+  657 MB in 2.0 s (336 MB/s), check against a full read: 0 mismatched blocks. No snapshots or attached disks left.
+  docs/vmware-transport-spike.md "Lab results"; the product proxy would be the appliance's bootc image.
+- [ ] Phase 41 design decision: hot-add proxy as the transport (plan.md); vSAN/NFS, quiesced snapshots, proxy on
+  another host.
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle

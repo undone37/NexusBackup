@@ -1327,7 +1327,14 @@ only if the spike shows it is needed).
   least-privilege vCenter role, CBT enabled per VM by the plugin, which datastore types work (VMFS, NFS; vSAN and
   vVols per the spike result).
 - UI, manual chapter, compatibility matrix rows, docs/plugin-system.md entry; lab e2e like `lab/truenas/e2e.sh`.
-Not started.
+- **Spike result (2026-10-23), transport decision revised:** HTTPS datastore reads cannot open the disk of a
+  running VM (hostd "Failed to lock file", also with a snapshot), so they only serve powered-off VMs and small files.
+  The transport is a **hot-add proxy without VDDK**: the snapshot's base disk attached read-only to a Nexus proxy
+  VM on the ESXi host through the vSphere API, the CBT extents read there (lab: 418 MB/s full, 336 MB/s incremental,
+  0 mismatches; docs/vmware-transport-spike.md). The proxy is the appliance's bootc image in a proxy role, enrolled
+  like an agent (agent protocol, mTLS) and driven by the plugin; VDDK stays out. To design next: proxy role and
+  enrolment, one proxy per host or per shared datastore, vSAN/NFS check.
+Spike done (ESXi 7.0U3 standalone); implementation not started.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
 
