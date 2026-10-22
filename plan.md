@@ -1136,7 +1136,10 @@ application-aware backups and restores controlled from the client. The target is
 Veeam Agent for Microsoft Windows and Veeam Agent for Linux (both editions, not only the free one). Everything stays
 in this repository and uses the same crates as the appliance; the agents get their own version line inside it.
 
-- **38a Comparison first:** `docs/veeam-agent-comparison.md`, from Veeam's current documentation: backup modes,
+- **38a Comparison first (done 2026-10-22):** `docs/veeam-agent-comparison.md`, from Veeam's current documentation
+  (Agent for Windows and for Linux 13; scope decision there: no CBT kernel driver and no Linux kernel module, re-read
+  plus deduplication with the volume bitmap and USN ranges instead; no Cloud Connect, no Exchange/SharePoint/AD item
+  explorers): backup modes,
   targets, schedules and triggers, application-aware processing, restores, recovery media, management (standalone,
   managed), security, limits. Each feature: has / partial / missing here, with effort. It fixes the scope of 38b-38j;
   the list below is the starting point, not the result.

@@ -952,4 +952,7 @@ P2V to PVE, limits). Not started.
 ## Phase 38 — Standalone agents with Veeam Agent parity (added 2026-10-20)
 Scope: plan.md Phase 38 (comparison doc first, managed and standalone mode, local repository in the appliance
 format on disk/USB/NFS/SMB/SFTP/S3, image and file backups, client triggers, application-aware processing, client
-restores, UI/CLI, import into an appliance). All in this repository. Not started.
+restores, UI/CLI, import into an appliance). All in this repository.
+- [x] 38a comparison `docs/veeam-agent-comparison.md` (2026-10-22, Veeam Agent 13 for Windows and Linux): 14 areas,
+  scope and order for 38b-38j (38b+38c, 38e, 38d with 37, 38f, 38g, 38h, 38i, 38j); no CBT driver, no kernel module.
+- [ ] 38b + 38c standalone mode and local repository (next).
