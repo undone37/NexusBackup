@@ -973,5 +973,8 @@ restores, UI/CLI, import into an appliance). All in this repository.
   nexus-agent.exe 7941 KiB of the 8188 KiB self-update frame limit (97 %): the next feature needs a size cut.
   VM 201 on 0.0.19-dev: greenboot green, 0 AVCs, /dev/shm noexec, sshd_config.d 0700, index rebuilt for format 2,
   owner filter by name `owner=root` works; `verify.sh exact` byte-identical (386 s).
-- [ ] 38 rest: SFTP/S3 copy against the lab testboxes, the size cut of nexus-agent.exe, lock/log-off and wake
+- [ ] nexus-agent.exe self-update in several frames (Phase 27 protocol): the binary is 7941 KiB of the 8188 KiB
+  frame (opt-level z only saves 375 KiB and slows hashing); chunked UpdateBegin/UpdateChunk removes the ceiling.
+  Needed before the agent grows again; lab L6/L7 cover the update path.
+- [ ] 38 rest: SFTP/S3 copy against the lab testboxes, lock/log-off and wake
   triggers, 38d with 37, TUI jobs view, restores from the UI (38g).

@@ -52,7 +52,7 @@ run() {
 		-e RUSTFLAGS="-C target-feature=+crt-static" \
 		-e CARGO_PROFILE_RELEASE_LTO=true \
 		-e CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
-		-e CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+		-e CARGO_PROFILE_RELEASE_OPT_LEVEL=${OPT_LEVEL:-s} \
 		-e CARGO_PROFILE_RELEASE_STRIP=symbols \
 		"$tag" "$@"
 }
