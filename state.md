@@ -934,6 +934,13 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle
 RMAN and archive logs, log backups on their own schedule); listed in the README under "Planned sources". Not started.
 
+## Lab: PostgreSQL HA cluster with Patroni (added 2026-10-23, maintainer request)
+- [ ] Three-node PostgreSQL cluster deployed with autobase (Patroni, etcd) on pve-test VMs (IDs from 200).
+- [ ] Back up the cluster with the `postgresql` plugin: logical dumps and physical base + WAL, including runs after a
+  switchover and a failover (new leader, new timeline, replication slot on the new leader).
+- [ ] Restores: dump to the cluster and to an alternate server; PITR to a time before and after a failover (WAL
+  across the timeline change); record the numbers here.
+
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
 Benchmark PDF in tmp/ (gitignored, CIS licence).
