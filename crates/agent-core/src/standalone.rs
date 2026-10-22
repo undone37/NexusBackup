@@ -392,7 +392,18 @@ fn backup_once<P: Platform>(
     let committed = match result {
         Ok(Ok((cache, tree))) => {
             sum.entries = tree.len() as u64;
-            sum.time = now();
+            // snapshots are named by the second: a run right after another one (a "run now" after the
+            // scheduled run) takes the next free second
+            let last = repo
+                .store
+                .list_snapshots()
+                .unwrap_or_default()
+                .iter()
+                .filter(|m| m.source == repo.source)
+                .map(|m| m.time)
+                .max()
+                .unwrap_or(0);
+            sum.time = now().max(last + 1);
             let r = repo
                 .store
                 .commit_snapshot(&repo.source, sum.time, &[(TREE, Index::Tree { entries: tree })])

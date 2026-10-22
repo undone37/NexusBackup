@@ -64,8 +64,11 @@ fn backup_incremental_restore_and_recovery_words() {
     let s2 = run(2);
     assert!(s2.time >= s1.time && s2.files == s1.files + 1, "{s2:?}");
     assert!(s2.new_chunks <= 2, "only the changed and the new file: {s2:?}");
+    // right after: a second within the same second still gets a snapshot of its own (CI 2026-10-22)
+    let s3 = run(3);
+    assert!(s3.time > s2.time, "{s2:?} {s3:?}");
     let snaps = standalone::list(&repo).unwrap();
-    assert_eq!(snaps.len(), 2);
+    assert_eq!(snaps.len(), 3);
 
     // restore the first snapshot: the old report, the big file intact
     let target = d.path().join("restore");
@@ -94,7 +97,7 @@ fn backup_incremental_restore_and_recovery_words() {
             "a second backup or prune waits for none: it fails"
         );
     }
-    // the last snapshot of today: both are from today
+    // the last snapshot of today: all three are from today
     let keep_one = standalone::Gfs {
         recent: 0,
         daily: 1,
@@ -103,7 +106,7 @@ fn backup_incremental_restore_and_recovery_words() {
         yearly: 0,
     };
     let line = standalone::prune(&repo, &keep_one).unwrap();
-    assert!(line.starts_with("1 snapshot(s) kept, 1 deleted"), "{line}");
+    assert!(line.starts_with("1 snapshot(s) kept, 2 deleted"), "{line}");
     assert_eq!(standalone::list(&repo).unwrap().len(), 1);
 
     // another machine: no key until the 24 words open it; wrong words do not
