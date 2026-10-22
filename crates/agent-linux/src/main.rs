@@ -20,6 +20,9 @@ standalone mode (root; a repository of its own, no appliance; docs/agent-standal
   nexus-agent repo open <dir>            on another machine: the 24 words on stdin open it
   nexus-agent repo backup <dir> <path>…  back up these paths (snapshot where possible)
   nexus-agent repo list <dir> [--json]
+  nexus-agent repo prune <dir> [--keep H,D,W,M,Y]   keep all of the last H hours plus the last snapshot of
+                                         D days, W weeks, M months, Y years (default 24,7,4,12,0);
+                                         then unused chunks are removed
   nexus-agent repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]
 end users (root or members of the group nexus-agent-ui):
   nexus-agent tui                        control panel: sessions, status, back up now
@@ -55,6 +58,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut sock = PathBuf::from(endpoint::proto::SOCKET_PATH);
     let mut words = vec![];
     let (mut only, mut overwrite) = (String::new(), agent_proto::Overwrite::Never);
+    let mut keep = String::from("24,7,4,12,0");
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -69,6 +73,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--limit" => limit = val("--limit")?.parse::<usize>().map_err(|_| "invalid --limit")?,
             "--socket" => sock = PathBuf::from(val("--socket")?),
             "--path" => only = val("--path")?,
+            "--keep" => keep = val("--keep")?,
             "--overwrite" => {
                 overwrite = match val("--overwrite")?.as_str() {
                     "never" => agent_proto::Overwrite::Never,
@@ -161,7 +166,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             print!("{out}");
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
         }
-        ["repo", rest @ ..] => repo(&paths, rest, json, &only, overwrite),
+        ["repo", rest @ ..] => repo(&paths, rest, json, &only, overwrite, &keep),
         ["version"] => {
             println!("nexus-agent {}", env!("CARGO_PKG_VERSION"));
             // keep the version marker in the binary (self-update reads it)
@@ -179,6 +184,7 @@ fn repo(
     json: bool,
     only: &str,
     overwrite: agent_proto::Overwrite,
+    keep: &str,
 ) -> Result<ExitCode, String> {
     use agent_core::standalone;
     // SAFETY: trivial syscall; keys, caches and spool files are never group/world-readable
@@ -229,6 +235,28 @@ fn repo(
                     " (not consistent: no snapshot)"
                 }
             );
+        }
+        ["prune", dir] => {
+            let n: Vec<u32> = keep
+                .split(',')
+                .map(|x| x.trim().parse::<u32>())
+                .collect::<Result<_, _>>()
+                .map_err(|_| format!("--keep: five numbers H,D,W,M,Y, not {keep}"))?;
+            let [recent, daily, weekly, monthly, yearly] = n[..] else {
+                return Err(format!("--keep: five numbers H,D,W,M,Y, not {keep}"));
+            };
+            if recent + daily + weekly + monthly + yearly == 0 {
+                return Err("--keep: keeping nothing would delete every snapshot".into());
+            }
+            let r = standalone::open(paths, Path::new(dir), None)?;
+            let gfs = standalone::Gfs {
+                recent,
+                daily,
+                weekly,
+                monthly,
+                yearly,
+            };
+            println!("{}", standalone::prune(&r, &gfs)?);
         }
         ["list", dir] => {
             let r = standalone::open(paths, Path::new(dir), None)?;

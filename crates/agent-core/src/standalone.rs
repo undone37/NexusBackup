@@ -16,6 +16,7 @@ use crate::config::Paths;
 use crate::server::{Ctx, Platform, RestoreJob, ScanError};
 use agent_proto::{Entry, Filters, Hash, Kind, Overwrite, ScanStats};
 use chunkstore::crypto::{generate_key, unwrap_key, wrap_key};
+pub use chunkstore::retention::Gfs;
 use chunkstore::{ChunkId, Index, Keyring, Options, Store, TreeEntry, TreeKind};
 use std::collections::HashMap;
 use std::fs;
@@ -58,6 +59,30 @@ struct Info {
 pub struct Repo {
     pub store: Store,
     pub source: String,
+    dir: PathBuf,
+}
+
+/// Held while a backup or a prune writes the repository (`<repo>/lock`, an OS file lock: released when the
+/// process ends, also on a crash).
+pub struct Lock(#[allow(dead_code)] fs::File);
+
+impl Repo {
+    /// The writer lock; fails at once when another backup or prune holds it.
+    pub fn lock(&self) -> Result<Lock, String> {
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.dir.join("lock"))
+            .map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        match f.try_lock() {
+            Ok(()) => Ok(Lock(f)),
+            Err(fs::TryLockError::WouldBlock) => {
+                Err(format!("{}: another backup or prune is running", self.dir.display()))
+            }
+            Err(fs::TryLockError::Error(e)) => Err(format!("{}: lock: {e}", self.dir.display())),
+        }
+    }
 }
 
 fn key_file(paths: &Paths, id: &str) -> PathBuf {
@@ -173,6 +198,7 @@ pub fn open(paths: &Paths, dir: &Path, recovery: Option<&str>) -> Result<Repo, S
     Ok(Repo {
         store: open_store(dir, &dek)?,
         source: i.source,
+        dir: dir.to_owned(),
     })
 }
 
@@ -250,6 +276,7 @@ pub fn backup<P: Platform>(
     filters: &Filters,
     hooks: bool,
 ) -> Result<Summary, String> {
+    let _lock = repo.lock()?;
     match backup_once(platform, ctx, repo, job, roots, excludes, filters, hooks, true) {
         Err(Retry) => backup_once(platform, ctx, repo, job, roots, excludes, filters, hooks, false)
             .map_err(|_| "unchanged files without chunks in the previous snapshot twice".to_owned())?,
@@ -379,6 +406,19 @@ fn backup_once<P: Platform>(
         Some(Err(e)) => Ok(Err(e)),
         Some(Ok(())) => Ok(Ok(sum)),
     }
+}
+
+/// Applies GFS retention to this machine's snapshots, then removes the chunks no snapshot uses any more.
+/// Returns a summary line.
+pub fn prune(repo: &Repo, gfs: &Gfs) -> Result<String, String> {
+    let _lock = repo.lock()?;
+    let (kept, deleted, locked) = repo.store.apply_retention(&repo.source, gfs).map_err(err)?;
+    // the owner runs it on their own repository: no second approval for large deletions
+    let gc = repo.store.gc(true).map_err(err)?;
+    Ok(format!(
+        "{kept} snapshot(s) kept, {deleted} deleted, {locked} still locked; {} unused chunk(s) removed, {} kept (younger than a day)",
+        gc.deleted, gc.kept_grace
+    ))
 }
 
 /// One snapshot of the repository.

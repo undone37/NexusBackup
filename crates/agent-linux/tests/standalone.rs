@@ -86,6 +86,26 @@ fn backup_incremental_restore_and_recovery_words() {
     assert!(read(&target.join(rel).join("big.bin")) == big);
     assert!(!target.join(rel).join("docs/new.txt").exists());
 
+    // one writer at a time; prune keeps the newest snapshot only (the restore above used the older one)
+    {
+        let _held = repo.lock().unwrap();
+        assert!(
+            repo.lock().is_err(),
+            "a second backup or prune waits for none: it fails"
+        );
+    }
+    // the last snapshot of today: both are from today
+    let keep_one = standalone::Gfs {
+        recent: 0,
+        daily: 1,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    };
+    let line = standalone::prune(&repo, &keep_one).unwrap();
+    assert!(line.starts_with("1 snapshot(s) kept, 1 deleted"), "{line}");
+    assert_eq!(standalone::list(&repo).unwrap().len(), 1);
+
     // another machine: no key until the 24 words open it; wrong words do not
     let other = paths(&d.path().join("b"));
     assert!(standalone::open(&other, &repo_dir, None).is_err());
@@ -93,7 +113,7 @@ fn backup_incremental_restore_and_recovery_words() {
     wrong.swap(0, 1);
     assert!(standalone::open(&other, &repo_dir, Some(&wrong.join(" "))).is_err());
     let r = standalone::open(&other, &repo_dir, Some(&words)).unwrap();
-    assert_eq!(standalone::list(&r).unwrap().len(), 2);
+    assert_eq!(standalone::list(&r).unwrap().len(), 1);
     assert!(
         standalone::open(&other, &repo_dir, None).is_ok(),
         "the key is kept from then on"
