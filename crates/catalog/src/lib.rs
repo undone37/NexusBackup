@@ -26,7 +26,8 @@ pub mod incident;
 pub mod inventory;
 pub mod network;
 pub mod priority;
-pub mod schedule;
+/// Moved to the crate `schedule` (standalone agents use it without the catalog).
+pub use schedule;
 pub mod secret;
 pub mod tenancy;
 pub mod tenant_key;

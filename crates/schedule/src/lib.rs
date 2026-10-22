@@ -27,6 +27,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
 const DAY: i64 = 86400;
+
+/// Unix seconds now.
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
 pub const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -577,7 +584,7 @@ struct ThrottleState {
 impl Throttle {
     /// Wall clock, re-evaluated every 10 s.
     pub fn new(bw: Bandwidth) -> Self {
-        Self::with_clock(bw, Arc::new(crate::now), StdDuration::from_secs(10))
+        Self::with_clock(bw, Arc::new(now), StdDuration::from_secs(10))
     }
 
     pub fn with_clock(bw: Bandwidth, clock: Arc<dyn Fn() -> i64 + Send + Sync>, recheck: StdDuration) -> Self {

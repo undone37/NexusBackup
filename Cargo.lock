@@ -932,13 +932,12 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "chacha20poly1305",
- "chrono",
- "chrono-tz",
  "crypto_box",
  "ml-kem",
  "rand 0.8.8",
  "recovery-key",
  "rusqlite",
+ "schedule",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -5835,6 +5834,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "schedule"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
