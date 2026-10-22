@@ -1,5 +1,6 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
+  import { labelOf } from '../lib/names.svelte';
   import { get, post, act, qs } from '../lib/api';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
@@ -118,7 +119,7 @@
   }
 </script>
 
-<Modal bind:open title={t.restoreFiles.title(source)} wide>
+<Modal bind:open title={t.restoreFiles.title(labelOf(tenant, source))} wide>
   <form onsubmit={submit}>
     <p class="muted">{tenant} · {fmtTime(time)}</p>
     {@render children?.()}

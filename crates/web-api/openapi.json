@@ -507,6 +507,14 @@
     "/policies": { "get": { "summary": "Policies (schedule, GFS, tier)", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/groups": { "get": { "summary": "Protection groups", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/agents": { "get": { "summary": "Linux / Windows agents", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/names": {
+      "get": {
+        "summary": "Display names of snapshot sources per tenant: PVE guests from the inventory, agents (UI: name first, id muted)",
+        "tags": ["data"],
+        "parameters": [{ "$ref": "#/components/parameters/tenant" }],
+        "responses": { "200": { "$ref": "#/components/responses/Object" } }
+      }
+    },
     "/snapshots": {
       "get": {
         "summary": "Snapshots (local / offsite, lock, verification, holds)",

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import SourceName from '../components/SourceName.svelte';
   import { ApiError, get, post, errText, qs } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
   import { runJob, downloadUrl, hostAgentId, terminal } from '../lib/jobs';
@@ -523,7 +524,7 @@
                 <td class="mono">{m.path}{m.kind === 'dir' ? '/' : ''}</td>
                 <td class="num">{m.kind === 'file' ? fmtBytes(m.size) : ''}</td>
                 <td class="nowrap">{fmtTime(m.mtime)}</td>
-                <td class="mono">{m.source}</td>
+                <td><SourceName source={m.source} {tenant} /></td>
                 <td>
                   {#if m.times.length > 1}
                     <select
@@ -613,7 +614,7 @@
                 <span class="mono">{h.path}{h.kind === 'dir' ? '/' : ''}</span>
                 {#if h.kind !== 'file'}<span class="muted small"> ({t.search.kind[h.kind] ?? h.kind})</span>{/if}
               </td>
-              <td class="mono">{h.source}</td>
+              <td><SourceName source={h.source} {tenant} /></td>
               <td class="num">{h.kind === 'file' && v0 ? fmtBytes(v0.size) : ''}</td>
               <td class="nowrap">{v0 ? fmtTime(v0.mtime) : '—'}</td>
               <td class="num">{h.versions.length}</td>

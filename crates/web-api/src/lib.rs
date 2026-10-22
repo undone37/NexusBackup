@@ -52,6 +52,7 @@ pub mod inventory;
 pub mod jobs;
 pub mod keep;
 pub mod lockdown;
+pub mod names;
 pub mod nasops;
 pub mod network;
 pub mod offsite;
@@ -662,6 +663,7 @@ pub fn router(st: St) -> Router {
         .route("/edges/{id}/token", post(edges::new_edge_token))
         .route("/edges/{id}/enroll", post(edges::enroll_edge))
         .route("/snapshots", get(list_snapshots))
+        .route("/names", get(names::names))
         .route("/snapshots/diff", post(changes::diff))
         .route(
             "/snapshots/{tenant}/{source}/{time}/anomaly/clear",

@@ -1,5 +1,7 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
+  import { labelOf } from '../lib/names.svelte';
+  import SourceName from '../components/SourceName.svelte';
   import { onMount } from 'svelte';
   import { get, post, del, act, errText, qs } from '../lib/api';
   import { askConfirm } from '../lib/confirm.svelte';
@@ -744,8 +746,7 @@
             {@const items = restoreItems(s)}
             <tr>
               <td>
-                <span class="mono">{s.source}</span>
-                {#if s.label && !ag}<span class="muted"> {s.label}</span>{/if}
+                <SourceName source={s.source} tenant={s.tenant} />
                 {#if ag}<div class="muted">{t.snap.agent(ag.name)}</div>{/if}
                 {#if sh}<div class="muted">{t.snap.share(sh)}</div>{/if}
                 {#if pl}
@@ -896,7 +897,11 @@
 
 <Modal
   bind:open={dlgOpen}
-  title={sel ? (mode === 'instant' ? t.snap.instantTitle(sel.source) : t.snap.restoreTitle(sel.source)) : ''}
+  title={sel
+    ? mode === 'instant'
+      ? t.snap.instantTitle(labelOf(sel.tenant, sel.source))
+      : t.snap.restoreTitle(labelOf(sel.tenant, sel.source))
+    : ''}
 >
   {#if sel}
     <form onsubmit={startRestore}>
@@ -1106,7 +1111,7 @@
 
 <Modal
   bind:open={prOpen}
-  title={prSnap && prRestore ? t.snap.pluginRestoreTitle(prRestore.title, prSnap.source) : ''}
+  title={prSnap && prRestore ? t.snap.pluginRestoreTitle(prRestore.title, labelOf(prSnap.tenant, prSnap.source)) : ''}
   wide
 >
   {#if prSnap && prRestore}

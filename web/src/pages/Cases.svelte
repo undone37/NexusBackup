@@ -2,6 +2,7 @@
   // Phase 33: compliance search and cases (web-api cases.rs). A case keeps search criteria; its search
   // is a file_search job over the tenant's name indexes; the matched snapshots can be held and exported.
   import { onDestroy, onMount } from 'svelte';
+  import SourceName from '../components/SourceName.svelte';
   import { get, post, act, errText, qs } from '../lib/api';
   import { route, href, navigate } from '../lib/router.svelte';
   import { askConfirm } from '../lib/confirm.svelte';
@@ -226,7 +227,8 @@
       <h3>{t.cases.exportJobs}</h3>
       <ul>
         {#each exportJobs as j (j.id)}<li>
-            <a href={href(`/jobs/${j.id}`)}>#{j.id}</a> <span class="mono">{j.source}</span> · {fmtTime(j.time)}
+            <a href={href(`/jobs/${j.id}`)}>#{j.id}</a>
+            <SourceName source={j.source} tenant={one.tenant} /> · {fmtTime(j.time)}
           </li>{/each}
       </ul>
     {/if}
@@ -247,8 +249,10 @@
         <tbody>
           {#each one.snapshot_list ?? [] as s (s.source + s.time)}
             <tr>
-              <td class="mono"
-                ><a href={href('/snapshots' + qs({ tenant: one.tenant, source: s.source }))}>{s.source}</a></td
+              <td
+                ><a href={href('/snapshots' + qs({ tenant: one.tenant, source: s.source }))}
+                  ><SourceName source={s.source} tenant={one.tenant} /></a
+                ></td
               >
               <td>{fmtTime(s.time)}</td>
               <td class="num">{s.items}</td>
@@ -282,7 +286,7 @@
           <tbody>
             {#each one.matches.slice(0, 300) as m (m.source + m.path + m.mtime)}
               <tr>
-                <td class="mono">{m.source}</td>
+                <td><SourceName source={m.source} tenant={one.tenant} /></td>
                 <td class="mono">{m.path}</td>
                 <td class="num">{fmtBytes(m.size)}</td>
                 <td>{m.times.length}</td>

@@ -4,6 +4,7 @@
   // Phase 30: the backup's duration and the share of the data read that was new, and the
   // per-source anomaly sensitivity (PUT /stats/sensitivity; lowering it is an approval).
   import { onMount } from 'svelte';
+  import SourceName from './SourceName.svelte';
   import { get, put, act, errText, qs } from '../lib/api';
   import { href } from '../lib/router.svelte';
   import { fmtBytes, fmtDuration, fmtPct, fmtTime } from '../lib/format';
@@ -74,7 +75,8 @@
             {@const lastRun = last(tr.runs)}
             <tr>
               <td
-                ><a class="mono" href={href('/snapshots' + qs({ tenant: tr.tenant, source: tr.source }))}>{tr.source}</a
+                ><a href={href('/snapshots' + qs({ tenant: tr.tenant, source: tr.source }))}
+                  ><SourceName source={tr.source} tenant={tr.tenant} /></a
                 ></td
               >
               <td>{tr.tenant}</td>

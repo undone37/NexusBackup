@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { labelOf } from '../lib/names.svelte';
   import { askConfirm } from '../lib/confirm.svelte';
   import { API, get, post, act, errText } from '../lib/api';
   import { session } from '../lib/session.svelte';
@@ -91,11 +92,13 @@
 <ErrorBanner {error} />
 
 {#if job}
-  {@const torn = (job.result?.snapshots ?? []).filter((x) => x.consistent === false).map((x) => x.source)}
+  {@const torn = (job.result?.snapshots ?? [])
+    .filter((x) => x.consistent === false)
+    .map((x) => labelOf(job?.tenant, x.source))}
   {#if torn.length}<p class="banner warn">{t.jobs.notConsistent(torn.join(', '))}</p>{/if}
   {@const skipped = (job.result?.snapshots ?? []).filter((x) => (x.warnings ?? 0) > 0)}
   {#if job.result?.warnings}<p class="banner warn">
-      {t.jobs.skipped(job.result.warnings, skipped.map((x) => x.source).join(', '))}
+      {t.jobs.skipped(job.result.warnings, skipped.map((x) => labelOf(job?.tenant, x.source)).join(', '))}
     </p>{/if}
   {#if job.state === 'failed' && (errorLines.length || retryJob)}
     <section class="card failure" aria-labelledby="jfail">

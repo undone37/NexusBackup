@@ -1,5 +1,6 @@
 <script lang="ts">
   import { get, errText, qs } from '../lib/api';
+  import { labelOf } from '../lib/names.svelte';
   import { fmtTime, fmtDuration } from '../lib/format';
   import { href } from '../lib/router.svelte';
   import { t } from '../lib/i18n';
@@ -24,7 +25,7 @@
   });
 </script>
 
-<Modal bind:open title={snap ? t.scan.resultsTitle(snap.source, fmtTime(snap.time)) : ''} wide>
+<Modal bind:open title={snap ? t.scan.resultsTitle(labelOf(snap.tenant, snap.source), fmtTime(snap.time)) : ''} wide>
   <ErrorBanner {error} />
   {#if loading}
     <p class="muted" aria-busy="true">{t.loading}</p>

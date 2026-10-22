@@ -86,6 +86,7 @@ pub const READ: &[&str] = &[
     "/groups",
     "/agents",
     "/snapshots",
+    "/names",
     "/files/search",
     "/files/index-status",
     "/holds",

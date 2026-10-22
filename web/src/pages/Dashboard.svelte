@@ -1,5 +1,6 @@
 <script lang="ts">
   import RunningJobs from '../components/RunningJobs.svelte';
+  import { labelOf } from '../lib/names.svelte';
   import { rowLink } from '../lib/rowlink';
   import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import { onMount } from 'svelte';
@@ -270,7 +271,7 @@
     if (guest === SHARE) return sources.find((s) => s.id === g.source_id)?.name ?? `share-${g.source_id}`;
     if (typeof guest === 'string')
       return isNas(g) || isPlugin(g) ? guest : (agents.find((a) => a.id === guest)?.name ?? `host-${guest}`);
-    return lastFor(g, guest)?.source ?? String(guest);
+    return labelOf(g.tenant, lastFor(g, guest)?.source ?? `vm-${guest}`);
   }
   const showAlerts = $derived(can.viewAlerts(session.user));
   const policyOf = (g: Group) => policies.find((p) => p.id === g.policy_id);

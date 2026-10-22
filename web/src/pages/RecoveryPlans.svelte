@@ -1,5 +1,6 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
+  import SourceName from '../components/SourceName.svelte';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
   import { href } from '../lib/router.svelte';
@@ -271,7 +272,9 @@
             {#each p.steps as s (s.source)}
               <li>
                 <span class="chip plain">{t.rplan.wave} {s.wave}</span>
-                <span class="mono">{s.source}</span>{#if s.delay}<span class="muted small"> +{s.delay} s</span>{/if}
+                <SourceName source={s.source} tenant={p.tenant} />{#if s.delay}<span class="muted small">
+                    +{s.delay} s</span
+                  >{/if}
                 {#if s.checks?.ports?.length || s.checks?.command?.length}<span class="muted small mono">
                     {[
                       ...(s.checks?.ports ?? []).map((x) => `tcp/${x}`),

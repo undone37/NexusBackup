@@ -1,3 +1,4 @@
+import { labelOf } from './names.svelte';
 import { get, post } from './api';
 import { t } from './i18n';
 import { notify } from './notify.svelte';
@@ -47,8 +48,8 @@ export function jobSubject(j: Job, groups?: Map<number, string>): string {
   const p = j.params ?? {};
   const out: string[] = [];
   if (typeof p.group_id === 'number') out.push(groups?.get(p.group_id) ?? t.jobs.groupN(p.group_id));
-  if (typeof p.source === 'string') out.push(p.source);
-  else if (typeof p.vmid === 'number') out.push(`vm-${p.vmid}`);
+  if (typeof p.source === 'string') out.push(labelOf(j.tenant, p.source));
+  else if (typeof p.vmid === 'number') out.push(labelOf(j.tenant, `vm-${p.vmid}`));
   return out.join(' · ');
 }
 

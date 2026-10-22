@@ -1,5 +1,6 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
+  import SourceName from '../components/SourceName.svelte';
   import { rowClick, rowLink } from '../lib/rowlink';
   import { onMount } from 'svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
@@ -255,7 +256,7 @@
             {@const bad = (x.checks ?? []).filter((c) => !c.ok)}
             <tr use:rowLink={`/jobs/${x.job_id}`}>
               <td
-                ><strong>{x.source}</strong>{#if !session.user?.tenant}<span class="muted small"
+                ><SourceName source={x.source} tenant={x.tenant} />{#if !session.user?.tenant}<span class="muted small"
                     >&nbsp;· {x.tenant}</span
                   >{/if}{#if x.name}<div class="muted small mono">{x.target} {x.name}</div>{/if}</td
               >

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { rowClick } from '../lib/rowlink';
+  import SourceName from '../components/SourceName.svelte';
   import { onDestroy, onMount } from 'svelte';
   import { get, post, errText, qs } from '../lib/api';
   import { route, href, navigate } from '../lib/router.svelte';
@@ -227,10 +228,7 @@
               <td class="mono" title={m.sha256}>{m.sha256.slice(0, 16)}…</td>
               <td>{m.lists.join(', ')}</td>
               <td>
-                {#if agents.find((a) => `host-${a.id}` === m.source)}{agents.find((a) => `host-${a.id}` === m.source)!
-                    .name}
-                  <div class="muted small mono">{m.source}</div>
-                {:else}<span class="mono">{m.source}</span>{/if}
+                <SourceName source={m.source} tenant={shownJob?.tenant ?? tenant} />
               </td>
               <td>
                 {#if m.times.length > 1}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Menu, { type MenuItem } from '../components/Menu.svelte';
+  import { vmidLabel } from '../lib/names.svelte';
   import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount, onDestroy } from 'svelte';
@@ -77,7 +78,9 @@
   const sourceName = (id: number) => sources.find((s) => s.id === id)?.name ?? `#${id}`;
   const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
-  const guestText = (g: number | string) => (typeof g === 'string' ? agentName(g) : String(g));
+  // a PVE guest by its name, the VMID in parentheses (identifiable across clusters and tenants)
+  const guestText = (g: number | string, tenant?: string) =>
+    typeof g === 'string' ? agentName(g) : vmidLabel(tenant, g);
 
   let open = $state(false);
   let editing: Group | null = $state(null);
@@ -569,7 +572,7 @@
                   )}{#if x.exclude.length}<span class="muted">
                       · {t.groups.except(x.exclude.join(', '))}</span
                     >{/if}{:else}{x.guests.length
-                    ? x.guests.map(guestText).join(', ')
+                    ? x.guests.map((g) => guestText(g, x.tenant)).join(', ')
                     : kindTitle(sources.find((s) => s.id === x.source_id)?.kind ?? '')}{/if}</td
               >
               <td class="nowrap">
@@ -916,7 +919,7 @@
   </form>
 </Modal>
 
-<BackupNow bind:open={bnOpen} group={target} label={guestText} />
+<BackupNow bind:open={bnOpen} group={target} label={(g) => guestText(g, target?.tenant)} />
 <PauseDialog
   bind:open={pauseOpen}
   title={t.runctl.pauseTitle(target?.name ?? '')}

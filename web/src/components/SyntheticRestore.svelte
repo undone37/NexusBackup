@@ -2,6 +2,7 @@
   // Phase 33: synthetic (clean-file) restore of an agent, NAS or share snapshot: the newest clean
   // version of each file, as a download or onto a host (same confirmation as Restore files).
   import { get, post, act, qs } from '../lib/api';
+  import { labelOf } from '../lib/names.svelte';
   import { navigate } from '../lib/router.svelte';
   import { hostAgentId } from '../lib/jobs';
   import { absHostPath, fmtAgo, fmtTime } from '../lib/format';
@@ -100,7 +101,7 @@
   }
 </script>
 
-<Modal bind:open title={t.synth.title(source)} wide>
+<Modal bind:open title={t.synth.title(labelOf(tenant, source))} wide>
   <form onsubmit={submit}>
     <p class="muted">{tenant} · {fmtTime(time)}</p>
     <p>{t.synth.intro}</p>

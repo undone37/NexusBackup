@@ -3,6 +3,7 @@
   // YARA scans of the source's snapshots from `time` backwards until one is complete and clean; the
   // dialog follows the job and shows the scanned snapshots and the recommended restore point.
   import { onDestroy } from 'svelte';
+  import { labelOf } from '../lib/names.svelte';
   import { get, post, errText } from '../lib/api';
   import { terminal } from '../lib/jobs';
   import { href } from '../lib/router.svelte';
@@ -72,7 +73,7 @@
   });
 </script>
 
-<Modal bind:open title={t.p29.scanBack.title(source)} wide>
+<Modal bind:open title={t.p29.scanBack.title(labelOf(tenant, source))} wide>
   <p class="muted">{tenant} · {t.p29.scanBack.from(fmtTime(time))}</p>
   {#if error}<p class="banner error" role="alert">{error}</p>{/if}
   {#if result?.scanned}

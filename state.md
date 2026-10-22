@@ -973,6 +973,13 @@ restores, UI/CLI, import into an appliance). All in this repository.
   nexus-agent.exe 7941 KiB of the 8188 KiB self-update frame limit (97 %): the next feature needs a size cut.
   VM 201 on 0.0.19-dev: greenboot green, 0 AVCs, /dev/shm noexec, sshd_config.d 0700, index rebuilt for format 2,
   owner filter by name `owner=root` works; `verify.sh exact` byte-identical (386 s).
+- [x] 2026-10-22 maintainer request: PVE guests by name everywhere in the web UI, the id muted next to it
+  (`GET /names`, component `SourceName`, `labelOf` for titles; Snapshots, Find files, Jobs, Dashboard, Groups,
+  restore dialogs, Restore tests, Cases, Hash hunt, Recovery plans, change trends). One VMID with different names in
+  two clusters of a tenant: both names (its snapshots share `vm-<vmid>`).
+- [x] 2026-10-22 lab VM 201: "Check now" staged the channel's 0.0.1-alpha over 0.0.19-dev and the page kept
+  "Last check 2 d ago" during the check: fixed (no older release staged, "checking" state). VM 201 still has that
+  0.0.1-alpha staged (download-only, never applied automatically); the next image will not offer it.
 - [ ] nexus-agent.exe self-update in several frames (Phase 27 protocol): the binary is 7941 KiB of the 8188 KiB
   frame (opt-level z only saves 375 KiB and slows hashing); chunked UpdateBegin/UpdateChunk removes the ceiling.
   Needed before the agent grows again; lab L6/L7 cover the update path.

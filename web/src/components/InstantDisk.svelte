@@ -1,5 +1,6 @@
 <script lang="ts">
   import { jobLink } from '../lib/jobs';
+  import { labelOf } from '../lib/names.svelte';
   // Phase 22b: instant disk recovery — one disk of a VM snapshot attached to an existing
   // VM (a VM a group of the tenant protects; the scheduler checks it) through the instant
   // recovery overlay, optionally moved to real storage afterwards.
@@ -67,7 +68,7 @@
   }
 </script>
 
-<Modal bind:open title={snap ? t.idr.title(snap.source) : ''}>
+<Modal bind:open title={snap ? t.idr.title(labelOf(snap.tenant, snap.source)) : ''}>
   {#if snap}
     <form onsubmit={submit}>
       <p class="muted">{snap.tenant} · {fmtTime(snap.time)}</p>

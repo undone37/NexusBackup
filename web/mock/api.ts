@@ -8074,6 +8074,23 @@ const GUEST_NAMES: Record<string, string> = {
   'acme/301': 'shop-api',
   'acme/302': 'test-web',
 };
+// GET /names (crates/web-api/src/names.rs): display names of the sources, per tenant
+on('GET', '/names', (c) => {
+  const u = need(c.user);
+  const tenant = c.query.get('tenant');
+  if (tenant && u.tenant && u.tenant !== tenant) throw new HttpError(403, 'forbidden');
+  const out: Record<string, Record<string, string>> = {};
+  const add = (t: string, source: string, name: string) => {
+    if ((tenant && t !== tenant) || (u.tenant && t !== u.tenant)) return;
+    (out[t] ??= {})[source] = name;
+  };
+  for (const [k, name] of Object.entries(GUEST_NAMES)) {
+    const [t, vmid] = k.split('/');
+    for (const pre of ['vm', 'ct']) add(t, `${pre}-${vmid}`, name);
+  }
+  for (const a of db.agents) add(a.tenant, `host-${a.id}`, a.name);
+  return [200, out];
+});
 interface Obj {
   source: string;
   name: string;

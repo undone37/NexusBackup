@@ -3979,6 +3979,7 @@ async fn tenant_admin_routes_classified() {
         ("PUT", "/agents/{id}/laptop", format!("/api/v1/agents/{agent}/laptop"), Some(json!({"min_battery": 20})), 'Y'),
         ("GET", "/agents/{id}/sessions", format!("/api/v1/agents/{agent}/sessions"), none(), 'Y'),
         ("GET", "/snapshots", "/api/v1/snapshots".into(), none(), 'Y'),
+        ("GET", "/names", "/api/v1/names".into(), none(), 'Y'),
         ("DELETE", "/snapshots/{tenant}/{source}/{time}", snap.into(), none(), 'N'),
         ("POST", "/snapshots/diff", "/api/v1/snapshots/diff".into(), Some(json!({"tenant": "acme", "source": "vm-100", "time": 1000})), 'Y'),
         ("POST", "/snapshots/{tenant}/{source}/{time}/anomaly/clear", format!("{snap}/anomaly/clear"), Some(json!({"note": "x"})), 'N'),

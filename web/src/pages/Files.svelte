@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { labelOf } from '../lib/names.svelte';
   import { get, errText } from '../lib/api';
   import { route, href } from '../lib/router.svelte';
   import { runJob, downloadUrl, fileEntries, hostAgentId, restorableToHost } from '../lib/jobs';
@@ -154,7 +155,7 @@
 </script>
 
 <div class="page-head">
-  <h1>{t.files.title(source, fmtTime(time))}</h1>
+  <h1>{t.files.title(labelOf(tenant, source), fmtTime(time))}</h1>
   <a class="button" href={href(`/snapshots?source=${encodeURIComponent(source)}`)}>{t.snap.title}</a>
   <p class="lede">{tenant}{hostName ? ` · ${t.snap.agent(hostName)}` : ''}</p>
 </div>
