@@ -966,5 +966,12 @@ restores, UI/CLI, import into an appliance). All in this repository.
   backend; SFTP/S3 not run from an agent yet (lab offline; the clients are the offsite ones).
 - [x] 38h first part: UI ops `jobs` / `run_job` (queued for the job loop), desktop card "Backups on this computer"
   with Run now, `nexus-agent jobs` / `run-job` for UI-group users, the UI socket/pipe also in standalone-only mode.
-- [ ] 38 rest: Windows run on a VM 101 copy (lab), SFTP/S3 copy against the lab testboxes, lock/log-off and wake
+- [x] Lab 2026-10-22 (main 8312dd90..d5811126): standalone agent on Windows Server 2022 (VM 242, reset to
+  clean-os): `repo init`, backup with VSS (all writers ok), incremental (USN: 2 new chunks, the unchanged 3 MB file
+  reused), `repo list`, restore of the first snapshot (old content, no later file), service installed while not
+  enrolled ran the job and pruned, UI pipe `jobs` / `run_job` (unknown job refused, run started within seconds).
+  nexus-agent.exe 7941 KiB of the 8188 KiB self-update frame limit (97 %): the next feature needs a size cut.
+  VM 201 on 0.0.19-dev: greenboot green, 0 AVCs, /dev/shm noexec, sshd_config.d 0700, index rebuilt for format 2,
+  owner filter by name `owner=root` works; `verify.sh exact` byte-identical (386 s).
+- [ ] 38 rest: SFTP/S3 copy against the lab testboxes, the size cut of nexus-agent.exe, lock/log-off and wake
   triggers, 38d with 37, TUI jobs view, restores from the UI (38g).

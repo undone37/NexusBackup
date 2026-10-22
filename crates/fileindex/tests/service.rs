@@ -348,3 +348,58 @@ fn paging_has_no_gaps_or_duplicates() {
     assert!(paths.windows(2).all(|w| w[0] < w[1]), "ordered by path");
     assert_eq!(all.iter().filter(|x| x.1 == 2).count(), 13);
 }
+
+/// Phase 39 C2: a version first seen in a snapshot taken before the guest's names were read gets its
+/// owner's name from a later snapshot, both when that snapshot is appended and after a rebuild.
+#[test]
+fn owner_names_from_a_later_snapshot() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        d.path().join("store/acme"),
+        keys(),
+        Options {
+            min_lock_secs: 0,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let vm = |t: u64, names: Option<Vec<(String, String)>>| {
+        let disk = store.store_image(&[0u8; 512][..], 4096).unwrap();
+        store.commit_snapshot("vm-100", t, &[("drive-scsi0", disk)]).unwrap();
+        let mut n = NameIndex::default();
+        for (p, k) in [("vda1", 1), ("vda1/home", 1), ("vda1/home/.bashrc", 0)] {
+            n.push(p, 11, 50, k);
+        }
+        n.set_owners(vec!["1000:1000".into()], vec![0, 0, 1]);
+        store.write_names("vm-100", t, &n).unwrap();
+        let mut vol = fsindex::Volume {
+            browse: "vda1".into(),
+            state: "indexed".into(),
+            mount: Some("/".into()),
+            ..Default::default()
+        };
+        vol.accounts = names.unwrap_or_default();
+        let rep = fsindex::Report {
+            version: 1,
+            volumes: vec![fsindex::VolumeRec {
+                volume: vol,
+                reads: Vec::new(),
+            }],
+        };
+        store
+            .write_snap_file("vm-100", t, fsindex::REPORT_FILE, &serde_json::to_vec(&rep).unwrap())
+            .unwrap();
+    };
+    let name = |s: &Service| find(s, "bashrc")[0].versions[0].owner_name.clone();
+    vm(100, None);
+    let s = svc(d.path());
+    s.sync("acme").unwrap();
+    assert_eq!(name(&s), None, "the old snapshot has no names");
+    // the next snapshot reads /etc/passwd: the unchanged version is named on append
+    vm(200, Some(vec![("1000".into(), "ann".into())]));
+    s.sync("acme").unwrap();
+    assert_eq!(name(&s).as_deref(), Some("ann"));
+    assert_eq!(find(&s, "bashrc")[0].versions.len(), 1, "still one version");
+    s.rebuild("acme").unwrap();
+    assert_eq!(name(&s).as_deref(), Some("ann"), "and after a rebuild");
+}

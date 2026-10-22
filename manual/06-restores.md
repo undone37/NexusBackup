@@ -472,7 +472,8 @@ that hold it. For files on VM disks the timeline also shows the **Owner** by nam
 Linux users from the guest's `/etc/passwd`, Windows local accounts from its SAM, and well-known Windows accounts
 such as SYSTEM, Administrators or TrustedInstaller. Domain accounts show their SID (their names are in Active
 Directory, not on the member's disk), unknown Linux ids their `uid:gid`; the id is in the cell's tooltip. Names come
-from the snapshot that first held the version. Pick the snapshot (default: the newest holding that version), then:
+from the snapshot that first held the version, or (for files unchanged since before the appliance read names) from
+the first later snapshot that has them. Pick the snapshot (default: the newest holding that version), then:
 
 - **Open** shows the folder in the file browser of that snapshot ([Browse files](#browse-files-and-download-them-tar-or-zip));
 - **Download** packs the file as a tar archive (needs the download permission);

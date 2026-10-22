@@ -434,7 +434,17 @@ impl TenantIndex {
                 w.add_document(self.doc(source, &v, t))?;
             }
             for (k, v) in cur.drain() {
-                open.entry(k).or_insert(v);
+                // a version first seen before the guest's names were read gets them from a later snapshot
+                match open.entry(k) {
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        if o.get().owner_name.is_none() {
+                            o.get_mut().owner_name = v.owner_name;
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert(v);
+                    }
+                }
             }
         }
         for v in open.values() {
@@ -476,8 +486,26 @@ impl TenantIndex {
             }
         }
         for (k, v) in cur {
-            if !old.contains_key(&k) {
-                w.add_document(self.doc(source, &v, 0))?;
+            match old.get(&k) {
+                None => {
+                    w.add_document(self.doc(source, &v, 0))?;
+                }
+                // the first snapshot with the guest's names (Phase 39 C2): name the open version once
+                Some(o) if o.owner_name.is_none() && v.owner_name.is_some() => {
+                    let term = Term::from_field_u64(self.f.okey, k);
+                    let hits = searcher.search(
+                        &TermQuery::new(term.clone(), IndexRecordOption::Basic),
+                        &DocSetCollector,
+                    )?;
+                    for a in hits {
+                        let d: TantivyDocument = searcher.doc(a)?;
+                        let mut kept = self.open_of(&d);
+                        kept.owner_name = v.owner_name.clone();
+                        w.delete_term(term.clone());
+                        w.add_document(self.doc(source, &kept, 0))?;
+                    }
+                }
+                Some(_) => {}
             }
         }
         Ok(())
