@@ -959,4 +959,6 @@ restores, UI/CLI, import into an appliance). All in this repository.
   (`nexus-agent repo …`), recovery words, incremental via the metadata cache; chunkstore builds for Windows.
 - [x] 38c: `repo prune` (GFS + GC), writer lock; Windows `nexus-agent.exe repo …` (shared CLI in agent-core;
   builds and passes clippy for Windows, not run on Windows yet: lab offline).
-- [ ] 38b + 38c rest: Windows run on a VM 101 copy, network targets (SFTP/S3), then 38e schedules and triggers.
+- [x] 38e first part: scheduled jobs (`standalone.json`, the service runs them every minute; waits for a missing
+  repository, low battery, metered network; `repo jobs`, `repo run`); crate `schedule` split out of the catalog.
+- [ ] 38 rest: Windows run on a VM 101 copy (lab), network targets (SFTP/S3), lock/log-off and wake triggers.

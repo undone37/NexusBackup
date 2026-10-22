@@ -441,9 +441,9 @@ Secure Boot must be off (the ISO is not signed yet).
 
 ## Standalone mode (preview): backups without an appliance
 
-> **Status:** first step of Phase 38 (docs/agent-standalone.md). Commands only, run by root, no schedule yet (use a
-> systemd timer or cron, `repo backup` followed by `repo prune`), the repository is a directory (a local or USB
-> disk, or a mounted NFS/SMB share). An agent can be enrolled with an appliance and use a standalone repository too.
+> **Status:** first step of Phase 38 (docs/agent-standalone.md). Run by root; the repository is a directory (a local
+> or USB disk, or a mounted NFS/SMB share). An agent can be enrolled with an appliance and use a standalone
+> repository too.
 
 ```sh
 nexus-agent repo init /mnt/usb/nexus           # prints the 24-word recovery key once: write it down
@@ -456,7 +456,20 @@ nexus-agent repo restore /mnt/usb/nexus <time> /srv/restore --path home/ann --ov
 The repository has the appliance's format: deduplicated, compressed and always encrypted. The machine keeps the
 repository key under `/var/lib/nexus-agent/standalone/`, so backups run without input. On another machine (after a
 disk loss), `echo "<24 words>" | nexus-agent repo open /mnt/usb/nexus` opens it and keeps the key from then on.
-Without the machine and without the words nobody can read the repository. Only one backup or prune runs at a time
+Without the machine and without the words nobody can read the repository.
+
+**Scheduled backups:** list them in `/etc/nexus-agent/standalone.json` and restart the service (`systemctl restart
+nexus-agent`); it runs them, also when the machine is not enrolled with an appliance:
+
+```json
+{"jobs": [{"name": "home", "repo": "/mnt/usb/nexus", "paths": ["/home", "/etc"], "schedule": "daily 21:00",
+           "tz": "Europe/Berlin", "keep": "24,7,4,12,0", "min_battery": 30, "skip_metered": true}]}
+```
+
+`schedule` takes the appliance's forms (`daily HH:MM`, `Mon-Fri HH:MM`, `every 4h`, `monthly 1 02:00`). A due job
+waits while its repository is not there (a disconnected USB disk), on battery below `min_battery` %, or on a metered
+network with `skip_metered`, and runs as soon as that changes. `keep` prunes after each backup. `nexus-agent repo
+jobs` shows each job's next slot, last result or why it waits; `nexus-agent repo run home` runs one now. Only one backup or prune runs at a time
 (the other one stops with "another backup or prune is running"). Pruning works like the appliance's retention: a
 snapshot kept as a daily, weekly or monthly one stays locked for its class's period. Backups use snapshots where the file
 system allows (LVM, ZFS, btrfs) like managed backups; only changed files are read again.

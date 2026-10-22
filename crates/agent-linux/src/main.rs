@@ -247,10 +247,28 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
         None => {}
     }
     let agent = server::Agent::new(paths, settings.clone())?;
-    match agent.mode() {
-        server::Mode::Uninitialized => {
-            return Err("not initialised: run nexus-agent init --token <T> (or --fleet-secret <S>)".into())
+    // Phase 38e: scheduled standalone jobs (<config>/standalone.json) run in this service as well
+    let standalone = match agent_core::standalone::load_jobs(&agent.paths) {
+        Ok(j) => !j.is_empty(),
+        Err(e) => {
+            eprintln!("nexus-agent: {e}");
+            false
         }
+    };
+    match agent.mode() {
+        // standalone only: no appliance, nothing to listen for
+        server::Mode::Uninitialized if standalone => {
+            eprintln!(
+                "nexus-agent {}: standalone jobs only (not enrolled)",
+                env!("CARGO_PKG_VERSION")
+            );
+            agent_core::standalone::run_jobs(&agent.platform, &agent.paths, &agent.settings);
+            return Ok(ExitCode::SUCCESS);
+        }
+        server::Mode::Uninitialized => return Err(
+            "not initialised: run nexus-agent init --token <T> (or --fleet-secret <S>), or configure standalone jobs"
+                .into(),
+        ),
         server::Mode::Locked(_) => eprintln!("nexus-agent: enrollment LOCKED; run nexus-agent init again"),
         server::Mode::Enroll(_) => eprintln!("nexus-agent: waiting for enrollment by the appliance"),
         server::Mode::Mtls { agent_id, .. } => eprintln!("nexus-agent: enrolled as {agent_id}"),
@@ -263,6 +281,10 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
         listener.local_addr().map_err(|e| e.to_string())?
     );
     let agent = Arc::new(agent);
+    if standalone {
+        let a = agent.clone();
+        std::thread::spawn(move || agent_core::standalone::run_jobs(&a.platform, &a.paths, &a.settings));
+    }
     serve_ui(&agent);
     agent.serve(listener).map_err(|e| e.to_string())?;
     Ok(ExitCode::SUCCESS)

@@ -582,7 +582,9 @@ pub fn usage(agent: &str) -> String {
   {agent} repo prune <dir> [--keep H,D,W,M,Y]   keep all of the last H hours plus the last snapshot of
                                          D days, W weeks, M months, Y years (default 24,7,4,12,0);
                                          then unused chunks are removed
-  {agent} repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]"
+  {agent} repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]
+  {agent} repo jobs [--json]         scheduled jobs ({JOBS_FILE} in the config directory; the service runs them)
+  {agent} repo run <job>             run a scheduled job now"
     )
 }
 
@@ -661,7 +663,275 @@ pub fn cli<P: Platform>(
             println!("restored {} files, {} bytes to {target}", st.files, st.bytes);
             return Ok(st.errors.is_empty());
         }
+        ["jobs"] => {
+            let jobs = load_jobs(paths)?;
+            let states = job_states(paths);
+            if o.json {
+                let v: Vec<_> = jobs
+                    .iter()
+                    .map(|j| serde_json::json!({"job": j, "state": states.get(&j.name)}))
+                    .collect();
+                println!("{}", serde_json::to_string(&v).map_err(err)?);
+            } else {
+                for j in &jobs {
+                    let s = states.get(&j.name).cloned().unwrap_or_default();
+                    let next = j.schedule().ok().and_then(|x| x.next_slot(now() as i64));
+                    println!(
+                        "{}: {} -> {} ({}){}{}",
+                        j.name,
+                        j.paths.join(" "),
+                        j.repo,
+                        j.schedule,
+                        next.map_or(String::new(), |n| format!(", next slot {n}")),
+                        match (&s.waiting, &s.last_error, s.last_ok) {
+                            (Some(w), _, _) => format!(", waiting: {w}"),
+                            (None, Some(e), _) => format!(", last run failed: {e}"),
+                            (None, None, Some(t)) => format!(", last ok {t}: {}", s.last_summary),
+                            _ => ", never run".into(),
+                        }
+                    );
+                }
+            }
+        }
+        ["run", name] => {
+            let jobs = load_jobs(paths)?;
+            let job = jobs
+                .iter()
+                .find(|j| j.name == *name)
+                .ok_or_else(|| format!("no job {name} in {JOBS_FILE}"))?;
+            println!("{}", run_job(platform, paths, settings, job)?);
+        }
         _ => return Err(String::new()),
     }
     Ok(true)
+}
+
+// ---- scheduled jobs (Phase 38e) ------------------------------------------------------------------------
+
+/// The jobs file in the agent's configuration directory.
+pub const JOBS_FILE: &str = "standalone.json";
+const JOB_STATE: &str = "jobs.json";
+
+/// A scheduled standalone backup (`<config>/standalone.json`, `{"jobs": [...]}`).
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Job {
+    /// unique, shown in logs and `repo jobs`
+    pub name: String,
+    /// the repository directory (`repo init` first)
+    pub repo: String,
+    /// absolute host paths to back up
+    pub paths: Vec<String>,
+    /// the appliance's schedule grammar (`daily 21:00`, `Mon-Fri 12:30`, `every 4h`, ...)
+    pub schedule: String,
+    /// IANA time zone of the schedule (default UTC)
+    #[serde(default)]
+    pub tz: Option<String>,
+    /// `--keep H,D,W,M,Y` after each backup; `""` = no pruning
+    #[serde(default = "default_keep")]
+    pub keep: String,
+    /// on battery: wait while the charge is below this (0 = do not wait)
+    #[serde(default)]
+    pub min_battery: u8,
+    /// wait while the network connection is metered
+    #[serde(default)]
+    pub skip_metered: bool,
+}
+
+fn default_keep() -> String {
+    CliOpts::default().keep
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct JobsFile {
+    jobs: Vec<Job>,
+}
+
+/// What happened to a job (`<state>/standalone/jobs.json`).
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+pub struct JobState {
+    /// last attempt (unix seconds); a slot counts as done once attempted
+    pub last_run: i64,
+    pub last_ok: Option<i64>,
+    pub last_error: Option<String>,
+    /// summary line of the last successful run
+    pub last_summary: String,
+    /// why a due run waits right now (repository missing, battery, metered network)
+    pub waiting: Option<String>,
+}
+
+impl Job {
+    fn schedule(&self) -> Result<schedule::Schedule, String> {
+        let s = schedule::Schedule::parse(&self.schedule).map_err(|e| format!("job {}: {e:#}", self.name))?;
+        match &self.tz {
+            Some(tz) => s.in_tz(tz).map_err(|e| format!("job {}: {e:#}", self.name)),
+            None => Ok(s),
+        }
+    }
+}
+
+/// The configured jobs, checked (an empty list when there is no jobs file).
+pub fn load_jobs(paths: &Paths) -> Result<Vec<Job>, String> {
+    let p = paths.config.join(JOBS_FILE);
+    let b = match fs::read(&p) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: {e}", p.display())),
+    };
+    let f: JobsFile = serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut names = std::collections::HashSet::new();
+    for j in &f.jobs {
+        if j.name.is_empty() || j.name.len() > 64 || !names.insert(j.name.clone()) {
+            return Err(format!("{}: job names must be unique, 1..=64 characters", p.display()));
+        }
+        if j.paths.is_empty() || j.repo.is_empty() {
+            return Err(format!("job {}: repo and paths are needed", j.name));
+        }
+        j.schedule()?;
+        if !j.keep.is_empty() {
+            CliOpts {
+                keep: j.keep.clone(),
+                ..CliOpts::default()
+            }
+            .gfs()
+            .map_err(|e| format!("job {}: {e}", j.name))?;
+        }
+        if j.min_battery > 100 {
+            return Err(format!("job {}: min_battery 0..=100", j.name));
+        }
+    }
+    Ok(f.jobs)
+}
+
+fn state_file(paths: &Paths) -> PathBuf {
+    state_paths(paths).state.join(JOB_STATE)
+}
+
+/// The jobs' states by name.
+pub fn job_states(paths: &Paths) -> HashMap<String, JobState> {
+    fs::read(state_file(paths))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_states(paths: &Paths, s: &HashMap<String, JobState>) -> io::Result<()> {
+    let p = state_file(paths);
+    if let Some(d) = p.parent() {
+        fs::create_dir_all(d)?;
+    }
+    let tmp = p.with_extension("tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    fs::rename(tmp, p)
+}
+
+/// Why a due job waits, if it does: the repository is not there (a disconnected USB disk, an unmounted
+/// share), the battery is low, the network is metered.
+fn hold(job: &Job, power: &agent_proto::PowerState) -> Option<String> {
+    if !Path::new(&job.repo).join(INFO).exists() {
+        return Some(format!("repository {} not reachable (disconnected?)", job.repo));
+    }
+    if job.min_battery > 0 && power.on_battery == Some(true) {
+        if let Some(p) = power.battery_percent.filter(|p| *p < job.min_battery) {
+            return Some(format!("on battery at {p} % (below {} %)", job.min_battery));
+        }
+    }
+    if job.skip_metered && power.metered == Some(true) {
+        return Some("metered network".into());
+    }
+    None
+}
+
+/// Runs one job now: backup, then prune. Returns the summary line.
+pub fn run_job<P: Platform>(
+    platform: &P,
+    paths: &Paths,
+    settings: &crate::config::Settings,
+    job: &Job,
+) -> Result<String, String> {
+    let sp = state_paths(paths);
+    fs::create_dir_all(&sp.state).map_err(|e| format!("{}: {e}", sp.state.display()))?;
+    let ctx = Ctx { paths: &sp, settings };
+    let r = open(paths, Path::new(&job.repo), None)?;
+    let s = backup(platform, ctx, &r, now(), &job.paths, &[], &Filters::default(), true)?;
+    let mut line = format!(
+        "snapshot {}: {} files, {} bytes, {} new chunks{}",
+        s.time,
+        s.files,
+        s.bytes,
+        s.new_chunks,
+        if s.consistent {
+            ""
+        } else {
+            " (no snapshot: not consistent)"
+        }
+    );
+    if !job.keep.is_empty() {
+        let gfs = CliOpts {
+            keep: job.keep.clone(),
+            ..CliOpts::default()
+        }
+        .gfs()?;
+        line.push_str(&format!("; prune: {}", prune(&r, &gfs)?));
+    }
+    Ok(line)
+}
+
+/// One pass over the jobs at `now`: runs every due job that does not have to wait. Returns log lines.
+pub fn tick<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::Settings, now: i64) -> Vec<String> {
+    let jobs = match load_jobs(paths) {
+        Ok(j) => j,
+        Err(e) => return vec![format!("standalone jobs: {e}")],
+    };
+    if jobs.is_empty() {
+        return Vec::new();
+    }
+    let mut states = job_states(paths);
+    let power = platform.power_state();
+    let mut log = Vec::new();
+    for job in &jobs {
+        let st = states.entry(job.name.clone()).or_default();
+        let Ok(sched) = job.schedule() else { continue };
+        if !sched.due(st.last_run, now) {
+            st.waiting = None;
+            continue;
+        }
+        if let Some(why) = hold(job, &power) {
+            if st.waiting.as_deref() != Some(why.as_str()) {
+                log.push(format!("job {}: due, waiting: {why}", job.name));
+            }
+            st.waiting = Some(why);
+            continue;
+        }
+        st.waiting = None;
+        st.last_run = now;
+        match run_job(platform, paths, settings, job) {
+            Ok(line) => {
+                log.push(format!("job {}: {line}", job.name));
+                st.last_ok = Some(now);
+                st.last_error = None;
+                st.last_summary = line;
+            }
+            Err(e) => {
+                log.push(format!("job {}: failed: {e}", job.name));
+                st.last_error = Some(e);
+            }
+        }
+    }
+    states.retain(|n, _| jobs.iter().any(|j| &j.name == n));
+    if let Err(e) = save_states(paths, &states) {
+        log.push(format!("standalone jobs: state not saved: {e}"));
+    }
+    log
+}
+
+/// The agent service's job loop: a pass every minute, forever (a thread of `run`).
+pub fn run_jobs<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::Settings) {
+    loop {
+        for l in tick(platform, paths, settings, now() as i64) {
+            eprintln!("nexus-agent: {l}");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    }
 }

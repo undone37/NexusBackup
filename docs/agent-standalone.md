@@ -4,7 +4,8 @@ Status: first step, 2026-10-22. The Linux agent backs up into a repository of it
 `nexus-agent repo init|open|backup|list|restore`. Scope and order of the whole phase: docs/veeam-agent-comparison.md
 "Scope decision". Also `repo prune` (the appliance's GFS retention, then GC) and one writer at a time
 (`<repo>/lock`, an OS file lock). Not yet: schedules and triggers (38e), network targets other than a
-mounted directory, the desktop UI (38h), import into an appliance (38i). The commands are shared
+mounted directory, the desktop UI (38h), import into an appliance (38i). Since 38e (first part): scheduled jobs in
+`<config>/standalone.json`, run by the agent service (also on a machine that is not enrolled). The commands are shared
 (`agent_core::standalone::cli`): `nexus-agent repo …` on Linux, `nexus-agent.exe repo …` on Windows (builds; not yet
 run on a Windows machine).
 
@@ -31,7 +32,31 @@ run on a Windows machine).
 - **Durability on Windows:** the store cannot flush directories there; files are flushed before their rename and
   NTFS journals the rename (`chunkstore::store::sync_dir`).
 
+## Scheduled jobs (38e, first part)
+
+`<config>/standalone.json` (`/etc/nexus-agent`, `%ProgramData%\NexusAgent\config`):
+
+```json
+{"jobs": [{"name": "home", "repo": "/mnt/usb/nexus", "paths": ["/home", "/etc"], "schedule": "daily 21:00",
+           "tz": "Europe/Berlin", "keep": "24,7,4,12,0", "min_battery": 30, "skip_metered": true}]}
+```
+
+- The service checks the jobs every minute (`standalone::tick`) with the appliance's schedule grammar (crate
+  `schedule`, moved out of the catalog for this): a slot is due once; after downtime one catch-up run, not one per
+  missed slot. A new job is due at once. A slot counts as done once attempted; a failure is recorded and the next
+  slot tries again.
+- A due job **waits** (and says why, once) while its repository is not there (a disconnected USB disk or an
+  unmounted share: "backup when the target is connected"), while the battery is below `min_battery` on battery,
+  and while the network is metered with `skip_metered` (the power state the agent already reports to the appliance).
+- After the backup, `keep` prunes (`""` = no pruning). State per job in `<state>/standalone/jobs.json` (last run,
+  last success with its summary, last error, why it waits); `repo jobs` shows it, `repo run <job>` runs one now.
+- An agent that is not enrolled but has jobs runs them and nothing else (no listener).
+- Not yet: lock/log-off and wake triggers, retries within a slot, bandwidth limits, a status in the desktop UI
+  (38h), e-mail.
+
 ## Tests
 
 `crates/agent-linux/tests/standalone.rs`: backup, an incremental that reuses the unchanged big file's chunks,
-restore of the first snapshot, opening on another machine with the 24 words (wrong words refused).
+restore of the first snapshot, prune, the writer lock, opening on another machine with the 24 words (wrong words
+refused); the job pass (once per slot, prune after the backup, waiting for a missing repository and running when it
+appears, a broken jobs file reported).

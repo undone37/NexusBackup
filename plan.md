@@ -1145,8 +1145,9 @@ in this repository and uses the same crates as the appliance; the agents get the
   the list below is the starting point, not the result.
 - **Status 2026-10-22:** first step of 38b/38c done (docs/agent-standalone.md): `agent_core::standalone`, Linux
   CLI `nexus-agent repo init|open|backup|list|restore`, repository = chunk store in a directory (chunkstore builds
-  for Windows now), key wrapped under 24 recovery words, own state directory. Next: Windows CLI, retention + GC,
-  38e schedules and triggers.
+  for Windows now), key wrapped under 24 recovery words, own state directory; `repo prune`, writer lock, Windows CLI;
+  38e first part: jobs in `standalone.json` run by the service (schedule crate, waits for the repository, battery,
+  metered network). Next: network targets (SFTP/S3), lock/log-off and wake triggers, 38d with Phase 37.
 - **38b Two modes, one agent:** *managed* (today: the appliance pulls, its policies apply) and *standalone* (the
   agent schedules and writes itself). A standalone agent can later be attached to an appliance without a new full
   backup (38i).

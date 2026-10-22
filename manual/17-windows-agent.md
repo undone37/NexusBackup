@@ -168,8 +168,9 @@ approved rollback) and updates only while no backup or restore runs.
 ## Standalone mode (preview): backups without an appliance
 
 > **Status:** first step of Phase 38 (docs/agent-standalone.md); not yet tested on Windows in the lab. Commands in an
-> elevated prompt, no schedule yet (use the Task Scheduler: `repo backup`, then `repo prune`), the repository is a
-> folder (a local or USB disk, or a network share mapped for the account that runs it).
+> elevated prompt; the repository is a folder (a local or USB disk, or a network share the service account can
+> reach). Scheduled jobs: `%ProgramData%\NexusAgent\config\standalone.json`, run by the NexusAgent service (also
+> when it is not enrolled), as on Linux; `nexus-agent.exe repo jobs` shows them.
 
 ```bat
 "C:\Program Files\NexusBackup\Agent\nexus-agent.exe" repo init E:\nexus

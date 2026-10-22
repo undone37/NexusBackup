@@ -399,7 +399,24 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
         None => {}
     }
     let agent = Agent::with_platform(platform, paths, settings.clone())?;
+    // Phase 38e: scheduled standalone jobs (<config>\standalone.json) run in this service as well
+    let standalone = match agent_core::standalone::load_jobs(&agent.paths) {
+        Ok(j) => !j.is_empty(),
+        Err(e) => {
+            eprintln!("nexus-agent: {e}");
+            false
+        }
+    };
     match agent.mode() {
+        // standalone only: no appliance, nothing to listen for
+        Mode::Uninitialized if standalone => {
+            eprintln!(
+                "nexus-agent {}: standalone jobs only (not enrolled)",
+                env!("CARGO_PKG_VERSION")
+            );
+            agent_core::standalone::run_jobs(&agent.platform, &agent.paths, &agent.settings);
+            return Ok(());
+        }
         // the MSI starts the service before enrollment: stop cleanly (no failure-action restarts)
         Mode::Uninitialized if service.is_some() => {
             eprintln!("nexus-agent: not initialised; run nexus-agent.exe init --token - and start the service");
@@ -418,6 +435,10 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
         listener.local_addr().map_err(|e| e.to_string())?
     );
     let agent = Arc::new(agent);
+    if standalone {
+        let a = agent.clone();
+        std::thread::spawn(move || agent_core::standalone::run_jobs(&a.platform, &a.paths, &a.settings));
+    }
     let a = agent.clone();
     std::thread::spawn(move || {
         if let Err(e) = super::pipe::serve(a) {

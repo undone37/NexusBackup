@@ -119,3 +119,57 @@ fn backup_incremental_restore_and_recovery_words() {
         "the key is kept from then on"
     );
 }
+
+/// Phase 38e: the service's pass over `standalone.json`: a due job runs once per slot, a missing
+/// repository makes it wait (and says why), a broken jobs file is reported.
+#[test]
+fn scheduled_jobs_run_once_per_slot_and_wait_for_the_repository() {
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let p = paths(&d.path().join("a"));
+    fs::create_dir_all(&p.config).unwrap();
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let platform = nexus_agent::server::Linux::default();
+    let data = d.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("a.txt"), b"one").unwrap();
+    let (repo, usb) = (d.path().join("repo"), d.path().join("usb/nexus"));
+    standalone::init(&p, &repo, "host").unwrap();
+    let jobs = serde_json::json!({"jobs": [
+        {"name": "home", "repo": repo, "paths": [data], "schedule": "every 4h", "tz": "Europe/Berlin", "keep": "0,1,0,0,0"},
+        {"name": "usb", "repo": usb, "paths": [data], "schedule": "daily 03:00"},
+    ]});
+    fs::write(p.config.join(standalone::JOBS_FILE), jobs.to_string()).unwrap();
+    let now = 2_000_000_000i64; // a Wednesday
+    let log = standalone::tick(&platform, &p, &settings, now);
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("job home: snapshot ") && l.contains("prune: 1 snapshot(s) kept")),
+        "{log:?}"
+    );
+    assert!(
+        log.iter()
+            .any(|l| l.contains("job usb: due, waiting: repository") && l.contains("not reachable")),
+        "{log:?}"
+    );
+    let st = standalone::job_states(&p);
+    assert_eq!(st["home"].last_ok, Some(now));
+    assert!(st["usb"].waiting.is_some() && st["usb"].last_run == 0);
+    // the same slot again: nothing runs, the wait is not logged twice
+    let log = standalone::tick(&platform, &p, &settings, now + 60);
+    assert!(log.is_empty(), "{log:?}");
+    // the disk comes back: the waiting job runs at the next pass
+    standalone::init(&p, &usb, "host").unwrap();
+    let log = standalone::tick(&platform, &p, &settings, now + 120);
+    assert!(log.iter().any(|l| l.starts_with("job usb: snapshot ")), "{log:?}");
+    // a broken jobs file: reported, nothing runs
+    fs::write(
+        p.config.join(standalone::JOBS_FILE),
+        r#"{"jobs": [{"name": "x", "repo": "r", "paths": ["/"], "schedule": "sometimes"}]}"#,
+    )
+    .unwrap();
+    let log = standalone::tick(&platform, &p, &settings, now + 10 * 3600);
+    assert!(log.len() == 1 && log[0].contains("bad schedule"), "{log:?}");
+}
