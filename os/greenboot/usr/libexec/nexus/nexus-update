@@ -343,12 +343,37 @@ def prechecks(c, st):
         raise Refused("pre-update checks failed: " + "; ".join(f"{x['id']}: {x['detail']}" for x in bad))
 
 
+def channel_version(c, target):
+    """The version label of the channel's image (skopeo inspect: the manifest and config only, no pull),
+    None when unknown. Only used to skip an older release; whatever is staged is still verified by bootc."""
+    argv = ["skopeo", "inspect", "--no-tags", "--retry-times", "2"]
+    if os.path.exists(c["NEXUS_UPDATE_AUTHFILE"]):
+        argv += ["--authfile", c["NEXUS_UPDATE_AUTHFILE"]]
+    p = run(*argv, f"docker://{target}", check=False)
+    if p.returncode != 0:
+        log(f"channel version unknown ({(p.stderr or p.stdout).strip()[-200:]}); checking with bootc")
+        return None
+    try:
+        return (json.loads(p.stdout).get("Labels") or {}).get("org.opencontainers.image.version")
+    except (ValueError, AttributeError):
+        return None
+
+
 def stage(c):
     target = f"{c['NEXUS_IMAGE_REPO']}:{c['NEXUS_UPDATE_TAG']}"
     s = summary(bootc_status())
     if s["spec_image"] is None:
         raise Error("not a bootc host (bootc status has no spec image)")
     with Egress(c), PullAuth(c):
+        # never pull (or switch the origin to) an older release than the one running: an appliance updated
+        # from a bundle or a lab build would otherwise stage the channel's older image (lab 2026-10-22:
+        # "Check now" on 0.0.19-dev staged 0.0.1-alpha)
+        booted = (s["booted"] or {}).get("version")
+        remote = channel_version(c, target)
+        old, new = parse_version(booted), parse_version(remote)
+        if old and new and new < old:
+            log(f"{target} is {remote}, older than the booted {booted}: nothing to stage")
+            return f"up to date: the channel has {remote}, older than the booted {booted}"
         try:
             if s["spec_image"] != target or s["spec_signature"] != "containerPolicy":
                 # first run after install, or channel/repo changed: pin the signed origin
@@ -633,7 +658,10 @@ def api_view(st):
     error = error or st.get("bootc_error")
     refused = str(last.get("result") or "").startswith("refused")
     available = None
-    if staged and staged.get("digest") != (booted or {}).get("digest"):
+    older = (lambda o, n: bool(o and n and n < o))(
+        parse_version((booted or {}).get("version")), parse_version((staged or {}).get("version"))
+    )
+    if staged and staged.get("digest") != (booted or {}).get("digest") and not older:
         available = {"version": staged.get("version"), "digest": staged.get("digest")}
     channel = st.get("channel") or ""
     return {
@@ -643,6 +671,8 @@ def api_view(st):
         "channel": channel.rsplit(":", 1)[-1] if channel else None,
         "window": window_text(st.get("window")),
         "last_check": st.get("last_check"),
+        # a check started at this time is still running (pull, signature check)
+        "checking": st.get("checking"),
         # a refused bundle is not a failed pre-update check: its own status, the reason in last_result
         "status": "error" if error else ("refused" if refused and last.get("request") == "import"
                                          else ("blocked" if refused else ("staged" if staged else "idle"))),
@@ -745,6 +775,10 @@ def tick(c, now=None):
             ) and not offline
             if check_due:
                 st["last_check"] = int(now.timestamp())
+                # a check can take minutes (pull, signature): the web view says so meanwhile
+                interim = {**prev, "checking": int(now.timestamp())}
+                interim["api"] = api_view(interim)
+                write_status(c, interim)
                 gate()
                 result = stage(c)
             win = effective_window(c)

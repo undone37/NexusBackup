@@ -63,6 +63,21 @@ json.dump(st, open(os.path.join(d, "state.json"), "w"))
 
 LOGGER = '#!/bin/sh\necho "$(basename "$0") $*" >> "$FAKE_DIR/calls"\n'
 
+# Fake skopeo inspect: the version label of what the registry serves (next.json, else the booted image);
+# not logged in calls. $FAKE_DIR/skopeo-fail: the registry cannot be inspected.
+FAKE_SKOPEO = r'''#!PYTHON
+import json, os, sys
+d = os.environ["FAKE_DIR"]
+if os.path.exists(os.path.join(d, "skopeo-fail")):
+    sys.exit("skopeo: simulated failure")
+nxt = os.path.join(d, "next.json")
+if os.path.exists(nxt):
+    v = json.load(open(nxt))["version"]
+else:
+    v = json.load(open(os.path.join(d, "state.json")))["status"]["booted"]["image"]["version"]
+print(json.dumps({"Labels": {"org.opencontainers.image.version": v}}))
+'''
+
 # Fake nexus-diag: prints $FAKE_DIR/checks.json (default: no checks), counts its runs.
 FAKE_DIAG = r'''#!/bin/sh
 echo "$*" >> "$FAKE_DIR/diag-calls"
@@ -133,6 +148,8 @@ class Agent(unittest.TestCase):
             (self.d / t).chmod(0o755)
         (self.d / "nexus-diag").write_text(FAKE_DIAG)
         (self.d / "nexus-diag").chmod(0o755)
+        (self.d / "skopeo").write_text(FAKE_SKOPEO.replace("PYTHON", sys.executable))
+        (self.d / "skopeo").chmod(0o755)
         self.env = {
             "FAKE_DIR": str(self.d),
             "NEXUS_UPDATE_CONF": str(self.d / "none.conf"),
@@ -143,6 +160,7 @@ class Agent(unittest.TestCase):
             "NEXUS_UPDATE_LOCK": str(self.d / "lock"),
             "NEXUS_UPDATE_EGRESS": "none",
             "NEXUS_UPDATE_DIAG": str(self.d / "nexus-diag"),
+            "NEXUS_UPDATE_SKOPEO": str(self.d / "skopeo"),
             "NEXUS_UPDATE_AUTHFILE": str(self.d / "run-ostree/auth.json"),
             # only the first tick checks, unless a test says otherwise
             "NEXUS_UPDATE_CHECK_HOURS": "1000",
@@ -322,6 +340,40 @@ class Agent(unittest.TestCase):
         self.tick(utc(2026, 10, 9, 13, 0))  # outside the window, check interval not due
         self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only", "bootc upgrade --from-downloaded --apply"])
         self.assertEqual(self.status()["applying"], "sha256:bbb")
+
+    def test_check_never_stages_an_older_release(self):
+        # lab 2026-10-22: a 0.0.19-dev appliance updated from bundles, "Check now", the channel held 0.0.1-alpha
+        self.host(image="/var/lib/nexus/update-offline/current/image:nexus", signature=None, version="0.0.19-dev")
+        self.registry_serves("sha256:old", "0.0.1-alpha")
+        (self.d / "ctl/request").write_text("stage")
+        self.tick()
+        self.assertEqual(self.calls(), [], "no switch, no pull")
+        st = self.status()
+        self.assertIn("older than the booted 0.0.19-dev", st["last_result"]["result"])
+        self.assertIsNone(st["api"]["available"])
+        self.assertIsNone(st["api"]["checking"], "the check has finished")
+        # the same release or a newer one is staged as before; an unreadable registry leaves it to bootc
+        self.registry_serves("sha256:new", "0.2.0")
+        (self.d / "ctl/request").write_text("stage")
+        self.tick(utc(2026, 10, 9, 12, 15))
+        self.assertTrue(any(c.startswith("bootc switch") for c in self.calls()))
+        self.assertEqual(self.status()["api"]["available"]["version"], "0.2.0")
+        (self.d / "skopeo-fail").write_text("")
+        (self.d / "ctl/request").write_text("stage")
+        self.tick(utc(2026, 10, 9, 12, 30))
+        self.assertEqual(self.calls(), ["bootc upgrade --quiet --download-only"])
+
+    def test_an_older_staged_image_is_not_offered(self):
+        st = json.loads((self.d / "state.json").read_text())
+        st["status"]["booted"]["image"]["version"] = "0.0.19-dev"
+        (self.d / "state.json").write_text(json.dumps(st))
+        (self.d / "skopeo-fail").write_text("")  # the old path: staged by bootc before this check existed
+        self.registry_serves("sha256:old", "0.0.1-alpha")
+        (self.d / "ctl/request").write_text("stage")
+        self.tick()
+        st = self.status()
+        self.assertEqual(st["staged"]["version"], "0.0.1-alpha")
+        self.assertIsNone(st["api"]["available"], "an older staged image is no update")
 
     def test_nothing_staged_apply_is_noop(self):
         (self.d / "ctl/request").write_text("apply")

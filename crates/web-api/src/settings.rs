@@ -715,6 +715,10 @@ pub fn update_status(dir: &std::path::Path) -> Value {
         v["status"] = json!("checking");
         v["pending_request"] = json!(req.trim());
     }
+    // nexus-update took the request and checks (pull, signature: minutes): still checking
+    if v["checking"].is_number() {
+        v["status"] = json!("checking");
+    }
     v
 }
 
@@ -903,5 +907,13 @@ mod tests {
             (v["status"].as_str(), v["pending_request"].as_str()),
             (Some("checking"), Some("stage"))
         );
+        // nexus-update took the request and is still checking (lab 2026-10-22: "Last check 2 d ago" meanwhile)
+        std::fs::remove_file(d.path().join("request")).unwrap();
+        std::fs::write(
+            d.path().join("status.json"),
+            r#"{"api": {"status": "idle", "checking": 1792704150, "last_check": 1}}"#,
+        )
+        .unwrap();
+        assert_eq!(update_status(d.path())["status"], "checking");
     }
 }
