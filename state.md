@@ -919,7 +919,16 @@ Scope: plan.md Phase 40 (was Phase 39 S6). Not started.
 ## Phase 41 — VMware ESXi and vCenter backups as plugins (added 2026-10-21)
 Scope: plan.md Phase 41 (plugins `vmware-esxi` and `vmware-vcenter` on a shared vSphere library; transport spike
 in a nested ESXi 7.0U3/8.0U3 lab on pve-test first, vCenter needs a VCSA ISO and evaluation licences; CBT
-incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Not started.
+incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike started.
+- [x] Lab (2026-10-23): nested ESXi 7.0U3g on VM 250 (`lab/pvehost/esxi.sh`: kickstart-remastered ISO, deleted
+  after the install; 96 GB system disk all taken by OSDATA (VMFS-L), so datastore1 lives on a second 128 GB disk).
+  Pitfalls: vmxnet3 drops the 42-byte ARP replies of the local bridge (reachable only through the router): e1000e
+  works; ESXi's FIPS sshd refuses ed25519 keys: ECDSA.
+- [x] Option A throughput, HTTPS `/folder` range reads of a 4 GiB flat VMDK (ESXi direct, no vCenter, no snapshot):
+  from VM 201 one stream 26.7 MB/s, 4 parallel ranges 41 MB/s, 64 x 4 MiB random ranges 12 MB/s (312 ms each); from
+  the workstation the same (28 / 46.5 / 14.2 MB/s), so `hostd` is the limit, not the network. Below the pass
+  criterion "full of 200 GB under 4 hours" (needs about 14 MB/s: met with parallel ranges, 2 TB is not).
+- [ ] CBT: a real guest on datastore1, `QueryChangedDiskAreas` after a snapshot, incremental read time.
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle

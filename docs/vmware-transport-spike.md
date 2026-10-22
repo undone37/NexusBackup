@@ -140,6 +140,21 @@ checked for redistribution **(verify licence)**, else the customer provides the 
    HTTPS datastore reads with `QueryChangedDiskAreas`; nbdkit with a customer-supplied VDDK stays an option for later.
    The item is scheduled once the spike above has run in a vSphere lab.
 
+## Lab results
+
+2026-10-23, nested ESXi 7.0U3g on pve-test (`lab/pvehost/esxi.sh`), 4 GiB flat VMDK on a VMFS-6 datastore, read over
+HTTPS `/folder` with `Range` from the appliance (VM 201) on the same bridge:
+
+| Read | MB/s |
+|---|---|
+| one stream, 2 GiB | 26.7 |
+| 4 parallel ranges of 512 MiB | 41 |
+| 64 random 4 MiB ranges, sequential | 12 (312 ms each) |
+
+The workstation (through a router) measured the same (28 / 46.5 / 14.2), so `hostd` is the limit. A nested host on
+old hardware is a lower bound; a real host is expected to be faster **(verify on real hardware)**. Option A is enough
+for incrementals and small VMs; fulls of large VMs are the case for option B.
+
 ## Spike steps (for the maintainer's lab)
 
 ```sh
