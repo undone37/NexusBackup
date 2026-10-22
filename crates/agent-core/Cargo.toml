@@ -19,6 +19,7 @@ hex = "0.4"
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 recovery-key = { path = "../recovery-key" }
+remote = { path = "../remote" }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 schedule = { path = "../schedule" }

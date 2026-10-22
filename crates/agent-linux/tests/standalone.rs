@@ -173,3 +173,87 @@ fn scheduled_jobs_run_once_per_slot_and_wait_for_the_repository() {
     let log = standalone::tick(&platform, &p, &settings, now + 10 * 3600);
     assert!(log.len() == 1 && log[0].contains("bad schedule"), "{log:?}");
 }
+
+/// Phase 38c: a copy to another place (the directory backend; SFTP and S3 share the `Remote` contract),
+/// incremental, with deletions after a prune; another machine fetches it and opens it with the words.
+#[test]
+fn copy_fetch_and_open_elsewhere() {
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let p = paths(&d.path().join("a"));
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let sp = standalone::state_paths(&p);
+    let ctx = Ctx {
+        paths: &sp,
+        settings: &settings,
+    };
+    let platform = nexus_agent::server::Linux::default();
+    let data = d.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("a.txt"), b"first").unwrap();
+    let (repo_dir, copy) = (d.path().join("repo"), d.path().join("offsite"));
+    let words = standalone::init(&p, &repo_dir, "host").unwrap();
+    let repo = standalone::open(&p, &repo_dir, None).unwrap();
+    let roots = [data.to_string_lossy().into_owned()];
+    let run = |job| standalone::backup(&platform, ctx, &repo, job, &roots, &[], &Filters::default(), false).unwrap();
+    run(1);
+    let target = d.path().join("target.json");
+    fs::write(&target, serde_json::json!({"kind": "dir", "path": copy}).to_string()).unwrap();
+    let (r, lock) = standalone::Target::load(&target).unwrap().open().unwrap();
+    let c1 = standalone::copy_to(&repo_dir, r.as_ref(), lock).unwrap();
+    assert!(c1.uploaded >= 4 && c1.deleted == 0, "{c1:?}");
+    let c2 = standalone::copy_to(&repo_dir, r.as_ref(), lock).unwrap();
+    assert_eq!((c2.uploaded, c2.deleted), (0, 0), "nothing new: {c2:?}");
+    assert!(c2.replaced >= 1, "manifests and the clock again: {c2:?}");
+    // a second snapshot, then keep only today's last one: the copy follows
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(data.join("a.txt"), b"second").unwrap();
+    run(2);
+    let today = standalone::Gfs {
+        recent: 0,
+        daily: 1,
+        weekly: 0,
+        monthly: 0,
+        yearly: 0,
+    };
+    standalone::prune(&repo, &today).unwrap();
+    let c3 = standalone::copy_to(&repo_dir, r.as_ref(), lock).unwrap();
+    assert!(
+        c3.uploaded >= 2 && c3.deleted >= 2,
+        "new snapshot up, old one gone: {c3:?}"
+    );
+    // another machine: fetch, open with the words, restore the file
+    let elsewhere = d.path().join("b-repo");
+    assert!(standalone::fetch_from(r.as_ref(), &elsewhere).unwrap() > 0);
+    let other = paths(&d.path().join("b"));
+    let r2 = standalone::open(&other, &elsewhere, Some(&words)).unwrap();
+    let snaps = standalone::list(&r2).unwrap();
+    assert_eq!(snaps.len(), 1);
+    let osp = standalone::state_paths(&other);
+    let octx = Ctx {
+        paths: &osp,
+        settings: &settings,
+    };
+    let out = d.path().join("restored");
+    fs::create_dir_all(&out).unwrap();
+    standalone::restore(
+        &platform,
+        octx,
+        &r2,
+        snaps[0].time,
+        "",
+        out.to_str().unwrap(),
+        Overwrite::Never,
+    )
+    .unwrap();
+    assert_eq!(
+        read(&out.join(data.strip_prefix("/").unwrap()).join("a.txt")),
+        b"second"
+    );
+    assert!(
+        standalone::fetch_from(r.as_ref(), &elsewhere).is_err(),
+        "only into an empty directory"
+    );
+}

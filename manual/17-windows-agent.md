@@ -170,7 +170,8 @@ approved rollback) and updates only while no backup or restore runs.
 > **Status:** first step of Phase 38 (docs/agent-standalone.md); not yet tested on Windows in the lab. Commands in an
 > elevated prompt; the repository is a folder (a local or USB disk, or a network share the service account can
 > reach). Scheduled jobs: `%ProgramData%\NexusAgent\config\standalone.json`, run by the NexusAgent service (also
-> when it is not enrolled), as on Linux; `nexus-agent.exe repo jobs` shows them.
+> when it is not enrolled), as on Linux; `nexus-agent.exe repo jobs` shows them. Copies to SFTP, S3 or another folder
+(`repo copy`, `repo fetch`, a job's `"copy"`) work as on Linux.
 
 ```bat
 "C:\Program Files\NexusBackup\Agent\nexus-agent.exe" repo init E:\nexus

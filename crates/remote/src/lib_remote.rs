@@ -45,7 +45,8 @@ pub trait Remote: Send + Sync {
     }
 }
 
-pub(crate) fn check(path: &str) -> io::Result<()> {
+/// A remote path is relative, `/`-separated, without empty, `.` or `..` components.
+pub fn check(path: &str) -> io::Result<()> {
     let ok =
         !path.is_empty() && !path.starts_with('/') && path.split('/').all(|c| !c.is_empty() && c != "." && c != "..");
     if ok {

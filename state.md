@@ -961,4 +961,8 @@ restores, UI/CLI, import into an appliance). All in this repository.
   builds and passes clippy for Windows, not run on Windows yet: lab offline).
 - [x] 38e first part: scheduled jobs (`standalone.json`, the service runs them every minute; waits for a missing
   repository, low battery, metered network; `repo jobs`, `repo run`); crate `schedule` split out of the catalog.
-- [ ] 38 rest: Windows run on a VM 101 copy (lab), network targets (SFTP/S3), lock/log-off and wake triggers.
+- [x] 38c copies: `repo copy` mirrors the repository to SFTP, S3 (Object Lock for chunks) or a directory,
+  `repo fetch` downloads it; crate `remote` (the offsite clients without keyd/catalog). Tested with the directory
+  backend; SFTP/S3 not run from an agent yet (lab offline; the clients are the offsite ones).
+- [ ] 38 rest: Windows run on a VM 101 copy (lab), SFTP/S3 copy against the lab testboxes, lock/log-off and wake
+  triggers, 38d with 37, 38h UI.

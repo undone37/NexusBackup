@@ -67,20 +67,24 @@ pub struct Repo {
 pub struct Lock(#[allow(dead_code)] fs::File);
 
 impl Repo {
-    /// The writer lock; fails at once when another backup or prune holds it.
+    /// The writer lock; fails at once when another backup, prune or copy holds it.
     pub fn lock(&self) -> Result<Lock, String> {
+        Repo::lock_dir(&self.dir)
+    }
+
+    fn lock_dir(dir: &Path) -> Result<Lock, String> {
         let f = fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.dir.join("lock"))
-            .map_err(|e| format!("{}: {e}", self.dir.display()))?;
+            .open(dir.join("lock"))
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
         match f.try_lock() {
             Ok(()) => Ok(Lock(f)),
             Err(fs::TryLockError::WouldBlock) => {
-                Err(format!("{}: another backup or prune is running", self.dir.display()))
+                Err(format!("{}: another backup, prune or copy is running", dir.display()))
             }
-            Err(fs::TryLockError::Error(e)) => Err(format!("{}: lock: {e}", self.dir.display())),
+            Err(fs::TryLockError::Error(e)) => Err(format!("{}: lock: {e}", dir.display())),
         }
     }
 }
@@ -583,6 +587,8 @@ pub fn usage(agent: &str) -> String {
                                          D days, W weeks, M months, Y years (default 24,7,4,12,0);
                                          then unused chunks are removed
   {agent} repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]
+  {agent} repo copy <dir> <target.json>   mirror the repository to SFTP, S3 or another directory
+  {agent} repo fetch <target.json> <dir>  download a copy (then: repo open <dir> with the 24 words)
   {agent} repo jobs [--json]         scheduled jobs ({JOBS_FILE} in the config directory; the service runs them)
   {agent} repo run <job>             run a scheduled job now"
     )
@@ -663,6 +669,27 @@ pub fn cli<P: Platform>(
             println!("restored {} files, {} bytes to {target}", st.files, st.bytes);
             return Ok(st.errors.is_empty());
         }
+        ["copy", dir, target] => {
+            let (r, lock_days) = Target::load(Path::new(target))?.open()?;
+            let s = copy_to(Path::new(dir), r.as_ref(), lock_days)?;
+            println!(
+                "{} file(s) uploaded, {} replaced ({} bytes), {} deleted{}",
+                s.uploaded,
+                s.replaced,
+                s.bytes,
+                s.deleted,
+                if s.kept > 0 {
+                    format!(", {} still locked", s.kept)
+                } else {
+                    String::new()
+                }
+            );
+        }
+        ["fetch", target, dir] => {
+            let (r, _) = Target::load(Path::new(target))?.open()?;
+            let n = fetch_from(r.as_ref(), Path::new(dir))?;
+            println!("{n} file(s) fetched into {dir}; open it with: repo open {dir} (24 words on stdin)");
+        }
         ["jobs"] => {
             let jobs = load_jobs(paths)?;
             let states = job_states(paths);
@@ -736,6 +763,9 @@ pub struct Job {
     /// wait while the network connection is metered
     #[serde(default)]
     pub skip_metered: bool,
+    /// after the backup and prune: mirror the repository to this target file (SFTP, S3, directory)
+    #[serde(default)]
+    pub copy: Option<String>,
 }
 
 fn default_keep() -> String {
@@ -875,6 +905,14 @@ pub fn run_job<P: Platform>(
         .gfs()?;
         line.push_str(&format!("; prune: {}", prune(&r, &gfs)?));
     }
+    if let Some(t) = &job.copy {
+        let (remote, lock_days) = Target::load(Path::new(t))?.open()?;
+        let c = copy_to(Path::new(&job.repo), remote.as_ref(), lock_days).map_err(|e| format!("copy: {e}"))?;
+        line.push_str(&format!(
+            "; copy: {} uploaded, {} replaced, {} deleted",
+            c.uploaded, c.replaced, c.deleted
+        ));
+    }
     Ok(line)
 }
 
@@ -934,4 +972,228 @@ pub fn run_jobs<P: Platform>(platform: &P, paths: &Paths, settings: &crate::conf
         }
         std::thread::sleep(std::time::Duration::from_secs(60));
     }
+}
+
+// ---- copies to SFTP / S3 (Phase 38c) -------------------------------------------------------------------
+
+/// Where a repository is copied to (a JSON file next to the jobs file: it holds credentials, keep it
+/// root/Administrators only). `{"kind": "s3", "endpoint": "https://…", "region": "…", "bucket": "…",
+/// "prefix": "…", "access_key": "…", "secret_key": "…", "lock_days": 30}`, `{"kind": "sftp", "host": "…",
+/// "port": 23, "user": "…", "key_file": "…", "host_key": "ssh-ed25519 AAAA…", "base_dir": "…"}` or
+/// `{"kind": "dir", "path": "…"}`.
+#[derive(serde::Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Target {
+    Dir {
+        path: PathBuf,
+    },
+    Sftp {
+        host: String,
+        #[serde(default = "sftp_port")]
+        port: u16,
+        user: String,
+        key_file: PathBuf,
+        host_key: String,
+        #[serde(default)]
+        base_dir: String,
+    },
+    S3 {
+        endpoint: String,
+        region: String,
+        bucket: String,
+        #[serde(default)]
+        prefix: String,
+        access_key: String,
+        secret_key: String,
+        #[serde(default)]
+        path_style: bool,
+        /// the bucket has Object Lock: chunks stay undeletable this many days after their upload
+        #[serde(default)]
+        lock_days: u32,
+    },
+}
+
+fn sftp_port() -> u16 {
+    22
+}
+
+impl Target {
+    /// Reads a target file.
+    pub fn load(path: &Path) -> Result<Target, String> {
+        let b = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The client and the lock period (days, 0 = none).
+    pub fn open(&self) -> Result<(Box<dyn remote::Remote>, u32), String> {
+        Ok(match self {
+            Target::Dir { path } => (Box::new(remote::LocalDir(path.clone())), 0),
+            Target::Sftp {
+                host,
+                port,
+                user,
+                key_file,
+                host_key,
+                base_dir,
+            } => {
+                let mut c = remote::sftp::SftpConfig::new(host, user, key_file.clone(), host_key);
+                c.port = *port;
+                c.base_dir = base_dir.clone();
+                (Box::new(remote::sftp::SftpRemote::new(c).map_err(err)?), 0)
+            }
+            Target::S3 {
+                endpoint,
+                region,
+                bucket,
+                prefix,
+                access_key,
+                secret_key,
+                path_style,
+                lock_days,
+            } => {
+                let mut c = remote::s3::S3Config::new(endpoint, region, bucket, access_key, secret_key);
+                c.prefix = prefix.trim_matches('/').to_owned();
+                c.path_style = *path_style;
+                c.lock = *lock_days > 0;
+                (Box::new(remote::s3::S3Remote::new(c).map_err(err)?), *lock_days)
+            }
+        })
+    }
+}
+
+/// What a copy did.
+#[derive(Debug, Default)]
+pub struct CopyStats {
+    pub uploaded: u64,
+    pub bytes: u64,
+    /// small files that change (manifests, clock) uploaded again
+    pub replaced: u64,
+    pub deleted: u64,
+    /// deletions the remote refused (still locked): tried again next time
+    pub kept: u64,
+}
+
+/// Files of a repository, relative `/`-separated paths with sizes; the lock file, temporary and corrupt
+/// chunk files are not part of a copy.
+fn local_files(root: &Path, rel: &str, out: &mut Vec<(String, u64)>) -> io::Result<()> {
+    for e in fs::read_dir(if rel.is_empty() {
+        root.to_owned()
+    } else {
+        root.join(rel)
+    })? {
+        let e = e?;
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let ft = e.file_type()?;
+        if ft.is_dir() {
+            local_files(root, &path, out)?;
+        } else if ft.is_file() && path != "lock" && !name.ends_with(".bad") && !name.contains(".tmp") {
+            out.push((path, e.metadata()?.len()));
+        }
+    }
+    Ok(())
+}
+
+fn remote_files(r: &dyn remote::Remote, dir: &str, out: &mut HashMap<String, u64>) -> io::Result<()> {
+    for (name, size, is_dir) in r.list(dir)? {
+        let path = if dir.is_empty() { name } else { format!("{dir}/{name}") };
+        if is_dir {
+            remote_files(r, &path, out)?;
+        } else {
+            out.insert(path, size);
+        }
+    }
+    Ok(())
+}
+
+/// Order of uploads and deletions: a snapshot's manifest is its commit point, so chunks go up before the
+/// snapshot files, those before the manifest, the top-level files last; deletions run the other way round.
+fn rank(path: &str) -> u8 {
+    if path.starts_with("chunks/") {
+        0
+    } else if path.starts_with("snapshots/") && !path.ends_with("/manifest") {
+        1
+    } else if path.starts_with("snapshots/") {
+        2
+    } else {
+        3
+    }
+}
+
+/// Files that change after they were written: manifests (lock extensions) and the top level (clock).
+fn mutable(path: &str) -> bool {
+    rank(path) >= 2
+}
+
+/// Mirrors the repository directory `dir` to `r`: uploads what the remote lacks (chunks locked for
+/// `lock_days` where the remote supports it), replaces manifests and the top-level files, deletes what the
+/// repository no longer has. Everything it sends is already encrypted.
+pub fn copy_to(dir: &Path, r: &dyn remote::Remote, lock_days: u32) -> Result<CopyStats, String> {
+    info(dir)?;
+    let _lock = Repo::lock_dir(dir)?;
+    let mut local = Vec::new();
+    local_files(dir, "", &mut local).map_err(|e| format!("{}: {e}", dir.display()))?;
+    local.sort_by(|a, b| (rank(&a.0), &a.0).cmp(&(rank(&b.0), &b.0)));
+    let mut have = HashMap::new();
+    remote_files(r, "", &mut have).map_err(|e| format!("remote listing: {e}"))?;
+    let mut st = CopyStats::default();
+    let until = now() + u64::from(lock_days) * 86400;
+    for (path, size) in &local {
+        let present = have.remove(path);
+        if present.is_some() && !mutable(path) {
+            continue;
+        }
+        let data = fs::read(dir.join(path)).map_err(|e| format!("{path}: {e}"))?;
+        if present.is_some() {
+            r.delete(path).map_err(|e| format!("remote {path}: {e}"))?;
+            st.replaced += 1;
+        } else {
+            st.uploaded += 1;
+        }
+        st.bytes += size;
+        let put = if lock_days > 0 && r.supports_locks() && rank(path) == 0 {
+            r.put_locked(path, &data, until)
+        } else {
+            r.put(path, &data)
+        };
+        put.map_err(|e| format!("remote {path}: {e}"))?;
+    }
+    let mut gone: Vec<String> = have.into_keys().collect();
+    gone.sort_by(|a, b| (std::cmp::Reverse(rank(a)), a).cmp(&(std::cmp::Reverse(rank(b)), b)));
+    for path in gone {
+        match r.delete(&path) {
+            Ok(()) => st.deleted += 1,
+            Err(_) => st.kept += 1,
+        }
+    }
+    Ok(st)
+}
+
+/// Downloads a copy into the new or empty directory `dir` (then `open` it with the recovery words).
+pub fn fetch_from(r: &dyn remote::Remote, dir: &Path) -> Result<u64, String> {
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if fs::read_dir(dir).map_err(err)?.next().is_some() {
+        return Err(format!("{}: not empty", dir.display()));
+    }
+    let mut files = HashMap::new();
+    remote_files(r, "", &mut files).map_err(|e| format!("remote listing: {e}"))?;
+    if !files.contains_key(INFO) {
+        return Err("the target holds no repository".into());
+    }
+    let mut n = 0;
+    for path in files.keys() {
+        remote::check(path).map_err(err)?;
+        let data = r.get(path, 0, None).map_err(|e| format!("remote {path}: {e}"))?;
+        let p = dir.join(path);
+        if let Some(d) = p.parent() {
+            fs::create_dir_all(d).map_err(err)?;
+        }
+        fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))?;
+        n += 1;
+    }
+    Ok(n)
 }

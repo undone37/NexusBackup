@@ -3,8 +3,7 @@
 Status: first step, 2026-10-22. The Linux agent backs up into a repository of its own, without an appliance:
 `nexus-agent repo init|open|backup|list|restore`. Scope and order of the whole phase: docs/veeam-agent-comparison.md
 "Scope decision". Also `repo prune` (the appliance's GFS retention, then GC) and one writer at a time
-(`<repo>/lock`, an OS file lock). Not yet: schedules and triggers (38e), network targets other than a
-mounted directory, the desktop UI (38h), import into an appliance (38i). Since 38e (first part): scheduled jobs in
+(`<repo>/lock`, an OS file lock). Not yet: the desktop UI (38h), import into an appliance (38i). Since 38e (first part): scheduled jobs in
 `<config>/standalone.json`, run by the agent service (also on a machine that is not enrolled). The commands are shared
 (`agent_core::standalone::cli`): `nexus-agent repo …` on Linux, `nexus-agent.exe repo …` on Windows (builds; not yet
 run on a Windows machine).
@@ -54,9 +53,24 @@ run on a Windows machine).
 - Not yet: lock/log-off and wake triggers, retries within a slot, bandwidth limits, a status in the desktop UI
   (38h), e-mail.
 
+## Copies to SFTP, S3 or another directory (38c)
+
+`repo copy <dir> <target.json>` (and a job's `"copy": "<target.json>"` after backup and prune) mirrors the
+repository with the offsite storage clients (crate `remote`, split out of `offsite` for this): files the target
+lacks are uploaded (everything is already encrypted), chunks first, a snapshot's files before its manifest (the
+commit point), manifests and the top-level files (clock) replaced every time, files the repository no longer has
+deleted (manifests first, chunks last). On S3 with Object Lock (`lock_days`), chunks are uploaded locked; a locked
+object that local GC removed stays until its date and is deleted by a later copy. `repo fetch <target.json> <dir>`
+downloads a copy into an empty directory; `repo open` with the 24 words then opens it on any machine. The target
+file holds credentials: keep it next to the jobs file (root / Administrators only).
+
+Mirror, not the appliance's offsite packs: one object per chunk (many small objects on S3; an SFTP box with a
+file-count limit fills faster). ponytail: packs like `crates/offsite` when that matters.
+
 ## Tests
 
 `crates/agent-linux/tests/standalone.rs`: backup, an incremental that reuses the unchanged big file's chunks,
 restore of the first snapshot, prune, the writer lock, opening on another machine with the 24 words (wrong words
 refused); the job pass (once per slot, prune after the backup, waiting for a missing repository and running when it
-appears, a broken jobs file reported).
+appears, a broken jobs file reported); a copy (incremental, deletions after a prune), fetched and opened on another
+machine with the words, restored.

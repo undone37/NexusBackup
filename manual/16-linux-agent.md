@@ -469,7 +469,23 @@ nexus-agent`); it runs them, also when the machine is not enrolled with an appli
 `schedule` takes the appliance's forms (`daily HH:MM`, `Mon-Fri HH:MM`, `every 4h`, `monthly 1 02:00`). A due job
 waits while its repository is not there (a disconnected USB disk), on battery below `min_battery` %, or on a metered
 network with `skip_metered`, and runs as soon as that changes. `keep` prunes after each backup. `nexus-agent repo
-jobs` shows each job's next slot, last result or why it waits; `nexus-agent repo run home` runs one now. Only one backup or prune runs at a time
+jobs` shows each job's next slot, last result or why it waits; `nexus-agent repo run home` runs one now.
+
+**A second copy elsewhere (SFTP, S3, another disk):** describe the target in a file only root can read, for example
+`/etc/nexus-agent/offsite.json`:
+
+```json
+{"kind": "s3", "endpoint": "https://s3.eu-central-1.example.com", "region": "eu-central-1", "bucket": "backups",
+ "prefix": "laptop-1", "access_key": "…", "secret_key": "…", "lock_days": 30}
+```
+
+(or `{"kind": "sftp", "host": "u123.your-storagebox.de", "port": 23, "user": "u123", "key_file":
+"/etc/nexus-agent/sftp_ed25519", "host_key": "ssh-ed25519 AAAA…"}`, or `{"kind": "dir", "path": "/mnt/nas/nexus"}`).
+`nexus-agent repo copy /mnt/usb/nexus /etc/nexus-agent/offsite.json` uploads what is new (all of it encrypted) and
+removes what pruning removed; in a job, `"copy": "/etc/nexus-agent/offsite.json"` does it after every backup. With
+`lock_days` and a bucket with Object Lock, uploaded data cannot be deleted for that many days, not even with the
+bucket's keys. After a loss: `nexus-agent repo fetch /etc/nexus-agent/offsite.json /srv/nexus`, then `repo open
+/srv/nexus` with the 24 words. Only one backup or prune runs at a time
 (the other one stops with "another backup or prune is running"). Pruning works like the appliance's retention: a
 snapshot kept as a daily, weekly or monthly one stays locked for its class's period. Backups use snapshots where the file
 system allows (LVM, ZFS, btrfs) like managed backups; only changed files are read again.

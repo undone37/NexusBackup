@@ -1147,7 +1147,8 @@ in this repository and uses the same crates as the appliance; the agents get the
   CLI `nexus-agent repo init|open|backup|list|restore`, repository = chunk store in a directory (chunkstore builds
   for Windows now), key wrapped under 24 recovery words, own state directory; `repo prune`, writer lock, Windows CLI;
   38e first part: jobs in `standalone.json` run by the service (schedule crate, waits for the repository, battery,
-  metered network). Next: network targets (SFTP/S3), lock/log-off and wake triggers, 38d with Phase 37.
+  metered network); copies to SFTP/S3/directory (`repo copy|fetch`, job `copy`; crate `remote` split out of
+  offsite). Next: lock/log-off and wake triggers, 38d with Phase 37, 38h UI.
 - **38b Two modes, one agent:** *managed* (today: the appliance pulls, its policies apply) and *standalone* (the
   agent schedules and writes itself). A standalone agent can later be attached to an appliance without a new full
   backup (38i).

@@ -114,6 +114,7 @@ dependencies = [
  "rcgen",
  "recovery-key",
  "regex",
+ "remote",
  "ring",
  "rustls",
  "schedule",
