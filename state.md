@@ -957,4 +957,6 @@ restores, UI/CLI, import into an appliance). All in this repository.
   scope and order for 38b-38j (38b+38c, 38e, 38d with 37, 38f, 38g, 38h, 38i, 38j); no CBT driver, no kernel module.
 - [x] 38b + 38c first step (2026-10-22): standalone backup/list/restore into a directory repository on Linux
   (`nexus-agent repo …`), recovery words, incremental via the metadata cache; chunkstore builds for Windows.
-- [ ] 38b + 38c rest: Windows CLI, retention and GC, repository lock, network targets (SFTP/S3), then 38e.
+- [x] 38c: `repo prune` (GFS + GC), writer lock; Windows `nexus-agent.exe repo …` (shared CLI in agent-core;
+  builds and passes clippy for Windows, not run on Windows yet: lab offline).
+- [ ] 38b + 38c rest: Windows run on a VM 101 copy, network targets (SFTP/S3), then 38e schedules and triggers.

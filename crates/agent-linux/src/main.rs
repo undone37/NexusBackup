@@ -3,7 +3,7 @@
 use nexus_agent::config::{ensure_dir, Paths, Settings};
 use nexus_agent::endpoint::{self, cli, exit, Clock};
 use nexus_agent::{server, snapshot, sys};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -15,15 +15,6 @@ usage:
   nexus-agent hooks test [--config DIR]
   nexus-agent rescue [--rescue-config FILE]   (rescue ISO: bare-metal recovery console)
   nexus-agent version (or --version)
-standalone mode (root; a repository of its own, no appliance; docs/agent-standalone.md):
-  nexus-agent repo init <dir>            new repository; prints the 24-word recovery key once
-  nexus-agent repo open <dir>            on another machine: the 24 words on stdin open it
-  nexus-agent repo backup <dir> <path>…  back up these paths (snapshot where possible)
-  nexus-agent repo list <dir> [--json]
-  nexus-agent repo prune <dir> [--keep H,D,W,M,Y]   keep all of the last H hours plus the last snapshot of
-                                         D days, W weeks, M months, Y years (default 24,7,4,12,0);
-                                         then unused chunks are removed
-  nexus-agent repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]
 end users (root or members of the group nexus-agent-ui):
   nexus-agent tui                        control panel: sessions, status, back up now
   nexus-agent status [--json]            protection status (as root also local diagnostics)
@@ -57,8 +48,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut limit = 20;
     let mut sock = PathBuf::from(endpoint::proto::SOCKET_PATH);
     let mut words = vec![];
-    let (mut only, mut overwrite) = (String::new(), agent_proto::Overwrite::Never);
-    let mut keep = String::from("24,7,4,12,0");
+    let mut repo_opts = agent_core::standalone::CliOpts::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -72,19 +62,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--json" => json = true,
             "--limit" => limit = val("--limit")?.parse::<usize>().map_err(|_| "invalid --limit")?,
             "--socket" => sock = PathBuf::from(val("--socket")?),
-            "--path" => only = val("--path")?,
-            "--keep" => keep = val("--keep")?,
-            "--overwrite" => {
-                overwrite = match val("--overwrite")?.as_str() {
-                    "never" => agent_proto::Overwrite::Never,
-                    "if-older" => agent_proto::Overwrite::IfOlder,
-                    "always" => agent_proto::Overwrite::Always,
-                    o => return Err(format!("--overwrite: never, if-older or always, not {o}")),
-                }
-            }
+            "--path" | "--overwrite" | "--keep" => repo_opts.set(a, &val(a)?)?,
             "--version" | "-V" => words.push("version".into()),
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{USAGE}\n{}", agent_core::standalone::usage("nexus-agent"));
                 return Ok(ExitCode::SUCCESS);
             }
             w if !w.starts_with('-') => words.push(w.to_string()),
@@ -166,7 +147,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             print!("{out}");
             Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
         }
-        ["repo", rest @ ..] => repo(&paths, rest, json, &only, overwrite, &keep),
+        ["repo", rest @ ..] => {
+            repo_opts.json = json;
+            repo(&paths, rest, &repo_opts)
+        }
         ["version"] => {
             println!("nexus-agent {}", env!("CARGO_PKG_VERSION"));
             // keep the version marker in the binary (self-update reads it)
@@ -178,114 +162,19 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
 }
 
 /// `nexus-agent repo …`: standalone mode (Phase 38b/38c, docs/agent-standalone.md).
-fn repo(
-    paths: &Paths,
-    args: &[&str],
-    json: bool,
-    only: &str,
-    overwrite: agent_proto::Overwrite,
-    keep: &str,
-) -> Result<ExitCode, String> {
-    use agent_core::standalone;
+fn repo(paths: &Paths, args: &[&str], opts: &agent_core::standalone::CliOpts) -> Result<ExitCode, String> {
     // SAFETY: trivial syscall; keys, caches and spool files are never group/world-readable
     unsafe { libc::umask(0o077) };
     let settings = Settings::load(paths)?;
-    let sp = standalone::state_paths(paths);
-    let ctx = agent_core::server::Ctx {
-        paths: &sp,
-        settings: &settings,
-    };
-    let platform = server::Linux::default();
-    match args {
-        ["init", dir] => {
-            let words = standalone::init(paths, Path::new(dir), &sys::uname().1)?;
-            println!("Repository {dir} created.\nRECOVERY KEY (record it now, it is shown only once):\n{words}");
-        }
-        ["open", dir] => {
-            let mut words = String::new();
-            std::io::stdin()
-                .read_line(&mut words)
-                .map_err(|e| format!("stdin: {e}"))?;
-            let r = standalone::open(paths, Path::new(dir), Some(words.trim()))?;
-            println!(
-                "{dir}: opened, {} snapshot(s); this machine keeps its key",
-                standalone::list(&r)?.len()
-            );
-        }
-        ["backup", dir, roots @ ..] if !roots.is_empty() => {
-            let r = standalone::open(paths, Path::new(dir), None)?;
-            ensure_dir(&sp.state, 0o700).map_err(|e| format!("{}: {e}", sp.state.display()))?;
-            let roots: Vec<String> = roots.iter().map(|s| (*s).to_owned()).collect();
-            let job = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(1, |d| d.as_secs());
-            let s = standalone::backup(&platform, ctx, &r, job, &roots, &[], &Default::default(), true)?;
-            print!("{}", s.log);
-            println!(
-                "snapshot {} of {}: {} entries, {} files, {} bytes, {} new chunks{}",
-                s.time,
-                r.source,
-                s.entries,
-                s.files,
-                s.bytes,
-                s.new_chunks,
-                if s.consistent {
-                    ""
-                } else {
-                    " (not consistent: no snapshot)"
-                }
-            );
-        }
-        ["prune", dir] => {
-            let n: Vec<u32> = keep
-                .split(',')
-                .map(|x| x.trim().parse::<u32>())
-                .collect::<Result<_, _>>()
-                .map_err(|_| format!("--keep: five numbers H,D,W,M,Y, not {keep}"))?;
-            let [recent, daily, weekly, monthly, yearly] = n[..] else {
-                return Err(format!("--keep: five numbers H,D,W,M,Y, not {keep}"));
-            };
-            if recent + daily + weekly + monthly + yearly == 0 {
-                return Err("--keep: keeping nothing would delete every snapshot".into());
-            }
-            let r = standalone::open(paths, Path::new(dir), None)?;
-            let gfs = standalone::Gfs {
-                recent,
-                daily,
-                weekly,
-                monthly,
-                yearly,
-            };
-            println!("{}", standalone::prune(&r, &gfs)?);
-        }
-        ["list", dir] => {
-            let r = standalone::open(paths, Path::new(dir), None)?;
-            let snaps = standalone::list(&r)?;
-            if json {
-                println!("{}", serde_json::to_string(&snaps).map_err(|e| e.to_string())?);
+    let ok = agent_core::standalone::cli(&server::Linux::default(), paths, &settings, &sys::uname().1, args, opts)
+        .map_err(|e| {
+            if e.is_empty() {
+                agent_core::standalone::usage("nexus-agent")
             } else {
-                for s in snaps {
-                    println!("{}  {}", s.time, s.source);
-                }
+                e
             }
-        }
-        ["restore", dir, time, target] => {
-            let r = standalone::open(paths, Path::new(dir), None)?;
-            let time = time
-                .parse::<u64>()
-                .map_err(|_| format!("invalid snapshot time {time}"))?;
-            let st = standalone::restore(&platform, ctx, &r, time, only, target, overwrite)?;
-            for e in &st.errors {
-                eprintln!("{e}");
-            }
-            println!("restored {} files, {} bytes to {target}", st.files, st.bytes);
-            if !st.errors.is_empty() {
-                return Ok(ExitCode::FAILURE);
-            }
-        }
-        _ => return Err(USAGE.into()),
-    }
-    Ok(ExitCode::SUCCESS)
+        })?;
+    Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 /// The local UI socket (docs/endpoint-ui.md): `/run/nexus-agent/ui.sock`, group

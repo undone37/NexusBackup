@@ -165,6 +165,25 @@ approved rollback) and updates only while no backup or restore runs.
 - A desktop window or tray icon that is open during an MSI upgrade keeps running the old version until the user
   signs out or restarts it; the files on disk are already the new ones.
 
+## Standalone mode (preview): backups without an appliance
+
+> **Status:** first step of Phase 38 (docs/agent-standalone.md); not yet tested on Windows in the lab. Commands in an
+> elevated prompt, no schedule yet (use the Task Scheduler: `repo backup`, then `repo prune`), the repository is a
+> folder (a local or USB disk, or a network share mapped for the account that runs it).
+
+```bat
+"C:\Program Files\NexusBackup\Agent\nexus-agent.exe" repo init E:\nexus
+nexus-agent.exe repo backup E:\nexus C:\Users D:\Data
+nexus-agent.exe repo list E:\nexus
+nexus-agent.exe repo prune E:\nexus --keep 24,7,4,12,0
+nexus-agent.exe repo restore E:\nexus <time> C:\Restore --path C/Users/ann --overwrite never
+```
+
+It works like the Linux agent's standalone mode ([16 Linux agent](16-linux-agent.md#standalone-mode-preview-backups-without-an-appliance)):
+the same repository format, VSS snapshots and USN incrementals as managed backups, the 24-word recovery key printed
+once by `repo init`, `repo open` with the words on another machine. The machine keeps the repository key below
+`%ProgramData%\NexusAgent\state\standalone` (SYSTEM and Administrators only).
+
 ## Re-enrolling and removing
 
 - **Server reinstalled or `%ProgramData%\NexusAgent` lost:** ask for a **New token** (the agent keeps its id,

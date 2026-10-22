@@ -3,8 +3,10 @@
 Status: first step, 2026-10-22. The Linux agent backs up into a repository of its own, without an appliance:
 `nexus-agent repo init|open|backup|list|restore`. Scope and order of the whole phase: docs/veeam-agent-comparison.md
 "Scope decision". Also `repo prune` (the appliance's GFS retention, then GC) and one writer at a time
-(`<repo>/lock`, an OS file lock). Not yet: Windows CLI, schedules and triggers (38e), network targets other than a
-mounted directory, the desktop UI (38h), import into an appliance (38i).
+(`<repo>/lock`, an OS file lock). Not yet: schedules and triggers (38e), network targets other than a
+mounted directory, the desktop UI (38h), import into an appliance (38i). The commands are shared
+(`agent_core::standalone::cli`): `nexus-agent repo …` on Linux, `nexus-agent.exe repo …` on Windows (builds; not yet
+run on a Windows machine).
 
 ## Design
 

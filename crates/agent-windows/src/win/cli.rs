@@ -61,6 +61,7 @@ pub fn main() -> ExitCode {
 fn real_main(args: &[String]) -> Result<ExitCode, String> {
     let mut paths = Paths::default();
     let (mut token, mut port, mut words, mut yes) = (None, None, vec![], false);
+    let (mut repo_opts, mut json) = (agent_core::standalone::CliOpts::default(), false);
     let mut fleet = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -73,8 +74,10 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             "--config" => paths.config = PathBuf::from(val("--config")?),
             "--version" | "-V" => words.push("version".into()),
             "--yes" => yes = true,
+            "--json" => json = true,
+            "--path" | "--overwrite" | "--keep" => repo_opts.set(a, &val(a)?)?,
             "-h" | "--help" | "/?" => {
-                println!("{USAGE}");
+                println!("{USAGE}\n{}", agent_core::standalone::usage("nexus-agent.exe"));
                 return Ok(ExitCode::SUCCESS);
             }
             w if !w.starts_with('-') => words.push(w.to_string()),
@@ -123,6 +126,26 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths, None).map(|_| ExitCode::SUCCESS),
+        // Phase 38b/38c standalone mode (an elevated prompt: backup privilege, VSS)
+        ["repo", rest @ ..] => {
+            repo_opts.json = json;
+            let settings = Settings::load(&paths)?;
+            secure(&paths)?;
+            let failed = sys::enable_privileges(&PRIVILEGES);
+            vss::com_security();
+            let platform = Windows {
+                sacl: !failed.iter().any(|p| p == "SeSecurityPrivilege"),
+            };
+            let ok = agent_core::standalone::cli(&platform, &paths, &settings, &host::hostname(), rest, &repo_opts)
+                .map_err(|e| {
+                    if e.is_empty() {
+                        agent_core::standalone::usage("nexus-agent.exe")
+                    } else {
+                        e
+                    }
+                })?;
+            Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+        }
         ["service"] => {
             *SERVICE_PATHS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(paths);
             service_dispatcher::start(SERVICE_NAME, ffi_service_main)

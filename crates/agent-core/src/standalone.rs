@@ -504,3 +504,164 @@ pub fn restore<P: Platform>(
     }
     Ok(job.end())
 }
+
+/// Options of the `repo` commands (both agents' command lines).
+#[derive(Clone, Debug)]
+pub struct CliOpts {
+    pub json: bool,
+    /// `--path`: restore only this path (and below)
+    pub only: String,
+    /// `--overwrite never|if-older|always`
+    pub overwrite: Overwrite,
+    /// `--keep H,D,W,M,Y`
+    pub keep: String,
+}
+
+impl Default for CliOpts {
+    fn default() -> Self {
+        CliOpts {
+            json: false,
+            only: String::new(),
+            overwrite: Overwrite::Never,
+            keep: "24,7,4,12,0".into(),
+        }
+    }
+}
+
+impl CliOpts {
+    /// Takes `--path`, `--overwrite` or `--keep` with its value.
+    pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
+        match name {
+            "--path" => self.only = value.to_owned(),
+            "--keep" => self.keep = value.to_owned(),
+            "--overwrite" => {
+                self.overwrite = match value {
+                    "never" => Overwrite::Never,
+                    "if-older" => Overwrite::IfOlder,
+                    "always" => Overwrite::Always,
+                    o => return Err(format!("--overwrite: never, if-older or always, not {o}")),
+                }
+            }
+            _ => return Err(format!("unknown option {name}")),
+        }
+        Ok(())
+    }
+
+    fn gfs(&self) -> Result<Gfs, String> {
+        let bad = || format!("--keep: five numbers H,D,W,M,Y, not {}", self.keep);
+        let n: Vec<u32> = self
+            .keep
+            .split(',')
+            .map(|x| x.trim().parse::<u32>())
+            .collect::<Result<_, _>>()
+            .map_err(|_| bad())?;
+        let [recent, daily, weekly, monthly, yearly] = n[..] else {
+            return Err(bad());
+        };
+        if recent + daily + weekly + monthly + yearly == 0 {
+            return Err("--keep: keeping nothing would delete every snapshot".into());
+        }
+        Ok(Gfs {
+            recent,
+            daily,
+            weekly,
+            monthly,
+            yearly,
+        })
+    }
+}
+
+/// The usage lines of the `repo` commands (`agent` = the command name).
+pub fn usage(agent: &str) -> String {
+    format!(
+        "standalone mode (administrator; a repository of its own, no appliance; docs/agent-standalone.md):
+  {agent} repo init <dir>            new repository; prints the 24-word recovery key once
+  {agent} repo open <dir>            on another machine: the 24 words on stdin open it
+  {agent} repo backup <dir> <path>…  back up these paths (snapshot where possible)
+  {agent} repo list <dir> [--json]
+  {agent} repo prune <dir> [--keep H,D,W,M,Y]   keep all of the last H hours plus the last snapshot of
+                                         D days, W weeks, M months, Y years (default 24,7,4,12,0);
+                                         then unused chunks are removed
+  {agent} repo restore <dir> <time> <target> [--path P] [--overwrite never|if-older|always]"
+    )
+}
+
+/// Runs one `repo` command (`args` after `repo`). `Ok(false)`: done with errors (restore); `Err("")`: the
+/// arguments do not form a command (print the usage).
+pub fn cli<P: Platform>(
+    platform: &P,
+    paths: &Paths,
+    settings: &crate::config::Settings,
+    hostname: &str,
+    args: &[&str],
+    o: &CliOpts,
+) -> Result<bool, String> {
+    let sp = state_paths(paths);
+    let ctx = Ctx { paths: &sp, settings };
+    match args {
+        ["init", dir] => {
+            let words = init(paths, Path::new(dir), hostname)?;
+            println!("Repository {dir} created.\nRECOVERY KEY (record it now, it is shown only once):\n{words}");
+        }
+        ["open", dir] => {
+            let mut words = String::new();
+            io::stdin().read_line(&mut words).map_err(|e| format!("stdin: {e}"))?;
+            let r = open(paths, Path::new(dir), Some(words.trim()))?;
+            println!(
+                "{dir}: opened, {} snapshot(s); this machine keeps its key",
+                list(&r)?.len()
+            );
+        }
+        ["backup", dir, roots @ ..] if !roots.is_empty() => {
+            let r = open(paths, Path::new(dir), None)?;
+            fs::create_dir_all(&sp.state).map_err(|e| format!("{}: {e}", sp.state.display()))?;
+            let roots: Vec<String> = roots.iter().map(|s| (*s).to_owned()).collect();
+            let s = backup(platform, ctx, &r, now(), &roots, &[], &Filters::default(), true)?;
+            print!("{}", s.log);
+            println!(
+                "snapshot {} of {}: {} entries, {} files, {} bytes, {} new chunks{}",
+                s.time,
+                r.source,
+                s.entries,
+                s.files,
+                s.bytes,
+                s.new_chunks,
+                if s.consistent {
+                    ""
+                } else {
+                    " (not consistent: no snapshot)"
+                }
+            );
+        }
+        ["prune", dir] => {
+            let gfs = o.gfs()?;
+            let r = open(paths, Path::new(dir), None)?;
+            println!("{}", prune(&r, &gfs)?);
+        }
+        ["list", dir] => {
+            let r = open(paths, Path::new(dir), None)?;
+            let snaps = list(&r)?;
+            if o.json {
+                println!("{}", serde_json::to_string(&snaps).map_err(err)?);
+            } else {
+                for s in snaps {
+                    println!("{}  {}", s.time, s.source);
+                }
+            }
+        }
+        ["restore", dir, time, target] => {
+            let r = open(paths, Path::new(dir), None)?;
+            let time = time
+                .parse::<u64>()
+                .map_err(|_| format!("invalid snapshot time {time}"))?;
+            let st = restore(platform, ctx, &r, time, &o.only, target, o.overwrite)?;
+            for e in &st.errors {
+                eprintln!("{e}");
+            }
+            println!("restored {} files, {} bytes to {target}", st.files, st.bytes);
+            return Ok(st.errors.is_empty());
+        }
+        _ => return Err(String::new()),
+    }
+    Ok(true)
+}
