@@ -1,7 +1,7 @@
 //! Calls to the agent service over the local IPC contract (crate agent-ui-proto). Blocking,
 //! one short connection per refresh; the UI runs them as background tasks.
 
-use agent_ui_proto::{Client, Session, SessionDetail, Status, MAX_SESSIONS};
+use agent_ui_proto::{Client, Job, Session, SessionDetail, Status, MAX_SESSIONS};
 use std::path::PathBuf;
 
 /// Where the service listens: the platform default or `--socket PATH` (tests, demos).
@@ -38,13 +38,23 @@ fn connect_error(e: &std::io::Error) -> String {
 pub struct Snapshot {
     pub status: Status,
     pub sessions: Vec<Session>,
+    /// standalone jobs (Phase 38h); empty when there are none or the service predates them
+    pub jobs: Vec<Job>,
 }
 
 pub fn fetch(ep: &Endpoint) -> Result<Snapshot, String> {
     let mut c = ep.connect()?;
     let status = c.status().map_err(|e| e.to_string())?;
     let sessions = c.sessions(Some(MAX_SESSIONS)).map_err(|e| e.to_string())?;
-    Ok(Snapshot { status, sessions })
+    // an older service refuses the op: no jobs section
+    let jobs = c.jobs().unwrap_or_default();
+    Ok(Snapshot { status, sessions, jobs })
+}
+
+/// Queues a standalone job to run now (the agent starts it within seconds).
+pub fn run_job(ep: &Endpoint, name: &str) -> Result<String, String> {
+    let q = ep.connect()?.run_job(name).map_err(|e| e.to_string())?;
+    Ok(format!("{} queued: it starts within a few seconds.", q.name))
 }
 
 pub fn session(ep: &Endpoint, id: u64) -> Result<SessionDetail, String> {
@@ -97,6 +107,15 @@ mod tests {
                         }),
                         Request::Session { .. } => encode_err("no such session"),
                         Request::RequestBackup => encode_err("rate limited: try again in 9 min"),
+                        Request::Jobs => encode_ok(&Jobs {
+                            jobs: vec![Job {
+                                name: "home".into(),
+                                schedule: "daily 21:00".into(),
+                                ..Default::default()
+                            }],
+                        }),
+                        Request::RunJob { name } if name == "home" => encode_ok(&JobQueued { name }),
+                        Request::RunJob { .. } => encode_err("no standalone job"),
                     };
                     w.write_all(reply.as_bytes()).unwrap();
                 }
@@ -118,6 +137,9 @@ mod tests {
         assert_eq!(session(&ep, 7).unwrap().log_tail, ["done"]);
         assert_eq!(session(&ep, 8).unwrap_err(), "no such session");
         assert!(request_backup(&ep).unwrap_err().contains("rate limited"));
+        assert_eq!(snap.jobs[0].name, "home");
+        assert!(run_job(&ep, "home").unwrap().starts_with("home queued"));
+        assert_eq!(run_job(&ep, "x").unwrap_err(), "no standalone job");
 
         let missing = Endpoint(Some(dir.join("nope.sock")));
         assert!(fetch(&missing).unwrap_err().contains("service is not running"));

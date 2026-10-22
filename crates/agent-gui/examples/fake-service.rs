@@ -76,6 +76,16 @@ fn main() {
                         })
                     }
                     Ok(Request::RequestBackup) => encode_err("a backup is already requested or running"),
+                    Ok(Request::Jobs) => encode_ok(&Jobs {
+                        jobs: snap.jobs.clone(),
+                    }),
+                    Ok(Request::RunJob { name }) => match snap.jobs.iter_mut().find(|j| j.name == name) {
+                        Some(j) => {
+                            j.queued = true;
+                            encode_ok(&JobQueued { name })
+                        }
+                        None => encode_err("no standalone job"),
+                    },
                     Err(e) => encode_err(&e.to_string()),
                 };
                 if w.write_all(reply.as_bytes()).is_err() {

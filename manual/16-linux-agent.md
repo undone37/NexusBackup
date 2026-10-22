@@ -469,7 +469,9 @@ nexus-agent`); it runs them, also when the machine is not enrolled with an appli
 `schedule` takes the appliance's forms (`daily HH:MM`, `Mon-Fri HH:MM`, `every 4h`, `monthly 1 02:00`). A due job
 waits while its repository is not there (a disconnected USB disk), on battery below `min_battery` %, or on a metered
 network with `skip_metered`, and runs as soon as that changes. `keep` prunes after each backup. `nexus-agent repo
-jobs` shows each job's next slot, last result or why it waits; `nexus-agent repo run home` runs one now.
+jobs` shows each job's next slot, last result or why it waits; `nexus-agent repo run home` runs one now. Users in
+the group `nexus-agent-ui` see the jobs with `nexus-agent jobs` and start one with `nexus-agent run-job home` (no
+root needed); the desktop window lists them under **Backups on this computer** with **Run now**.
 
 **A second copy elsewhere (SFTP, S3, another disk):** describe the target in a file only root can read, for example
 `/etc/nexus-agent/offsite.json`:

@@ -1,16 +1,26 @@
 //! Scriptable end-user commands (`veeamconfig session list / info` counterparts):
-//! `nexus-agent status | sessions | session <id> | request-backup [--json]`.
+//! `nexus-agent status | sessions | session <id> | request-backup | jobs | run-job <name> [--json]`.
 
-use super::proto::{Requested, SessionDetail, SessionKind, Status};
+use super::proto::{Job, Requested, SessionDetail, SessionKind, Status};
 use super::{bytes, connect, duration, failure, rate, reach_label, result_label, secs, state_label, Clock, Failure};
 use std::fmt::Write;
 use std::path::Path;
 
 pub enum Command {
     Status,
-    Sessions { limit: usize },
-    Session { id: u64 },
+    Sessions {
+        limit: usize,
+    },
+    Session {
+        id: u64,
+    },
     RequestBackup,
+    /// Phase 38h: the standalone jobs
+    Jobs,
+    /// Phase 38h: queue one to run now
+    RunJob {
+        name: String,
+    },
 }
 
 /// Runs one command against the socket and returns what to print on stdout.
@@ -50,7 +60,47 @@ pub fn run(cmd: &Command, sock: &Path, json: bool, clock: Clock) -> Result<Strin
                 requested_text(&r, clock)
             }
         }
+        Command::Jobs => {
+            let j = c.jobs().map_err(fail)?;
+            if json {
+                pretty(&j)
+            } else {
+                jobs_text(&j, clock)
+            }
+        }
+        Command::RunJob { name } => {
+            let q = c.run_job(name).map_err(fail)?;
+            if json {
+                pretty(&q)
+            } else {
+                format!("standalone job {} queued: it starts within a few seconds\n", q.name)
+            }
+        }
     })
+}
+
+/// One line per standalone job: name, schedule, then queued, waiting, failed or the last success.
+pub fn jobs_text(jobs: &[Job], clock: Clock) -> String {
+    if jobs.is_empty() {
+        return "no standalone jobs\n".into();
+    }
+    let mut out = String::new();
+    for j in jobs {
+        let state = if j.queued {
+            "starting now".to_owned()
+        } else if let Some(w) = &j.waiting {
+            format!("waiting: {w}")
+        } else if let Some(e) = &j.last_error {
+            format!("last run failed: {e}")
+        } else if let Some(t) = j.last_ok {
+            format!("last backup {}", clock.fmt(t))
+        } else {
+            "not run yet".into()
+        };
+        let next = j.next.map(|n| format!(", next {}", clock.fmt(n))).unwrap_or_default();
+        let _ = writeln!(out, "{}  {}  {state}{next}", j.name, j.schedule);
+    }
+    out
 }
 
 fn pretty<T: serde::Serialize>(v: &T) -> String {

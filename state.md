@@ -964,5 +964,7 @@ restores, UI/CLI, import into an appliance). All in this repository.
 - [x] 38c copies: `repo copy` mirrors the repository to SFTP, S3 (Object Lock for chunks) or a directory,
   `repo fetch` downloads it; crate `remote` (the offsite clients without keyd/catalog). Tested with the directory
   backend; SFTP/S3 not run from an agent yet (lab offline; the clients are the offsite ones).
+- [x] 38h first part: UI ops `jobs` / `run_job` (queued for the job loop), desktop card "Backups on this computer"
+  with Run now, `nexus-agent jobs` / `run-job` for UI-group users, the UI socket/pipe also in standalone-only mode.
 - [ ] 38 rest: Windows run on a VM 101 copy (lab), SFTP/S3 copy against the lab testboxes, lock/log-off and wake
-  triggers, 38d with 37, 38h UI.
+  triggers, 38d with 37, TUI jobs view, restores from the UI (38g).

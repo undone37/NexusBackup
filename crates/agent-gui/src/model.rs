@@ -329,6 +329,22 @@ pub(crate) mod tests_support {
     }
 }
 
+/// One line about a standalone job: queued, waiting, last failure, last success or never run.
+pub fn job_state(j: &agent_ui_proto::Job) -> String {
+    let next = j.next.map(|n| format!(" · next {}", fmt_time(n))).unwrap_or_default();
+    if j.queued {
+        return "Starting now".into();
+    }
+    if let Some(w) = &j.waiting {
+        return format!("Waiting: {w}");
+    }
+    match (&j.last_error, j.last_ok) {
+        (Some(e), _) => format!("Last run failed: {e}{next}"),
+        (None, Some(t)) => format!("Last backup {}{next}", fmt_time(t)),
+        (None, None) => format!("Not run yet{next}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

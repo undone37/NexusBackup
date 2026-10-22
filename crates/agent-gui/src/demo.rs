@@ -62,6 +62,20 @@ pub fn snapshot(now: u64) -> Snapshot {
             ui_policy: UiPolicy::default(),
         },
         sessions,
+        // Phase 38h: a standalone job next to the appliance's backups (a USB disk at home)
+        jobs: vec![agent_ui_proto::Job {
+            name: "usb-disk".into(),
+            paths: vec!["C:\\Users\\anna".into()],
+            repo: "E:\\nexus".into(),
+            schedule: "daily 20:00".into(),
+            next: Some(today + 18 * 3600),
+            last_run: Some(today - 4 * 3600),
+            last_ok: Some(today - 4 * 3600),
+            last_summary: "snapshot: 18 204 files, 41.2 GiB, 312 new chunks".into(),
+            last_error: None,
+            waiting: None,
+            queued: false,
+        }],
     }
 }
 

@@ -6,7 +6,8 @@
 //! line (`{"op": ...}`), one reply line per request: `{"ok": true, ...fields}` or
 //! `{"ok": false, "error": "..."}`. Nothing on this channel can change configuration,
 //! start a restore or read backup data; `request_backup` only queues a request that the
-//! appliance picks up with its next poll.
+//! appliance picks up with its next poll, `run_job` only queues a run of a standalone job
+//! the administrator configured (Phase 38h).
 
 #![warn(missing_docs)]
 
@@ -51,6 +52,16 @@ pub enum Request {
     /// Refused within [`REQUEST_INTERVAL_SECS`] of the last one, before enrollment and
     /// while the UI policy hides the button.
     RequestBackup,
+    /// The standalone jobs the administrator configured (Phase 38h); reply [`Jobs`].
+    /// An older service refuses it (unknown op): hide the jobs then.
+    Jobs,
+    /// Queue a run of one standalone job now (the agent's next job pass, usually within a
+    /// second; repository, battery and metered-network waits still apply); reply [`JobQueued`].
+    /// Refused for an unknown job and while the UI policy hides "back up now".
+    RunJob {
+        /// [`Job::name`]
+        name: String,
+    },
 }
 
 /// What the agent does right now (tray icon, status line).
@@ -214,6 +225,57 @@ pub struct Requested {
     pub request_id: String,
     /// when it was queued, Unix seconds
     pub queued_at: u64,
+}
+
+/// One standalone job with its last result (Phase 38h).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct Job {
+    /// unique name from the jobs file
+    pub name: String,
+    /// paths it backs up
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// the repository directory
+    #[serde(default)]
+    pub repo: String,
+    /// schedule as configured (`daily 21:00`)
+    #[serde(default)]
+    pub schedule: String,
+    /// next slot, Unix seconds
+    #[serde(default)]
+    pub next: Option<u64>,
+    /// last attempt
+    #[serde(default)]
+    pub last_run: Option<u64>,
+    /// last success and its summary
+    #[serde(default)]
+    pub last_ok: Option<u64>,
+    #[serde(default)]
+    /// summary line of the last success
+    pub last_summary: String,
+    /// error of the last attempt, if it failed
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// why a due run waits right now (repository not reachable, battery, metered network)
+    #[serde(default)]
+    pub waiting: Option<String>,
+    /// a "run now" is queued
+    #[serde(default)]
+    pub queued: bool,
+}
+
+/// Reply to `jobs`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct Jobs {
+    /// in the order of the jobs file; empty = no standalone jobs
+    pub jobs: Vec<Job>,
+}
+
+/// Reply to `run_job`.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct JobQueued {
+    /// the job
+    pub name: String,
 }
 
 /// Error reply or transport failure as seen by a client.
@@ -382,6 +444,16 @@ impl Client {
     /// Sends `request_backup`; [`Error::Refused`] when rate-limited or not allowed.
     pub fn request_backup(&mut self) -> Result<Requested, Error> {
         self.call(&Request::RequestBackup)
+    }
+
+    /// Sends `jobs`; [`Error::Refused`] from a service older than Phase 38h.
+    pub fn jobs(&mut self) -> Result<Vec<Job>, Error> {
+        self.call::<Jobs>(&Request::Jobs).map(|j| j.jobs)
+    }
+
+    /// Sends `run_job`.
+    pub fn run_job(&mut self, name: &str) -> Result<JobQueued, Error> {
+        self.call(&Request::RunJob { name: name.to_owned() })
     }
 }
 

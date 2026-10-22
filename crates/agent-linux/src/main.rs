@@ -21,6 +21,8 @@ end users (root or members of the group nexus-agent-ui):
   nexus-agent sessions [--limit N] [--json]
   nexus-agent session <id> [--json]      one session with its log tail
   nexus-agent request-backup [--json]    ask the appliance for a backup at its next poll
+  nexus-agent jobs [--json]              standalone jobs of this computer with their last result
+  nexus-agent run-job <name> [--json]    run a standalone job now
   exit codes: 0 ok, 1 error, 2 no permission on the socket, 3 agent service not running,
   4 refused by the agent (rate limit, policy, unknown session); --socket PATH for tests
 defaults: --config /etc/nexus-agent --state /var/lib/nexus-agent
@@ -134,6 +136,15 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
         }
         ["request-backup"] => Ok(user_exit(cli::run(
             &cli::Command::RequestBackup,
+            &sock,
+            json,
+            Clock::Local,
+        ))),
+        ["jobs"] => Ok(user_exit(cli::run(&cli::Command::Jobs, &sock, json, Clock::Local))),
+        ["run-job", name] => Ok(user_exit(cli::run(
+            &cli::Command::RunJob {
+                name: (*name).to_owned(),
+            },
             &sock,
             json,
             Clock::Local,
@@ -262,6 +273,9 @@ fn run(paths: Paths) -> Result<ExitCode, String> {
                 "nexus-agent {}: standalone jobs only (not enrolled)",
                 env!("CARGO_PKG_VERSION")
             );
+            // the local UI still shows the jobs and can run one now
+            let agent = Arc::new(agent);
+            serve_ui(&agent);
             agent_core::standalone::run_jobs(&agent.platform, &agent.paths, &agent.settings);
             return Ok(ExitCode::SUCCESS);
         }

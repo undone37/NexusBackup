@@ -19,7 +19,7 @@ self-service restore.
 | Control Panel bar chart: one bar per session, colour = result (green / yellow / red / grey), height = size or duration, hover = status, time, size | Same chart (last 30 sessions), height toggle *transferred* / *duration*, hover details; next scheduled run and last successful backup above it |
 | Backup Now in the Control Panel / tray menu | "Request backup now" (same request path as the TUI); can be hidden by the administrator per agent |
 | Branding / hiding UI parts (Config.xml: accent colour, header text, hide manual runs, hide tray) | Per-agent UI policy set on the appliance, sent with the session summaries: accent colour, header text, hide "backup now", hide tray |
-| Managed mode: most local actions disabled, "managed by server" | Always managed: no local job configuration, no local restore (user decision), no encryption settings (per-tenant keys on the appliance) |
+| Managed mode: most local actions disabled, "managed by server" | Managed by the appliance (no local job configuration from the UI, no local restore, no encryption settings); since Phase 38 the administrator can add standalone jobs (`standalone.json`, docs/agent-standalone.md), which the window lists under "Backups on this computer" with "Run now" |
 | Notifications: Control Panel notification bar, no completion toast | Optional desktop notification on failure / warning (off by default), notification bar in the window |
 | Laptops: skip on battery < 20 %, metered connections blocked, Wi-Fi allow-list, "backup once powered on" | Agent reports battery / metered / network state in its poll answer; the appliance skips or defers a scheduled run accordingly (policy options), retries when the laptop is reachable again |
 
@@ -36,9 +36,12 @@ the release page, Phase 19), FLR mount on the endpoint (restores stay admin-only
   answers with queued requests (backup now), its UI policy version and its power/network state. Reachability is
   recorded (`agents.last_seen`); a missed scheduled run is queued when the agent becomes reachable again.
 - **Local IPC:** the agent service exposes a read-mostly local socket (`/run/nexus-agent/ui.sock`, named pipe
-  `\\.\pipe\nexus-agent-ui` on Windows): `status`, `sessions`, `session <id>`, `request_backup`. Access: local users
-  (Linux: group `nexus-agent-ui`; Windows: interactive users), requests rate-limited; nothing on the socket can change
-  configuration, start a restore or read backup data.
+  `\\.\pipe\nexus-agent-ui` on Windows): `status`, `sessions`, `session <id>`, `request_backup`, and since Phase 38h
+  `jobs` and `run_job <name>` (standalone jobs the administrator configured; a run is queued for the agent's job loop,
+  which applies the usual waits). Access: local users (Linux: group `nexus-agent-ui`; Windows: interactive users),
+  backup requests rate-limited, `run_job` refused like `request_backup` while the UI policy hides "backup now";
+  nothing on the socket can change configuration, start a restore or read backup data. A service that is not
+  enrolled but has standalone jobs serves the socket / pipe as well.
 - **Linux TUI:** `nexus-agent tui` (ratatui), works over SSH, no mouse needed.
 - **GUI (Windows + Linux desktop):** `nexus-agent-gui` (Rust, iced + tray-icon), started per user session
   (Windows: Run key / Startup; Linux: XDG autostart), talks only to the local socket/pipe; packaged with the agent

@@ -74,6 +74,7 @@ fn fake_service(path: &Path) {
                         })
                     }
                     Request::RequestBackup => encode_err("rate limited: one request per 10 minutes"),
+                    Request::Jobs | Request::RunJob { .. } => encode_err("bad request: unknown op"),
                 };
                 w.write_all(reply.as_bytes()).unwrap();
             }

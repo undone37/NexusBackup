@@ -414,6 +414,14 @@ fn run(paths: Paths, service: Option<()>) -> Result<(), String> {
                 "nexus-agent {}: standalone jobs only (not enrolled)",
                 env!("CARGO_PKG_VERSION")
             );
+            // the local UI still shows the jobs and can run one now
+            let agent = Arc::new(agent);
+            let a = agent.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = super::pipe::serve(a) {
+                    eprintln!("nexus-agent: local UI pipe {}: {e}", agent_ui_proto::PIPE_NAME);
+                }
+            });
             agent_core::standalone::run_jobs(&agent.platform, &agent.paths, &agent.settings);
             return Ok(());
         }

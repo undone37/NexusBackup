@@ -37,6 +37,8 @@ pub enum Message {
     Metric(Metric),
     BackupNow,
     BackupDone(Result<String, String>),
+    /// run a standalone job now (Phase 38h)
+    RunJob(String),
     Notify(bool),
     DismissNotice,
     Opened(window::Id),
@@ -288,6 +290,10 @@ impl App {
                 Task::none()
             }
             Message::BackupNow => self.backup_now(),
+            Message::RunJob(name) => {
+                let ep = self.opts.endpoint.clone();
+                Task::perform(async move { ipc::run_job(&ep, &name) }, Message::BackupDone)
+            }
             Message::BackupDone(r) => {
                 self.notice = Some(r);
                 Task::done(Message::Refresh)
@@ -453,7 +459,7 @@ impl App {
         if let Some(n) = &self.notice {
             let (t, err) = match n {
                 Ok(t) => (t.clone(), false),
-                Err(e) => (format!("Backup request refused: {e}"), true),
+                Err(e) => (format!("Refused: {e}"), true),
             };
             body = body.push(bar(t, err, Some(Message::DismissNotice)));
         }
@@ -523,6 +529,32 @@ impl App {
             );
         }
         body = body.push(container(card).padding(14).width(Length::Fill).style(card_style));
+
+        // Phase 38h: standalone jobs (backups this computer runs itself)
+        let jobs = self.snap.as_ref().map_or(&[][..], |s| &s.jobs[..]);
+        if !jobs.is_empty() {
+            let can_run = !status.is_some_and(|s| s.ui_policy.hide_backup_now);
+            let mut c = column![text("Backups on this computer").size(16)].spacing(10);
+            for j in jobs {
+                let state = model::job_state(j);
+                c = c.push(
+                    row![
+                        column![
+                            text(format!("{} · {}", j.name, j.schedule)).size(14),
+                            text(state).size(12),
+                        ]
+                        .spacing(2)
+                        .width(Length::Fill),
+                        button(text(if j.queued { "Queued" } else { "Run now" }).size(13))
+                            .on_press_maybe((can_run && !j.queued).then(|| Message::RunJob(j.name.clone())))
+                            .padding([6, 12]),
+                    ]
+                    .spacing(12)
+                    .align_y(iced::Alignment::Center),
+                );
+            }
+            body = body.push(container(c).padding(14).width(Length::Fill).style(card_style));
+        }
 
         // session chart
         let sessions = self.sessions();

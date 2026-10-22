@@ -257,3 +257,55 @@ fn copy_fetch_and_open_elsewhere() {
         "only into an empty directory"
     );
 }
+
+/// Phase 38h: the local UI lists the jobs and queues one to run now; the next pass runs it although its
+/// slot is not due. (The queue is process-wide: a job name no other test uses.)
+#[test]
+fn local_ui_lists_jobs_and_runs_one_now() {
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let p = paths(&d.path().join("a"));
+    fs::create_dir_all(&p.config).unwrap();
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let data = d.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("a.txt"), b"x").unwrap();
+    let repo = d.path().join("repo");
+    standalone::init(&p, &repo, "host").unwrap();
+    let jobs =
+        serde_json::json!({"jobs": [{"name": "ui-job", "repo": repo, "paths": [data], "schedule": "monthly 1 03:00"}]});
+    fs::write(p.config.join(standalone::JOBS_FILE), jobs.to_string()).unwrap();
+    let agent = nexus_agent::server::Agent::new(p.clone(), settings.clone()).unwrap();
+    let now = 2_000_000_000i64;
+    // the first pass runs the new job (a new job is due at once); then the slot is done
+    assert!(standalone::tick(&agent.platform, &p, &settings, now)
+        .iter()
+        .any(|l| l.contains("ui-job: snapshot")));
+    assert!(standalone::tick(&agent.platform, &p, &settings, now + 60).is_empty());
+
+    let reply: serde_json::Value = serde_json::from_str(&agent.ui_request(r#"{"op":"jobs"}"#)).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    let j = &reply["jobs"][0];
+    assert_eq!(
+        (j["name"].as_str(), j["queued"].as_bool()),
+        (Some("ui-job"), Some(false)),
+        "{reply}"
+    );
+    assert!(
+        j["last_ok"].as_u64().is_some() && j["next"].as_u64().is_some(),
+        "{reply}"
+    );
+
+    let r: serde_json::Value = serde_json::from_str(&agent.ui_request(r#"{"op":"run_job","name":"nope"}"#)).unwrap();
+    assert_eq!(r["ok"], false);
+    let r: serde_json::Value = serde_json::from_str(&agent.ui_request(r#"{"op":"run_job","name":"ui-job"}"#)).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    let reply: serde_json::Value = serde_json::from_str(&agent.ui_request(r#"{"op":"jobs"}"#)).unwrap();
+    assert_eq!(reply["jobs"][0]["queued"], true);
+    // not due by its schedule, run because it was asked for; then the queue is empty again
+    let log = standalone::tick(&agent.platform, &p, &settings, now + 120);
+    assert!(log.iter().any(|l| l.starts_with("job ui-job: snapshot")), "{log:?}");
+    assert!(!standalone::queued().contains("ui-job"));
+}

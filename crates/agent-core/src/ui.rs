@@ -172,6 +172,14 @@ impl Ui {
 
     /// `request_backup` from a local user: refused when hidden by policy or within
     /// the rate limit; persisted until the appliance acknowledges it.
+    /// The appliance's UI policy hides "back up now" (also for standalone jobs).
+    pub fn backup_now_hidden(&self) -> bool {
+        lock(&self.state)
+            .appliance
+            .as_ref()
+            .is_some_and(|a| a.ui_policy.hide_backup_now)
+    }
+
     pub fn request_backup(&self, now: u64) -> Result<ui::Requested, String> {
         let mut st = lock(&self.state);
         if st.appliance.as_ref().is_some_and(|a| a.ui_policy.hide_backup_now) {
@@ -320,7 +328,49 @@ impl<P: Platform> Agent<P> {
                     Err(e) => ui::encode_err(&e),
                 }
             }
+            ui::Request::Jobs => match self.ui_jobs() {
+                Ok(j) => ui::encode_ok(&j),
+                Err(e) => ui::encode_err(&e),
+            },
+            ui::Request::RunJob { name } => {
+                if self.ui.backup_now_hidden() {
+                    return ui::encode_err("backup requests are disabled by the administrator");
+                }
+                match crate::standalone::request_run(&self.paths, &name) {
+                    Ok(()) => {
+                        crate::server::log(format!("local UI: standalone job {name} queued to run now"));
+                        ui::encode_ok(&ui::JobQueued { name })
+                    }
+                    Err(e) => ui::encode_err(&e),
+                }
+            }
         }
+    }
+
+    /// The standalone jobs with their state (`jobs`).
+    fn ui_jobs(&self) -> Result<ui::Jobs, String> {
+        use crate::standalone;
+        let (states, queued) = (standalone::job_states(&self.paths), standalone::queued());
+        let jobs = standalone::load_jobs(&self.paths)?
+            .into_iter()
+            .map(|j| {
+                let s = states.get(&j.name).cloned().unwrap_or_default();
+                ui::Job {
+                    next: j.next_slot(now() as i64).map(|t| t as u64),
+                    last_run: (s.last_run > 0).then_some(s.last_run as u64),
+                    last_ok: s.last_ok.map(|t| t as u64),
+                    last_summary: s.last_summary,
+                    last_error: s.last_error,
+                    waiting: s.waiting,
+                    queued: queued.contains(&j.name),
+                    name: j.name,
+                    paths: j.paths,
+                    repo: j.repo,
+                    schedule: j.schedule,
+                }
+            })
+            .collect();
+        Ok(ui::Jobs { jobs })
     }
 
     pub fn ui_status(&self, now: u64) -> ui::Status {

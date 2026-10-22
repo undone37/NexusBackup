@@ -67,10 +67,22 @@ file holds credentials: keep it next to the jobs file (root / Administrators onl
 Mirror, not the appliance's offsite packs: one object per chunk (many small objects on S3; an SFTP box with a
 file-count limit fills faster). ponytail: packs like `crates/offsite` when that matters.
 
+## Local UI (38h, first part)
+
+The UI channel (crate `agent-ui-proto`) has `jobs` (each job with schedule, next slot, last success and summary, last
+error, why it waits, whether a run is queued) and `run_job` (queues a run for the job loop, which starts it within
+about a second and applies the usual waits; refused while the appliance's UI policy hides "backup now"). An older
+service refuses the ops and the UIs hide the jobs. The desktop window shows a card "Backups on this computer" with
+"Run now" per job; on Linux, `nexus-agent jobs` and `nexus-agent run-job <name>` do the same for members of
+`nexus-agent-ui` without root. The run-now queue lives in the service process (one job pass at a time); a run asked
+for while the job waits keeps waiting with it. Not yet: a jobs view in the TUI, job configuration or restores from
+the UI.
+
 ## Tests
 
 `crates/agent-linux/tests/standalone.rs`: backup, an incremental that reuses the unchanged big file's chunks,
 restore of the first snapshot, prune, the writer lock, opening on another machine with the 24 words (wrong words
 refused); the job pass (once per slot, prune after the backup, waiting for a missing repository and running when it
 appears, a broken jobs file reported); a copy (incremental, deletions after a prune), fetched and opened on another
-machine with the words, restored.
+machine with the words, restored; the UI ops (`jobs`, `run_job` for an unknown and a known job, the next pass
+runs the queued job although its slot is not due).

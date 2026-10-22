@@ -792,6 +792,11 @@ pub struct JobState {
 }
 
 impl Job {
+    /// Next slot after `now` (unix seconds), `None` for a broken schedule.
+    pub fn next_slot(&self, now: i64) -> Option<i64> {
+        self.schedule().ok()?.next_slot(now)
+    }
+
     fn schedule(&self) -> Result<schedule::Schedule, String> {
         let s = schedule::Schedule::parse(&self.schedule).map_err(|e| format!("job {}: {e:#}", self.name))?;
         match &self.tz {
@@ -918,6 +923,8 @@ pub fn run_job<P: Platform>(
 
 /// One pass over the jobs at `now`: runs every due job that does not have to wait. Returns log lines.
 pub fn tick<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::Settings, now: i64) -> Vec<String> {
+    // one pass at a time: jobs.json is read, changed and written back
+    let _pass = PASS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let jobs = match load_jobs(paths) {
         Ok(j) => j,
         Err(e) => return vec![format!("standalone jobs: {e}")],
@@ -928,10 +935,14 @@ pub fn tick<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::
     let mut states = job_states(paths);
     let power = platform.power_state();
     let mut log = Vec::new();
+    // the queue stays until a job starts: a waiting job keeps its request
+    let requested = queued();
     for job in &jobs {
         let st = states.entry(job.name.clone()).or_default();
         let Ok(sched) = job.schedule() else { continue };
-        if !sched.due(st.last_run, now) {
+        // "run now" from the local UI: due at once, the waits apply as for a slot
+        let asked = requested.contains(&job.name);
+        if !asked && !sched.due(st.last_run, now) {
             st.waiting = None;
             continue;
         }
@@ -944,6 +955,7 @@ pub fn tick<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::
         }
         st.waiting = None;
         st.last_run = now;
+        unqueue(&job.name);
         match run_job(platform, paths, settings, job) {
             Ok(line) => {
                 log.push(format!("job {}: {line}", job.name));
@@ -970,8 +982,51 @@ pub fn run_jobs<P: Platform>(platform: &P, paths: &Paths, settings: &crate::conf
         for l in tick(platform, paths, settings, now() as i64) {
             eprintln!("nexus-agent: {l}");
         }
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        // a minute, or until the local UI asks for a run
+        let (q, wake) = &*RUN_NOW;
+        let g = q.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if g.is_empty() {
+            let _ = wake.wait_timeout(g, std::time::Duration::from_secs(60));
+        }
     }
+}
+
+/// One job pass at a time (the service's loop, a run asked for by the local UI).
+static PASS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Jobs the local UI asked to run now, and the wake-up of the job loop.
+static RUN_NOW: std::sync::LazyLock<(std::sync::Mutex<std::collections::BTreeSet<String>>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Queues a configured job for the next pass and wakes the job loop (local UI "run now"). The pass applies
+/// the usual waits (repository missing, battery, metered network) and records the result.
+pub fn request_run(paths: &Paths, name: &str) -> Result<(), String> {
+    if !load_jobs(paths)?.iter().any(|j| j.name == name) {
+        return Err(format!("no standalone job {name:?}"));
+    }
+    let (q, wake) = &*RUN_NOW;
+    q.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(name.to_owned());
+    wake.notify_all();
+    Ok(())
+}
+
+/// The jobs queued by the local UI and not started yet.
+pub fn queued() -> std::collections::BTreeSet<String> {
+    RUN_NOW
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn unqueue(name: &str) {
+    RUN_NOW
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(name);
 }
 
 // ---- copies to SFTP / S3 (Phase 38c) -------------------------------------------------------------------
