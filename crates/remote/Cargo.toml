@@ -1,0 +1,26 @@
+[package]
+name = "remote"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Offsite storage backends: local directory, SFTP, S3 with Object Lock"
+
+[dependencies]
+base64 = "0.22"
+futures-util = "0.3"
+hmac = "0.12"
+md5 = { package = "md-5", version = "0.10" }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+russh = { version = "0.64", default-features = false, features = ["ring"] }
+russh-sftp = "3"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

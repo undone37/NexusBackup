@@ -116,6 +116,7 @@ dependencies = [
  "regex",
  "ring",
  "rustls",
+ "schedule",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4388,25 +4389,16 @@ name = "offsite"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "catalog",
  "chunkstore",
- "futures-util",
- "hmac 0.12.1",
  "keyd",
  "libc",
- "md-5",
  "postcard",
  "rand 0.8.8",
- "reqwest",
- "russh",
- "russh-sftp",
- "rustls",
+ "remote",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
- "tokio",
  "zeroize",
 ]
 
@@ -5451,6 +5443,24 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "remote"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "hmac 0.12.1",
+ "md-5",
+ "rand 0.8.8",
+ "reqwest",
+ "russh",
+ "russh-sftp",
+ "rustls",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "renderdoc-sys"

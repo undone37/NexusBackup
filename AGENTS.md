@@ -28,7 +28,7 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 | `crates/pve`, `pve-plugin/` | Proxmox VE connector and the Perl node plugin (storage plugin, backup provider, SSH helper) |
 | `crates/agent-*` | agent protocol, Linux/Windows agents, desktop UI, appliance side (`agent-conn`) |
 | `crates/fsindex` | read-only guest file system parsers for the file index (NTFS, ext4, XFS, btrfs, FAT, LVM, LDM) |
-| `crates/offsite`, `replication`, `nas`, `truenas`, `plugin-*`, `plugins/` | other connectors and the plugin system |
+| `crates/offsite`, `remote`, `replication`, `nas`, `truenas`, `plugin-*`, `plugins/` | other connectors (`remote`: the SFTP / S3 / directory storage clients) and the plugin system |
 | `os/` | bootc Containerfile, systemd units, SELinux policy, nftables, greenboot checks |
 | `release/` | packaging, signing (offline key), verification, promotion |
 | `docs/` | contracts and designs (`docs/pve-connector.md`, `docs/adr.md`, ...); comparisons are background reading |
