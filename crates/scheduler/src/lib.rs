@@ -1416,7 +1416,8 @@ impl Scheduler {
         } else {
             self.failed_result(&job, &log)
         };
-        if ok && job.kind == "plugin_backup" {
+        // group backups of a plugin source run as `backup` (schedules), single sources as `plugin_backup`
+        if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.meta_bookkeeping(&job, result.as_ref())?;
         }
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {

@@ -1453,6 +1453,31 @@ esac"
             .unwrap_err()
     )
     .contains("disabled"));
+    // the same through a group backup (kind `backup`, what schedules run): kept too, merged with
+    // what the row has (lab 2026-10-23: scheduled PostgreSQL backups had no recoverable range)
+    s.db.conn().execute("UPDATE plugins SET enabled = 1", []).unwrap();
+    s.db.conn()
+        .execute(
+            "UPDATE snapshots SET meta = '{\"keep\":1}' WHERE source='plugin-pgx-9-db1' AND time=1700000000",
+            [],
+        )
+        .unwrap();
+    let g = manual(&s, "backup", "t1", json!({"group_id": 9}));
+    s.start_jobs().unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    assert_eq!(state(&s, g), "ok", "group backup");
+    let meta: Value = serde_json::from_str(
+        &s.db
+            .conn()
+            .query_row::<String, _, _>(
+                "SELECT meta FROM snapshots WHERE source='plugin-pgx-9-db1' AND time=1700000000",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta, json!({"keep": 1, "recoverable": {"to_lsn": "0/3000000"}}));
 }
 
 fn result_of(s: &Scheduler, id: i64) -> Value {

@@ -30,8 +30,8 @@ pub(crate) fn attach(log: &str, snaps: &mut [Value]) {
 }
 
 impl Scheduler {
-    /// `snapshots.meta` of a finished backup's snapshots (the row may not exist yet:
-    /// the refresh fills in the rest).
+    /// `snapshots.meta` of a finished backup's snapshots, merged with what the row has (the
+    /// row may not exist yet: the refresh fills in the rest).
     pub(crate) fn meta_bookkeeping(&self, job: &Job, result: Option<&Value>) -> Result<()> {
         for s in result.and_then(|r| r["snapshots"].as_array()).into_iter().flatten() {
             let (Some(src), Some(t), Some(m)) = (s["source"].as_str(), s["time"].as_i64(), s.get("meta")) else {
@@ -44,7 +44,7 @@ impl Scheduler {
                 // the snapshot was just committed to the local store: local = 1 now, not after the
                 // next store scan (a restore test right after the backup found "no such local snapshot")
                 "INSERT INTO snapshots (tenant, source, time, local, offsite, meta) VALUES (?1,?2,?3,1,0,?4)
-                 ON CONFLICT (tenant, source, time) DO UPDATE SET meta=?4",
+                 ON CONFLICT (tenant, source, time) DO UPDATE SET meta = json_patch(COALESCE(meta,'{}'), ?4)",
                 params![job.tenant, src, t, m.to_string()],
             )?;
         }
