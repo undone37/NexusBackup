@@ -685,7 +685,14 @@ fn ha_primary_and_failover() {
         again.summary,
         h.log()
     );
-    assert!(h.log().iter().any(|l| l.contains("timeline changed")), "{:?}", h.log());
+    // no slot on the promoted replica (no cluster manager keeps one there): a new base backup
+    assert!(
+        h.log()
+            .iter()
+            .any(|l| l.contains("timeline 1 → 2: no slot") && l.contains("full backup")),
+        "{:?}",
+        h.log()
+    );
     assert_eq!(again.meta.as_ref().unwrap()["recoverable"]["timeline"], 2);
     stop_rm(&b, &["replica"]);
 }
