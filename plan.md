@@ -1096,6 +1096,7 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
   bundle: `bootc upgrade`. **Done 2026-10-20** for 36a (release/update-bundle.sh), 36b, 36c (upload API + UI);
   lab on the appliance VM: see state.md. Open: parts above 2 GiB, `nexusctl update upload`, USB at the console,
   the greenboot rollback after a broken build and an online update after an offline one (lab).
+Open work: epic #18.
 
 ### Phase 37 — Windows bare-metal recovery (added 2026-10-20 by user request)
 
@@ -1127,6 +1128,7 @@ Until now the Windows agent backs up files (VSS, USN incrementals), and BMR was 
 - **Verification:** VM 101 is never written to: lab restores of an isolated copy of VM 101 onto blank disks (same
   firmware) and as a P2V VM; Windows boots, the guest agent answers, the data is identical (hash list), BitLocker
   state as recorded. Then a test on physical hardware.
+Open work: epic #19.
 
 ### Phase 38 — Standalone agents with Veeam Agent parity (added 2026-10-20 by user request)
 
@@ -1180,22 +1182,24 @@ in this repository and uses the same crates as the appliance; the agents get the
 - **Verification:** lab matrix from `lab/README.md` (Linux distributions) and VM 101 copies for Windows: backup to
   each target type, triggers, application-aware backup and point-in-time restore, BMR from a standalone repository,
   attach of a standalone repository to an appliance, recovery with only the 24 words and the target.
+Open work: epic #20.
 
 ### Phase 39 — Open items (consolidated 2026-10-20 by user request)
 
 The small open points that were scattered over Phases 0–34 and the state log. Each lives here only; the earlier
 sections keep their decisions and point here. Larger planned work stays in Phases 35–38. IDs are for references from
-state.md and commits.
+state.md and commits. Since 2026-10-23 every open item is a GitHub issue (number after the ID), all
+sub-issues of the backlog epic #21; close the issue with the PR or commit that finishes it.
 
 **Security**
-- S1 Offline key ceremony with a standby key; rotate away from the alpha key before the first beta
+- S1 (#50) Offline key ceremony with a standby key; rotate away from the alpha key before the first beta
   (0.0.1-alpha release).
 - S2 **Done 2026-10-21:** risk signals: the "API token from a new network" rule (/24, /48; `token_networks`,
   catalog v47); thresholds as the gated setting `risk` (Settings → Security; loosening counts as weakening)
   (Phase 29).
 - S3 **Done 2026-10-20:** flagged snapshots: BMR/P2V refused (409, scheduler re-check; no approval route, the flag is
   cleared first); downloads administrators only (security officers start no jobs) (Phase 29).
-- S4 Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
+- S4 (#51) Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
   2026-10-21 first part: keyd gives the index (its primary group `nexus-index`) read-only access, keyring fetches
   only. Open: a uid of its own needs group-readable stores (chunk files are 0600 `nexus-chunkstore` on every
   existing appliance), together with H-3.
@@ -1212,23 +1216,23 @@ state.md and commits.
   zlib and zstd decompressed; lzo stays unhashed, no default anywhere);
   NTFS, ext4, XFS done before. NTFS compressed / encrypted / deduplicated
   files unhashed (Phase 28, 31c). MD5/SHA-1 IOC lists: decided SHA-256 only for now.
-- C2 File search: **done 2026-10-21:** owner filter (`owner=`: SID, uid, uid:gid, built-in Windows names; UI field),
+- C2 (#52) File search: **done 2026-10-21:** owner filter (`owner=`: SID, uid, uid:gid, built-in Windows names; UI field),
   names of Windows' well-known SIDs; **2026-10-22:** owner names from the guest itself (`/etc/passwd` of a Linux root
   file system, local accounts of the Windows SAM), kept in the encrypted per-snapshot report, resolved by nexus-index
   at ingest (index format 2: one rebuild), and names as owner filter values (case-insensitive). Open: domain account
   names (AD is not on the member's disk) (31c).
-- C3 Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
+- C3 (#53) Windows dynamic disks: GPT dynamic disks checked against a Windows-made disk; micro-VM restore from dynamic
   volumes (31c).
-- C4 M365 item metadata search (sender, recipients) for cases: **done 2026-10-22** (plugin protocol v1.10
+- C4 (#54) M365 item metadata search (sender, recipients) for cases: **done 2026-10-22** (plugin protocol v1.10
   `ItemMeta` with `caps` in the backup params, sealed side file `itemmeta` per snapshot carried over for unchanged
   mails, case criteria `sender` / `recipient`; docs/m365.md). Open: the instant search (nexus-index) does not use the
   records; mails carried over from older snapshots have none (Phase 19, 33).
 - C5 VMware vSphere: moved to Phase 41 (2026-10-21).
-- C6 Instant rollback for containers (Phase 30).
+- C6 (#55) Instant rollback for containers (Phase 30).
 - C7 **Done 2026-10-21:** progress lines for nexus-nas (part `scan`: entries, bytes read; the share is the item) and the
   plugin host (the plugin's text as the part); the plugin host's and the agent release push's former lines were not
   machine lines and were dropped by the scheduler (Phase 31 lab notes).
-- C8 `ntfs` 0.4.0 (file index) pins binrw 0.11.3, which Rust 1.99 reports as future-incompatible (unnamed `...`
+- C8 (#56) `ntfs` 0.4.0 (file index) pins binrw 0.11.3, which Rust 1.99 reports as future-incompatible (unnamed `...`
   argument, private extern crate re-export; rust-lang/rust#145544, #127909). ntfs master replaced binrw with zerocopy
   (2026-01) but is unreleased: move to ntfs 0.5 when it is published (2026-10-21).
 
@@ -1237,18 +1241,18 @@ state.md and commits.
   `config_backup:<tenant>:2`, own row in Settings) (Phase 30).
 
 **Web UI**
-- U1 In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14). 2026-10-21: Hardware
+- U1 (#57) In-depth review of the Plugins, Hardware, Quorum and Search pages (UI polish 2026-10-14). 2026-10-21: Hardware
   disk rows link to their array card (replace, spare); Search got the owner filter (C2); Plugins reviewed, no change.
 
 **Release and CI**
-- R1 Maintainer: sign and publish the v0.1.0-alpha draft (digest sha256:176c25e7...) (Release 0.1.0-alpha).
-- R2 CVE gate for final releases (2026-10-20): `toolbox` removed from the image. Reviewed exceptions
+- R1 (#58) Maintainer: sign and publish the v0.2.0-alpha.3 draft (v0.1.0-alpha is published) (Release 0.1.0-alpha).
+- R2 (#59) CVE gate for final releases (2026-10-20): `toolbox` removed from the image. Reviewed exceptions
   (`release/cve-exceptions.json`, 90-day review) cover all 19 critical kernel findings of the restore micro-VM: 6 by
   Debian tracker evidence (2 not affected, 4 fixed in 6.12.100 to 6.12.111), 13 by reachability (maintainer decision:
   config option per subsystem from Debian's 6.12.111 config; the VM has no NIC; the initrd's 36-module closure holds
   none of ksmbd, sctp, rdma_rxe, mlx5, qla2xxx, netfs). **Still blocking a final release:** the podman/skopeo Go
   findings (grpc, x/net, Go stdlib; AlmaLinux 10 has no newer build) (Release 0.1.0-alpha).
-- R6 Spike: our own minimal kernel for the restore micro-VM (no networking, only the needed drivers and file systems,
+- R6 (#60) Spike: our own minimal kernel for the restore micro-VM (no networking, only the needed drivers and file systems,
   a current LTS series so grype sees the fixes): CI build time, ZFS against the LTS, rebuild cadence per stable
   release; then decide whether to replace Debian's kernel (maintainer question 2026-10-20).
 - R3 **Done 2026-10-20:** perlcritic severity 4 ("stern") over the plugin, helper and rollback, in CI (`plugin`) and
@@ -1258,40 +1262,40 @@ state.md and commits.
 - R5 **Done 2026-10-20 (maintainer):** private vulnerability reporting and Dependabot alerts enabled (Phase 34d).
 
 **Labs and tests** (lab rules: `lab/README.md`, Windows only on copies of VM 101)
-- L1 Real Hetzner Storage Box: rename-no-overwrite, extensions, WAN throughput (Phase 4).
-- L2 Appliance VM scripts not run since Phases 13–18: `disks.sh` (EXTRA_DISKS=5 NVME=1), `grub-lock.sh`, m5-api
+- L1 (#61) Real Hetzner Storage Box: rename-no-overwrite, extensions, WAN throughput (Phase 4).
+- L2 (#62) Appliance VM scripts not run since Phases 13–18: `disks.sh` (EXTRA_DISKS=5 NVME=1), `grub-lock.sh`, m5-api
   `firewall` step, `forwarding.sh` rerun, `offsite-fetch`, `config-restore.sh`, `console-gate.sh`, PG 1.2.0 bundle,
   vault mode, ui-smoke.
-- L3 Installation on physical hardware (none tested; manual chapter 2) and a multi-node PVE cluster (manual chapter 4).
-- L4 Windows: desktop GUI checked by the maintainer (icon, palette), MSI major upgrade with a bumped version, the
+- L3 (#63) Installation on physical hardware (none tested; manual chapter 2) and a multi-node PVE cluster (manual chapter 4).
+- L4 (#64) Windows: desktop GUI checked by the maintainer (icon, palette), MSI major upgrade with a bumped version, the
   appliance on pve-test backing up the Windows VMs through PVE (Phase 24, 27).
-- L5 Restore test of VM 101 on pve-test: pipelined reads byte-exact and timed on a full run.
-- L6 Linux agent updates: `lab/linux/e2e.sh <vm> agent agent_deb update_deb`, `.rpm` on alma-xfs, desktop package
+- L5 (#65) Restore test of VM 101 on pve-test: pipelined reads byte-exact and timed on a full run.
+- L6 (#66) Linux agent updates: `lab/linux/e2e.sh <vm> agent agent_deb update_deb`, `.rpm` on alma-xfs, desktop package
   with the GUI running, bundle swap + watchdog on deb-plain, arm64 on the emulated aarch64 VM, edge-connected laptop
   updated on reconnect (Phase 27).
-- L7 Windows agent updates: MSI update with the GUI running (service stays enrolled), msiexec outside the service's
+- L7 (#67) Windows agent updates: MSI update with the GUI running (service stays enrolled), msiexec outside the service's
   job object, MSI 1603 log parsing, watchdog revert of a manual install, rollback refused for MSI (Phase 27).
-- L8 Appliance image with a signed agent release (os/agent-release) booted; SELinux of the upload dir
+- L8 (#68) Appliance image with a signed agent release (os/agent-release) booted; SELinux of the upload dir
   (`nexus_agent_release_t`) and of nexus-agentctl reading /etc/pki/nexus/cosign under enforcing (Phase 27).
-- L9 Scheduled scan and hash hunt with real Linux and Windows agents; lockdown with a tenant admin session;
+- L9 (#69) Scheduled scan and hash hunt with real Linux and Windows agents; lockdown with a tenant admin session;
   new-device mail through the lab SMTP sink (Phase 28).
-- L10 Full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with a
+- L10 (#70) Full read against the PVE host (bitmap reuse with a real VM), scan back in the real restore VM, step-up with a
   passkey in the browser (Phase 29).
-- L11 File index: Debian LVM + XFS guest; XFS / btrfs / LVM thin / LDM on real guests; index time with the LRU cache
+- L11 (#71) File index: Debian LVM + XFS guest; XFS / btrfs / LVM thin / LDM on real guests; index time with the LRU cache
   on the Windows member server; several groups at once (needs a second PVE node); per-snapshot cost of `index_files`
   on by default (decision 4 of docs/file-index-v2-plan.md) (Phase 31).
-- L12 Instant rollback on a PVE host with a running VM: `restore ... --replace --rollback` on LVM-thin, ZFS, dir
+- L12 (#72) Instant rollback on a PVE host with a running VM: `restore ... --replace --rollback` on LVM-thin, ZFS, dir
   qcow2 and RBD, the root service's socket unit after installing the .deb, rolled-back disk compared with
   `nexus-pve dump`; risk of a pre-rollback backup of a paused Windows guest without guest-agent freeze (Phase 30).
-- L13 Two real offsite targets (Storage Box + S3 with Object Lock) for one tenant: uploads, longer monthly retention
+- L13 (#73) Two real offsite targets (Storage Box + S3 with Object Lock) for one tenant: uploads, longer monthly retention
   on the second, listing, fetch and DR (`nexus-setup` attach) from the second (Phase 30).
-- L14 PSA ticketing against HaloPSA, ConnectWise and Autotask sandboxes (needs vendor test instances) (Phase 33).
-- L15 `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs (Phase 33).
-- L16 Clean-file restore of a real agent / share snapshot after a simulated ransomware run (rename + YARA rule),
+- L14 (#74) PSA ticketing against HaloPSA, ConnectWise and Autotask sandboxes (needs vendor test instances) (Phase 33).
+- L15 (#75) `nexusctl fleet` against two appliance VMs over HTTPS with their own CAs (Phase 33).
+- L16 (#76) Clean-file restore of a real agent / share snapshot after a simulated ransomware run (rename + YARA rule),
   download and to host (Phase 33).
-- L17 M365 case over a real test tenant backup with a PST export (Phase 33).
-- L18 Instant recovery with disk move of a TPM VM (TPM state fix, 2026-10-15).
-- L19 First boot with the 24-word recovery key screen on a real console, 80x25 (ADR-015).
+- L17 (#77) M365 case over a real test tenant backup with a PST export (Phase 33).
+- L18 (#78) Instant recovery with disk move of a TPM VM (TPM state fix, 2026-10-15).
+- L19 (#79) First boot with the 24-word recovery key screen on a real console, 80x25 (ADR-015).
 
 ### Phase 40 — Disk encryption with LUKS2 and TPM, NVMe metadata tier (added 2026-10-20)
 
@@ -1303,7 +1307,7 @@ Split out of Phase 39 (S6) as its own phase. The plan §12.2 disk layout without
 - The NVMe metadata tier: catalog and chunk indexes on a mirrored NVMe pair, the data array for packs only.
 - Virtual appliances: vTPM limits (manual chapter 2), and what the setup wizard offers without a TPM.
 - Lab: appliance VM with vTPM and Secure Boot on pve-test; unlock, update, rollback, disk replacement, recovery.
-Not started.
+Not started. Epic #22.
 
 ### Phase 41 — VMware ESXi and vCenter backups as plugins (added 2026-10-21 by user request)
 
@@ -1351,7 +1355,7 @@ only if the spike shows it is needed).
   ESXi 7.0.3/8.0.3 (NFC read + full/incremental NFC and proxy backups, byte-correct reconstruction).
 - **M3 (next):** the scheduler job kind and connector binary, web-api source + UI (ESXi/vCenter, credentials,
   transport choice, proxy per cluster), restore to Proxmox VE, the proxy OVA, manual chapter, lab e2e.
-Spike and M1/M2 done; M3 not started.
+Spike and M1/M2 done; M3 not started. Epic #23.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
 
@@ -1368,7 +1372,7 @@ Sources listed as planned in the README, beyond Phases 37, 38 and 41. Each one s
   point-in-time restore; licensing of the lab instance (Oracle Database Free) to check first.
 - **Log backups** as their own schedule for every database source (SQL Server transaction logs, Oracle archive logs,
   as PostgreSQL WAL and MySQL binlogs already have), with the recoverable range shown per snapshot.
-Not started.
+Not started. Epic #24.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 
@@ -1395,7 +1399,7 @@ The catalogue at [plugins.pegaprox.com](https://plugins.pegaprox.com/) is curate
 - **Lab:** PegaProx in a VM on pve-test (ID from 200) against pve-test and the appliance VM 201; screenshots for the
   manual. Publishing in the catalogue is the maintainer's decision (submission by e-mail with the repository URL).
 - Later: XCP-ng VMs once Phase 42 backs them up.
-Not started.
+Plugin done and lab-tested (state.md Phase 43); open: screenshots (#44). Epic #25.
 
 ### Phase 44 — Backup and restore testing, databases first (added 2026-10-23 by user request)
 
@@ -1418,7 +1422,7 @@ source kind checked continuously, starting with databases.
   so the physical slot is declared as a Patroni permanent slot (maintainer's choice: slot + Patroni documentation);
   the plugin follows the timeline switch through `TIMELINE_HISTORY` and keeps the history files. Other cluster
   managers without slots on the standbys get a new base backup after a failover, as before.
-Not started.
+Restore tests and fault injection done (state.md Phase 44); open items in epic #26.
 
 ## 16. Risks and Open Questions
 

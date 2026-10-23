@@ -190,8 +190,8 @@ Measured in the lab:
 - **Instant recovery:** the VM runs 4.5 s after the start.
 - **Replication:** 181 MB/s for the initial sync.
 
-Per platform and version: [compatibility matrix](docs/compatibility.md). The exact state, every open item and the
-production gaps are in [`state.md`](state.md).
+Per platform and version: [compatibility matrix](docs/compatibility.md). The lab results and the state are in
+[`state.md`](state.md); open work is tracked in [GitHub issues](https://github.com/undone37/NexusBackup/issues).
 
 ## Comparison
 A rough orientation, not a buyer's guide. The other products are described from their public documentation as of
@@ -290,7 +290,7 @@ that should share one store, one key model and one approval process.
                          └── keyd (KEK, tenant DEKs, recovery-key escrow)
 ```
 Details:
-- [`plan.md`](plan.md): vision, decisions, phases;
+- [`plan.md`](plan.md): vision, decisions, phases; open work: [issues](https://github.com/undone37/NexusBackup/issues);
 - [`docs/`](docs): contracts and designs;
 - [`docs/adr.md`](docs/adr.md): architecture decisions;
 - [`docs/threat-model.md`](docs/threat-model.md) and [`docs/security-review.md`](docs/security-review.md): threat

@@ -12,8 +12,13 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 - **No secrets in the repository.** Lab credentials live in `~/nexus-lab/` (never committed). Test keys in the tree
   are marked as such (`release/testkey/`, `TEST-KEY-DO-NOT-SHIP`).
 - **Stop processes by PID**, never with `pkill -f` / `killall` (a pattern can hit unrelated processes).
-- **Keep `state.md` current**: tick what is done, add what is open, record lab results with numbers and dates.
-  Decisions go to `plan.md` (§2 decision table or the phase section).
+- **Open work lives in GitHub issues** (since 2026-10-23): one issue per open item, one epic per open phase with
+  the items as sub-issues, labels `phase:NN`, `area:*`, `lab`, `backlog`, `security`. New open work gets an issue;
+  close it with the PR or commit that finishes it. Issues assigned to the maintainer need a person (hardware,
+  accounts, signing keys, a passkey, visual checks); do the rest of such an issue and leave that part.
+- **`state.md` is the lab and progress log**: record what was done with numbers, dates and commits; open entries
+  there point to their issue. Decisions and rationale go to `plan.md` (§2 decision table or the phase section) or
+  `docs/adr.md`.
 - **The repository and the ghcr.io images are public** (since 2026-10-21): everything committed, every CI log and
   every release asset is world-readable. Nothing from `~/nexus-lab/` or a lab run goes into a commit, log or issue.
 - Prefer the smallest change that works and matches the surrounding code. No new dependency for what a few lines do.
@@ -76,7 +81,11 @@ the jobs whose files changed (`.github/workflows/ci.yml`, job `changes`). All wo
 - **Security-relevant changes** (auth, approvals, locks, crypto, firewall, update policy) get a test that fails
   without the change, and a line in `docs/security-review.md` if they close or open a finding.
 - **Commits:** one topic per commit, imperative summary that says what changed and why, details in the body. Run
-  `cargo fmt --all` first. Push to `main` directly; tags only on a commit that passed CI.
+  `cargo fmt --all` first. Reference the issue (`#N`, `Closes #N` in the commit or PR that finishes it). Tags only
+  on a commit that passed CI.
+- **Branches and pull requests** for substantial or risky work: new features, security-relevant changes, catalog
+  migrations, release and update changes. Branch `<issue>-<short-name>`, a PR with `Closes #N`, merged when CI is
+  green. Docs, lab scripts and small fixes may still go to `main` directly.
 
 ## Labs
 
