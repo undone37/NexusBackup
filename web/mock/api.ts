@@ -1731,6 +1731,28 @@ function seed() {
     } as Json,
     sizing_entries: 2_350_000,
   };
+  // VMware vCenter (docs/vmware-design.md): VMs by their UUID, disks read over NFC
+  const VC_VMS: [string, string][] = [
+    ['5003c9a6-1b2e-4f7a-9d3c-0123456789ab', 'acme-sql01'],
+    ['5003c9a6-1b2e-4f7a-9d3c-0123456789cd', 'acme-app01'],
+    ['5003c9a6-1b2e-4f7a-9d3c-0123456789ef', 'acme-jump'],
+  ];
+  const sVc01 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'vmware' as const,
+    name: 'vc01',
+    config: {
+      host: 'vc01.acme.example.com',
+      port: 443,
+      ca_pem: '-----BEGIN CERTIFICATE-----\n(vCenter CA, demo)\n-----END CERTIFICATE-----\n',
+      user: 'nexus-backup@vsphere.local',
+      password: 'SECRET',
+      datacenter: 'acme-dc',
+      transport: 'nfc',
+      nfc_hosts: ['esx01.acme.example.com', 'esx02.acme.example.com'],
+    } as Json,
+  };
   // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
   const sNfs = {
     id: nextId(),
@@ -1800,7 +1822,7 @@ function seed() {
       timeout_secs: 60,
     } as Json,
   };
-  db.sources.push(sWeb01, sFs02, sNas01, sNfs, sSmb, sSmbProj);
+  db.sources.push(sWeb01, sFs02, sNas01, sVc01, sNfs, sSmb, sSmbProj);
 
   // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
   // (Both carry the current manifest, so the UI shows today's PostgreSQL forms.)
@@ -1946,6 +1968,7 @@ function seed() {
     grp('acme', sWeb01.id, silver.id, 'acme-web01', [web01.id]),
     grp('acme', sFs02.id, silver.id, 'acme-fs02', [fs02.id]),
     grp('acme', sNas01.id, silver.id, 'acme-nas01', [], { mode: 'all' }),
+    grp('acme', sVc01.id, silver.id, 'acme-vsphere', [VC_VMS[0][0], VC_VMS[1][0]]),
     grp('acme', sNfs.id, silver.id, 'acme-filer', []),
     gSmb,
     gDbs,
@@ -1974,6 +1997,10 @@ function seed() {
     ['301', 'shop-api', 'qemu', vm('acme-pve1', 'tag:shop')],
     ['302', 'test-web', 'qemu', vm('acme-pve1', 'tag:test')],
   ]);
+  inv(
+    sVc01.id,
+    VC_VMS.map(([u, name]) => [u, name, 'vm', []]),
+  );
   inv(sNas01.id, [
     ['tank/projects', 'tank/projects', 'dataset', ['pool:tank']],
     ['tank/home', 'tank/home', 'dataset', ['pool:tank']],
@@ -2055,6 +2082,8 @@ function seed() {
   series('acme', `host-${fs02.id}`, 210, { hh: 22, skip: 1, days: 6 });
   series('acme', `nas-${sNas01.id}-tank.projects`, 1_800, { hh: 22, skip: 1, days: 5 });
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
+  series('acme', `vmw-${VC_VMS[0][0]}`, 61_440, { hh: 21, skip: 1, days: 5 });
+  series('acme', `vmw-${VC_VMS[1][0]}`, 24_576, { hh: 21, skip: 1, days: 5 });
   // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
   for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
     (s as Json).meta = {
@@ -3301,6 +3330,10 @@ function stripSource(s: (typeof db.sources)[number]) {
       ? { ...s, config }
       : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
   }
+  if (s.kind === 'vmware') {
+    const { password, ...config } = s.config;
+    return { ...s, config: { ...config, password_set: !!password } };
+  }
   if (s.kind === 'truenas') {
     const { token_secret, ssh, ...rest } = s.config;
     const { key_pem, ...sshPub } = ssh ?? {};
@@ -3325,6 +3358,27 @@ function truenasKeyLine(c: Json): string | undefined {
   const sudo = (b: boolean) => (b ? '/usr/bin/sudo -n' : '');
   const script = `A=\\"${(c.datasets ?? []).join(' ')}\\" R=\\"${c.recursive ? 1 : ''}\\" S=\\"${sudo(c.sudo)}\\" Z=\\"${sudo(c.zfs_sudo)}\\"; case \\"$SSH_ORIGINAL_COMMAND\\" in …`;
   return `restrict${from},command="${script}" ${pk}`;
+}
+/** vmware source config (docs/vmware-design.md); the password omitted on PUT keeps the stored one only for the same
+ * host, port, certificate and user (crates/web-api resources.rs). */
+function vmwareConfig(cfg: Json, old?: Json): Json {
+  const c = structuredClone(cfg ?? {});
+  if (!c.host) throw new HttpError(400, 'host: required');
+  if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE'))
+    throw new HttpError(400, 'ca_pem: expected a PEM certificate (at most 64 KiB)');
+  if (!/^[A-Za-z0-9._@\\-]{1,256}$/.test(c.user ?? ''))
+    throw new HttpError(400, 'user: 1..=256 characters of A-Z a-z 0-9 . _ - @ \\');
+  if (!c.datacenter) throw new HttpError(400, 'datacenter: required (ha-datacenter on a standalone host)');
+  if ((c.transport ?? 'nfc') !== 'nfc') throw new HttpError(400, 'transport: `nfc`');
+  c.port = c.port ?? 443;
+  c.transport = 'nfc';
+  if (!c.password) {
+    if (!old?.password) throw new HttpError(400, 'config.password: required');
+    if (['host', 'port', 'ca_pem', 'user'].some((k) => c[k] !== old[k]))
+      throw new HttpError(400, 'config.password: required when host, port, ca_pem or user change');
+    c.password = old.password;
+  }
+  return c;
 }
 /** truenas source config (docs/truenas-connector.md); secrets omitted on PUT keep the stored ones. */
 function truenasConfig(cfg: Json, old?: Json): Json {
@@ -4487,8 +4541,14 @@ on('POST', '/sources', async (c) => {
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
     return [201, stripSource(s)];
   }
-  if (!['pve', 'linux', 'truenas', 'nfs', 'smb'].includes(kind))
-    throw new HttpError(400, 'kind: must be pve, linux, truenas, nfs, smb or plugin:<kind>');
+  if (!['pve', 'linux', 'truenas', 'vmware', 'nfs', 'smb'].includes(kind))
+    throw new HttpError(400, 'kind: must be pve, linux, truenas, vmware, nfs, smb or plugin:<kind>');
+  if (kind === 'vmware') {
+    const s = { id: nextId(), tenant, kind: 'vmware' as const, name, config: vmwareConfig(config) };
+    db.sources.push(s);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s)];
+  }
   if (kind === 'truenas') {
     const s = { id: nextId(), tenant, kind: 'truenas' as const, name, config: truenasConfig(config) };
     db.sources.push(s);
@@ -4536,6 +4596,11 @@ on('PUT', '/sources/:id', async (c, [id]) => {
   }
   if (s.kind === 'truenas') {
     Object.assign(s, { name: c.body.name ?? s.name, config: truenasConfig(c.body.config, s.config) });
+    await audit(u.name, 'source.update', `source/${s.id}`, {});
+    return [200, stripSource(s)];
+  }
+  if (s.kind === 'vmware') {
+    Object.assign(s, { name: c.body.name ?? s.name, config: vmwareConfig(c.body.config, s.config) });
     await audit(u.name, 'source.update', `source/${s.id}`, {});
     return [200, stripSource(s)];
   }
@@ -4647,6 +4712,7 @@ function hasInventory(src: (typeof db.sources)[number]): boolean {
   return (
     src.kind === 'pve' ||
     src.kind === 'truenas' ||
+    src.kind === 'vmware' ||
     (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list)
   );
 }
@@ -4776,6 +4842,9 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
       throw new HttpError(400, 'guests: datasets of the source required');
   } else if (src.kind === 'nfs' || src.kind === 'smb') {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
+  } else if (src.kind === 'vmware') {
+    if (guests.some((g) => typeof g !== 'string' || !/^[0-9a-fA-F-]{32,36}$/.test(g)))
+      throw new HttpError(400, 'guests: VM UUIDs for a vmware source (from its inventory)');
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100))
     throw new HttpError(400, 'guests: VM/CT IDs required');
 }
@@ -8089,6 +8158,9 @@ on('GET', '/names', (c) => {
     for (const pre of ['vm', 'ct']) add(t, `${pre}-${vmid}`, name);
   }
   for (const a of db.agents) add(a.tenant, `host-${a.id}`, a.name);
+  // VMware VMs: the guest id is the VM UUID (crates/web-api names.rs)
+  for (const s of db.sources.filter((x) => x.kind === 'vmware'))
+    for (const g of db.inventory.get(s.id) ?? []) if (g.name) add(s.tenant, `vmw-${g.guest}`, g.name);
   // plugin sources: the source's name, a guest (database) after it
   for (const s of db.sources.filter((x) => x.kind.startsWith('plugin:'))) {
     const id = `plugin-${s.kind.slice(7)}-${s.id}`;

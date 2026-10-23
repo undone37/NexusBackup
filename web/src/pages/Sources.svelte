@@ -110,9 +110,12 @@
   // "Validate connection": plugin_validate job on the stored config.
   const ctl = new AbortController();
   onDestroy(() => ctl.abort());
-  // guest inventory (Phase 13c): PVE, TrueNAS and plugin kinds that list guests
+  // guest inventory (Phase 13c): PVE, TrueNAS, VMware and plugin kinds that list guests
   const hasInventory = (x: Source) =>
-    x.kind === 'pve' || x.kind === 'truenas' || (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
+    x.kind === 'pve' ||
+    x.kind === 'truenas' ||
+    x.kind === 'vmware' ||
+    (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
   let invOf: Source | null = $state(null);
   let invOpen = $state(false);
 
@@ -181,6 +184,10 @@
     recursive: false,
     sudo: true,
     zfs_sudo: true,
+    // vmware
+    vm_user: '',
+    datacenter: 'ha-datacenter',
+    nfc_hosts: '',
     // nfs / smb shares
     version: '4.2',
     export: '',
@@ -229,14 +236,15 @@
     const c = x?.kind === 'pve' ? x.config : undefined;
     const l = x?.kind === 'linux' ? x.config : undefined;
     const n = x?.kind === 'truenas' ? x.config : undefined;
+    const v = x?.kind === 'vmware' ? x.config : undefined;
     const sh = x?.kind === 'nfs' || x?.kind === 'smb' ? x.config : undefined;
     f = {
       kind: x?.kind ?? 'pve',
       tenant: x?.tenant ?? tenants[0]?.name ?? '',
       name: x?.name ?? '',
-      host: c?.host ?? n?.host ?? sh?.host ?? '',
-      port: c?.port ?? n?.port ?? sh?.port ?? (x?.kind === 'nfs' ? 2049 : x?.kind === 'smb' ? 445 : 8006),
-      ca_pem: c?.ca_pem ?? n?.ca_pem ?? '',
+      host: c?.host ?? n?.host ?? v?.host ?? sh?.host ?? '',
+      port: c?.port ?? n?.port ?? v?.port ?? sh?.port ?? (x?.kind === 'nfs' ? 2049 : x?.kind === 'smb' ? 445 : 8006),
+      ca_pem: c?.ca_pem ?? n?.ca_pem ?? v?.ca_pem ?? '',
       token_id: c?.token_id ?? '',
       token_secret: '',
       nodes: JSON.stringify(c?.nodes ?? {}, null, 2),
@@ -266,6 +274,9 @@
       recursive: n?.recursive ?? false,
       sudo: n?.sudo ?? true,
       zfs_sudo: n?.zfs_sudo ?? true,
+      vm_user: v?.user ?? '',
+      datacenter: v?.datacenter ?? 'ha-datacenter',
+      nfc_hosts: (v?.nfc_hosts ?? []).join('\n'),
       version: sh?.version ?? (x?.kind === 'smb' ? '3' : '4.2'),
       export: sh?.export ?? '',
       mount_port: sh?.mount_port ?? 20048,
@@ -297,7 +308,14 @@
   }
 
   // New sources default to the port and protocol version of their kind.
-  const defaultPorts: Record<string, number> = { pve: 8006, linux: 8006, truenas: 443, nfs: 2049, smb: 445 };
+  const defaultPorts: Record<string, number> = {
+    pve: 8006,
+    linux: 8006,
+    truenas: 443,
+    vmware: 443,
+    nfs: 2049,
+    smb: 445,
+  };
   let lastKind = 'pve';
   $effect(() => {
     if (!open || editing || f.kind === lastKind) return;
@@ -416,6 +434,22 @@
     return config;
   }
 
+  /** Config of a vmware source; the password is write-only (only sent when entered). */
+  function vmwareConfig(): Record<string, unknown> {
+    const config: Record<string, unknown> = {
+      host: f.host.trim(),
+      port: Number(f.port),
+      ca_pem: f.ca_pem,
+      user: f.vm_user.trim(),
+      datacenter: f.datacenter.trim(),
+      transport: 'nfc',
+    };
+    const hosts = lines(f.nfc_hosts);
+    if (hosts.length) config.nfc_hosts = hosts;
+    if (f.password) config.password = f.password;
+    return config;
+  }
+
   /** Phase 22b: adds the caps / read limit; false (after telling the user) when invalid. */
   function withLimits(config: Record<string, unknown>): boolean {
     const l = limitsConfig(f.lim, f.kind === 'pve');
@@ -521,9 +555,11 @@
         ? linuxConfig()
         : f.kind === 'truenas'
           ? truenasConfig()
-          : f.kind === 'nfs' || f.kind === 'smb'
-            ? shareConfig()
-            : pveConfig();
+          : f.kind === 'vmware'
+            ? vmwareConfig()
+            : f.kind === 'nfs' || f.kind === 'smb'
+              ? shareConfig()
+              : pveConfig();
     if (!config) return;
     const r = editing
       ? await act(put<Source>(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
@@ -713,6 +749,9 @@
               {:else if x.kind === 'truenas'}
                 <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono wrap">{(x.config?.datasets ?? []).join(' ')}{x.config?.recursive ? ' (+)' : ''}</td>
+              {:else if x.kind === 'vmware'}
+                <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
+                <td class="mono wrap">{x.config?.user} · {x.config?.datacenter} · NFC</td>
               {:else}
                 <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono wrap">{x.config?.token_id}</td>
@@ -740,6 +779,7 @@
           <option value="pve">{t.sources.kinds.pve}</option>
           <option value="linux">{t.sources.kinds.linux}</option>
           <option value="truenas">{t.sources.kinds.truenas}</option>
+          <option value="vmware">{t.sources.kinds.vmware}</option>
           <option value="nfs">{t.sources.kinds.nfs}</option>
           <option value="smb">{t.sources.kinds.smb}</option>
           {#if kindsEnabled.length || (editing && isPlugin(editing))}
@@ -948,6 +988,61 @@
           <label for="t-from">{t.sources.tn.from}</label>
           <input id="t-from" class="mono" bind:value={f.from} spellcheck="false" />
         </div>
+      {:else if f.kind === 'vmware'}
+        <div class="field">
+          <label for="v-host">{t.sources.vm.host}</label>
+          <input id="v-host" bind:value={f.host} required spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="v-port">{t.sources.vm.port}</label>
+          <input id="v-port" type="number" min="1" max="65535" bind:value={f.port} required />
+        </div>
+        <div class="field">
+          <label for="v-user">{t.sources.vm.user}</label>
+          <input
+            id="v-user"
+            class="mono"
+            bind:value={f.vm_user}
+            required
+            spellcheck="false"
+            autocomplete="off"
+            aria-describedby="v-user-hint"
+          />
+          <div class="hint" id="v-user-hint">{t.sources.vm.userHint}</div>
+        </div>
+        <div class="field">
+          <label for="v-pw">{t.sources.vm.password}</label>
+          <input
+            id="v-pw"
+            type="password"
+            bind:value={f.password}
+            autocomplete="new-password"
+            required={!editing}
+            aria-describedby="v-pw-hint"
+          />
+          <div class="hint" id="v-pw-hint">
+            {editing?.kind === 'vmware' && editing.config?.password_set ? t.writeOnlyKeep : t.writeOnlyHint}
+          </div>
+        </div>
+        <div class="field">
+          <label for="v-dc">{t.sources.vm.datacenter}</label>
+          <input
+            id="v-dc"
+            class="mono"
+            bind:value={f.datacenter}
+            required
+            spellcheck="false"
+            aria-describedby="v-dc-hint"
+          />
+          <div class="hint" id="v-dc-hint">{t.sources.vm.datacenterHint}</div>
+        </div>
+        <div class="field">
+          <label for="v-tr">{t.sources.vm.transport}</label>
+          <select id="v-tr" disabled aria-describedby="v-tr-hint">
+            <option value="nfc" selected>{t.sources.vm.transportNfc}</option>
+          </select>
+          <div class="hint" id="v-tr-hint">{t.sources.vm.transportHint}</div>
+        </div>
       {:else}
         <div class="field">
           <label for="s-host">{t.sources.host}</label>
@@ -1091,6 +1186,29 @@
       </div>
       <FileSelection bind:include={f.include} bind:regex={f.exclude_regex} share={true} />
       <p class="muted">{f.kind === 'nfs' ? t.sources.sh.nfsHint : t.sources.sh.shareHint}</p>
+    {:else if f.kind === 'vmware'}
+      <div class="field">
+        <label for="v-cert">{t.sources.vm.cert}</label>
+        <textarea
+          id="v-cert"
+          class="mono"
+          bind:value={f.ca_pem}
+          required
+          spellcheck="false"
+          aria-describedby="v-cert-hint"></textarea>
+        <div class="hint" id="v-cert-hint">{t.sources.vm.certHint}</div>
+      </div>
+      <div class="field">
+        <label for="v-nfc">{t.sources.vm.nfcHosts}</label>
+        <textarea
+          id="v-nfc"
+          class="mono"
+          bind:value={f.nfc_hosts}
+          spellcheck="false"
+          placeholder={'esx1.example.com\nesx2.example.com'}
+          aria-describedby="v-nfc-hint"></textarea>
+        <div class="hint" id="v-nfc-hint">{t.sources.vm.nfcHostsHint}</div>
+      </div>
     {:else if f.kind === 'truenas'}
       <div class="field">
         <label for="t-ds">{t.sources.tn.datasets}</label>

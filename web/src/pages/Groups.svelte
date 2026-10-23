@@ -1,6 +1,6 @@
 <script lang="ts">
   import Menu, { type MenuItem } from '../components/Menu.svelte';
-  import { vmidLabel } from '../lib/names.svelte';
+  import { nameOf, vmidLabel } from '../lib/names.svelte';
   import { rowClick } from '../lib/rowlink';
   import { askConfirm } from '../lib/confirm.svelte';
   import { onMount, onDestroy } from 'svelte';
@@ -79,8 +79,10 @@
   const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   // a PVE guest by its name, the VMID in parentheses (identifiable across clusters and tenants)
+  // VM UUIDs (vmware sources) by their vSphere name, agent ids by the agent name, VMIDs as "100 (name)"
+  const UUID_RE = /^[0-9a-f-]{32,36}$/;
   const guestText = (g: number | string, tenant?: string) =>
-    typeof g === 'string' ? agentName(g) : vmidLabel(tenant, g);
+    typeof g === 'string' ? (UUID_RE.test(g) ? (nameOf(tenant, `vmw-${g}`) ?? g) : agentName(g)) : vmidLabel(tenant, g);
 
   let open = $state(false);
   let editing: Group | null = $state(null);
@@ -112,6 +114,11 @@
   const nasSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
     return s?.kind === 'truenas' ? s : null;
+  });
+  // A vmware source: guests = VM UUIDs from its inventory (kept in f.datasets, like plugin guest ids).
+  const vmSource = $derived.by(() => {
+    const s = sources.find((x) => x.id === Number(f.source_id));
+    return s?.kind === 'vmware' ? s : null;
   });
   // An nfs/smb source is one share: the group has no guests.
   const shareSource = $derived.by(() => {
@@ -156,12 +163,15 @@
   }
   const diskCount = (x: Group) => Object.values(x.exclude_disks ?? {}).reduce((n, l) => n + l.length, 0);
 
-  // Auto-protect (Phase 13c): PVE, TrueNAS and plugin kinds with a guest list have an
+  // Auto-protect (Phase 13c): PVE, TrueNAS, VMware and plugin kinds with a guest list have an
   // inventory; their groups may take all guests or the guests with given tags.
   const invSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
     if (!s) return null;
-    return s.kind === 'pve' || s.kind === 'truenas' || (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list)
+    return s.kind === 'pve' ||
+      s.kind === 'truenas' ||
+      s.kind === 'vmware' ||
+      (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list)
       ? s
       : null;
   });
@@ -407,6 +417,8 @@
       }
     } else if (shareSource) {
       guests = [];
+    } else if (vmSource) {
+      guests = f.datasets;
     } else if (nasSource) {
       guests = f.datasets.filter((d) => nasSource.config.datasets.includes(d));
     } else {
@@ -733,6 +745,26 @@
       {/if}
     {:else if shareSource}
       <p class="muted">{t.groups.wholeShare}</p>
+    {:else if vmSource}
+      <fieldset class="field">
+        <legend>{t.groups.vms}</legend>
+        <div class="row">
+          <span class="muted">{inv?.refreshed ? t.groups.refreshed(fmtAgo(inv.refreshed)) : t.groups.noInventory}</span>
+          <button type="button" class="small" disabled={invBusy} onclick={refreshInventory}
+            >{invBusy ? t.groups.refreshing : t.groups.refresh}</button
+          >
+          {#if invJob}<a href={href(`/jobs/${invJob}`)}>{t.jobs.detail(invJob)}</a>{/if}
+        </div>
+        {#each present as g (g.guest)}
+          <label class="inline-check"
+            ><input type="checkbox" value={g.guest} bind:group={f.datasets} /><span>{g.name || g.guest}</span><span
+              class="mono muted">{g.guest}</span
+            ></label
+          >
+        {:else}
+          <p class="hint">{t.groups.vmsHint}</p>
+        {/each}
+      </fieldset>
     {:else if nasSource}
       <fieldset class="field">
         <legend>{t.groups.datasets}</legend>

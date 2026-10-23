@@ -4598,3 +4598,98 @@ async fn chunk_repair_is_admin_only_and_snapshots_show_damage() {
     assert_eq!(by_time(2000)["damaged"], Value::Null);
     t.finish();
 }
+
+fn vmware_cfg(password: Option<&str>) -> Value {
+    let mut c = json!({
+        "host": "vc.lab", "port": 443,
+        "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        "user": "backup@vsphere.local", "datacenter": "dc1", "nfc_hosts": ["esx1.lab", "192.0.2.31"]
+    });
+    if let Some(p) = password {
+        c["password"] = json!(p);
+    }
+    c
+}
+
+/// VMware sources (Phase 41): the password write-only and sealed (bound to the endpoint), kept on updates only
+/// for the same host/port/certificate/user; group guests are VM UUIDs (lower-cased, deduplicated); validation.
+#[tokio::test]
+async fn vmware_sources() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let src = |cfg: Value| json!({"tenant": "acme", "kind": "vmware", "name": "vc", "config": cfg});
+    let r = t.post("/api/v1/sources", &admin, src(vmware_cfg(None))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "password is required: {:?}", r.body);
+    let r = t
+        .post("/api/v1/sources", &admin, src(vmware_cfg(Some("V3ry s3cret!"))))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let sid = r.body["id"].as_i64().unwrap();
+    assert_eq!(r.body["config"]["password_set"], true);
+    assert_eq!(r.body["config"]["transport"], "nfc");
+    let raw = String::from_utf8(t.get("/api/v1/sources", &admin).await.raw).unwrap();
+    assert!(!raw.contains("s3cret") && !raw.contains("sealed:v1:"), "{raw}");
+    let stored = t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {sid}"));
+    let mut v: Value = serde_json::from_str(&stored).unwrap();
+    assert!(v["password"].as_str().unwrap().starts_with("sealed:v1:"));
+    t.sk.open_all(&source_owner(sid), &mut v).unwrap();
+    assert_eq!(v["password"], "V3ry s3cret!");
+
+    // update without the password: kept for the same endpoint, refused when it moves
+    let url = format!("/api/v1/sources/{sid}");
+    let mut cfg = vmware_cfg(None);
+    cfg["datacenter"] = json!("dc2");
+    let r = t.put(&url, &admin, json!({"name": "vc", "config": cfg})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["config"]["password_set"], true);
+    for (field, val) in [("host", json!("other.lab")), ("user", json!("root"))] {
+        let mut moved = vmware_cfg(None);
+        moved[field] = val;
+        let r = t.put(&url, &admin, json!({"name": "vc", "config": moved})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}");
+        assert!(r.body["error"].as_str().unwrap().contains("password"));
+    }
+
+    // validation
+    for (field, val) in [
+        ("host", json!("a b")),
+        ("port", json!(0)),
+        ("ca_pem", json!("x")),
+        ("user", json!("x;id")),
+        ("password", json!("line\nbreak")),
+        ("datacenter", json!("")),
+        ("transport", json!("proxy")),
+        ("nfc_hosts", json!(["bad host"])),
+        ("unknown", json!(1)),
+    ] {
+        let mut c = vmware_cfg(Some("pw"));
+        c[field] = val;
+        let r = t.post("/api/v1/sources", &admin, src(c)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {:?}", r.body);
+    }
+
+    // groups: VM UUIDs (the inventory's guest ids)
+    let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let group = |name: &str, guests: Value| json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests});
+    let u = "5003C9A6-1B2E-4F7A-9D3C-0123456789AB";
+    let g = t
+        .post("/api/v1/groups", &admin, group("vms", json!([u, u.to_lowercase()])))
+        .await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    assert_eq!(g.body["guests"], json!([u.to_lowercase()]));
+    for bad in [json!([101]), json!(["vm-1"]), json!(["5003c9a6"])] {
+        let g = t.post("/api/v1/groups", &admin, group("bad", bad.clone())).await;
+        assert_eq!(g.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let g = t
+        .post(
+            "/api/v1/groups",
+            &admin,
+            json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": "all", "guests": [], "mode": "all"}),
+        )
+        .await;
+    assert_eq!(g.status, StatusCode::CREATED, "an inventory group: {:?}", g.body);
+    t.finish();
+}

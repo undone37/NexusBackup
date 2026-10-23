@@ -266,6 +266,24 @@ export interface TrueNasSourceConfig {
   authorized_keys?: string;
 }
 
+/** Config of a `vmware` source (docs/vmware-design.md): an ESXi host or a vCenter. The password is write-only. */
+export interface VmwareSourceConfig {
+  host: string;
+  port: number;
+  /** the ESXi / vCenter certificate (pinned) and/or its CA */
+  ca_pem: string;
+  /** `root` on a host, `user@vsphere.local` or `DOMAIN\user` on a vCenter */
+  user: string;
+  password?: string;
+  password_set?: boolean;
+  /** datacenter of the VM configuration downloads (`ha-datacenter` on a standalone host) */
+  datacenter: string;
+  /** `nfc`: disks read over NFC, no proxy VM */
+  transport: 'nfc';
+  /** the ESXi hosts behind a vCenter (NFC on 902 is allowed to them) */
+  nfc_hosts?: string[];
+}
+
 /**
  * Config of an `nfs` or `smb` share source (docs/nas-connector.md). Optional
  * fields are omitted when unset; SMB secrets (`password`, `keytab` base64) are
@@ -319,6 +337,7 @@ interface SourceBase {
 export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
 export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourceConfig };
+export type VmwareSource = SourceBase & { kind: 'vmware'; config: VmwareSourceConfig };
 export type NfsSource = SourceBase & { kind: 'nfs'; config: ShareSourceConfig };
 export type SmbSource = SourceBase & { kind: 'smb'; config: ShareSourceConfig };
 export type ShareSource = NfsSource | SmbSource;
@@ -327,7 +346,7 @@ export type ShareSource = NfsSource | SmbSource;
  * `config_schema`; secret fields are write-only (GET returns `<field>_set: boolean` instead).
  */
 export type PluginSource = SourceBase & { kind: `plugin:${string}`; config: Record<string, unknown> };
-export type Source = PveSource | LinuxSource | TrueNasSource | NfsSource | SmbSource | PluginSource;
+export type Source = PveSource | LinuxSource | TrueNasSource | VmwareSource | NfsSource | SmbSource | PluginSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
