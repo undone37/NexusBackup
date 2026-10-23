@@ -1108,4 +1108,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   run, stopped it and failed; retry 536 backed VM 242 up (153 s), about 10 minutes after the reboot, without anyone
   touching the node. (Could be one retry shorter if recovery stopped the task itself: the interrupted job's log has
   its UPID.)
-- [ ] Fault injection, the rest: network loss, full store, corrupt chunks, clock jumps.
+- [x] Fault injection, network loss (2026-10-23, `faults.sh netloss`, 0.0.23-dev): the appliance's traffic to the
+  PVE host dropped for 120 s after 1.3 GB: the job failed ("NBD reader stopped") 205 s after it started, the temporary
+  rule was removed; retry 542 stopped the leftover vzdump task, retry 543 succeeded (151 s). Leftover task because
+  the failure report to the node went over the broken SSH session: nexus-pve now also stops its task through the API
+  when that report fails (saves one retry).
+- [ ] Fault injection, the rest: full store, corrupt chunks, clock jumps.

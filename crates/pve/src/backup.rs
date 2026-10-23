@@ -275,6 +275,11 @@ impl Cluster {
                     Err(e) => format!("fail {}", e.to_string().replace(['\n', '\''], " ")),
                 };
                 let signalled = ssh.run(&format!("done {vmid} {done}"), None);
+                // the node never heard about the failure (the SSH session broke, e.g. a network outage): its
+                // vzdump task would keep the guest's backup lock up to the plugin's job timeout (lab 2026-10-23)
+                if result.is_err() && signalled.is_err() {
+                    let _ = self.api.stop_task(&upid);
+                }
                 let manifest = result?;
                 signalled?;
                 Ok(manifest)
