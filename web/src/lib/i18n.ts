@@ -4254,7 +4254,7 @@ export const en = {
     editSchedule: (g: string) => `Restore test schedule of ${g}`,
     group: 'Protection group',
     pveGroupsOnly:
-      'Groups of Proxmox VE sources, and of database plugins that offer restore tests (PostgreSQL 1.4 or newer).',
+      'Groups of Proxmox VE sources, and of database plugins that offer restore tests (PostgreSQL 1.4, MySQL/MariaDB 1.1 or newer).',
     pluginTest:
       "Database groups use the plugin's own restore test: a dump is restored into a throwaway database (on the alternate server if one is set, else the source) and every table's rows are counted against the dump; a cluster backup is restored point-in-time to its end into a throwaway directory on the restore host (the source's test directory), started and queried. Both are removed again.",
     pluginShort: 'plugin restore test (throwaway database or data directory)',
