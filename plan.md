@@ -1340,7 +1340,18 @@ only if the spike shows it is needed).
   (trusted, like `nexus-pve`) plus the proxy as an enrolled agent with a `block-read` capability, instead of a
   sandboxed plugin: a plugin cannot drive an agent, and the native route keeps the PVE VM snapshot layout
   (instant restore, file index, restore tests) and deduplicated transfer.
-Spike done (ESXi 7.0U3 standalone); implementation not started.
+- **Transport revised again (2026-10-23): NFC without VDDK.** Broadcom restricted VDDK to partners (2026-08), so
+  neither we nor customers can supply it. Instead the connector speaks the NFC protocol (VADP network mode) to the
+  ESXi NFC service (TCP 902) directly, a clean reimplementation from the public protocol (docs/nfc-protocol.md;
+  `crates/vmware/src/nfc.rs`), shipping no VMware code. So **no proxy VM is needed by default**; the hot-add proxy
+  stays as the alternative where the NFC path is too slow or the management network is unreachable.
+- **M1 done:** agent protocol v1.9 block reads (the proxy role). **M2 done:** `crates/vmware` — vSphere SOAP
+  client, snapshots, CBT, `QueryChangedDiskAreas`, both transports (NFC and hot-add proxy), one fixed index per
+  disk plus the `.vmx`/state config index; `backup_vm` with a `Transport` choice. Lab-tested on vCenter 8.0.3 and
+  ESXi 7.0.3/8.0.3 (NFC read + full/incremental NFC and proxy backups, byte-correct reconstruction).
+- **M3 (next):** the scheduler job kind and connector binary, web-api source + UI (ESXi/vCenter, credentials,
+  transport choice, proxy per cluster), restore to Proxmox VE, the proxy OVA, manual chapter, lab e2e.
+Spike and M1/M2 done; M3 not started.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
 

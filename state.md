@@ -942,7 +942,28 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   (119 extents) 386 MB/s, 0 mismatches. No snapshots or attached disks left.
 - [x] Phase 41 design decision (maintainer, 2026-10-23): hot-add proxy, native connector `nexus-vmware`, the proxy as
   an enrolled agent with `block-read`, shipped as an OVA (docs/vmware-design.md).
-- [ ] Implementation; vSAN/NFS, quiesced snapshots, proxy on another host.
+- [x] M1 (2026-10-23, 5d9d9016): agent protocol v1.9 block reads (the proxy role); agent-conn `blocks::read_disk`
+  and `block_ranges` (973419ba), tested over a real mTLS session.
+- [x] M2 `crates/vmware` (2026-10-23): vSphere SOAP client (login, inventory, devices, snapshots, CBT,
+  `QueryChangedDiskAreas`, hot-add/detach), `backup_vm` with a `Transport` choice, one fixed index per disk plus
+  the `.vmx`/`vmware.json` config index. Commits 91eb15f4 (backup flow), 7cf03bb5 (NFC transport).
+- [x] vCenter 8.0.3 deployed in the lab (2026-10-23, `lab/pvehost/vcenter.sh`, VCSA tiny at 10.2.34.231
+  vcsa-dev.dev.ah.local, on a 600 GB datastore2 on ESXi 8 VM 251), both nested hosts joined to datacenter nx-lab.
+  Note: joining vCenter re-issued ESXi 7's certificate, so a cached vSphere client failed until it refetched it;
+  adding datastore2 detached ESXi 8's datastore1 VMFS (VMs 1/2 "invalid") until `esxcli storage vmfs snapshot
+  mount -l datastore1` and `vim-cmd vmsvc/reload` restored it (no data lost).
+- [x] Hot-add proxy backup (2026-10-23, `esxi.sh proxy` + `vmware-lab.sh backup_through_proxy`, ESXi 7.0.3):
+  full read 16 GiB -> 1913 distinct blocks (6.3 GB wire), incremental 13 changed blocks, dedup reuses the rest;
+  byte-correct reconstruction (MBR). Full read ~6 MB/s in the nested lab (throughput follow-up open).
+- [x] NFC transport without VDDK (2026-10-23, `crates/vmware/src/nfc.rs`, docs/nfc-protocol.md): clean
+  reimplementation of VADP network mode (authd 220+TLS pinned to the ticket thumbprint, classic 264-byte
+  handshake, AIO). `vmware-lab.sh nfc_read_disk` passed on vCenter 8.0.3 / ESXi 7.0.3 (MBR, fragment-boundary and
+  determinism checks). Protocol details found against the lab: authd sends a plaintext 220 before TLS;
+  SET_RES_POOL does reply.
+- [ ] M3: scheduler job + connector binary, web-api source + UI (transport choice, proxy per cluster), restore to
+  PVE, the proxy OVA, manual chapter, lab e2e. vSAN/NFS, quiesced Windows snapshots, proxy on another host.
+- Lab leftovers to clean up when done: VixDiskLib 7.0.1 + nbdkit packages were installed on the regression VM
+  (VM 280) while evaluating the VDDK/nbdkit path (not used in the end); `/opt/vddk-7.0.1`.
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle
