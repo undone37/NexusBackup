@@ -502,7 +502,7 @@ token** instead of a session: `Authorization: Bearer nxt_…`. Every user manage
 | Field | Content |
 |---|---|
 | **Name** | what the token is for, e.g. `grafana` (unique per user) |
-| **Scope** | **Read only** or **Operator** (see below) |
+| **Scope** | **Read only**, **Read and start backups** or **Operator** (see below) |
 | **Valid for** | 7, 30, 90, 180 days or 1 year. Every token expires; there are no tokens without an end date. |
 | **Your current password**, **Your authenticator code** | local accounts confirm it is really you, as for a password change. Single sign-on accounts instead need a session that is at most 15 minutes old (sign in again first). |
 
@@ -518,6 +518,9 @@ hash of it and cannot show it again. The dialog shows a `curl` example.
 - **Read only:** GET requests on the dashboard, storage, tenants, sources and their inventory, policies, groups,
   agents, snapshots, jobs, alerts, approvals (the list), the audit log and its verification, replication and plugins
   (what the user's role may read).
+- **Read and start backups:** read only, plus starting backup jobs (`POST /jobs` with the kind `backup`), nothing
+  else: no restores, no cancelling, pausing or acknowledging. Made for integrations that show the backup state and
+  offer "back up now", such as the PegaProx plugin below. Needs the same roles as an operator token.
 - **Operator:** in addition, start jobs (backups, restores, verify, …) and cancel them, pause and resume protection
   groups, start and end source maintenance, acknowledge alerts and start a replication sync. An administrator's
   operator token acts as an operator; a tenant user's stays a tenant user and a tenant admin's a tenant admin in
@@ -538,6 +541,20 @@ used. Administrators see and revoke every user's tokens at the end of the **User
 Audit entries made with a token name the user and the token, e.g. `admin via token grafana`; creating and revoking
 are audited (`token.create`, `token.revoke`). An `info` alert reminds of tokens in their last 7 days
 ([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)).
+
+### PegaProx
+
+[PegaProx](https://github.com/PegaProx/project-pegaprox) manages several Proxmox VE clusters in one web interface.
+The NexusBackup plugin for it (`integrations/pegaprox/` in the repository) adds a tab that lists every guest of a
+cluster with its backup state: protected, late or failed, no backup yet or not protected, with the newest backup, the
+protection group and policy, the next run, the retention lock, the newest restore test and open alerts. With **Read
+and start backups** and `allow_backup` in the plugin's settings it also offers **Back up now** for a guest, to
+PegaProx users who may create backups of that cluster. The plugin pins this appliance's certificate (its SHA-256
+from **Settings → Certificate**) and never sends the token anywhere else. Installation and the mapping of PegaProx
+clusters to tenants and sources: `integrations/pegaprox/README.md`.
+
+> **Status:** tested in the lab with PegaProx 1.4.0 and a read-only token (the state of 30 guests); **Back up now**
+> is covered by the plugin's tests, its lab run follows.
 
 Example:
 
