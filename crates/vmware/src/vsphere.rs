@@ -53,8 +53,28 @@ pub struct Disk {
 pub struct Controller {
     pub key: i32,
     pub bus: i32,
-    /// SCSI controller (lsilogic, pvscsi, ...)
-    pub scsi: bool,
+    /// `scsi` (lsilogic, pvscsi, ...), `sata`, `nvme`, `ide` or `other`: the prefix of the disk names
+    pub kind: &'static str,
+}
+
+/// What a backup needs to know about a VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmInfo {
+    pub name: String,
+    /// `config.instanceUuid` (vCenter; stable across renames and re-registrations), on a standalone host
+    /// `config.uuid` (the BIOS UUID: a clone made outside vCenter keeps it), the snapshot source
+    pub uuid: String,
+    /// `[datastore] dir/name.vmx`
+    pub vmx: String,
+    pub cbt: bool,
+    /// VMware Tools run (a quiesced snapshot is possible)
+    pub tools: bool,
+}
+
+/// `[datastore] dir/file` into (datastore, path).
+pub fn split_ds_path(p: &str) -> Option<(&str, &str)> {
+    let (ds, path) = p.strip_prefix('[')?.split_once("] ")?;
+    Some((ds, path))
 }
 
 pub struct Client {
@@ -154,21 +174,21 @@ pub fn parse_controllers(devices: roxmltree::Node) -> Vec<Controller> {
         .children()
         .filter(roxmltree::Node::is_element)
         .filter_map(|d| {
-            let t = xsi_type(d);
-            let scsi = matches!(
-                t,
+            let kind = match xsi_type(d) {
                 "ParaVirtualSCSIController"
-                    | "VirtualLsiLogicController"
-                    | "VirtualLsiLogicSASController"
-                    | "VirtualBusLogicController"
-            );
-            if !scsi && !t.ends_with("Controller") {
-                return None;
-            }
+                | "VirtualLsiLogicController"
+                | "VirtualLsiLogicSASController"
+                | "VirtualBusLogicController" => "scsi",
+                "VirtualAHCIController" => "sata",
+                "VirtualNVMEController" => "nvme",
+                "VirtualIDEController" => "ide",
+                t if t.ends_with("Controller") => "other",
+                _ => return None,
+            };
             Some(Controller {
                 key: text(kid(d, "key"))?.parse().ok()?,
                 bus: text(kid(d, "busNumber")).and_then(|b| b.parse().ok()).unwrap_or(0),
-                scsi,
+                kind,
             })
         })
         .collect()
@@ -322,6 +342,62 @@ impl Client {
             .find(|n| n.tag_name().name() == "val")
             .with_context(|| format!("{}: no devices", obj.value))?;
         Ok((parse_disks(val), parse_controllers(val)))
+    }
+
+    /// Name, instance UUID, `.vmx` path, CBT and Tools state of a VM.
+    pub fn vm_info(&self, vm: &MoRef) -> Result<VmInfo> {
+        let t = self.properties(
+            vm,
+            &[
+                "name",
+                "config.instanceUuid",
+                "config.uuid",
+                "config.files.vmPathName",
+                "config.changeTrackingEnabled",
+                "guest.toolsRunningStatus",
+            ],
+        )?;
+        let doc = roxmltree::Document::parse(&t)?;
+        let get = |p: &str| {
+            doc.descendants()
+                .filter(|n| n.tag_name().name() == "propSet")
+                .find(|n| text(kid(*n, "name")).as_deref() == Some(p))
+                .and_then(|n| text(kid(n, "val")))
+                .filter(|v| !v.trim().is_empty())
+        };
+        let need = |p: &str| get(p).with_context(|| format!("{}: no {p}", vm.value));
+        Ok(VmInfo {
+            name: need("name")?,
+            uuid: get("config.instanceUuid").map_or_else(|| need("config.uuid"), Ok)?,
+            vmx: need("config.files.vmPathName")?,
+            cbt: get("config.changeTrackingEnabled").as_deref() == Some("true"),
+            tools: get("guest.toolsRunningStatus").as_deref() == Some("guestToolsRunning"),
+        })
+    }
+
+    /// A datastore file (`[ds] dir/file`) through `/folder`, at most `max` bytes. `dc`: the datacenter
+    /// (`ha-datacenter` on a standalone host).
+    pub fn download(&self, ds_path: &str, dc: &str, max: usize) -> Result<Vec<u8>> {
+        let (ds, path) = split_ds_path(ds_path).with_context(|| format!("not a datastore path: {ds_path:?}"))?;
+        let mut url = reqwest::Url::parse(&self.url)?;
+        url.set_path(&format!("folder/{path}"));
+        url.query_pairs_mut()
+            .append_pair("dcPath", dc)
+            .append_pair("dsName", ds);
+        let r = self
+            .http
+            .get(url)
+            .header("Cookie", &self.cookie)
+            .send()
+            .with_context(|| format!("download of {ds_path}"))?;
+        if !r.status().is_success() {
+            bail!("download of {ds_path}: {}", r.status());
+        }
+        let b = r.bytes()?;
+        if b.len() > max {
+            bail!("{ds_path}: {} bytes, more than the {max} expected", b.len());
+        }
+        Ok(b.to_vec())
     }
 
     /// `config.changeTrackingEnabled` of a VM.
@@ -506,13 +582,17 @@ mod tests {
         assert!(c.contains(&Controller {
             key: 1000,
             bus: 0,
-            scsi: true
+            kind: "scsi"
         }));
         assert!(c.contains(&Controller {
             key: 200,
             bus: 0,
-            scsi: false
+            kind: "ide"
         }));
+        assert_eq!(
+            split_ds_path("[datastore1] nx-cbt/nx-cbt.vmx"),
+            Some(("datastore1", "nx-cbt/nx-cbt.vmx"))
+        );
     }
 
     #[test]

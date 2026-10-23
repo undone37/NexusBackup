@@ -1,6 +1,7 @@
 //! The vSphere client against the nested ESXi lab (lab/pvehost/esxi.sh): runs only with `NEXUS_ESXI` set (the
 //! host), `NEXUS_ESXI_PASSWORD` (root) and `NEXUS_ESXI_CERT` (its certificate, PEM). Snapshot of `nx-cbt`, its
 //! disks and changed areas, the base disk hot-added to `nx-proxy` and removed again, the snapshot removed.
+//! Run on the regression VM (lab/pvehost/vmware-lab.sh), not on a workstation.
 
 use vmware::vsphere::Client;
 
@@ -56,7 +57,7 @@ fn snapshot_cbt_and_hot_add() {
         let (pd, pc) = c.devices(&proxy).unwrap();
         let scsi = pc
             .iter()
-            .find(|c| c.scsi && c.bus == 0)
+            .find(|c| c.kind == "scsi" && c.bus == 0)
             .expect("proxy SCSI controller 0");
         let unit = (1..16)
             .find(|u| *u != 7 && !pd.iter().any(|x| x.controller_key == scsi.key && x.unit == *u))
@@ -78,4 +79,91 @@ fn snapshot_cbt_and_hot_add() {
     if let Err(e) = result {
         std::panic::resume_unwind(e);
     }
+}
+
+/// The whole backup through the proxy agent on `nx-proxy` (esxi.sh proxy): with `NEXUS_PROXY` (its address) and
+/// `NEXUS_PROXY_TOKEN` as well. A full backup of `nx-cbt`, an incremental one, a forced full read: the disk
+/// indexes of all three are the same (the guest is idle), the incremental one fetches no block.
+#[test]
+fn backup_through_proxy() {
+    use agent_conn::ca::Ca;
+    use agent_conn::map::MapDb;
+    use agent_conn::tls::{session_config, Session};
+    use chunkstore::{Index, Keyring, Options, Store};
+    use std::time::Duration;
+    use vmware::backup::{backup_vm, Spec};
+    let (Ok(host), Ok(proxy_ip)) = (std::env::var("NEXUS_ESXI"), std::env::var("NEXUS_PROXY")) else {
+        eprintln!("NEXUS_ESXI / NEXUS_PROXY not set, skipped");
+        return;
+    };
+    let pw = std::env::var("NEXUS_ESXI_PASSWORD").unwrap();
+    let token = std::env::var("NEXUS_PROXY_TOKEN").unwrap();
+    let pem = std::fs::read(std::env::var("NEXUS_ESXI_CERT").unwrap()).unwrap();
+    // the test binary runs on the regression VM: its store goes to NEXUS_TMP (on disk), not this build's target dir
+    let d = tempfile::tempdir_in(std::env::var("NEXUS_TMP").unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").into()))
+        .unwrap();
+    let ca = Ca::load_or_create(&d.path().join("ca")).unwrap();
+    let id = "00000000000000aa";
+    let t = Duration::from_secs(60);
+    let e = agent_conn::enroll::enroll(&ca, &proxy_ip, 7444, &agent_proto::token_digest(&token), id, t).unwrap();
+    // the agent switches to its enrolled certificate shortly after the enrolment
+    let mut s = (0..50)
+        .find_map(|_| {
+            let r = Session::connect(
+                &proxy_ip,
+                7444,
+                session_config(&ca, id, Some(&e.cert_sha256)).unwrap(),
+                t,
+            )
+            .and_then(|mut s| s.hello(id).map(|_| s));
+            if r.is_err() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            r.ok()
+        })
+        .expect("no session with the proxy after its enrolment");
+    let store_dir = d.path().join("store");
+    let store = Store::open(&store_dir, Keyring::new("lab", &[(1, [7; 32])]), Options::default()).unwrap();
+    let mut map = MapDb::open(&store_dir).unwrap();
+
+    let c = Client::login(&host, 443, &pem, "root", &pw).unwrap();
+    let vms = c.vms().unwrap();
+    let find = |n: &str| vms.iter().find(|(_, name)| name == n).unwrap().0.clone();
+    let (vm, proxy) = (find("nx-cbt"), find("nx-proxy"));
+    let mut run = |job, full| {
+        let spec = Spec {
+            vm: &vm,
+            proxy: &proxy,
+            datacenter: "ha-datacenter",
+            job,
+            full,
+        };
+        let mut lines = Vec::new();
+        let m = backup_vm(&c, &store, &mut map, &mut s, &spec, &mut |l| {
+            eprintln!("{l}");
+            lines.push(l.to_owned());
+        })
+        .unwrap();
+        (m, lines)
+    };
+    let (m1, _) = run(1, false);
+    let (m2, log2) = run(2, false);
+    let (m3, _) = run(3, true);
+    let disks: Vec<&String> = m1.indexes.iter().filter(|n| *n != "config").collect();
+    assert!(!disks.is_empty(), "{:?}", m1.indexes);
+    for n in &disks {
+        let chunks = |m| match store.load_index(m, n).unwrap() {
+            Index::Fixed { chunks, .. } => chunks,
+            _ => panic!("{n}: not a fixed index"),
+        };
+        assert_eq!(chunks(&m1), chunks(&m2), "{n}: incremental differs");
+        assert_eq!(chunks(&m1), chunks(&m3), "{n}: full read differs");
+    }
+    assert!(log2.iter().any(|l| l.contains("(incremental)")), "{log2:?}");
+    assert!(log2.iter().any(|l| l.contains(" 0 fetched")), "{log2:?}");
+    // no snapshot and no hot-added disk left behind
+    let (pd, _) = c.devices(&proxy).unwrap();
+    assert_eq!(pd.len(), 1, "proxy disks: {pd:?}");
+    c.logout();
+    s.close();
 }

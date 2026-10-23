@@ -69,6 +69,21 @@ needs a second trust mechanism for the proxy. Recommended: the native connector.
    leftover is reported with its name (`nexus-backup-<job>`).
 7. Store the `.vmx`, `.nvram` and the change IDs in the snapshot metadata.
 
+## Snapshot layout (M2)
+
+- Source `vmw-<uuid>`: the VM's `config.instanceUuid` (vCenter), on a standalone host its BIOS UUID
+  `config.uuid` (empty instance UUID there; a clone made outside vCenter keeps the BIOS UUID).
+- One fixed index of 4 MiB chunks per disk, named by controller kind, bus and unit (`scsi0-0`, `sata1-0`,
+  `nvme0-1`); the config index holds `vm.vmx` and `vmware.json` (per disk: size, change id, disk file).
+- The disk hot-added is the snapshot's own disk file (`backing.fileName` of the snapshot's device, with its
+  delta chain), not the chain's base: a VM with earlier snapshots of its own would otherwise be read in an older
+  state.
+- Incremental: `QueryChangedDiskAreas` against the change id in the previous snapshot's `vmware.json`; byte
+  extents become block ranges (`agent_conn::blocks::block_ranges`), blocks outside them are taken from the
+  previous index. A failing query ("change tracking info is unclean" after a host crash or a hard power-off),
+  a missing change id or a missing previous index read the whole disk; known blocks still do not cross the
+  network (mapping index).
+
 ## Open points
 
 - vCenter (VCSA and licences not in the lab yet): `ExportSnapshot`, clusters, VMs moving between hosts (the proxy
