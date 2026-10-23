@@ -326,6 +326,21 @@ fn validate_guests_dumps_and_restores() {
             r.summary
         );
         assert!(h.log().iter().any(|l| l.contains("logs (MyISAM)")), "{:?}", h.log());
+        // restore test (Phase 44): a throwaway database, row counts against the dump's trailer, dropped again
+        let v = h.restore(&native, &r.source, r.time, "verify", json!({})).unwrap();
+        assert!(
+            v.summary.starts_with("restore test passed:") && v.summary.contains("rows counted against the dump"),
+            "{flavor}: {}",
+            v.summary
+        );
+        assert_eq!(
+            b.sql(
+                "information_schema",
+                "SELECT COUNT(*) FROM SCHEMATA WHERE SCHEMA_NAME LIKE 'nexus_verify_%'"
+            ),
+            "0",
+            "{flavor}: dropped again"
+        );
         let out = h
             .restore(
                 &native,

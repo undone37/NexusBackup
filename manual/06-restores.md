@@ -393,13 +393,17 @@ of a database plugin; deleting the group deletes the schedule.
 
 ### Database restore tests
 
-For a group of a PostgreSQL source (plugin 1.4 or newer) the schedule needs no node or storage: each run uses the
-plugin's own restore test on the newest local snapshot of every database and of the cluster:
+For a group of a PostgreSQL source (plugin 1.4 or newer) or a MySQL/MariaDB source (plugin 1.1 or newer) the
+schedule needs no node or storage: each run uses the plugin's own restore test on the newest local snapshot of every
+database (and, for PostgreSQL, of the cluster):
 
 - **Database dumps** are restored into a throwaway database `nexus_verify_<snapshot time>`, on the alternate
   restore server if the source has one, else on the source. The rows of every table are counted and compared
   with the rows the dump holds; then the database is dropped (also when the test failed). The source's role needs
   `CREATEDB` for that.
+- **MySQL/MariaDB dumps** are tested the same way (`nexus_verify_<snapshot time>`, dropped afterwards). Dumps the
+  appliance made over the connection carry the row count of every table, which the test compares; dumps made with
+  `mysqldump` over SSH carry none, so their test checks that the whole dump restores without an error.
 - **Cluster snapshots** are restored point-in-time to their end into a throwaway directory below the source's
   **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
   must answer a query once recovery has ended. The server is stopped and the directory removed afterwards. The

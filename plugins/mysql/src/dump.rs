@@ -32,9 +32,14 @@ pub struct Stats {
     pub skipped: Vec<String>,
     /// tables of non-transactional engines (not consistent with the rest)
     pub non_transactional: Vec<String>,
+    /// rows per table as dumped: the `-- nexus:rows` trailer, for restore tests
+    pub per_table: Vec<(String, u64)>,
 }
 
 const BATCH: usize = 1 << 20;
+
+/// The trailer line with the rows per table (dumps made over the connection only).
+pub const ROWS_PREFIX: &str = "-- nexus:rows ";
 
 /// `-- nexus: {"charset":…,"collation":…}` for the database `db`.
 pub fn header(c: &mut Conn, db: &str) -> Result<String> {
@@ -273,6 +278,7 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
             w.write_all(&buf)?;
         }
         st.rows += rows;
+        st.per_table.push((name.clone(), rows));
     }
     for v in &views {
         // columns: View, Create View, character_set_client, collation_connection
@@ -366,7 +372,15 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
     writeln!(
         w,
         "SET FOREIGN_KEY_CHECKS = @nexus_old_fk, UNIQUE_CHECKS = @nexus_old_uc, SQL_MODE = @nexus_old_mode, \
-         TIME_ZONE = @nexus_old_tz;\n-- NexusBackup dump complete"
+         TIME_ZONE = @nexus_old_tz;"
+    )?;
+    // a comment: `mysql db < x.sql` ignores it; the restore test compares the restored rows with it
+    let rows: serde_json::Map<String, serde_json::Value> =
+        st.per_table.iter().map(|(t, n)| (t.clone(), (*n).into())).collect();
+    writeln!(
+        w,
+        "{ROWS_PREFIX}{}\n-- NexusBackup dump complete",
+        serde_json::Value::Object(rows)
     )?;
     c.exec("COMMIT")?;
     Ok(st)
@@ -376,6 +390,8 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
 /// (`'`, `"`, `` ` ``), comments (`-- `, `#`, `/* */`; `/*!…*/` and `/*M!…*/` are
 /// code), `DELIMITER` lines. Comment-only statements are dropped.
 pub struct Splitter<R> {
+    /// the `-- nexus:rows` trailer, when the script had one
+    pub rows: Option<String>,
     r: R,
     delim: Vec<u8>,
     line: Vec<u8>,
@@ -385,6 +401,7 @@ pub struct Splitter<R> {
 impl<R: BufRead> Splitter<R> {
     pub fn new(r: R) -> Self {
         Splitter {
+            rows: None,
             r,
             delim: b";".to_vec(),
             line: Vec::new(),
@@ -471,6 +488,9 @@ impl<R: BufRead> Splitter<R> {
                     let line_comment = rest.starts_with(b"#")
                         || (rest.starts_with(b"--") && rest.get(2).is_none_or(u8::is_ascii_whitespace));
                     if line_comment {
+                        if let Some(j) = rest.strip_prefix(ROWS_PREFIX.as_bytes()) {
+                            self.rows = Some(String::from_utf8_lossy(j).trim_end().to_owned());
+                        }
                         self.at = self.line.len();
                         stmt.push(b'\n');
                     } else if rest.starts_with(b"/*!") || rest.starts_with(b"/*M!") {
@@ -503,6 +523,27 @@ impl<R: BufRead> Splitter<R> {
 #[derive(Default, Debug)]
 pub struct Restored {
     pub statements: u64,
+    /// rows per table from the dump's trailer (None: a dump without one, e.g. mysqldump over SSH)
+    pub rows: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Restore test: every table of the trailer holds as many rows as the dump had for it.
+pub fn check_counts(c: &mut Conn, rows: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    let mut bad = Vec::new();
+    for (t, want) in rows {
+        let have: u64 = c
+            .value(&format!("SELECT COUNT(*) FROM {}", ident(t)))?
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(u64::MAX);
+        if Some(have) != want.as_u64() {
+            bad.push(format!("{t}: {have} rows, the dump had {want}"));
+        }
+    }
+    if !bad.is_empty() {
+        bail!("restore test: row counts differ: {}", bad.join("; "));
+    }
+    Ok(())
 }
 
 /// Runs the statements of a dump (header already read) on `c`.
@@ -525,6 +566,11 @@ pub fn restore(c: &mut Conn, r: impl BufRead) -> Result<Restored> {
             }
         }
     }
+    st.rows = match sp.rows.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+        Some(Ok(serde_json::Value::Object(m))) => Some(m),
+        Some(_) => bail!("the dump's row trailer is not a JSON object"),
+        None => None,
+    };
     Ok(st)
 }
 
@@ -583,6 +629,19 @@ mod tests {
             String::from_utf8(o).unwrap(),
             "42 0x00FF 'it\\'s' '{\"a\": 1}' 0x05 '' NULL"
         );
+    }
+
+    #[test]
+    fn rows_trailer() {
+        let mut sp = Splitter::new(
+            &b"CREATE TABLE t (a int);\nINSERT INTO t VALUES (1),(2);\n-- nexus:rows {\"t\":2,\"u v\":0}\n-- NexusBackup dump complete\n"[..],
+        );
+        let mut n = 0;
+        while sp.next_statement().unwrap().is_some() {
+            n += 1;
+        }
+        assert_eq!(n, 2, "the trailer is a comment, not a statement");
+        assert_eq!(sp.rows.as_deref(), Some("{\"t\":2,\"u v\":0}"));
     }
 
     #[test]

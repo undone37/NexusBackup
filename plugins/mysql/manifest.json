@@ -1,7 +1,7 @@
 {
   "id": "mysql",
   "name": "MySQL / MariaDB",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -87,6 +87,12 @@
       "backup": { "incremental": true, "consistent": "application" },
       "restores": [
         { "id": "download", "title": "Download (tar/zip)" },
+        {
+          "id": "verify",
+          "title": "Restore test (dump into a throwaway database, row counts checked, dropped again)",
+          "applies_to": "guest",
+          "params_schema": { "type": "object", "properties": {} }
+        },
         {
           "id": "to_target",
           "title": "Restore database dump to a server",
