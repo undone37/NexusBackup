@@ -223,14 +223,19 @@ pub fn convert(vmx: &str, disks: &[VmDisk], target: u32, storage: &str, bridge: 
         lines.push("scsihw: virtio-scsi-single".into());
     }
     let mut devices = Vec::new();
+    // PVE's restore allocates and imports only the drives named by vzdump's `#qmdump#map:` hint lines
+    // (qemu-server parse_backup_hints): without them it writes the config and restores no disk
+    let mut hints = Vec::new();
     for (i, d) in sorted.iter().enumerate() {
         let key = format!("{bus}{i}");
+        hints.push(format!("#qmdump#map:{key}:drive-{key}:{storage}:raw:"));
         lines.push(format!(
             "{key}: {storage}:vm-{target}-disk-{i},size={}",
             size_str(d.size)
         ));
         devices.push((format!("drive-{key}"), d.index.clone(), d.size));
     }
+    lines.splice(0..0, hints);
     lines.push(format!("boot: order={bus}0"));
     let model = if fam == Family::Linux { "virtio" } else { "e1000e" };
     let mut nics = 0;
@@ -305,7 +310,8 @@ ctkEnabled = "TRUE"
         assert_eq!(c.name, "nx-cbt-debian-12");
         assert_eq!(
             c.conf,
-            "name: nx-cbt-debian-12\nmemory: 2048\ncores: 2\nsockets: 2\nostype: l26\nscsihw: virtio-scsi-single\n\
+            "#qmdump#map:scsi0:drive-scsi0:local-lvm:raw:\n#qmdump#map:scsi1:drive-scsi1:local-lvm:raw:\n\
+             name: nx-cbt-debian-12\nmemory: 2048\ncores: 2\nsockets: 2\nostype: l26\nscsihw: virtio-scsi-single\n\
              scsi0: local-lvm:vm-220-disk-0,size=16G\nscsi1: local-lvm:vm-220-disk-1,size=4G\nboot: order=scsi0\n\
              net0: virtio=00:0C:29:AB:CD:EF,bridge=vmbr0\n"
         );
@@ -343,6 +349,10 @@ ctkEnabled = "TRUE"
         assert!(c
             .conf
             .contains("net0: e1000e=00:50:56:01:02:03,bridge=vmbr1\nnet1: e1000e,bridge=vmbr1\n"));
+        // PVE's restore imports exactly the drives named by the hint lines
+        assert!(c
+            .conf
+            .starts_with("#qmdump#map:sata0:drive-sata0:ceph:raw:\n#qmdump#map:sata1:drive-sata1:ceph:raw:\n"));
         assert_eq!(c.notes.len(), 3, "{:?}", c.notes);
         assert_eq!(c.devices[0], ("drive-sata0".into(), "sata0-0".into(), 64 << 30));
     }
@@ -365,7 +375,7 @@ ctkEnabled = "TRUE"
         .unwrap();
         assert!(
             c.conf
-                .starts_with("name: vmware-vm\nmemory: 1024\ncores: 1\nsockets: 1\nostype: other\n"),
+                .contains("\nname: vmware-vm\nmemory: 1024\ncores: 1\nsockets: 1\nostype: other\n"),
             "{}",
             c.conf
         );
