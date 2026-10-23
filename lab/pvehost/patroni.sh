@@ -27,9 +27,12 @@
 #   patroni.sh restore    dump of labdb restored into the cluster as labdb_copy (compared), and point-in-time
 #                         restores on pg-ctl to every mark (patroni.sh mark) and to the end, row counts compared
 #   patroni.sh mark NAME  remember now as a restore target (state in $LAB/marks)
+#   patroni.sh matrix V…  per PostgreSQL version: new nodes, deploy, slot, writer, source, scenario, cleanup
+#                         (e.g. `patroni.sh matrix 14 15 16 18`; results per version in the log)
 #   patroni.sh scenario   marks and backups around a switchover and a hard failover, then restore (new marks)
 #   patroni.sh ssh N CMD  a command as root on VM N (ctl, pg1, pg2, pg3)
-#   patroni.sh destroy    stop and remove the VMs
+#   patroni.sh destroy    stop and remove the VMs (KEEP_CTL=1: the nodes only, e.g. for another PG_VERSION)
+#   patroni.sh cleanpitr  stop the restored servers on pg-ctl and remove /srv/pitr/*
 #
 # env: PVE_HOST (10.2.34.200), SSH_KEY (~/nexus-lab/pve-lab-key), VM_KEY (~/nexus-lab/lab_ed25519),
 #      LAB (~/nexus-lab/patroni: addresses, passwords), STORAGE (vmpool),
@@ -223,6 +226,10 @@ step_pitrhost() {
 	[ -f "$LAB/pitr_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C nexus-pitr -f "$LAB/pitr_ed25519"
 	on pg-ctl "set -e; export DEBIAN_FRONTEND=noninteractive
 		command -v /usr/lib/postgresql/$PG_VERSION/bin/pg_ctl >/dev/null || {
+			# Debian 13 ships one major version: the others from the PostgreSQL project's repository
+			apt-cache show postgresql-$PG_VERSION >/dev/null 2>&1 || {
+				apt-get -qq install -y postgresql-common >/dev/null
+				/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null; }
 			apt-get -qq install -y postgresql-$PG_VERSION postgresql-client-$PG_VERSION >/dev/null
 			# no cluster of its own: restores create theirs
 			pg_dropcluster --stop $PG_VERSION main 2>/dev/null || true; }
@@ -271,15 +278,18 @@ step_source() {
 		--arg hk "$(on pg-ctl 'cat /etc/ssh/ssh_host_ed25519_key.pub' </dev/null | cut -d' ' -f1-2)" \
 		'{host:$h1, hosts:[$h2, $h3], port:5432, user:"nexus_backup", password:$pw, sslmode:"require",
 		databases_include:["labdb"], ssh_host:$ctl, ssh_user:"postgres", ssh_key:$key, ssh_host_key:$hk}')
-	src=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" '{tenant:"pgha", kind:"plugin:postgresql", name:"patroni-lab", config:$c}')" | jq -r .id)
+	src=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" --arg n "patroni-lab-pg$PG_VERSION-$(date +%s)" '{tenant:"pgha", kind:"plugin:postgresql", name:$n, config:$c}')" | jq -r .id)
 	expect 201 "create source"
 	j=$(job admin plugin_validate "$(jq -nc --argjson s "$src" '{source_id:$s}')" 300)
 	log "validate: $(jq -c .result <<<"$j")"
-	pol=$(api admin POST /policies '{"name":"pgha","schedule":"daily 03:33","gfs":{"daily":14,"weekly":0,"monthly":0,"yearly":0},"offsite":false}' | jq -r .id)
-	expect 201 "create policy"
-	g1=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" '{tenant:"pgha", source_id:$s, policy_id:$p, name:"labdb", guests:["labdb"]}')" | jq -r .id)
+	pol=$(api admin GET /policies | jq -r '.[] | select(.name == "pgha") | .id' | head -1)
+	if [ -z "$pol" ]; then
+		pol=$(api admin POST /policies '{"name":"pgha","schedule":"daily 03:33","gfs":{"daily":14,"weekly":0,"monthly":0,"yearly":0},"offsite":false}' | jq -r .id)
+		expect 201 "create policy"
+	fi
+	g1=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" '{tenant:"pgha", source_id:$s, policy_id:$p, name:("labdb-" + ($s|tostring)), guests:["labdb"]}')" | jq -r .id)
 	expect 201 "group labdb"
-	g2=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" '{tenant:"pgha", source_id:$s, policy_id:$p, name:"cluster", guests:[]}')" | jq -r .id)
+	g2=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" '{tenant:"pgha", source_id:$s, policy_id:$p, name:("cluster-" + ($s|tostring)), guests:[]}')" | jq -r .id)
 	expect 201 "group cluster"
 	jq -n --argjson s "$src" --argjson d "$g1" --argjson c "$g2" '{source:$s, dump_group:$d, cluster_group:$c}' >"$LAB/state.json"
 	log "source $src, groups labdb $g1, cluster $g2"
@@ -350,7 +360,8 @@ step_restore() {
 	apienv
 	local snaps snap s r j name at rows tl want have dir port=5440
 	# the dump into the cluster as labdb_copy: ticks up to the dump compared
-	snaps=$(api admin GET '/snapshots?tenant=pgha')
+	# this lab's source only (one per PostgreSQL version)
+	snaps=$(api admin GET '/snapshots?tenant=pgha' | jq -c --arg p "plugin-postgresql-$(jq -r .source "$LAB/state.json")" '[.[] | select(.source == $p or .source == ($p + "-labdb"))]')
 	snap=$(jq -c '[.[] | select(.source | endswith("-labdb"))] | sort_by(.time) | .[-1]' <<<"$snaps")
 	sql 'DROP DATABASE IF EXISTS labdb_copy WITH (FORCE)' postgres
 	j=$(job admin plugin_restore "$(jq -nc --argjson s "$snap" '{source:$s.source, time:$s.time, restore:"to_target", params:{database:"labdb_copy", server:"source"}}')")
@@ -409,13 +420,37 @@ step_scenario() {
 	step_restore
 }
 
+step_cleanpitr() {
+	on pg-ctl 'for d in /srv/pitr/*/; do [ -f "$d/postmaster.pid" ] && kill -QUIT "$(head -1 "$d/postmaster.pid")" 2>/dev/null; done; sleep 2; rm -rf /srv/pitr/*; df -h / | tail -1' </dev/null
+}
+
+step_matrix() {
+	local v
+	for v in $MATRIX; do
+		log "=== PostgreSQL $v"
+		KEEP_CTL=1 step_destroy
+		step_vms
+		step_control
+		# a transient download error (DNS, mirror) before initdb: the playbook can run again
+		PG_VERSION=$v step_deploy || { sleep 30; PG_VERSION=$v step_deploy; }
+		PG_VERSION=$v step_pitrhost
+		step_roles
+		step_slot
+		step_writer
+		PG_VERSION=$v step_source
+		PG_VERSION=$v step_scenario
+		step_nowriter
+		step_cleanpitr
+	done
+}
+
 step_ssh() {
 	on "$SSH_NODE" "$SSH_CMD"
 }
 
 step_destroy() {
 	local id
-	for id in $(awk 'NF {print $1}' <<<"$VMS"); do
+	for id in $(awk -v k="${KEEP_CTL:-0}" 'NF && !(k == 1 && $2 == "pg-ctl") {print $1}' <<<"$VMS"); do
 		pve "qm stop $id 2>/dev/null; qm destroy $id --purge 2>/dev/null" || true
 	done
 	rm -f "$LAB/hosts"
@@ -426,6 +461,11 @@ if [ "${1:-}" = ssh ]; then
 	SSH_NODE=$2
 	SSH_CMD="${*:3}"
 	step_ssh
+	exit
+fi
+if [ "${1:-}" = matrix ]; then
+	MATRIX="${*:2}"
+	step_matrix
 	exit
 fi
 if [ "${1:-}" = mark ]; then
