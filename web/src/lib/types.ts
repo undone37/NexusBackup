@@ -2348,7 +2348,7 @@ export interface ApiToken {
   user: string;
   name: string;
   prefix: string;
-  scope: 'read' | 'operator';
+  scope: 'read' | 'operator' | 'backup';
   expires: number;
   created: number;
   last_used: number | null;

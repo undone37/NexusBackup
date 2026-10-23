@@ -781,6 +781,12 @@ pub async fn create_job(State(st): State<St>, ctx: Ctx, J(r): J<JobReq>) -> ApiR
     if !allowed || (r.kind == "files_get" && !ctx.user.can_download) {
         return Err(ApiError::forbidden());
     }
+    if ctx.token.as_ref().is_some_and(|t| t.scope == "backup") && r.kind != "backup" {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "this API token may only start backups".into(),
+        ));
+    }
     if ctx.token.is_some() && crate::tokens::DENIED_KINDS.contains(&r.kind.as_str()) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,

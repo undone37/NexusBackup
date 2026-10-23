@@ -264,6 +264,10 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
   the secret: the secret is random and long, so a fast hash suffices (no KDF); the secret is returned once, by
   `POST /auth/tokens`, and never stored. `expires` is mandatory (1–365 days); the owner (`user_id`, ON DELETE
   CASCADE), `scope` (`read` | `operator`), `last_used` / `last_ip` (written at most once a minute).
+- Scope `backup` (catalog v48, Phase 43, for integrations such as the PegaProx plugin): stored as `operator` with
+  `only_kinds = 'backup'` and shown as `backup`. It reads like a read token and writes nothing but `POST /jobs`
+  (the middleware refuses every other POST), and `POST /jobs` refuses any kind other than `backup` ("this API token
+  may only start backups"). Same role rule as `operator`: never more than the user's role.
 - `Authorization: Bearer nxt_…` is handled by a middleware in front of the router (other bearer tokens, e.g. the
   metrics token, pass untouched). Valid = known prefix, constant-time hash match, not expired, user enabled and not
   pending activation. It then puts `TokenAuth` (user with capped role + token) into the request; `Ctx` uses it

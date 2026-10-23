@@ -1014,12 +1014,20 @@ CREATE TABLE token_networks (
 );
 "#;
 
+/// v48 (Phase 43, PegaProx integration): `api_tokens.only_kinds` — an operator token limited to starting
+/// these job kinds (comma-separated; today only `backup`, shown as scope `backup`), nothing else that writes.
+/// A column instead of a new `scope` value: the CHECK on `scope` cannot change without rebuilding the table,
+/// and a rebuild would cascade-delete `token_networks`.
+const SCHEMA_V48: &str = r#"
+ALTER TABLE api_tokens ADD COLUMN only_kinds TEXT;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -3448,6 +3456,38 @@ mod tests {
     /// v46 (Phase 33) on top of the catalog before it (whatever comes between
     /// v44 and v46): no tickets; one open ticket per rule and key, closed ones
     /// may repeat.
+    #[test]
+    fn migration_v48_token_kinds() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let before = MIGRATIONS.iter().position(|m| *m == SCHEMA_V48).unwrap();
+        {
+            let c = Connection::open(&p).unwrap();
+            for (i, m) in MIGRATIONS[..before].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO users (id, name, password_hash, totp_secret, role, created) VALUES (1, 'u', 'h', 's', 'admin', 1);
+                 INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created)
+                   VALUES (1, 'old', 'aaaaaaaa', 'h', 'operator', 9, 1);
+                 INSERT INTO token_networks (token_id, net, first_seen) VALUES (1, '10.0.0.0/24', 1);",
+            )
+            .unwrap();
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        // existing tokens keep their scope (no restriction) and their networks
+        let (k, n): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT only_kinds, (SELECT COUNT(*) FROM token_networks) FROM api_tokens WHERE name = 'old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((k, n), (None, 1));
+    }
+
     #[test]
     fn migration_v46_psa_approvers_cases() {
         let d = tempfile::tempdir().unwrap();

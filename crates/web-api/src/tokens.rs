@@ -5,8 +5,10 @@
 //! on their own. A token
 //! - belongs to a user and stops working when the user is disabled, pending
 //!   activation or deleted, and when it expires (mandatory, at most 365 days);
-//! - has a scope: `read` (GET only) or `operator` (also start and cancel jobs,
-//!   pause/resume groups, maintenance, acknowledge alerts, sync replication).
+//! - has a scope: `read` (GET only), `operator` (also start and cancel jobs,
+//!   pause/resume groups, maintenance, acknowledge alerts, sync replication) or
+//!   `backup` (read, and start `backup` jobs only: integrations such as the
+//!   PegaProx plugin; stored as an operator token with `only_kinds`).
 //!   The effective role is the lower of the user's role and the scope: an admin's
 //!   operator token acts as operator, a security officer's tokens are read-only;
 //! - reaches only the endpoints on [`allowed`]: an allow-list, so a new
@@ -140,8 +142,8 @@ pub fn allowed(writes: bool, method: &Method, path: &str) -> bool {
 /// (effective role, may write) for a scope and the user's role.
 fn effective(scope: &str, role: &str) -> (String, bool) {
     match (scope, role) {
-        ("operator", "admin" | "operator") => ("operator".into(), true),
-        ("operator", "tenant_user" | "tenant_admin") => (role.into(), true),
+        ("operator" | "backup", "admin" | "operator") => ("operator".into(), true),
+        ("operator" | "backup", "tenant_user" | "tenant_admin") => (role.into(), true),
         _ => (role.into(), false),
     }
 }
@@ -177,7 +179,9 @@ pub async fn layer(State(st): State<St>, mut req: Request, next: Next) -> Respon
     };
     let path = req.uri().path().strip_prefix("/api/v1").unwrap_or("-");
     let (_, writes) = effective(&auth.token.scope, &auth.user.role);
-    if !allowed(writes, req.method(), path) {
+    // a backup token writes nothing but new jobs (their kind is checked when the job is created)
+    let backup_only = auth.token.scope == "backup" && *req.method() == Method::POST && path != "/jobs";
+    if backup_only || !allowed(writes, req.method(), path) {
         return denied(
             StatusCode::FORBIDDEN,
             "API tokens cannot use this endpoint (or not with this scope)",
@@ -207,7 +211,8 @@ fn authenticate(st: &St, token: &str, ip: &str) -> ApiResult<Option<TokenAuth>> 
     let row = c
         .query_row(
             &format!(
-                "SELECT t.id, t.name, t.scope, t.hash, t.expires, t.last_used, {cols} FROM api_tokens t
+                "SELECT t.id, t.name, CASE WHEN t.only_kinds IS NULL THEN t.scope ELSE 'backup' END,
+                        t.hash, t.expires, t.last_used, {cols} FROM api_tokens t
                  JOIN users u ON u.id = t.user_id WHERE t.prefix = ?1 AND u.activation_hash IS NULL"
             ),
             [prefix],
@@ -262,7 +267,8 @@ fn row_json(r: &catalog::rusqlite::Row) -> catalog::rusqlite::Result<Value> {
 }
 
 const COLS: &str =
-    "t.id, u.name, t.name, t.prefix, t.scope, t.expires, t.created, t.last_used, t.last_ip FROM api_tokens t JOIN users u ON u.id = t.user_id";
+    "t.id, u.name, t.name, t.prefix, CASE WHEN t.only_kinds IS NULL THEN t.scope ELSE 'backup' END, t.expires, t.created,
+     t.last_used, t.last_ip FROM api_tokens t JOIN users u ON u.id = t.user_id";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -317,13 +323,13 @@ pub async fn create(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r)
     }
     match r.scope.as_str() {
         "read" => {}
-        "operator" if effective("operator", &ctx.user.role).1 => {}
-        "operator" => {
+        "operator" | "backup" if effective("operator", &ctx.user.role).1 => {}
+        "operator" | "backup" => {
             return Err(ApiError::bad(
-                "scope: operator tokens need the admin, operator, tenant admin or tenant user role",
+                "scope: operator and backup tokens need the admin, operator, tenant admin or tenant user role",
             ))
         }
-        _ => return Err(ApiError::bad("scope: read or operator")),
+        _ => return Err(ApiError::bad("scope: read, operator or backup")),
     }
     let n: i64 = st.cat.conn().query_row(
         "SELECT COUNT(*) FROM api_tokens WHERE user_id = ?1",
@@ -357,8 +363,17 @@ pub async fn create(State(st): State<St>, ctx: Ctx, ClientIp(ip): ClientIp, J(r)
     let id = {
         let c = st.cat.conn();
         c.execute(
-            "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![ctx.user.id, r.name, prefix, sha256_hex(secret.as_bytes()), r.scope, expires, now],
+            "INSERT INTO api_tokens (user_id, name, prefix, hash, scope, expires, created, only_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                ctx.user.id,
+                r.name,
+                prefix,
+                sha256_hex(secret.as_bytes()),
+                if r.scope == "backup" { "operator" } else { r.scope.as_str() },
+                expires,
+                now,
+                (r.scope == "backup").then_some("backup")
+            ],
         )?;
         c.last_insert_rowid()
     };

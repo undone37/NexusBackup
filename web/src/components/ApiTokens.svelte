@@ -37,7 +37,7 @@
   onMount(load);
 
   let open = $state(false);
-  let f = $state({ name: '', scope: 'read' as 'read' | 'operator', days: 90, password: '', totp: '' });
+  let f = $state({ name: '', scope: 'read' as 'read' | 'operator' | 'backup', days: 90, password: '', totp: '' });
   let created: ApiToken | null = $state(null);
   let shownOpen = $state(false);
 
@@ -147,7 +147,8 @@
         <label for="{id}-scope">{t.tokens.scope}</label>
         <select id="{id}-scope" bind:value={f.scope} aria-describedby="{id}-scope-hint">
           <option value="read">{t.tokens.scopes.read}</option>
-          {#if canOperate}<option value="operator">{t.tokens.scopes.operator}</option>{/if}
+          {#if canOperate}<option value="operator">{t.tokens.scopes.operator}</option>
+            <option value="backup">{t.tokens.scopes.backup}</option>{/if}
         </select>
       </div>
       <div class="field">
@@ -157,7 +158,9 @@
         </select>
       </div>
     </div>
-    <p class="hint" id="{id}-scope-hint">{f.scope === 'operator' ? t.tokens.operatorHint : t.tokens.readHint}</p>
+    <p class="hint" id="{id}-scope-hint">
+      {f.scope === 'operator' ? t.tokens.operatorHint : f.scope === 'backup' ? t.tokens.backupHint : t.tokens.readHint}
+    </p>
     <p class="banner info">{t.tokens.never}</p>
     {#if local}
       <fieldset>

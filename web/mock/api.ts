@@ -9952,9 +9952,10 @@ on('POST', '/auth/tokens', async (c) => {
   if (!NAME_RE.test(String(name)))
     throw new HttpError(400, 'name: must match [A-Za-z0-9._-]{1,64} without a leading dot');
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new HttpError(400, 'days: 1..=365');
-  if (scope !== 'read' && scope !== 'operator') throw new HttpError(400, 'scope: read or operator');
-  if (scope === 'operator' && (u.role === 'security_officer' || u.role === 'viewer'))
-    throw new HttpError(400, 'scope: operator tokens need the admin, operator or tenant user role');
+  if (scope !== 'read' && scope !== 'operator' && scope !== 'backup')
+    throw new HttpError(400, 'scope: read, operator or backup');
+  if (scope !== 'read' && (u.role === 'security_officer' || u.role === 'viewer'))
+    throw new HttpError(400, 'scope: operator and backup tokens need the admin, operator or tenant user role');
   if (u.auth !== 'oidc' && (current_password !== u.password || !secondOk(u, current_totp)))
     throw new HttpError(
       current_password === undefined ? 400 : 403,

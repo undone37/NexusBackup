@@ -353,6 +353,45 @@ async fn scope_matrix_and_allow_list() {
         StatusCode::FORBIDDEN
     );
 
+    // backup scope (Phase 43, PegaProx): read, and start backups, nothing else that writes
+    let bk = t.token("alice", &alice, "pegaprox", "backup").await;
+    let listed = t
+        .call(Method::GET, "/api/v1/auth/tokens", Some(Auth::Session(&alice)), None)
+        .await;
+    assert!(
+        listed
+            .body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["name"] == "pegaprox" && x["scope"] == "backup"),
+        "{:?}",
+        listed.body
+    );
+    assert_eq!(
+        t.bearer(Method::GET, "/api/v1/snapshots", &bk, None).await.status,
+        StatusCode::OK
+    );
+    let r = t.bearer(Method::POST, "/api/v1/jobs", &bk, Some(backup.clone())).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    let started = r.body["id"].as_i64().unwrap();
+    let restore = json!({"kind": "restore", "tenant": "acme", "params": {"source": "vm-100", "time": 1}});
+    let r = t.bearer(Method::POST, "/api/v1/jobs", &bk, Some(restore)).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+    assert!(
+        r.body["error"].as_str().unwrap().contains("only start backups"),
+        "{:?}",
+        r.body
+    );
+    for p in [
+        format!("/api/v1/jobs/{started}/cancel"),
+        "/api/v1/groups/1/pause".into(),
+        "/api/v1/alerts/1/ack".into(),
+    ] {
+        let r = t.bearer(Method::POST, &p, &bk, Some(json!({}))).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{p}: {:?}", r.body);
+    }
+
     // read scope: GET only
     for p in [
         "/api/v1/dashboard",

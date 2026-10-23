@@ -3259,10 +3259,12 @@ export const en = {
     new: 'New token',
     user: 'User',
     scope: 'Scope',
-    scopes: { read: 'Read only', operator: 'Operator' } as Record<string, string>,
+    scopes: { read: 'Read only', operator: 'Operator', backup: 'Read and start backups' } as Record<string, string>,
     readHint: 'Read only: GET requests (dashboard, jobs, snapshots, alerts, …), no downloads.',
     operatorHint:
       "Operator: also start and cancel jobs, pause and resume groups, maintenance, acknowledge alerts, replication sync. Never more than your own role (an administrator's operator token acts as operator).",
+    backupHint:
+      'Read and start backups: everything a read-only token sees, plus starting backup jobs, nothing else (no restores, cancelling, pausing or acknowledging). For integrations such as the PegaProx plugin.',
     never:
       'Tokens can never approve, change settings, users or tokens, install plugins, download files or export keys.',
     lifetime: 'Valid for',
