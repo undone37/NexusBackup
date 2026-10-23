@@ -9,6 +9,7 @@ use agent_conn::blocks::{block_ranges, read_disk};
 use agent_conn::map::MapDb;
 use agent_conn::tls::Session;
 use anyhow::{bail, Context, Result};
+use chunkstore::progress;
 use chunkstore::{FileEntry, Index, Manifest, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -119,6 +120,7 @@ fn read_disk_nfc(
     prev_index: Option<&Index>,
     changed: &Option<(Vec<(u64, u64)>, u64)>,
     timeout: Duration,
+    part: (&str, u32, u32),
     log: &mut dyn FnMut(&str),
 ) -> Result<Index> {
     let dirty = dirty_of(changed, d.capacity);
@@ -127,10 +129,15 @@ fn read_disk_nfc(
     let to_read = Store::image_extents_bytes(prev, chunk, d.capacity, &dirty);
     let ticket = c.nfc_ticket(vm)?; // single-use: a fresh ticket per disk
     let mut disk = NfcDisk::open(&ticket, &d.file, d.capacity, timeout)?;
+    // live progress of the job: the bytes of this disk read over NFC
+    let mut meter = progress::Meter::new(part.0, part.1, part.2, Some(to_read));
     let idx = store.store_image_extents(prev, chunk, d.capacity, &dirty, |off, buf| {
         disk.read_at(off, buf)
-            .map_err(|e| std::io::Error::other(format!("{e:#}")))
+            .map_err(|e| std::io::Error::other(format!("{e:#}")))?;
+        meter.add(buf.len() as u64);
+        Ok(())
     });
+    meter.finish();
     disk.close();
     let idx = idx?;
     log(&format!("{}: {to_read} bytes read over NFC", d.file));
@@ -248,7 +255,7 @@ fn with_snapshot(
     };
     let mut names = Vec::new();
     let mut indexes = Vec::new();
-    for d in &disks {
+    for (i, d) in disks.iter().enumerate() {
         let name = disk_name(d, &controllers);
         let base = prev.and_then(|(m, st)| Some((m, st.disks.get(&name)?)));
         let prev_index = match base {
@@ -280,7 +287,8 @@ fn with_snapshot(
         ));
         let idx = match transport {
             Transport::Nfc { timeout } => {
-                read_disk_nfc(c, store, spec.vm, d, prev_index.as_ref(), &changed, *timeout, log)
+                let part = (name.as_str(), i as u32 + 1, disks.len() as u32);
+                read_disk_nfc(c, store, spec.vm, d, prev_index.as_ref(), &changed, *timeout, part, log)
                     .with_context(|| format!("{name}: NFC read"))?
             }
             Transport::Proxy { proxy, session, map } => read_disk_proxy(
