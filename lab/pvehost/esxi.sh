@@ -21,6 +21,7 @@
 #   esxi.sh hotadd      the same CBT test, the data read on a proxy VM (GUEST=nx-proxy esxi.sh guest first)
 #                       that gets the snapshot's base disk hot-added read-only (/folder cannot read the disk
 #                       of a running VM: hostd "Failed to lock file")
+#   esxi.sh proxy       this tree's agent on nx-proxy in the proxy role (proxy = on), a new token in $LAB/proxy.token
 #   esxi.sh up          after a cold start of the ESXi VM: wait for SSH, power on nx-cbt and nx-proxy, wait for both
 #   esxi.sh ssh CMD     a command on the ESXi shell (lab ECDSA key in $LAB: ESXi's FIPS sshd refuses ed25519)
 #   esxi.sh destroy     stop and remove VM $VMID (ours: IDs from 200, AGENTS.md "Labs")
@@ -377,16 +378,35 @@ step_up() {
 		sleep 15
 	done
 	for g in nx-cbt nx-proxy; do
-		esx "id=\$(vim-cmd vmsvc/getallvms | awk '\$2 == \"$g\" {print \$1}'); [ -n \"\$id\" ] || exit 0
-			vim-cmd vmsvc/power.getstate \$id | grep -q 'Powered on' || vim-cmd vmsvc/power.on \$id >/dev/null" </dev/null
-	done
-	for g in nx-cbt nx-proxy; do
-		until [ -n "$(GUEST=$g guest_ip)" ] && GUEST=$g guest true 2>/dev/null; do
+		# hostd lists the VMs some time after SSH is up: the power-on is retried until the guest answers
+		until esx "id=\$(vim-cmd vmsvc/getallvms 2>/dev/null | awk '\$2 == \"$g\" {print \$1}'); [ -n \"\$id\" ] || exit 1
+			vim-cmd vmsvc/power.getstate \$id | grep -q 'Powered on' || vim-cmd vmsvc/power.on \$id >/dev/null 2>&1" </dev/null &&
+			[ -n "$(GUEST=$g guest_ip)" ] && GUEST=$g guest true 2>/dev/null; do
 			[ "$(date +%s)" -lt "$end" ] || die "$g did not come up"
 			sleep 15
 		done
 	done
 	log "nx-cbt and nx-proxy up"
+}
+
+# the proxy role for the connector tests (crates/vmware/tests/lab.rs): this tree's agent (static musl build) on
+# nx-proxy with proxy = on, initialised with a new token ($LAB/proxy.token) that the test enrols with
+step_proxy() {
+	local bin tok
+	bin=$(dirname "$0")/../../target/x86_64-unknown-linux-musl/release/nexus-agent
+	[ -x "$bin" ] || die "no $bin (CC_x86_64_unknown_linux_musl=gcc cargo build --release --target x86_64-unknown-linux-musl -p agent-linux)"
+	tok=$(head -c 20 /dev/urandom | base32 | tr -d =)
+	(umask 077 && echo "$tok" >"$LAB/proxy.token")
+	GUEST=nx-proxy guest 'systemctl stop nexus-agent 2>/dev/null; cat > /usr/local/bin/nexus-agent.new && chmod 755 /usr/local/bin/nexus-agent.new &&
+		mv /usr/local/bin/nexus-agent.new /usr/local/bin/nexus-agent' <"$bin"
+	echo "$tok" | GUEST=nx-proxy guest "set -e; rm -rf /var/lib/nexus-agent /etc/nexus-agent
+		/usr/local/bin/nexus-agent init --token - >/dev/null
+		grep -q '^proxy' /etc/nexus-agent/agent.conf 2>/dev/null || echo 'proxy = on' >> /etc/nexus-agent/agent.conf
+		printf '%s\\n' '[Unit]' 'Description=NexusBackup agent (lab proxy role)' 'After=network-online.target' \\
+			'[Service]' 'ExecStart=/usr/local/bin/nexus-agent run' 'Restart=on-failure' '[Install]' 'WantedBy=multi-user.target' \\
+			> /etc/systemd/system/nexus-agent.service
+		systemctl daemon-reload; systemctl enable --now nexus-agent >/dev/null 2>&1; sleep 1; systemctl is-active nexus-agent"
+	log "proxy agent on nx-proxy ($(GUEST=nx-proxy guest_ip):7444), token in $LAB/proxy.token"
 }
 
 step_destroy() {
