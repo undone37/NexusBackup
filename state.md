@@ -940,8 +940,9 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   Haswell CPU with `--forceunsupportedinstall` and `allowLegacyCPU=true` (installer and installed boot.cfg). Same
   findings as 7.0U3: `/folder` refuses the running VM's base disk (500); hot-add full 447 MB/s, incremental of 659 MB
   (119 extents) 386 MB/s, 0 mismatches. No snapshots or attached disks left.
-- [ ] Phase 41 design decision: hot-add proxy as the transport and the component split in docs/vmware-design.md
-  (maintainer); vSAN/NFS, quiesced snapshots, proxy on another host.
+- [x] Phase 41 design decision (maintainer, 2026-10-23): hot-add proxy, native connector `nexus-vmware`, the proxy as
+  an enrolled agent with `block-read`, shipped as an OVA (docs/vmware-design.md).
+- [ ] Implementation; vSAN/NFS, quiesced snapshots, proxy on another host.
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle
@@ -986,6 +987,10 @@ RMAN and archive logs, log backups on their own schedule); listed in the README 
   `/srv/pitr/verify/…` on pg-ctl, started and queried (passed), directory removed. On the way: the check query took
   the answer from psql's whole output, and a collation-version warning (source Debian 12 glibc 2.36, restore host
   Debian 13 2.41) failed the test; 1.4.1 takes the last line.
+- [x] Cleanup (2026-10-23, maintainer): the stale lab sources 2-8 of tenant pgha and their groups removed (each delete
+  approved by the security officer; the bulk deletes marked the admin account as designed, every further delete
+  needed a step-up, the security officer cleared the mark afterwards). Source 9 (the current PostgreSQL 18 cluster)
+  stays.
 - Lab left running with the writer stopped (`patroni.sh writer` / `nowriter`); `patroni.sh destroy` removes it.
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
@@ -1069,8 +1074,8 @@ then "back up now"; read-only token by default, operator token only for backup j
   in 10 s, the plugin shows the new snapshot; the appliance's audit log names `admin via token pegaprox-backup`.
   The first try was refused correctly: the admin account carried a risk mark (sign-in at an unusual hour), and a
   marked account's tokens cannot change anything; the security officer cleared it.
-- [ ] Screenshots of the tab (PegaProx in a browser; sign-in there is a manual step); submit to the PegaProx
-  catalogue (maintainer's decision, then its own repository).
+- [ ] Screenshots of the tab (PegaProx in a browser; sign-in there is a manual step). Catalogue submission: not yet,
+  the plugin stays in this repository (maintainer, 2026-10-23).
 
 ## Phase 44 — Backup and restore testing, databases first (added 2026-10-23)
 Scope: plan.md Phase 44 (scheduled restore tests of PostgreSQL / MySQL dumps and PITR with row counts and checksums,
@@ -1084,8 +1089,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   rows, read back with the dump's columns under canonical output settings. Lab: 435 rows (timestamptz, inet) of the
   Patroni cluster's `labdb` compared, passed.
 - [ ] A custom SQL check per group; a random PITR target inside the recoverable range; MySQL contents (counts only).
-- [ ] Lab scripts as scheduled regression runs: where they run is open (the dev machine drives the lab today;
-  maintainer: a timer on a lab VM, or CI with lab access?).
+- [ ] Lab scripts as scheduled regression runs: decided (maintainer, 2026-10-23): a systemd timer on a lab VM on
+  pve-test.
 - [x] Fault injection, failover during a backup (2026-10-23, `patroni.sh fault`, PostgreSQL 18): a 1.3 GB table, the
   first (full) cluster backup of a new source, the leader's VM stopped hard while it streams. The job fails, no
   snapshot is committed, the scheduler queues a retry; the next run takes a full base backup from the new primary

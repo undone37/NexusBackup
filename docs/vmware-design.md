@@ -3,7 +3,8 @@
 Status: proposal (2026-10-23), based on the transport spike in [vmware-transport-spike.md](vmware-transport-spike.md).
 Decided by the maintainer: no VDDK; the proxy is the appliance's bootc image in a proxy role, shipped as an OVA
 that the admin deploys and enrols (no automatic deployment); lab tests on nested ESXi 7.0U3 and 8.0U3.
-**Open for the maintainer:** the component split below (native connector instead of a sandboxed plugin).
+Decided 2026-10-23 as well: the component split below (native connector `nexus-vmware`, the proxy as an enrolled
+agent), not a sandboxed plugin.
 
 ## What the spike decided
 
