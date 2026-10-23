@@ -1089,8 +1089,11 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   rows, read back with the dump's columns under canonical output settings. Lab: 435 rows (timestamptz, inet) of the
   Patroni cluster's `labdb` compared, passed.
 - [ ] A custom SQL check per group; a random PITR target inside the recoverable range; MySQL contents (counts only).
-- [ ] Lab scripts as scheduled regression runs: decided (maintainer, 2026-10-23): a systemd timer on a lab VM on
-  pve-test.
+- [x] Lab scripts as scheduled regression runs (maintainer: a timer on a lab VM): VM 280 nx-regress (Debian 13,
+  `lab/pvehost/regress.sh`) runs `lab/pvehost/nightly.sh` at 01:30 UTC after a `git pull` of main: tunnel, exact
+  restore, the reboot fault test, the Patroni scenario (PostgreSQL 18), the ESXi 8 hot-add test; the VMs a step needs
+  are started before it and stopped after; results as JSON on the VM (`regress.sh results`). Trial 2026-10-23 on the
+  VM: tunnel + exact passed (373 s); first full run started 2026-10-23 16:20 UTC.
 - [x] Fault injection, failover during a backup (2026-10-23, `patroni.sh fault`, PostgreSQL 18): a 1.3 GB table, the
   first (full) cluster backup of a new source, the leader's VM stopped hard while it streams. The job fails, no
   snapshot is committed, the scheduler queues a retry; the next run takes a full base backup from the new primary
