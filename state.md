@@ -1080,8 +1080,10 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   database with per-table row counts, cluster PITR to the end started and queried; mysql 1.1.0: dump with a
   `-- nexus:rows` trailer, counts compared); restore-test schedules on plugin groups, results in `restore_tests` and
   the `restore_test` alert; Restore tests page and manual. Lab: both PostgreSQL tests pass on VM 201 (0.0.22-dev).
-- [ ] Checksums of selected tables and a custom SQL check (row counts only so far); a random PITR target inside the
-  recoverable range.
+- [x] Table contents in PostgreSQL dump restore tests (plugin 1.4.2): an order-independent SHA-256 sum of the COPY
+  rows, read back with the dump's columns under canonical output settings. Lab: 435 rows (timestamptz, inet) of the
+  Patroni cluster's `labdb` compared, passed.
+- [ ] A custom SQL check per group; a random PITR target inside the recoverable range; MySQL contents (counts only).
 - [ ] Lab scripts as scheduled regression runs: where they run is open (the dev machine drives the lab today;
   maintainer: a timer on a lab VM, or CI with lab access?).
 - [ ] Fault injection (network loss, reboot, failover during a backup, full store, corrupt chunks, clock jumps).
