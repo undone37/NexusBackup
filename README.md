@@ -249,6 +249,35 @@ it adds Proxmox VE VM integration, tenants with separate keys and approvals for 
 tools are far more mature, run on more platforms (macOS, BSD) and support many more storage backends. For files on a
 few hosts, restic with Backrest or Borg with borgmatic is the proven choice today.
 
+### PostgreSQL
+
+Dedicated PostgreSQL backup tools against NexusBackup's `postgresql` plugin. pgBackRest and Databasus are described
+from their own documentation as of October 2026 ([pgbackrest.org](https://pgbackrest.org/),
+[github.com/databasus/databasus](https://github.com/databasus/databasus)), not installed or tested here; the
+NexusBackup column is from the lab runs in [state.md](state.md), including a three-node Patroni cluster.
+
+| | NexusBackup (`postgresql` plugin) | pgBackRest | Databasus |
+|---|---|---|---|
+| **Model** | appliance pulls over the network (wire protocol in Rust, no pg_dump / pg_basebackup on the appliance) | runs on the database hosts (or a repository host over SSH/TLS), `archive_command` on every node | server with web UI (Docker, Helm), connects to the databases |
+| **License** | AGPL-3.0 | MIT | Apache-2.0 |
+| **Maturity** | vibe-coded alpha | mature, widely used in production | young, actively developed |
+| **Logical backups** | per database; owners/grants, comments, RLS, large objects and roles not covered yet | no (physical only) | yes (also MySQL/MariaDB, MongoDB) |
+| **Physical backups** | base backup + WAL from a replication slot; incrementals send only new WAL, a new base backup every 7 days | full, differential, incremental, block-level incremental | yes, incremental with PostgreSQL's native mechanism |
+| **Point-in-time restore** | yes, to a time, LSN or restore point, into a new data directory over SSH | yes | yes (WAL streaming) |
+| **Patroni / HA** | finds the primary among the configured nodes; after a switchover or failover a new base backup on the new timeline; the WAL between the last backup and the failover is not kept (lab 2026-10-23) | standard companion of Patroni (archiving from every node, backups from a standby) | not documented |
+| **Parallelism, backup from standby** | no, from the primary | yes, both | parallel backups |
+| **Storage** | the appliance's deduplicated store, offsite copy to SFTP / S3 / second appliance | POSIX, S3, Azure, GCS, SFTP, several repositories at once | local, S3, R2, SFTP, NAS, Google Drive, Dropbox, rclone and more |
+| **Encryption** | always, per tenant keys on the appliance | repository encryption (optional) | AES-256-GCM |
+| **Deduplication** | across all sources of a tenant (chunk level) | no (block-level incremental instead) | not documented |
+| **Immutability** | extend-only locks, S3 Object Lock | through the storage (object versioning / locks) | not documented |
+| **Restore checks** | none automatic for PostgreSQL yet | `verify` checks the repository, no test restore | test restore into a container after each backup or on a schedule |
+| **UI, approvals** | web UI shared with all other sources, multi-person approval for destructive actions | CLI only | web UI, workspaces with roles, audit log |
+
+For PostgreSQL alone, pgBackRest is the proven choice, especially with Patroni: WAL archiving from every node keeps
+the history across failovers, which the plugin does not yet. Databasus is the closer match in scope (web UI, logical
+and physical backups, restore checks). NexusBackup fits where PostgreSQL is one source among VMs, hosts and shares
+that should share one store, one key model and one approval process.
+
 ## Architecture
 ```text
                   Web UI (Svelte SPA) ── REST API: nexus-web-api (axum, TLS 1.3, TOTP/passkeys, RBAC, quorum)

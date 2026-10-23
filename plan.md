@@ -1357,6 +1357,50 @@ Timelines assume a small dedicated team (2–4 engineers); adjust to actual staf
 
 ---
 
+### Phase 43 — PegaProx plugin (added 2026-10-23 by user request)
+
+[PegaProx](https://github.com/PegaProx/project-pegaprox) (AGPL-3.0) is a web interface for several Proxmox VE and
+XCP-ng clusters; its plugins are Python modules (`manifest.json` + `register(app)`) that add API routes under
+`/api/plugins/<id>/api/...` (behind PegaProx's login, permission `plugins.view`) and can read its cluster managers.
+The catalogue at [plugins.pegaprox.com](https://plugins.pegaprox.com/) is curated by hand from GitHub repositories.
+- **Goal:** NexusBackup's state where PegaProx users manage their VMs: per VM the last good backup and its age against
+  the policy's RPO, the next scheduled run, retention locks, the last restore test, and open alerts; a summary per
+  cluster (protected / unprotected / failing). Second step: **"Back up now"** for a VM or its protection group.
+- **Shape:** a separate repository `pegaprox-plugin-nexusbackup` (AGPL-3.0), Python, no dependencies beyond what
+  PegaProx ships; it calls the NexusBackup REST API, never the store. VMs are matched by PVE cluster + VMID through
+  `GET /names` and the inventory (one PegaProx cluster = one NexusBackup PVE source; several tenants = one token each).
+- **Security:** an API token per PegaProx instance and tenant, read-only by default; triggering backups needs a token
+  with the operator role and is limited to `backup` jobs (no restores, deletes or settings: those stay in
+  NexusBackup with its approvals). TLS with the appliance certificate pinned; the token kept in PegaProx's encrypted
+  database. NexusBackup side: check that token scopes can express "read + start backups of this tenant"; a compact
+  per-VM status endpoint if the existing ones need too many calls.
+- **Lab:** PegaProx in a VM on pve-test (ID from 200) against pve-test and the appliance VM 201; screenshots for the
+  manual. Publishing in the catalogue is the maintainer's decision (submission by e-mail with the repository URL).
+- Later: XCP-ng VMs once Phase 42 backs them up.
+Not started.
+
+### Phase 44 — Backup and restore testing, databases first (added 2026-10-23 by user request)
+
+Phase 25 proves VM backups by booting them in isolation. Database backups have no automatic proof yet, and the lab
+runs (for example the Patroni lab, `lab/pvehost/patroni.sh`) are manual. This phase makes restorability of every
+source kind checked continuously, starting with databases.
+- **Database restore tests (PostgreSQL, MySQL/MariaDB; SQL Server and Oracle with Phase 42):** scheduled per protection
+  group every N days and optionally after each backup. A dump is restored into a throwaway database on a configured
+  test server (or a disposable test VM on PVE from a template), a cluster backup is restored point-in-time into a new
+  data directory on the restore host and started. Checks: restore and start succeed; per-table row counts and
+  checksums of selected tables against values captured at backup time; an optional custom SQL check; for
+  point-in-time, a random target inside the snapshot's recoverable range. Everything is dropped afterwards; results
+  in the dashboard, alerts on failure, history per group.
+- **Regression labs as CI-like runs on pve-test:** the existing lab scripts (PVE exact restore, agents, TrueNAS,
+  Patroni switchover/failover with PITR on every timeline, ESXi CBT) run on a schedule against the current dev
+  build, with their numbers recorded in state.md.
+- **Fault injection:** network loss, appliance reboot and source failover during a backup, a full store, corrupt
+  chunks (detected by verify and repair), clock jumps; each with the expected outcome written down first.
+- **Known gap to close here:** WAL between the last backup and a Patroni failover is lost today (lab 2026-10-23); the
+  plugin needs either a permanent slot kept by Patroni on every node (`slots:` in the DCS) or WAL archiving from
+  every node, then PITR across the timeline switch.
+Not started.
+
 ## 16. Risks and Open Questions
 
 | Risk / question | Impact | Mitigation / decision needed |
