@@ -1060,8 +1060,13 @@ then "back up now"; read-only token by default, operator token only for backup j
   through a read-only PVE user `pegaprox-lab@pve` (PVEAuditor, API token), plugin enabled with a read token of
   VM 201: 30 guests listed, VM 101 (group windows) and VM 200 (lab-arm64) protected with their newest backups, the
   rest unprotected, as on the appliance.
-- [ ] "Back up now" in the lab once VM 201 runs a build with the `backup` scope; screenshots of the tab; submit to the
-  PegaProx catalogue (maintainer's decision, then its own repository).
+- [x] "Back up now" (2026-10-23, VM 201 on 0.0.22-dev, token scope `backup`, `pegaprox.sh backup`): a GET is refused
+  ("POST only"); the POST through PegaProx started backup job 460 of VM 200 (group lab-arm64, `guests: [200]`), ok
+  in 10 s, the plugin shows the new snapshot; the appliance's audit log names `admin via token pegaprox-backup`.
+  The first try was refused correctly: the admin account carried a risk mark (sign-in at an unusual hour), and a
+  marked account's tokens cannot change anything; the security officer cleared it.
+- [ ] Screenshots of the tab (PegaProx in a browser; sign-in there is a manual step); submit to the PegaProx
+  catalogue (maintainer's decision, then its own repository).
 
 ## Phase 44 — Backup and restore testing, databases first (added 2026-10-23)
 Scope: plan.md Phase 44 (scheduled restore tests of PostgreSQL / MySQL dumps and PITR with row counts and checksums,

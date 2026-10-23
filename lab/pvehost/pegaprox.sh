@@ -11,6 +11,7 @@
 #   pegaprox.sh plugin    the plugin copied in, config.json (appliance URL, token, certificate pin, cluster
 #                         mapping), enabled; TOKEN_SCOPE read (default) or backup, ALLOW_BACKUP 0/1
 #   pegaprox.sh check     the plugin's API as the administrator: clusters, guests with their state
+#   pegaprox.sh backup    "Back up now" of BACKUP_VMID (200) through the plugin (needs TOKEN_SCOPE=backup ALLOW_BACKUP=1)
 #   pegaprox.sh destroy   stop and remove the VM (the PVE user and token stay: `pveum user delete pegaprox-lab@pve`)
 #
 # env: PVE_HOST (10.2.34.200), SSH_KEY (~/nexus-lab/pve-lab-key), VM_KEY (~/nexus-lab/lab_ed25519), LAB
@@ -185,6 +186,16 @@ step_check() {
 	r=$(pp GET "/api/plugins/nexusbackup/api/vms?cluster=$cid")
 	log "summary: $(jq -c .summary <<<"$r" 2>/dev/null || echo "$r" | head -c 300)"
 	jq -r '.vms[]? | "  \(.vmid) \(.name): \(.state)  last \(.last_backup.time // "-")  group \(.group.name // "-")"' <<<"$r" | head -30 >&2
+}
+
+step_backup() { # VMID (default 200): "Back up now" through PegaProx, then the job on the appliance
+	local cid r vm=${BACKUP_VMID:-200}
+	login
+	cid=$(pp GET /api/clusters | jq -r '[.[]? | select(.name == "pve-test") | .id][0] // empty')
+	# a GET must not start anything
+	log "GET backup: $(pp GET /api/plugins/nexusbackup/api/backup | head -c 120)"
+	r=$(pp POST /api/plugins/nexusbackup/api/backup "$(jq -nc --arg c "$cid" --argjson v "$vm" '{cluster:$c, vmid:$v}')")
+	log "POST backup of $vm: $r"
 }
 
 step_destroy() {

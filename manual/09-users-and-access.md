@@ -553,8 +553,9 @@ PegaProx users who may create backups of that cluster. The plugin pins this appl
 from **Settings → Certificate**) and never sends the token anywhere else. Installation and the mapping of PegaProx
 clusters to tenants and sources: `integrations/pegaprox/README.md`.
 
-> **Status:** tested in the lab with PegaProx 1.4.0 and a read-only token (the state of 30 guests); **Back up now**
-> is covered by the plugin's tests, its lab run follows.
+> **Status:** tested in the lab with PegaProx 1.4.0: the state of 30 guests with a read-only token, and **Back up
+> now** with a backup token (the job is audited as `<user> via token <name>`). A token of an account with a risk
+> mark ([Risk signals](#risk-signals-and-step-up)) cannot start backups until the mark is cleared or expires.
 
 Example:
 
