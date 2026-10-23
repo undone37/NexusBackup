@@ -1333,7 +1333,9 @@ only if the spike shows it is needed).
   VM on the ESXi host through the vSphere API, the CBT extents read there (lab: 418 MB/s full, 336 MB/s incremental,
   0 mismatches; docs/vmware-transport-spike.md). The proxy is the appliance's bootc image in a proxy role, enrolled
   like an agent (agent protocol, mTLS) and driven by the plugin; VDDK stays out. To design next: proxy role and
-  enrolment, one proxy per host or per shared datastore, vSAN/NFS check.
+  enrolment, one proxy per host or per shared datastore, vSAN/NFS check. **Decided (maintainer, 2026-10-23):** the
+  proxy ships as an OVA that the admin deploys and enrols; no automatic deployment. Lab tests run on nested ESXi
+  7.0U3 and 8.0U3 (ESXi 8 on the lab's older CPU through `allowLegacyCPU=true` or a custom CPU model).
 Spike done (ESXi 7.0U3 standalone); implementation not started.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
@@ -1366,7 +1368,8 @@ The catalogue at [plugins.pegaprox.com](https://plugins.pegaprox.com/) is curate
 - **Goal:** NexusBackup's state where PegaProx users manage their VMs: per VM the last good backup and its age against
   the policy's RPO, the next scheduled run, retention locks, the last restore test, and open alerts; a summary per
   cluster (protected / unprotected / failing). Second step: **"Back up now"** for a VM or its protection group.
-- **Shape:** a separate repository `pegaprox-plugin-nexusbackup` (AGPL-3.0), Python, no dependencies beyond what
+- **Shape:** in this repository under `integrations/pegaprox/` first (maintainer, 2026-10-23), split into its own
+  repository `pegaprox-plugin-nexusbackup` (AGPL-3.0) when it is submitted to the catalogue; Python, no dependencies beyond what
   PegaProx ships; it calls the NexusBackup REST API, never the store. VMs are matched by PVE cluster + VMID through
   `GET /names` and the inventory (one PegaProx cluster = one NexusBackup PVE source; several tenants = one token each).
 - **Security:** an API token per PegaProx instance and tenant, read-only by default; triggering backups needs a token
