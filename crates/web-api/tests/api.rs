@@ -4691,5 +4691,55 @@ async fn vmware_sources() {
         )
         .await;
     assert_eq!(g.status, StatusCode::CREATED, "an inventory group: {:?}", g.body);
+
+    // restore of a VM snapshot as a new Proxmox VE VM (#34): to a pve source of the tenant, full restore only
+    let snap = format!("vmw-{}", u.to_lowercase());
+    let pve = {
+        let c = t.st.cat.conn();
+        c.execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 1000, 1, 1, 0)",
+            [&snap],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'pve', 'cl', '{}')",
+            [],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    };
+    let restore = |extra: Value| {
+        let mut p = json!({"source": snap, "time": 1000, "node": "pve1", "target": 230, "storage": "local-lvm"});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        json!({"kind": "restore", "tenant": "acme", "params": p})
+    };
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            restore(json!({"source_id": pve, "bridge": "vmbr1"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for (bad, why) in [
+        (json!({}), "no target cluster"),
+        (json!({"source_id": sid}), "the VMware source is no target"),
+        (json!({"source_id": pve, "replace": true}), "nothing to replace"),
+        (json!({"source_id": pve, "bridge": "vmbr0;x"}), "bridge"),
+    ] {
+        let r = t.post("/api/v1/jobs", &admin, restore(bad)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {:?}", r.body);
+    }
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "instant_recover", "tenant": "acme",
+                   "params": {"source": snap, "time": 1000, "node": "pve1", "target": 230, "storage": "s", "source_id": pve}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
     t.finish();
 }

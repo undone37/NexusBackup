@@ -649,6 +649,20 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'restore':
     case 'restore_ct': {
+      if (String(src).startsWith('vmw-')) {
+        const vmName = (db.inventory.get(db.sources.find((s) => s.kind === 'vmware')?.id ?? -1) ?? []).find(
+          (g) => `vmw-${g.guest}` === src,
+        )?.name;
+        const name = p.name ?? `${p.name_prefix ?? ''}${vmName ?? 'vmware-vm'}${p.name_prefix ? '' : '-restore'}`;
+        return [
+          `restoring ${src} @ ${p.time} as VM ${p.target} (${name}) on ${p.node}, storage ${p.storage}, bridge ${p.bridge ?? 'vmbr0'}`,
+          'note: Windows guest: disks on SATA and NICs as e1000e (built-in drivers); install the VirtIO drivers, then switch to VirtIO SCSI and network for speed',
+          'serving disks over NBD: drive-sata0 (sata0-0), drive-sata1 (scsi0-1)',
+          `restored qemu ${p.target} (${name})`,
+          ...(p.link_down ? [`NICs of ${p.target}: link_down=1`] : []),
+          ...(p.start ? [`${p.target} started`] : []),
+        ];
+      }
       const ct = kind === 'restore_ct';
       const vmid = String(src).slice(3);
       // Phase 30: replace by rolling back in place (changed chunks only)
@@ -6819,9 +6833,21 @@ const OVERWRITE = ['never', 'if_older', 'always'];
 const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
 /** Phase 15a restore options, as web-api `jobs.rs` checks them. */
 function checkRestore(kind: string, tenant: string, p: Json) {
-  const want = kind === 'restore_ct' ? 'ct-' : 'vm-';
-  if (!String(p.source ?? '').startsWith(want))
-    throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
+  if (String(p.source ?? '').startsWith('vmw-')) {
+    // a VMware VM as a new Proxmox VE VM (#34)
+    if (kind !== 'restore' || p.replace || p.rollback)
+      throw new HttpError(
+        400,
+        'source: a VMware snapshot is restored in full as a new VM (no replace, rollback or instant recovery)',
+      );
+    if (!db.sources.some((s) => s.id === p.source_id && s.tenant === tenant && s.kind === 'pve'))
+      throw new HttpError(400, 'source_id: no Proxmox VE source of this tenant');
+  } else {
+    const want = kind === 'restore_ct' ? 'ct-' : 'vm-';
+    if (!String(p.source ?? '').startsWith(want))
+      throw new HttpError(400, `source: ${kind} needs a ${want}<vmid> snapshot`);
+    if (p.bridge !== undefined) throw new HttpError(400, 'bridge: only for a VMware snapshot');
+  }
   if (!(p.target >= 100 && p.target <= 999999999)) throw new HttpError(400, 'vmid: must be within 100..=999999999');
   if (p.name !== undefined && p.name_prefix !== undefined)
     throw new HttpError(400, 'name, name_prefix: give at most one');

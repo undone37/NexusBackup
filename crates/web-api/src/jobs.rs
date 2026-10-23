@@ -152,6 +152,12 @@ pub(crate) struct RestoreP {
     /// only; the full replace is the fallback); VMs, only with replace
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback: Option<bool>,
+    /// the Proxmox VE source (cluster) to restore to; required for a VMware snapshot (`vmw-<uuid>`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<i64>,
+    /// VMware snapshot: the bridge of the restored VM's NICs (default vmbr0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<String>,
 }
 
 /// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a VM
@@ -450,9 +456,41 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
         }
         "restore" | "restore_ct" | "instant_recover" => {
             let r: RestoreP = parse(p)?;
-            let want = if kind == "restore_ct" { "ct-" } else { "vm-" };
-            if !r.source.starts_with(want) {
-                return Err(ApiError::bad(format!("source: {kind} needs a {want}<vmid> snapshot")));
+            let vmw = r.source.starts_with(vmware::names::SOURCE_PREFIX);
+            if vmw {
+                // a VMware VM as a new Proxmox VE VM (#34): full restore only, to a PVE source of the tenant
+                validate::source_ref(&r.source)?;
+                if kind != "restore" || r.replace || r.rollback == Some(true) {
+                    return Err(ApiError::bad(
+                        "source: a VMware snapshot is restored in full as a new VM (no replace, rollback or instant recovery)",
+                    ));
+                }
+                let sid = r
+                    .source_id
+                    .ok_or_else(|| ApiError::bad("source_id: the Proxmox VE source to restore the VMware VM to"))?;
+                let pve: Option<i64> = st
+                    .cat
+                    .conn()
+                    .query_row(
+                        "SELECT 1 FROM sources WHERE id = ?1 AND tenant = ?2 AND kind = 'pve'",
+                        params![sid, tenant],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if pve.is_none() {
+                    return Err(ApiError::bad("source_id: no Proxmox VE source of this tenant"));
+                }
+            } else {
+                let want = if kind == "restore_ct" { "ct-" } else { "vm-" };
+                if !r.source.starts_with(want) {
+                    return Err(ApiError::bad(format!("source: {kind} needs a {want}<vmid> snapshot")));
+                }
+                if r.bridge.is_some() {
+                    return Err(ApiError::bad("bridge: only for a VMware snapshot"));
+                }
+            }
+            if let Some(b) = &r.bridge {
+                validate::name(b, "bridge")?;
             }
             validate::name(&r.node, "node")?;
             validate::vmid(r.target)?;

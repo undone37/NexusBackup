@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -251,6 +251,27 @@ fn main() -> Result<()> {
                 node,
                 target.parse()?,
                 storage,
+                &opts,
+            )?;
+            println!("restored {}", serde_json::to_string(&r)?);
+        }
+        ("restore-vmware", [uuid, time, node, target, storage, bridge, opts @ ..]) => {
+            // a VMware VM snapshot (vmw-<uuid>/<time>) as a new PVE VM (crate::fromvmware)
+            if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || uuid.len() > 36 {
+                bail!("invalid VM UUID {uuid:?}");
+            }
+            if !pve::restore::valid_name(bridge) {
+                bail!("invalid bridge {bridge:?}");
+            }
+            let opts = pve::restore::RestoreOpts::parse(opts)?;
+            let r = cluster.restore_vmware(
+                &store,
+                uuid,
+                time.parse()?,
+                node,
+                target.parse()?,
+                storage,
+                bridge,
                 &opts,
             )?;
             println!("restored {}", serde_json::to_string(&r)?);
