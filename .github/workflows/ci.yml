@@ -60,7 +60,7 @@ jobs:
           out rust "^(crates|plugins|restore-vm)/|^Cargo\.(toml|lock)$|^(rustfmt|deny)\.toml$|^\.config/nextest\.toml$|$wf"
           out web "^web/|^crates/web-api/openapi\.json$|$wf"
           out plugin "^pve-plugin/|^\.perlcriticrc$|$wf"
-          out os "^(os|release)/|$wf"
+          out os "^(os|release|integrations)/|$wf"
           out windows "^crates/agent-(core|proto|windows|gui)/|^Cargo\.lock$|$wf"
           out deps "^Cargo\.(toml|lock)$|^deny\.toml$|$wf"
           # the container-based suites: their plugins, the plugin runtime and store under them, OIDC
@@ -188,6 +188,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: python3 -m unittest discover -s release/tests
+      - run: python3 integrations/pegaprox/test_core.py
       - run: release/check-trust.sh
   web:
     # the SPA embedded in nexus-web-api (same Node major as os/Containerfile)

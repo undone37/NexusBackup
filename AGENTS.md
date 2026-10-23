@@ -31,6 +31,7 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 | `crates/offsite`, `remote`, `replication`, `nas`, `truenas`, `plugin-*`, `plugins/` | other connectors (`remote`: the SFTP / S3 / directory storage clients) and the plugin system |
 | `os/` | bootc Containerfile, systemd units, SELinux policy, nftables, greenboot checks |
 | `release/` | packaging, signing (offline key), verification, promotion |
+| `integrations/` | plugins for other products that call the REST API (`pegaprox/`: the PegaProx plugin) |
 | `docs/` | contracts and designs (`docs/pve-connector.md`, `docs/adr.md`, ...); comparisons are background reading |
 | `manual/` | user manual; screenshots from `manual/tools/screenshots.mjs` against the mock backend |
 | `lab/` | reproducible labs (`lab/README.md`); `lab/pvehost/` drives the real PVE lab host |
@@ -54,6 +55,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 | `web/` | `cd web && npm run format && npm run check && npm run build` |
 | `pve-plugin/` | `perlcritic --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback` (severity 4), `prove pve-plugin/t` (about 30 s, taint mode like PVE's workers) |
 | `os/`, `release/` | `python3 -m unittest discover -s os/greenboot/tests`, `python3 -m unittest discover -s release/tests`, `release/check-trust.sh` |
+| `integrations/` | `python3 integrations/pegaprox/test_core.py` |
 | UI visible change | regenerate the affected manual screenshots (`node manual/tools/screenshots.mjs`, see the script header) |
 
 The hooks run the fast part automatically; `--no-verify` skips them only for a deliberate exception (for example a
