@@ -428,6 +428,13 @@ fn cluster_backup_and_point_in_time_restore() {
         r.summary
     );
     assert_eq!(start_and_count(&b, "pitr1", 5499), "100");
+    // the source's recovery minimums travel with the snapshot (a Debian/Patroni source keeps them
+    // outside the data directory: recovery aborted on max_connections, lab 2026-10-23)
+    let (_, auto) = b.exec(&["cat", "/var/lib/postgresql/pitr1/postgresql.auto.conf"]);
+    assert!(
+        auto.contains("max_connections = ") && auto.contains("max_locks_per_transaction = "),
+        "{auto}"
+    );
     // to the end of the backup
     h.restore(
         &cfg,

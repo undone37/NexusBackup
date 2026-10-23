@@ -52,7 +52,17 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   warning); the job log lists every server as primary/standby/unreachable, and `validate` fails on `hosts` when
   there is none. Dumps, dump restores to the source and cluster backups all go to the primary; after a failover
   the timeline changed, so the next cluster backup is a new base backup that creates the slot on the new
-  primary. The slot on the old primary stays (drop it when it returns as a standby).
+  primary. The slot on the old primary stays (drop it when it returns as a standby); Patroni removes it itself
+  when the old primary rejoins (lab 2026-10-23, Patroni through autobase 2.11). **Gap:** the WAL between the last
+  backup and a switchover or failover is in no snapshot, so times in that window cannot be restored; the next base
+  backup on the new timeline starts a new recoverable range (plan.md Phase 44: permanent slot or WAL archiving from
+  every node).
+- **Recovery minimums** (1.2.1): every cluster backup stores the source's `max_connections`,
+  `max_worker_processes`, `max_wal_senders`, `max_prepared_transactions` and `max_locks_per_transaction` in
+  `settings.conf`; the point-in-time restore writes them into `postgresql.auto.conf`. PostgreSQL aborts recovery when
+  they are lower than on the primary, which happened with a source that keeps its configuration outside the data
+  directory (Debian, Patroni with `max_connections = 1000`). Snapshots from 1.2.0 lack the file: set the values in
+  the restored `postgresql.auto.conf` by hand if the start fails with "insufficient parameter settings".
 
 ## Server setup
 ```sql
@@ -87,4 +97,4 @@ targets, tablespace remapping and the start command (`pitr.rs`).
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.2.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.2.1.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).

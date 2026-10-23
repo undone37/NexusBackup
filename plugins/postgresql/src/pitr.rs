@@ -129,6 +129,25 @@ pub fn remap(map: &str, rules: &[String]) -> Result<(Vec<Tablespace>, String)> {
     Ok((out, rewritten))
 }
 
+/// The `name = number` lines of a snapshot's `settings.conf` for the settings recovery
+/// needs (`physical::RECOVERY_MINIMUMS`); anything else is dropped (the file goes into the
+/// restored server's configuration).
+pub fn recovery_minimums(text: &str) -> String {
+    let mut out = String::new();
+    for l in text.lines() {
+        let Some((k, v)) = l.split_once('=') else { continue };
+        let (k, v) = (k.trim(), v.trim());
+        if crate::physical::RECOVERY_MINIMUMS.contains(&k)
+            && !v.is_empty()
+            && v.len() <= 9
+            && v.bytes().all(|b| b.is_ascii_digit())
+        {
+            out += &format!("{k} = {v}\n");
+        }
+    }
+    out
+}
+
 /// Files whose content the restore edits or adds when missing.
 const WATCH: &[&str] = &[
     "postgresql.auto.conf",
@@ -289,7 +308,20 @@ pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     if !top.contains(&"data") {
         bail!("this snapshot holds no base backup (point-in-time restore needs a cluster snapshot)");
     }
-    let (conf, until) = recovery_conf(p)?;
+    let (mut conf, until) = recovery_conf(p)?;
+    if top.contains(&crate::physical::SETTINGS_FILE) {
+        let mut s = String::new();
+        src.files(&[crate::physical::SETTINGS_FILE.as_bytes().to_vec()], |_, r| {
+            io::Read::read_to_string(&mut io::Read::take(&mut *r, 64 << 10), &mut s)?;
+            Ok(())
+        })?;
+        conf += &recovery_minimums(&s);
+    } else {
+        ctx.info(format!(
+            "the snapshot has no {}: if PostgreSQL stops with \"insufficient parameter settings\", set the named settings in the restored postgresql.auto.conf to the source's values",
+            crate::physical::SETTINGS_FILE
+        ));
+    }
     let start = p["start"].as_bool().unwrap_or(false);
     let rules: Vec<String> = p["tablespaces"]
         .as_array()
@@ -453,6 +485,16 @@ mod tests {
             assert!(remap(map, &bad).is_err(), "{bad:?}");
         }
         assert_eq!(remap("", &[]).unwrap(), (vec![], String::new()));
+    }
+
+    #[test]
+    fn recovery_minimums_only_known_numbers() {
+        let s = "# NexusBackup\nmax_connections = 1000\nmax_wal_senders=10\nshared_preload_libraries = 'evil'\n\
+                 max_locks_per_transaction = 64; DROP\nmax_worker_processes = 8\nmax_prepared_transactions = \n";
+        assert_eq!(
+            recovery_minimums(s),
+            "max_connections = 1000\nmax_wal_senders = 10\nmax_worker_processes = 8\n"
+        );
     }
 
     #[test]

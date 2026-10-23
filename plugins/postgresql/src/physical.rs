@@ -11,6 +11,9 @@
 //! previous snapshot and streams the new WAL up to the server's current position
 //! (the last segment is zero-padded and streamed again next time). Every snapshot
 //! is therefore self-contained: base backup + WAL up to the snapshot's time.
+//! `settings.conf` holds the source's values of the settings that a recovering
+//! server needs at least as high as the primary ([`RECOVERY_MINIMUMS`]), for the
+//! point-in-time restore (sent again by every run: they may change).
 //!
 //! Frequent runs (`every 15m`) are cheap: an unchanged base sends no data file,
 //! only the WAL since the previous run (the partial last segment again). Each run
@@ -180,6 +183,39 @@ pub fn range(st: &State, to_time: u64, to_lsn: u64) -> serde_json::Value {
 
 /// Backup of the cluster: incremental on top of `prev` if possible, else full.
 /// `o`: the replication connection, `sql`: a normal one (database `postgres`).
+/// Settings PostgreSQL requires on a recovering server to be at least the primary's
+/// (it aborts recovery otherwise: "insufficient parameter settings"); a restore into a
+/// fresh configuration would get the defaults (lab 2026-10-23: Patroni's 1000 connections).
+pub const RECOVERY_MINIMUMS: [&str; 5] = [
+    "max_connections",
+    "max_worker_processes",
+    "max_wal_senders",
+    "max_prepared_transactions",
+    "max_locks_per_transaction",
+];
+/// Top-level snapshot file with the [`RECOVERY_MINIMUMS`] of the source.
+pub const SETTINGS_FILE: &str = "settings.conf";
+
+/// The source's [`RECOVERY_MINIMUMS`] as `postgresql.conf` lines (`SHOW` works on a
+/// replication connection, but not once it streams).
+fn recovery_minimums(c: &mut Conn) -> Result<String> {
+    let mut s = String::from("# NexusBackup: settings of the source that recovery needs at least\n");
+    for n in RECOVERY_MINIMUMS {
+        if let Some(v) = c.value(&format!("SHOW {n}"))? {
+            s += &format!("{n} = {v}\n");
+        }
+    }
+    Ok(s)
+}
+
+fn send_settings(sink: &mut Sink, s: &str, t0: u64) -> Result<()> {
+    sink.file(
+        SETTINGS_FILE.as_bytes(),
+        meta(Kind::File, 0o600, s.len() as u64, t0),
+        &mut s.as_bytes(),
+    )
+}
+
 pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, full_days: u64) -> Result<Report> {
     let prev: Option<State> = ctx
         .state
@@ -202,6 +238,7 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<
     let mut c = Conn::connect(o)?;
     let (system, tli, _) = identify(&mut c)?;
     let seg = parse_size(&c.value("SHOW wal_segment_size")?.unwrap_or_default())?;
+    let settings = recovery_minimums(&mut c)?;
     // a fresh slot: it holds the WAL from before the base backup on
     match c.exec(&format!("DROP_REPLICATION_SLOT {slot}")) {
         Err(e) if crate::pg::sqlstate(&e) == Some("42704") => {}
@@ -219,6 +256,7 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<
         c.server_version
     ));
     let t0 = now();
+    send_settings(sink, &settings, t0)?;
     sink.entry(b"data", meta(Kind::Dir, 0o700, 0, t0))?;
     let mut files = vec!["data".to_owned()];
     // result sets: start position, tablespaces, (COPY), end position — split by
@@ -491,6 +529,7 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
         ctx.info("previous snapshot incomplete: full backup");
         return Ok(None);
     }
+    let settings = recovery_minimums(&mut c)?;
     // start streaming before sending anything: if the slot lost the WAL, a full backup follows
     let streaming = target > p.next;
     if streaming {
@@ -511,6 +550,7 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
         }
     }
     let t0 = now();
+    send_settings(sink, &settings, t0)?;
     for path in paths.iter().take(data.len()) {
         let m = base[path].clone();
         if m.kind == Some(Kind::File) {
