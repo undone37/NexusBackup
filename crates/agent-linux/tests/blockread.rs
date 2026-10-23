@@ -221,3 +221,65 @@ fn block_reads_of_a_hot_added_disk() {
     assert!(e.contains("404"), "the job is gone: {e}");
     s.close();
 }
+
+/// The appliance side (`agent_conn::blocks::read_disk`) against the proxy: a full read into a fixed index, then an
+/// incremental one that fetches only the changed block and takes the rest from the first index.
+#[test]
+fn disk_index_from_a_proxy() {
+    use agent_conn::blocks::{block_ranges, read_disk};
+    use agent_conn::map::MapDb;
+    use chunkstore::{Index, Keyring, Options, Store};
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let size = 3 * BLOCK_SIZE + 4096;
+    let mut data: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
+    // block 2 equals block 0: fetched once
+    data.copy_within(0..BLOCK_SIZE as usize, 2 * BLOCK_SIZE as usize);
+    let disk = d.path().join("disk.img");
+    fs::write(&disk, &data).unwrap();
+    let store_dir = d.path().join("store");
+    let store = Store::open(&store_dir, Keyring::new("acme", &[(1, [9; 32])]), Options::default()).unwrap();
+    let mut map = MapDb::open(&store_dir).unwrap();
+    let mut s = session(d.path(), disk.clone(), true, "proxy");
+    let image = |idx: &Index| {
+        let mut r = store.image_reader(idx).unwrap();
+        let mut buf = vec![0; r.size() as usize];
+        r.read_at(0, &mut buf).unwrap();
+        buf
+    };
+
+    let (full, rep) = read_disk(
+        &store,
+        &mut map,
+        &mut s,
+        1,
+        1,
+        size,
+        &block_ranges(&[], size, 0),
+        None,
+        &mut |_| {},
+    )
+    .unwrap();
+    assert_eq!((rep.blocks, rep.bytes, rep.wanted), (4, size, 3));
+    assert_eq!(image(&full), data);
+
+    // one byte in block 1 changed (CBT reports a 64 KiB extent)
+    data[BLOCK_SIZE as usize + 10] ^= 0xff;
+    fs::write(&disk, &data).unwrap();
+    let ranges = block_ranges(&[(BLOCK_SIZE, 65536)], size, size);
+    assert_eq!(ranges, [(1, 1)]);
+    let (inc, rep) = read_disk(&store, &mut map, &mut s, 2, 1, size, &ranges, Some(&full), &mut |_| {}).unwrap();
+    assert_eq!((rep.blocks, rep.wanted), (1, 1));
+    assert_eq!(image(&inc), data);
+    let (Index::Fixed { chunks: a, .. }, Index::Fixed { chunks: b, .. }) = (&full, &inc) else {
+        unreachable!()
+    };
+    assert!(a[0] == b[0] && a[2] == b[2] && a[3] == b[3] && a[1] != b[1]);
+
+    // without a previous index the ranges must cover the disk
+    let e = read_disk(&store, &mut map, &mut s, 3, 1, size, &ranges, None, &mut |_| {}).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("neither read nor in the previous index"),
+        "{e:#}"
+    );
+    s.close();
+}

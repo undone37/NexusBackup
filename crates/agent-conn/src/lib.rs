@@ -7,6 +7,7 @@
 //! the scheduler like `nexus-pve`).
 
 pub mod backup;
+pub mod blocks;
 pub mod ca;
 pub mod edge;
 pub mod enroll;
