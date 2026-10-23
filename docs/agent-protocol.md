@@ -400,3 +400,25 @@ capability. Owned here: the two messages below; the rest of v1.8 (agent updates)
   `Scan` as before and the appliance computes every hash from the stored chunks (a log line says so).
 - A lying agent can only hide or fake hashes of its own files: the hashes are used for the IOC search alone, never
   for deduplication or integrity.
+
+## v1.9 — block reads of hot-added disks (additive, Phase 41, docs/vmware-design.md)
+
+The VMware proxy role: the appliance hot-adds a VM's snapshot disk to a proxy VM through the vSphere API and reads
+it through the agent on that VM. Capability **`block-read`**, announced only with `proxy = on` in `agent.conf` (off
+by default: an ordinary agent never offers raw disks).
+
+| Appliance → agent | Agent → appliance | Purpose |
+|---|---|---|
+| `BlockScan { job, target, size, ranges: [(first, count)] }` | `BlockHashes { job, first, hashes }` …, then `BlockScanDone { job, blocks, bytes }` | plain BLAKE3 of every requested 4 MiB block (`BLOCK_SIZE`, the last one shorter) of the disk at SCSI target `0:target` |
+| `Want` / `WantLz4 { job, hashes }` | `Chunk` / `ChunkLz4` …, `WantDone` | the blocks' data, re-read and checked against the hash (`E_CHUNKS_GONE` if a block changed) |
+| `Release { job, … }` | `Released` | ends the block job |
+
+Rules the agent enforces:
+
+- Targets `1..=15` only (`MAX_BLOCK_TARGET`; `0:0` is the proxy's own disk); exactly one SCSI disk at
+  `<host>:0:<target>:0` (sysfs), or the scan is refused.
+- The disk must be unused: neither it nor a partition mounted or used as swap, nothing stacked on it (LVM, device
+  mapper, md: `holders`). It is opened read-only.
+- `size` must equal the device size, every range must lie on the disk, at most `MAX_BATCH` ranges and hashes per
+  message (`check`).
+- A block job lives in the session and ends with `Release` or the connection.

@@ -141,6 +141,10 @@ pub struct Settings {
     /// set here they override what the appliance pushed (`SetEdge`)
     pub edge: Option<String>,
     pub edge_sha256: Option<String>,
+    /// `proxy = on`: the VMware proxy role (docs/vmware-design.md): the appliance may read
+    /// disks it hot-added to this machine (`BlockScan`). Off by default: an ordinary agent
+    /// never offers raw disks.
+    pub proxy: bool,
 }
 
 impl Default for Settings {
@@ -158,6 +162,7 @@ impl Default for Settings {
             self_update: None,
             edge: None,
             edge_sha256: None,
+            proxy: false,
         }
     }
 }
@@ -191,6 +196,13 @@ impl Settings {
                 "vss_exclude_writers" => s.vss_exclude_writers = v.to_string(),
                 "edge" => s.edge = Some(v.to_string()).filter(|v| !v.is_empty()),
                 "edge_sha256" => s.edge_sha256 = Some(v.to_ascii_lowercase()).filter(|v| !v.is_empty()),
+                "proxy" => {
+                    s.proxy = match v {
+                        "on" | "yes" | "true" => true,
+                        "off" | "no" | "false" => false,
+                        _ => return Err(format!("agent.conf line {}: proxy must be on or off", n + 1)),
+                    }
+                }
                 "self_update" => {
                     s.self_update = Some(match v {
                         "on" | "yes" | "true" => true,
@@ -323,6 +335,9 @@ mod tests {
         assert_eq!(Settings::parse("self_update = on").unwrap().self_update, Some(true));
         assert_eq!(Settings::parse("self_update=off").unwrap().self_update, Some(false));
         assert_eq!(Settings::parse("self_update = auto").unwrap().self_update, None);
+        assert!(!s.proxy, "block reads off by default");
+        assert!(Settings::parse("proxy = on").unwrap().proxy);
+        assert!(Settings::parse("proxy = maybe").is_err());
         assert!(Settings::parse("self_update = maybe").is_err());
     }
 

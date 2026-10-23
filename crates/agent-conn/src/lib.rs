@@ -97,6 +97,9 @@ pub fn name(m: &Message) -> &'static str {
         Message::UpdateState { .. } => "UpdateState",
         Message::ScanHashed { .. } => "ScanHashed",
         Message::EntryHashes { .. } => "EntryHashes",
+        Message::BlockScan { .. } => "BlockScan",
+        Message::BlockHashes { .. } => "BlockHashes",
+        Message::BlockScanDone { .. } => "BlockScanDone",
     }
 }
 

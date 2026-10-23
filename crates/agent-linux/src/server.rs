@@ -331,6 +331,12 @@ impl Platform for Linux {
         crate::power::state()
     }
 
+    fn block_device(&self, target: u32) -> Result<PathBuf, String> {
+        let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+        let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
+        crate::blockdev::find(std::path::Path::new("/sys"), &mounts, &swaps, target)
+    }
+
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
         let install = self.install();
         let gui = self.gui.get_or_init(|| update::desktop_version(&install)).clone();

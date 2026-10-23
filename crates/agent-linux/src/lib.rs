@@ -1,6 +1,7 @@
 //! NexusBackup Linux agent (`nexus-agent`), see docs/agent-protocol.md and
 //! docs/agent-linux.md.
 
+pub mod blockdev;
 pub mod endpoint;
 pub mod hooks;
 pub mod layout;

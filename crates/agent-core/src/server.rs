@@ -183,6 +183,12 @@ pub trait Platform: Send + Sync + 'static {
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
         None
     }
+    /// The VMware proxy role (v1.9, `proxy = on`): the device of the disk the appliance
+    /// hot-added at SCSI target `0:target`, opened read-only by the caller. Implementations
+    /// refuse the machine's own disks and any disk with something mounted.
+    fn block_device(&self, _target: u32) -> Result<PathBuf, String> {
+        Err("this agent cannot read hot-added disks".into())
+    }
     /// The executable format check of a `binary` update (ELF for this architecture,
     /// PE32+ x86-64).
     fn native_binary(&self, _binary: &[u8]) -> bool {
@@ -500,6 +506,7 @@ impl<P: Platform> Agent<P> {
                     receiving: None,
                     staged: Vec::new(),
                     staged_rollback: false,
+                    blocks: HashMap::new(),
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -635,6 +642,8 @@ struct Session<'a, P: Platform> {
     staged: Vec<(Staged, crate::update::Announced)>,
     /// `UpdateBegin.rollback` of the staged artifacts
     staged_rollback: bool,
+    /// v1.9 block reads: job → the blocks of its hot-added disk (served by `Want`)
+    blocks: HashMap<u64, Locator>,
 }
 
 impl<P: Platform> Session<'_, P> {
@@ -674,6 +683,10 @@ impl<P: Platform> Session<'_, P> {
                         if !c.iter().any(|x| x == cap) {
                             c.push(cap.into());
                         }
+                    }
+                    // v1.9: the VMware proxy role, only when configured
+                    if self.agent.settings.proxy {
+                        c.push(agent_proto::CAP_BLOCK_READ.into());
                     }
                     // v1.8: chunked updates with the install's own package type
                     if let Some(f) = self.agent.platform.host_facts() {
@@ -748,8 +761,21 @@ impl<P: Platform> Session<'_, P> {
                     crate::chunk::set_file_hashing(false);
                     r?;
                 }
+                Message::BlockScan {
+                    job,
+                    target,
+                    size,
+                    ranges,
+                } => self.block_scan(s, job, target, size, &ranges)?,
                 Message::Want { job, hashes } => self.want(s, job, &hashes, false)?,
                 Message::WantLz4 { job, hashes } => self.want(s, job, &hashes, true)?,
+                Message::Release { job, .. } if self.blocks.remove(&job).is_some() => write_msg(
+                    s,
+                    &Message::Released {
+                        job,
+                        hook_log: String::new(),
+                    },
+                )?,
                 Message::Release { job, success } => match self.release(job, success) {
                     Some(hook_log) => write_msg(s, &Message::Released { job, hook_log })?,
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
@@ -1019,7 +1045,129 @@ impl<P: Platform> Session<'_, P> {
 
     /// `lz4`: the appliance asked via `WantLz4`; compressible chunks go as `ChunkLz4`
     /// (one fast attempt per chunk, a single extra buffer at a time).
+    /// v1.9: hashes the requested blocks of the hot-added disk at `0:target` (see
+    /// [`Platform::block_device`]); the data is served by `Want` until `Release`.
+    fn block_scan(
+        &mut self,
+        s: &mut Stream,
+        job: u64,
+        target: u32,
+        size: u64,
+        ranges: &[(u64, u64)],
+    ) -> io::Result<()> {
+        use agent_proto::BLOCK_SIZE;
+        if !self.agent.settings.proxy {
+            return error(
+                s,
+                E_REFUSED,
+                "block reads are off on this agent (proxy = on in agent.conf)",
+            );
+        }
+        if self.jobs.contains_key(&job) || self.blocks.contains_key(&job) {
+            return error(s, E_BUSY, format!("job {job} is already running"));
+        }
+        let path = match self.agent.platform.block_device(target) {
+            Ok(p) => p,
+            Err(e) => return error(s, E_REFUSED, e),
+        };
+        let f = match crate::chunk::open_read(&path) {
+            Ok(f) => f,
+            Err(e) => return error(s, E_INTERNAL, format!("{}: {e}", path.display())),
+        };
+        let have = match io::Seek::seek(&mut &f, io::SeekFrom::End(0)) {
+            Ok(n) => n,
+            Err(e) => return error(s, E_INTERNAL, format!("{}: {e}", path.display())),
+        };
+        if have != size {
+            return error(
+                s,
+                E_BAD_REQUEST,
+                format!(
+                    "the disk at 0:{target} ({}) has {have} bytes, not {size}",
+                    path.display()
+                ),
+            );
+        }
+        let total = size.div_ceil(BLOCK_SIZE);
+        if ranges
+            .iter()
+            .any(|&(first, n)| first.checked_add(n).is_none_or(|end| end > total))
+        {
+            return error(
+                s,
+                E_BAD_REQUEST,
+                format!("a range goes beyond the disk's {total} blocks"),
+            );
+        }
+        let mut loc = Locator::new(None, 0)?;
+        let idx = loc.add_file(path.clone());
+        let (mut blocks, mut bytes) = (0u64, 0u64);
+        let mut buf = vec![0u8; BLOCK_SIZE as usize];
+        for &(first, n) in ranges {
+            let mut batch = Vec::new();
+            let mut at = first;
+            for b in first..first + n {
+                let off = b * BLOCK_SIZE;
+                let len = (size - off).min(BLOCK_SIZE) as usize;
+                if let Err(e) = crate::chunk::read_exact_at(&f, &mut buf[..len], off) {
+                    return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display()));
+                }
+                let h: Hash = *blake3::hash(&buf[..len]).as_bytes();
+                loc.add(&h, idx, off, len as u32, None)?;
+                batch.push(h);
+                blocks += 1;
+                bytes += len as u64;
+                if batch.len() == agent_proto::MAX_BATCH {
+                    write_msg(
+                        s,
+                        &Message::BlockHashes {
+                            job,
+                            first: at,
+                            hashes: std::mem::take(&mut batch),
+                        },
+                    )?;
+                    at = b + 1;
+                }
+            }
+            if !batch.is_empty() {
+                write_msg(
+                    s,
+                    &Message::BlockHashes {
+                        job,
+                        first: at,
+                        hashes: batch,
+                    },
+                )?;
+            }
+        }
+        self.blocks.insert(job, loc);
+        write_msg(s, &Message::BlockScanDone { job, blocks, bytes })
+    }
+
     fn want(&mut self, s: &mut Stream, job: u64, hashes: &[Hash], lz4: bool) -> io::Result<()> {
+        if let Some(loc) = self.blocks.get_mut(&job) {
+            for h in hashes {
+                let Some(data) = loc.get(h) else {
+                    return error(
+                        s,
+                        E_CHUNKS_GONE,
+                        format!("block {} of job {job} changed or is gone", hex::encode(h)),
+                    );
+                };
+                match lz4.then(|| agent_proto::lz4_pack(&data)).flatten() {
+                    Some(c) => write_msg(
+                        s,
+                        &Message::ChunkLz4 {
+                            hash: *h,
+                            raw_len: data.len() as u32,
+                            data: c,
+                        },
+                    )?,
+                    None => write_msg(s, &Message::Chunk { hash: *h, data })?,
+                }
+            }
+            return write_msg(s, &Message::WantDone);
+        }
         let Some(Job {
             scan: Some((loc, _)),
             bucket,

@@ -622,7 +622,50 @@ pub enum Message {
         /// SHA-256 per entry of the batch (not BLAKE3), at most [`MAX_BATCH`]
         hashes: Vec<Option<Hash>>,
     },
+    // --- v1.9, appended: block reads of hot-added disks (CAP_BLOCK_READ, the VMware proxy role,
+    // docs/vmware-design.md; only agents announcing the capability are sent these) ---
+    /// Appliance → agent: read these block ranges of the disk at SCSI target `0:target` of the
+    /// proxy (a snapshot disk the appliance hot-added through the vSphere API), in blocks of
+    /// [`BLOCK_SIZE`] (the last one may be shorter: `size`). Answer: `BlockHashes` batches, then
+    /// `BlockScanDone`; the data follows on `Want` (job `job`); `Release` ends the job.
+    BlockScan {
+        /// job id chosen by the appliance (no `Prepare`)
+        job: u64,
+        /// SCSI target of the disk on controller 0, 1..=[`MAX_BLOCK_TARGET`]
+        target: u32,
+        /// the disk's size in bytes (the agent checks the device has it)
+        size: u64,
+        /// `(first block, count)` ranges, at most [`MAX_BATCH`]
+        ranges: Vec<(u64, u64)>,
+    },
+    /// Agent → appliance: plain BLAKE3 of the blocks `first..first + hashes.len()` of the last
+    /// range in order (at most [`MAX_BATCH`] per message).
+    BlockHashes {
+        /// job id
+        job: u64,
+        /// index of the first block
+        first: u64,
+        /// one hash per block
+        hashes: Vec<Hash>,
+    },
+    /// Agent → appliance: every range of the `BlockScan` was read.
+    BlockScanDone {
+        /// job id
+        job: u64,
+        /// blocks hashed
+        blocks: u64,
+        /// bytes read
+        bytes: u64,
+    },
 }
+
+/// Capability (v1.9): the agent reads hot-added disks for the VMware connector (`BlockScan`).
+/// Announced only with `proxy = on` in `agent.conf`.
+pub const CAP_BLOCK_READ: &str = "block-read";
+/// Block size of `BlockScan` (the appliance's VM image index granularity).
+pub const BLOCK_SIZE: u64 = 4 << 20;
+/// Highest SCSI target a `BlockScan` may name (0:1..0:15; 0:0 is the proxy's own disk).
+pub const MAX_BLOCK_TARGET: u32 = 15;
 
 /// Capability: the agent understands `UpdateBegin` / `UpdateChunk` / `UpdateCommit` /
 /// `UpdateStatus` (v1.8) and reports its host facts as `arch=`, `install=`, `gui=` caps
@@ -860,6 +903,14 @@ pub fn check(m: &Message) -> io::Result<()> {
             return Err(bad("chunk too large"))
         }
         Message::EntryHashes { hashes } if hashes.len() > MAX_BATCH => return Err(bad("too many hashes in one batch")),
+        Message::BlockHashes { hashes, .. } if hashes.len() > MAX_BATCH => {
+            return Err(bad("too many hashes in one batch"))
+        }
+        Message::BlockScan { target, ranges, .. }
+            if *target == 0 || *target > MAX_BLOCK_TARGET || ranges.len() > MAX_BATCH =>
+        {
+            return Err(bad("block scan exceeds limits"))
+        }
         Message::Want { hashes, .. } | Message::WantLz4 { hashes, .. } if hashes.len() > MAX_BATCH => {
             return Err(bad("want list too long"))
         }
