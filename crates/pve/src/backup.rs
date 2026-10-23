@@ -10,6 +10,7 @@ use chunkstore::progress::Meter;
 use chunkstore::store::IMAGE_CHUNK_SIZE;
 use chunkstore::{FileEntry, Index, Manifest, Store};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -154,6 +155,17 @@ pub fn progress_item(vmid: u32, names: &BTreeMap<u32, (String, String)>) -> (Str
 }
 
 impl Cluster {
+    /// Active vzdump tasks of `vmid` on `node` that the token of `ours` started before it ([`stale_of`]);
+    /// none when the task list cannot be read.
+    fn stale_tasks(&self, node: &str, vmid: u32, ours: &str) -> Vec<String> {
+        self.api
+            .get(&format!(
+                "/nodes/{node}/tasks?source=active&typefilter=vzdump&vmid={vmid}"
+            ))
+            .map(|v| stale_of(&v, vmid, ours))
+            .unwrap_or_default()
+    }
+
     /// (node, type) of a guest; type is "qemu" or "lxc".
     pub fn guest(&self, vmid: u32) -> Result<(String, String)> {
         let res = self.api.get("/cluster/resources?type=vm")?;
@@ -367,6 +379,21 @@ impl Cluster {
                 if let Some(start) = upid_start(upid) {
                     if job.time()? < start {
                         let _ = self.api.stop_task(upid);
+                        // A task of an interrupted run of this appliance (same token, e.g. a reboot during the
+                        // backup) waits up to the plugin's job timeout (6 h): stop it, so the retry goes through
+                        // (lab 2026-10-23). Tasks of other users are left alone.
+                        let stale = self.stale_tasks(node, vmid, upid);
+                        if !stale.is_empty() {
+                            for s in &stale {
+                                let _ = self.api.stop_task(s);
+                            }
+                            bail!(
+                                "guest {vmid} on node {node} was still held by a backup task of an interrupted run \
+                                 of this appliance (job {}): stopped it ({}); the next attempt backs the guest up",
+                                job.archive,
+                                stale.join(", ")
+                            );
+                        }
                         bail!(
                             "another backup task of guest {vmid} on node {node} still waits for an appliance (job {}, \
                              published before this backup started): stop that vzdump task in the Proxmox VE task \
@@ -1096,8 +1123,56 @@ fn upid_start(upid: &str) -> Option<u64> {
     u64::from_str_radix(upid.split(':').nth(4)?, 16).ok()
 }
 
+/// The user (token) that started a task: `UPID:node:pid:pstart:starttime:type:id:user:`.
+fn upid_user(upid: &str) -> Option<&str> {
+    upid.split(':').nth(7).filter(|u| !u.is_empty())
+}
+
+/// Of the active tasks (`GET /nodes/<node>/tasks?source=active`), the vzdump tasks of `vmid` that the
+/// user of `ours` started before it.
+fn stale_of(tasks: &Value, vmid: u32, ours: &str) -> Vec<String> {
+    let (Some(user), Some(start)) = (upid_user(ours), upid_start(ours)) else {
+        return Vec::new();
+    };
+    tasks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t["upid"].as_str())
+        .filter(|u| {
+            *u != ours
+                && upid_user(u) == Some(user)
+                && u.split(':').nth(5) == Some("vzdump")
+                && u.split(':').nth(6) == Some(vmid.to_string().as_str())
+                && upid_start(u).is_some_and(|s| s < start)
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn stale_tasks_of_the_same_token_only() {
+        let ours = "UPID:pve-test:0003DBBC:003D1E27:6ADB123B:vzdump:242:nexus@pve!backup:";
+        let tasks = serde_json::json!([
+            {"upid": ours},
+            // the interrupted run (lab 2026-10-23)
+            {"upid": "UPID:pve-test:0003CB19:003BCD43:6ADB0EDD:vzdump:242:nexus@pve!backup:"},
+            // someone else's backup of the guest, another guest, a later task
+            {"upid": "UPID:pve-test:00000001:00000001:6ADB0000:vzdump:242:root@pam:"},
+            {"upid": "UPID:pve-test:00000002:00000002:6ADB0000:vzdump:243:nexus@pve!backup:"},
+            {"upid": "UPID:pve-test:00000003:00000003:6ADB2000:vzdump:242:nexus@pve!backup:"},
+            {"upid": "UPID:pve-test:00000004:00000004:6ADB0000:qmstart:242:nexus@pve!backup:"}
+        ]);
+        assert_eq!(
+            super::stale_of(&tasks, 242, ours),
+            ["UPID:pve-test:0003CB19:003BCD43:6ADB0EDD:vzdump:242:nexus@pve!backup:"]
+        );
+        assert_eq!(super::upid_user(ours), Some("nexus@pve!backup"));
+        assert!(super::stale_of(&tasks, 242, "garbage").is_empty());
+    }
 
     #[test]
     fn upid_start_and_older_jobs() {

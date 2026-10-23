@@ -1100,4 +1100,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   recovery only marked it failed), so the guest waited for its next schedule silently. Fixed in the scheduler: an
   interrupted backup follows the group's retry policy, the last attempt raises `job_failed` (test `crash_recovery`);
   lab confirmation with the next build.
+- [x] Found by the reboot test as well: the vzdump task of the interrupted run kept the guest's backup lock on the node
+  and waits for an appliance up to the PVE plugin's job timeout (6 h); every retry failed with "another backup task
+  ... still waits". nexus-pve now stops such tasks when the same API token started them before (other users' tasks
+  stay), and the retry goes through (test `stale_tasks_of_the_same_token_only`); lab confirmation with the next build.
 - [ ] Fault injection, the rest: network loss, full store, corrupt chunks, clock jumps.
