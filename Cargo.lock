@@ -5503,6 +5503,7 @@ dependencies = [
  "serde",
  "serde_json",
  "truenas",
+ "vmware",
 ]
 
 [[package]]

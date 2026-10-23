@@ -85,6 +85,8 @@ fn in_group(kind: &str, sid: u64, guests: &[Value], source: &str) -> bool {
             id == sid && (strs.is_empty() || strs.iter().any(|d| ds == *d || ds.starts_with(&format!("{d}/"))))
         }),
         "nfs" | "smb" => nas::parse_source_name(source) == Some(sid),
+        // guests are VM UUIDs; the snapshot source carries no source id (vmw-<uuid>)
+        "vmware" => vmware::names::parse_source_name(source).is_some_and(|u| strs.contains(&u)),
         k if k.starts_with("plugin:") => plugin_proto::parse_source_name(source)
             .is_some_and(|(_, id, g)| id == sid && (strs.is_empty() || g.is_some_and(|g| strs.contains(&g.as_str())))),
         // agent sources: guests are agent ids
@@ -364,5 +366,14 @@ mod tests {
         assert!(in_group("plugin:pgx", 9, &g(json!(["db1"])), "plugin-pgx-9-db1"));
         assert!(!in_group("plugin:pgx", 9, &g(json!(["db1"])), "plugin-pgx-9-db2"));
         assert!(in_group("plugin:pgx", 9, &g(json!([])), "plugin-pgx-9"));
+        let u = "5003c9a6-1b2e-4f7a-9d3c-0123456789ab";
+        assert!(in_group("vmware", 4, &g(json!([u])), &format!("vmw-{u}")));
+        assert!(!in_group(
+            "vmware",
+            4,
+            &g(json!([u])),
+            "vmw-5003c9a6-1b2e-4f7a-9d3c-0123456789cd"
+        ));
+        assert!(!in_group("vmware", 4, &g(json!([u])), "vm-101"));
     }
 }

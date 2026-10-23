@@ -2,7 +2,7 @@
 //! reports): every guest / host / share / dataset / plugin guest a group backs up,
 //! with its RPO (the shortest schedule period of its groups) and SLA state.
 
-use crate::rusqlite::{self, params, Connection};
+use crate::rusqlite::{self, params, Connection, OptionalExtension};
 use crate::{iso, Cell, Kind, Table, DAY};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -108,6 +108,22 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                 }
             }
             "nfs" | "smb" => add.push((vec![nas::source_name(sid as u64)], sname.clone())),
+            "vmware" => {
+                for u in strs() {
+                    // the VM by its vSphere name from the inventory, the UUID when not listed yet
+                    let name: Option<String> = c
+                        .query_row(
+                            "SELECT name FROM inventory WHERE source_id = ?1 AND guest = ?2 AND name != ''",
+                            params![sid, u],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    add.push((
+                        vec![vmware::names::source_name(&u)],
+                        format!("{sname} {}", name.unwrap_or_else(|| u.clone())),
+                    ));
+                }
+            }
             k => {
                 let Some(pk) = k.strip_prefix("plugin:") else { continue };
                 let Some(cur) = plugin_manager::current_for_kind(c, pk).ok().flatten() else {

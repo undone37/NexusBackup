@@ -916,6 +916,83 @@ impl TrueNasConfig {
     }
 }
 
+fn ha_datacenter() -> String {
+    "ha-datacenter".into()
+}
+
+fn nfc_transport() -> String {
+    "nfc".into()
+}
+
+/// VMware source (docs/vmware-design.md): an ESXi host or a vCenter. `password` of `user` is write-only and
+/// sealed, bound to host/port/ca_pem/user. `nfc_hosts`: the ESXi hosts behind a vCenter (NFC on 902 is allowed
+/// to them in the firewall; a standalone host is allowed by `host`).
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct VmwareConfig {
+    host: String,
+    #[serde(default = "https_port")]
+    port: u16,
+    /// the ESXi / vCenter certificate (pinned) and/or the CA that issued it
+    ca_pem: String,
+    /// `root` on a host, `user@vsphere.local` or `DOMAIN\user` on a vCenter
+    user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    #[serde(default = "ha_datacenter")]
+    datacenter: String,
+    /// `nfc` (no proxy VM); the hot-add proxy follows (#80)
+    #[serde(default = "nfc_transport")]
+    transport: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    nfc_hosts: Vec<String>,
+}
+
+impl VmwareConfig {
+    fn check(&self) -> ApiResult<()> {
+        validate::host(&self.host)?;
+        if self.port == 0 {
+            return Err(ApiError::bad("port: must be 1..=65535"));
+        }
+        if self.ca_pem.len() > 64 << 10 || !self.ca_pem.contains("-----BEGIN CERTIFICATE-----") {
+            return Err(ApiError::bad("ca_pem: expected a PEM certificate (at most 64 KiB)"));
+        }
+        let user_ok = (1..=256).contains(&self.user.len())
+            && self
+                .user
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-@\\".contains(&b));
+        if !user_ok {
+            return Err(ApiError::bad(
+                "user: 1..=256 characters of A-Z a-z 0-9 . _ - @ \\ (root, backup@vsphere.local, DOMAIN\\user)",
+            ));
+        }
+        if let Some(p) = &self.password {
+            if p.is_empty() || p.len() > 256 || p.chars().any(char::is_control) {
+                return Err(ApiError::bad("password: 1..=256 characters, no control characters"));
+            }
+        }
+        validate::text(&self.datacenter, "datacenter", 80)?;
+        if self.datacenter.is_empty() {
+            return Err(ApiError::bad(
+                "datacenter: required (ha-datacenter on a standalone host)",
+            ));
+        }
+        if self.transport != "nfc" {
+            return Err(ApiError::bad(
+                "transport: `nfc` (the hot-add proxy is not available yet)",
+            ));
+        }
+        if self.nfc_hosts.len() > 64 {
+            return Err(ApiError::bad("nfc_hosts: at most 64 ESXi hosts"));
+        }
+        for h in &self.nfc_hosts {
+            validate::host(h).map_err(|_| ApiError::bad(format!("nfc_hosts: {h:?} is not a host name or address")))?;
+        }
+        Ok(())
+    }
+}
+
 /// NFS or SMB share source (docs/nas-connector.md); one share per source. SMB
 /// secrets (`password`, or `keytab` as base64 for `sec: "krb5"`) are write-only
 /// and sealed, bound to `host`/`port`/`user`.
@@ -1294,6 +1371,41 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
+        "vmware" => {
+            let cfg: VmwareConfig = parse_config(r.config)?;
+            cfg.check()?;
+            if cfg.password.is_none() {
+                return Err(ApiError::bad("config.password: required"));
+            }
+            let pk = st.seal_key()?;
+            let (id, out) = {
+                let mut c = st.cat.conn();
+                if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
+                    return Err(ApiError::bad("tenant: does not exist"));
+                }
+                let tx = c.transaction()?;
+                tx.execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, 'vmware', ?2, '{}')",
+                    params![r.tenant, r.name],
+                )?;
+                let id = tx.last_insert_rowid();
+                let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+                pk.seal_all(&source_owner(id), &mut v)?;
+                tx.execute(
+                    "UPDATE sources SET config = ?2 WHERE id = ?1",
+                    params![id, v.to_string()],
+                )?;
+                tx.commit()?;
+                (id, source_json(&c, id)?)
+            };
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": "vmware", "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
         kind @ ("nfs" | "smb") => {
             let pk = st.seal_key()?;
             let (id, out) = {
@@ -1316,7 +1428,7 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
         }
         _ => {
             return Err(ApiError::bad(
-                "kind: `pve`, `linux`, `truenas`, `nfs`, `smb` or `plugin:<kind>` of an installed plugin",
+                "kind: `pve`, `linux`, `truenas`, `vmware`, `nfs`, `smb` or `plugin:<kind>` of an installed plugin",
             ))
         }
     }
@@ -1441,6 +1553,46 @@ pub async fn update_source(
                     ));
                 }
                 cfg.ssh.key_pem = old["ssh"]["key_pem"].as_str().map(str::to_owned);
+            }
+            let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            pk.seal_all(&source_owner(id), &mut v)?;
+            c.execute(
+                "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
+                params![id, r.name, v.to_string()],
+            )?;
+            source_json(&c, id)?
+        };
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
+    if kind == "vmware" {
+        let mut cfg: VmwareConfig = parse_config(r.config)?;
+        cfg.check()?;
+        let pk = st.seal_key()?;
+        let out = {
+            let c = st.cat.conn();
+            let old: String = c
+                .query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?
+                .ok_or_else(ApiError::not_found)?;
+            let old: Value = serde_json::from_str(&old).unwrap_or_default();
+            let new = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            // keeping the stored password is only allowed for the same endpoint (it is sealed bound to it)
+            if cfg.password.is_none() {
+                if ["host", "port", "ca_pem", "user"]
+                    .iter()
+                    .any(|k| old.get(*k) != new.get(*k))
+                {
+                    return Err(ApiError::bad(
+                        "config.password: required when host, port, ca_pem or user change",
+                    ));
+                }
+                cfg.password = old["password"].as_str().map(str::to_owned);
             }
             let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
             pk.seal_all(&source_owner(id), &mut v)?;
@@ -1982,6 +2134,19 @@ fn check_group(
             guests.sort_by_key(|g| g.as_str().unwrap_or_default().to_owned());
             guests.dedup();
         }
+    } else if kind == "vmware" {
+        // guests = VM UUIDs (the inventory's guest ids; the snapshots are vmw-<uuid>)
+        let mut ids = Vec::with_capacity(guests.len());
+        for g in guests.iter() {
+            let u = g
+                .as_str()
+                .filter(|u| vmware::names::valid_uuid(u))
+                .ok_or_else(|| ApiError::bad("guests: VM UUIDs for a vmware source (from its inventory)"))?;
+            ids.push(u.to_ascii_lowercase());
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        *guests = ids.into_iter().map(Value::from).collect();
     } else {
         let mut ids = Vec::with_capacity(guests.len());
         for g in guests.iter() {

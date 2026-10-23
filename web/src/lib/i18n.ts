@@ -338,6 +338,7 @@ export const en = {
       linux: 'Agent hosts',
       agent: 'Agent hosts',
       truenas: 'TrueNAS',
+      vmware: 'VMware',
       nfs: 'NFS shares',
       smb: 'SMB shares',
       share: 'File shares',
@@ -956,6 +957,7 @@ export const en = {
       pve: 'Proxmox VE cluster',
       linux: 'Linux or Windows host (agent)',
       truenas: 'TrueNAS (ZFS datasets)',
+      vmware: 'VMware ESXi or vCenter',
       nfs: 'NFS share',
       smb: 'SMB share',
     } as Record<string, string>,
@@ -986,6 +988,27 @@ export const en = {
       authorizedKeysHint:
         'Contains the forced command: the key can only list, diff and read snapshots of the datasets above. Update it on TrueNAS whenever datasets change.',
       datasetsShort: 'Datasets',
+    },
+    vm: {
+      host: 'ESXi host or vCenter',
+      port: 'HTTPS port',
+      cert: 'ESXi / vCenter certificate or CA (PEM)',
+      certHint:
+        'Pinned: the exact certificate the host or vCenter serves, or the CA that issued it (the vCenter CA for hosts it manages). Public CAs are not trusted.',
+      user: 'User',
+      userHint:
+        'root on a standalone host; on a vCenter a user with a backup role (backup@vsphere.local, DOMAIN\\user).',
+      password: 'Password of that user',
+      datacenter: 'Datacenter',
+      datacenterHint: 'ha-datacenter on a standalone ESXi host; the datacenter name on a vCenter.',
+      nfcHosts: 'ESXi hosts behind the vCenter (one per line)',
+      nfcHostsHint:
+        'The disks are read over NFC (TCP 902) directly from the host that runs each VM; the firewall allows these hosts. Not needed for a standalone host.',
+      transport: 'Disk transport',
+      transportNfc: 'NFC (network mode, no proxy VM)',
+      transportHint:
+        'Changed blocks are read over NFC from the ESXi host. The hot-add proxy (a proxy VM on the host) follows in a later version.',
+      vmsShort: 'VMs',
     },
     sh: {
       host: 'Server (host name or IP)',
@@ -1681,6 +1704,8 @@ export const en = {
     guestsShort: 'Guests',
     linuxGuest: (n: string) => `Backs up the host of agent ${n} (the paths configured in the source).`,
     datasets: 'Datasets (none selected = all datasets of the source)',
+    vms: 'Virtual machines',
+    vmsHint: 'No VMs in the inventory yet: refresh it to list the VMs of the ESXi host or vCenter.',
     wholeShare: 'Backs up the whole share (the export or share configured in the source).',
     wholeSource: 'Backs up the whole source as configured (this plugin kind has no guest selection).',
     loadGuests: (title: string) => `Load ${title}`,
