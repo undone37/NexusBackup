@@ -21,6 +21,7 @@
 #   esxi.sh hotadd      the same CBT test, the data read on a proxy VM (GUEST=nx-proxy esxi.sh guest first)
 #                       that gets the snapshot's base disk hot-added read-only (/folder cannot read the disk
 #                       of a running VM: hostd "Failed to lock file")
+#   esxi.sh up          after a cold start of the ESXi VM: wait for SSH, power on nx-cbt and nx-proxy, wait for both
 #   esxi.sh ssh CMD     a command on the ESXi shell (lab ECDSA key in $LAB: ESXi's FIPS sshd refuses ed25519)
 #   esxi.sh destroy     stop and remove VM $VMID (ours: IDs from 200, AGENTS.md "Labs")
 #
@@ -367,6 +368,25 @@ step_hotadd() {
 	log "incremental read and check: $(read_on_proxy "$LAB/cbt2.json")"
 	cbt detach nx-proxy
 	cbt remove cbt2
+}
+
+step_up() {
+	local end=$(($(date +%s) + 900)) g
+	until esx true 2>/dev/null; do
+		[ "$(date +%s)" -lt "$end" ] || die "no SSH on ESXi after 15 minutes"
+		sleep 15
+	done
+	for g in nx-cbt nx-proxy; do
+		esx "id=\$(vim-cmd vmsvc/getallvms | awk '\$2 == \"$g\" {print \$1}'); [ -n \"\$id\" ] || exit 0
+			vim-cmd vmsvc/power.getstate \$id | grep -q 'Powered on' || vim-cmd vmsvc/power.on \$id >/dev/null" </dev/null
+	done
+	for g in nx-cbt nx-proxy; do
+		until [ -n "$(GUEST=$g guest_ip)" ] && GUEST=$g guest true 2>/dev/null; do
+			[ "$(date +%s)" -lt "$end" ] || die "$g did not come up"
+			sleep 15
+		done
+	done
+	log "nx-cbt and nx-proxy up"
 }
 
 step_destroy() {
