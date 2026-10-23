@@ -99,12 +99,19 @@ needs a second trust mechanism for the proxy. Recommended: the native connector.
 
 - Source kind `vmware` (catalog v49). Config: `host` (ESXi host or vCenter), `port` (443), `ca_pem` (the
   certificate or its CA, pinned), `user`, `password` (write-only, sealed, bound to host/port/ca_pem/user),
-  `datacenter` (`ha-datacenter` on a standalone host), `transport` (`nfc`; the hot-add proxy in the binary is #80),
+  `datacenter` (`ha-datacenter` on a standalone host), `transport` (`nfc` or `hotadd` with `proxy_vm` (UUID) and `proxy_agent`),
   `nfc_hosts` (the ESXi hosts behind a vCenter: the firewall allows NFC on 902 to them and to `host`).
 - Groups list VM UUIDs (the inventory's guest ids), or take all VMs / VMs by tag from the inventory. The scheduler
   runs `nexus-vmware <config> backup` per group (exclusive per source) and `inventory` for the listing; snapshots
   are `vmw-<uuid>`, so retention, retries and full reads map them back to the group's VMs.
-- SELinux: domain `nexus_vmware_t` (https and unreserved ports for the API, `nexus_nfc_port_t` = 902/tcp).
+- Hot-add (#80): only `nexus_agentctl_t` may read the agent CA, so a VM is backed up in three job steps:
+  `nexus-vmware proxy-prepare` (removes leftovers of an aborted job, snapshot, disks hot-added to the proxy's SCSI
+  controller 0, `vm-<n>/plan.json` + `state.json`), `nexus-agentctl block-read` (reads the plan's block ranges
+  over the agent session, writes `<disk>.idx`, or `.err` / `block-read.err` and still exits 0) and
+  `nexus-vmware proxy-finish` (detaches, removes the snapshot, commits the indexes with the `.vmx`). A failed
+  prepare or finish ends the job; the remaining VMs wait for the next run.
+- SELinux: domain `nexus_vmware_t` (https and unreserved ports for the API, `nexus_nfc_port_t` = 902/tcp);
+  `nexus_vmware_work_t` for the hot-add handoff directory (the job dir's configs stay read-only).
 
 ## Open points
 

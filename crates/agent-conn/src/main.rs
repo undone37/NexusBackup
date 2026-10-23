@@ -1,5 +1,5 @@
 //! `nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll |
-//! edge-enroll | edge-link | rescue | layout <agent-id> <time> <out.json> |
+//! edge-enroll | edge-link | rescue | block-read | layout <agent-id> <time> <out.json> |
 //! files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...`
 //!
 //! Spawned by the scheduler with a generated 0600 config (docs/agent-protocol.md
@@ -73,6 +73,17 @@ struct Config {
     /// Phase 33 synthetic restore
     #[serde(default)]
     synthetic: Option<SyntheticCfg>,
+    /// Phase 41: block reads of disks hot-added to a VMware proxy (`agent` is the proxy's agent)
+    #[serde(default)]
+    block_read: Option<BlockReadCfg>,
+}
+
+/// `block-read`: the plan nexus-vmware wrote, and where the disk indexes go.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlockReadCfg {
+    plan: PathBuf,
+    out_dir: PathBuf,
 }
 
 /// `synthetic`: the scheduler's plan and where it goes.
@@ -304,7 +315,7 @@ impl Config {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | edge-enroll | edge-link | rescue | layout <agent-id> <time> <out.json> | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-agentctl <config.json> enroll | backup | restore | update | hello | renew | fleet-scan | poll | edge-enroll | edge-link | rescue | block-read | layout <agent-id> <time> <out.json> | files <agent-id> <time> ls <dir> | files <agent-id> <time> get <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -553,6 +564,31 @@ fn main() -> Result<()> {
             }
         }
         ("synthetic", []) => synthetic(&cfg)?,
+        ("block-read", []) => {
+            // the disks the VMware connector hot-added to this proxy agent (#80): failed disks are written as
+            // `<name>.err` and the command still succeeds, so the connector's finish step always runs
+            let b = cfg.block_read.as_ref().context("config: block_read missing")?;
+            let plan: agent_conn::blocks::ReadPlan =
+                serde_json::from_slice(&fs::read(&b.plan)?).context("block read plan")?;
+            let r = (|| -> Result<usize> {
+                let ca = Ca::load_or_create(&cfg.ca_dir)?;
+                let store = cfg.store()?;
+                let mut map = MapDb::open(cfg.store.as_deref().context("config: store missing")?)?;
+                let (mut s, _) = cfg.session(&ca)?;
+                let failed = agent_conn::blocks::read_plan(&store, &mut map, &mut s, &plan, &b.out_dir, &mut |l| {
+                    println!("{l}");
+                })?;
+                s.close();
+                Ok(failed)
+            })();
+            match r {
+                Ok(failed) => println!("block-read: {} disk(s), {failed} failed", plan.disks.len()),
+                Err(e) => {
+                    println!("block-read failed: {e:#}");
+                    fs::write(b.out_dir.join("block-read.err"), format!("{e:#}"))?;
+                }
+            }
+        }
         ("update", []) if cfg.update.is_some() => update_release(&cfg)?,
         ("update", []) => {
             let dir = cfg.update_dir.as_ref().context("config: update_dir missing")?;
@@ -886,6 +922,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         fleet: None,
         edge: None,
         synthetic: None,
+        block_read: None,
         timeout_secs: cfg.timeout_secs,
     };
     let end = Instant::now() + Duration::from_secs(60);

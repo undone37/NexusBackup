@@ -9,7 +9,7 @@ use reqwest::blocking::Client as Http;
 use std::time::{Duration, Instant};
 
 /// A managed object reference: `type` and value (`vm-12`, `snapshot-3`, `ha-host`, ...).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MoRef {
     pub kind: String,
     pub value: String,
@@ -157,6 +157,16 @@ fn xsi_type<'a>(n: roxmltree::Node<'a, '_>) -> &'a str {
         .find(|a| a.name() == "type" && a.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance"))
         .map(|a| a.value())
         .map_or("", |v| v.rsplit(':').next().unwrap_or(v))
+}
+
+/// Every node of a snapshot tree answer (`snapshot.rootSnapshotList`): (moref, name), children included.
+pub fn parse_snapshots(answer: &str) -> Result<Vec<(MoRef, String)>> {
+    let doc = roxmltree::Document::parse(answer)?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.is_element() && matches!(n.tag_name().name(), "VirtualMachineSnapshotTree" | "childSnapshotList"))
+        .filter_map(|n| Some((moref(kid(n, "snapshot"))?, text(kid(n, "name"))?)))
+        .collect())
 }
 
 /// The disks of an `ArrayOfVirtualDevice` value.
@@ -488,6 +498,11 @@ impl Client {
         self.wait(&task, Duration::from_secs(3 * 3600)).map(|_| ())
     }
 
+    /// Every snapshot of a VM (the whole tree): (moref, name).
+    pub fn snapshots(&self, vm: &MoRef) -> Result<Vec<(MoRef, String)>> {
+        parse_snapshots(&self.properties(vm, &["snapshot.rootSnapshotList"])?)
+    }
+
     /// Turns CBT on or off (`ctkEnabled`); it takes effect at the VM's next snapshot. Off and on again
     /// resets unclean tracking (a host crash or a hard power-off of a running VM): the next backup of
     /// the VM is then a full read.
@@ -649,6 +664,33 @@ mod tests {
             split_ds_path("[datastore1] nx-cbt/nx-cbt.vmx"),
             Some(("datastore1", "nx-cbt/nx-cbt.vmx"))
         );
+    }
+
+    #[test]
+    fn snapshot_tree() {
+        let t = r#"<r><propSet><name>snapshot.rootSnapshotList</name><val xsi:type="ArrayOfVirtualMachineSnapshotTree"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+          <VirtualMachineSnapshotTree><snapshot type="VirtualMachineSnapshot">3-snapshot-1</snapshot><vm type="VirtualMachine">3</vm>
+            <name>before update</name>
+            <childSnapshotList><snapshot type="VirtualMachineSnapshot">3-snapshot-7</snapshot><name>nexus-backup-41</name></childSnapshotList>
+          </VirtualMachineSnapshotTree></val></propSet></r>"#;
+        let s = parse_snapshots(t).unwrap();
+        assert_eq!(
+            s,
+            [
+                (
+                    MoRef::new("VirtualMachineSnapshot", "3-snapshot-1"),
+                    "before update".into()
+                ),
+                (
+                    MoRef::new("VirtualMachineSnapshot", "3-snapshot-7"),
+                    "nexus-backup-41".into()
+                )
+            ]
+        );
+        assert!(parse_snapshots("<r><propSet><name>x</name></propSet></r>")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

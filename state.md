@@ -976,9 +976,12 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   link_down), boots to the Debian 12 login; 0 AVC denials. Two bugs found and fixed on the way: SELinux denied the
   agent mapping index to nexus-vmware (#85, 03f6fabe: NFC no longer opens it); PVE restored no disk without vzdump's
   `#qmdump#map:` hint lines (in 808dfb8b). Images 0.0.25-dev to 0.0.27-dev installed as offline updates.
-- [ ] (epic #23) rest of M3: proxy transport in the binary (#80, design note: the agent CA stays agentctl's), proxy
-  throughput (#38), the proxy OVA (#35), manual + compatibility matrix (#36), files of VMware snapshots (#83), lab
-  (#37: vSAN/NFS, quiesced Windows snapshots, proxy on another host). Small: no byte progress during NFC reads.
+- [x] Hot-add proxy transport in the binary (#80, 2026-10-24): `proxy-prepare` / `nexus-agentctl block-read` /
+  `proxy-finish` as three job steps per VM (the agent CA stays agentctl's), source fields `proxy_vm` +
+  `proxy_agent`, UI, SELinux `nexus_vmware_work_t`. Unit and plan tests only; no appliance lab run yet.
+- [ ] (epic #23) rest of M3: appliance lab run of the hot-add transport (#80 follow-up, needs an enrolled agent in
+  a proxy VM on ESXi), proxy throughput (#38), the proxy OVA (#35), files of VMware snapshots (#83), lab (#37:
+  vSAN/NFS, quiesced Windows snapshots, proxy on another host).
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 

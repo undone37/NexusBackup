@@ -4667,6 +4667,30 @@ async fn vmware_sources() {
         let r = t.post("/api/v1/sources", &admin, src(c)).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {:?}", r.body);
     }
+    // hot-add proxy (#80): needs the proxy VM's UUID and its agent, and nothing of it with nfc
+    let hot = |vm: Value, agent: Value, transport: &str| {
+        let mut c = vmware_cfg(Some("pw"));
+        c["transport"] = json!(transport);
+        c["proxy_vm"] = vm;
+        c["proxy_agent"] = agent;
+        c
+    };
+    let uuid = json!("5003c9a6-1b2e-4f7a-9d3c-0123456789ef");
+    let agent = json!("0123456789abcdef");
+    for c in [
+        hot(Value::Null, agent.clone(), "hotadd"),
+        hot(json!("nope"), agent.clone(), "hotadd"),
+        hot(uuid.clone(), json!("a b"), "hotadd"),
+        hot(uuid.clone(), agent.clone(), "nfc"),
+    ] {
+        let r = t.post("/api/v1/sources", &admin, src(c.clone())).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{c}: {:?}", r.body);
+    }
+    let mut ok = src(hot(uuid.clone(), agent, "hotadd"));
+    ok["name"] = json!("vc-hot");
+    let r = t.post("/api/v1/sources", &admin, ok).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    assert_eq!(r.body["config"]["proxy_vm"], uuid);
 
     // groups: VM UUIDs (the inventory's guest ids)
     let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]

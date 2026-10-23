@@ -1014,8 +1014,14 @@ export const en = {
         'The disks are read over NFC (TCP 902) directly from the host that runs each VM; the firewall allows these hosts. Not needed for a standalone host.',
       transport: 'Disk transport',
       transportNfc: 'NFC (network mode, no proxy VM)',
+      transportHotadd: 'Hot-add (proxy VM with the agent)',
       transportHint:
-        'Changed blocks are read over NFC from the ESXi host. The hot-add proxy (a proxy VM on the host) follows in a later version.',
+        'NFC reads the changed blocks over the network from the ESXi host. Hot-add attaches the snapshot disks to a proxy VM on the same hosts and datastores, and its agent reads them locally.',
+      proxyVm: 'Proxy VM UUID',
+      proxyVmHint:
+        'The BIOS or instance UUID of the proxy VM (vSphere: VM, Summary, or the inventory of this source). It needs a SCSI controller 0 with free units.',
+      proxyAgent: 'Agent on the proxy VM',
+      proxyAgentHint: 'The enrolled Linux agent running inside the proxy VM; it reads the hot-added disks.',
       vmsShort: 'VMs',
     },
     sh: {

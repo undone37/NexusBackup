@@ -941,11 +941,17 @@ pub struct VmwareConfig {
     password: Option<String>,
     #[serde(default = "ha_datacenter")]
     datacenter: String,
-    /// `nfc` (no proxy VM); the hot-add proxy follows (#80)
+    /// `nfc` (no proxy VM) or `hotadd` (disks read by the agent on `proxy_vm`)
     #[serde(default = "nfc_transport")]
     transport: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     nfc_hosts: Vec<String>,
+    /// hot-add: UUID of the proxy VM (on the same hosts and datastores as the VMs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy_vm: Option<String>,
+    /// hot-add: the enrolled agent running on the proxy VM
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proxy_agent: Option<String>,
 }
 
 impl VmwareConfig {
@@ -978,10 +984,17 @@ impl VmwareConfig {
                 "datacenter: required (ha-datacenter on a standalone host)",
             ));
         }
-        if self.transport != "nfc" {
-            return Err(ApiError::bad(
-                "transport: `nfc` (the hot-add proxy is not available yet)",
-            ));
+        match (self.transport.as_str(), &self.proxy_vm, &self.proxy_agent) {
+            ("nfc", None, None) => {}
+            ("nfc", _, _) => return Err(ApiError::bad("proxy_vm, proxy_agent: only with transport `hotadd`")),
+            ("hotadd", Some(vm), Some(agent)) => {
+                if !vmware::names::valid_uuid(vm) {
+                    return Err(ApiError::bad("proxy_vm: expected the proxy VM's UUID"));
+                }
+                validate::agent_id(agent)?;
+            }
+            ("hotadd", _, _) => return Err(ApiError::bad("transport `hotadd`: proxy_vm and proxy_agent required")),
+            _ => return Err(ApiError::bad("transport: `nfc` or `hotadd`")),
         }
         if self.nfc_hosts.len() > 64 {
             return Err(ApiError::bad("nfc_hosts: at most 64 ESXi hosts"));

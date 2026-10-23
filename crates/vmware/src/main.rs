@@ -1,9 +1,14 @@
-//! `nexus-vmware <config.json> backup | inventory | check`
+//! `nexus-vmware <config.json> backup | inventory | check | proxy-prepare | proxy-finish`
 //!
 //! Spawned by the scheduler with a generated 0600 config (plan.md Phase 41, docs/vmware-design.md). Machine lines
 //! on stdout: `committed vmw-<uuid>/<time> …` and `consistency vmw-<uuid>/<time>: application|crash` per VM,
 //! `result {json}` at the end of a backup (exit status 1 if any VM failed); `inventory` prints
 //! `{"guests":[{id, title, kind, tags}]}` with the VM UUID as the guest id; progress lines go to stderr.
+//!
+//! The hot-add proxy runs as three job steps because only nexus-agentctl may hold the agent CA (#80):
+//! `proxy-prepare` (snapshot, disks hot-added to the proxy, `<work_dir>/plan.json` for `nexus-agentctl
+//! block-read`), the block read, then `proxy-finish` (always: disks detached, snapshot removed, the indexes the
+//! block read wrote committed). One VM per job (`vms` holds exactly one UUID).
 
 use anyhow::{bail, Context, Result};
 use chunkstore::progress;
@@ -13,7 +18,7 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use vmware::backup::{backup_vm, Spec, Transport};
+use vmware::backup::{backup_vm, proxy_finish, proxy_prepare, ProxyState, Spec, Transport};
 use vmware::names::{source_name, valid_uuid};
 use vmware::vsphere::Client;
 
@@ -37,9 +42,15 @@ struct Config {
     /// datacenter of the `.vmx` downloads (`ha-datacenter` on a standalone host)
     #[serde(default = "ha_datacenter")]
     datacenter: String,
-    /// `nfc` (no proxy VM); the hot-add proxy is not run by this binary yet
+    /// `nfc` (no proxy VM) or `hotadd` (`proxy-prepare` / `proxy-finish`)
     #[serde(default = "nfc")]
     transport: String,
+    /// hot-add: the proxy VM's UUID
+    #[serde(default)]
+    proxy: Option<String>,
+    /// hot-add: the job's directory shared with the block read (`plan.json`, `state.json`, `<disk>.idx`)
+    #[serde(default)]
+    work_dir: Option<PathBuf>,
     /// VM UUIDs to back up (the group's guests)
     #[serde(default)]
     vms: Vec<String>,
@@ -94,7 +105,7 @@ fn now() -> u64 {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-vmware <config.json> backup | inventory | check";
+    let usage = "usage: nexus-vmware <config.json> backup | inventory | check | proxy-prepare | proxy-finish";
     let [cfg_path, cmd] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -133,9 +144,75 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        "proxy-prepare" => proxy_step(&cfg, true)?,
+        "proxy-finish" => proxy_step(&cfg, false)?,
         _ => bail!("{usage}"),
     }
     Ok(())
+}
+
+/// `proxy-prepare` / `proxy-finish` of the one VM in `cfg.vms`; finish prints the same lines as `backup`.
+fn proxy_step(cfg: &Config, prepare: bool) -> Result<()> {
+    let dir = cfg.work_dir.as_ref().context("config: work_dir missing")?;
+    let [uuid] = cfg.vms.as_slice() else {
+        bail!("config: vms: the proxy transport backs up one VM per job");
+    };
+    if !valid_uuid(uuid) {
+        bail!("config: vms: {uuid:?} is not a VM UUID");
+    }
+    let store = cfg.store()?;
+    let c = cfg.client()?;
+    let r = if prepare {
+        let proxy = cfg.proxy.as_deref().context("config: proxy missing")?;
+        fs::create_dir_all(dir).context("work_dir")?;
+        let vms = c.vm_list()?;
+        let find = |u: &str| vms.iter().find(|(_, v)| v.uuid == u).map(|(m, _)| m);
+        let vm = find(uuid).with_context(|| format!("VM {uuid} not in the inventory of {}", cfg.host))?;
+        let proxy = find(proxy).with_context(|| format!("proxy VM {proxy} not in the inventory"))?;
+        let spec = Spec {
+            vm,
+            datacenter: &cfg.datacenter,
+            job: cfg.job.unwrap_or_else(now),
+            full: cfg.full_read,
+        };
+        proxy_prepare(&c, &store, &spec, proxy, &mut |l| println!("{l}")).and_then(|(state, plan)| {
+            fs::write(dir.join("state.json"), serde_json::to_vec(&state)?)?;
+            fs::write(dir.join("plan.json"), serde_json::to_vec(&plan)?)?;
+            println!("prepared {} disk(s) of {}", plan.disks.len(), state.vm_name);
+            Ok(())
+        })
+    } else {
+        let source = source_name(uuid);
+        let res = fs::read(dir.join("state.json"))
+            .context("no state from proxy-prepare")
+            .and_then(|b| Ok(serde_json::from_slice::<ProxyState>(&b)?))
+            .and_then(|st| {
+                let m = proxy_finish(&c, &store, &st, dir, &cfg.datacenter, &mut |l| println!("{l}"))?;
+                Ok((st, m))
+            });
+        match res {
+            Ok((st, m)) => {
+                println!("committed {}/{}: {}", m.source, m.time, st.vm_name);
+                let level = if st.quiesced { "application" } else { "crash" };
+                println!("consistency {}/{}: {level}", m.source, m.time);
+                println!(
+                    "result {}",
+                    json!({"source_id": cfg.source_id, "snapshots": [{"source": m.source, "time": m.time}], "failed": []})
+                );
+                Ok(())
+            }
+            Err(e) => {
+                println!("failed {source}: {e:#}");
+                println!(
+                    "result {}",
+                    json!({"source_id": cfg.source_id, "snapshots": [], "failed": [{"source": source, "error": format!("{e:#}")}]})
+                );
+                Err(e)
+            }
+        }
+    };
+    c.logout();
+    r
 }
 
 /// Backs up every VM of `cfg.vms`; false if any failed (the others are still committed).
