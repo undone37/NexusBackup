@@ -306,15 +306,18 @@ pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     ))
 }
 
-/// The local `psql` of the restored server's version: databases other than templates.
+/// The local `psql` of the restored server's version: databases other than templates. The answer is
+/// the last line: warnings come first (lab 2026-10-23: a collation version mismatch between the
+/// source's and the restore host's C library is a WARNING, not a failure of the test).
 pub fn check_cmd(dir: &str, port: u64) -> String {
     let d = sh_quote(dir);
     format!(
         "d={d}; v=$(cat \"$d/PG_VERSION\") || exit 1; q=; \
          for x in \"/usr/lib/postgresql/$v/bin/psql\" \"/usr/pgsql-$v/bin/psql\" \"$(command -v psql)\"; do \
          [ -n \"$x\" ] && [ -x \"$x\" ] && {{ q=$x; break; }}; done; \
-         n=$(\"$q\" -X -p {port} -d postgres -Atc 'SELECT count(*) FROM pg_database WHERE NOT datistemplate' 2>&1) && \
-         [ \"$n\" -ge 1 ] 2>/dev/null || {{ echo \"check query: $n\" >&2; exit 1; }}"
+         o=$(\"$q\" -X -p {port} -d postgres -Atc 'SELECT count(*) FROM pg_database WHERE NOT datistemplate' 2>&1); \
+         n=$(printf '%s\\n' \"$o\" | tail -n 1); \
+         [ \"$n\" -ge 1 ] 2>/dev/null || {{ echo \"check query: $o\" >&2; exit 1; }}"
     )
 }
 

@@ -45,6 +45,9 @@ else
 	KOPT=
 fi
 GUEST=${GUEST:-nx-cbt}
+# esxi_cbt.py reads LAB (the host's address and password); one pyvmomi venv for both labs
+export LAB
+PY=${PY:-$HOME/nexus-lab/esxi/venv/bin/python}
 STORAGE=${STORAGE:-vmpool}
 BRIDGE=${BRIDGE:-vmbr0}
 ISO=/var/lib/vz/template/iso
@@ -97,10 +100,12 @@ step_install() {
 	log "remastering $ISO_NAME with a kickstart file"
 	# the kickstart goes over stdin: the password never appears in a command line on the host
 	{
-		printf 'vmaccepteula\ninstall --firstdisk --overwritevmfs\nrootpw %s\n' "$pw"
+		# ESXi 8 on an older CPU: the kickstart turns the CPU warning into an error unless forced
+		printf 'vmaccepteula\ninstall --firstdisk --overwritevmfs%s\nrootpw %s\n' \
+			"$([ -n "$KOPT" ] && echo ' --forceunsupportedinstall')" "$pw"
 		printf 'network --bootproto=dhcp --device=vmnic0\nreboot\n'
 		# the installed host needs the installer's CPU override as well (ESXi 8 on an older CPU)
-		[ -z "$KOPT" ] || printf '%%post --interpreter=busybox\nfor f in /vmfs/volumes/*/boot.cfg /altbootbank/boot.cfg; do [ -f "$f" ] && sed -i "s|^kernelopt=.*|&%s|" "$f"; done\n' "$KOPT"
+		[ -z "$KOPT" ] || printf '%%post --interpreter=busybox\nfor f in /vmfs/volumes/*/boot.cfg /altbootbank/boot.cfg; do if [ -f "$f" ]; then sed -i "s|^kernelopt=.*|&%s|" "$f"; fi; done\nexit 0\n' "$KOPT"
 		printf '%%firstboot --interpreter=busybox\nvim-cmd hostsvc/enable_ssh\nvim-cmd hostsvc/start_ssh\n'
 		printf 'echo "%s" >> /etc/ssh/keys-root/authorized_keys\n' "$(cat "$LAB/esxi_ecdsa.pub")"
 	} | pve "set -e; w=\$(mktemp -d); trap 'umount \$w/src 2>/dev/null || true; rm -rf \$w' EXIT
@@ -167,8 +172,9 @@ step_datastore() {
 		sleep 60
 		until esx true 2>/dev/null; do sleep 10; done
 	fi
-	# the disk without partitions is the new one
+	# the disk without partitions is the new one (rescan first: ESXi 8 lists a new disk late)
 	esx 'set -e
+		esxcli storage core adapter rescan --all; sleep 5
 		for d in $(ls /vmfs/devices/disks/ | grep "^t10" | grep -v ":"); do
 			if [ "$(partedUtil getptbl /vmfs/devices/disks/$d 2>/dev/null | wc -l)" -le 2 ]; then dev=$d; fi
 		done
@@ -301,7 +307,7 @@ EOF
 }
 
 step_cbt() {
-	local here py=${PY:-$LAB/venv/bin/python} con w=${WRITE_MB:-1024} s1 s2 url
+	local here py=$PY con w=${WRITE_MB:-1024} s1 s2 url
 	here=$(dirname "$0")
 	con() { CONSOLE=${CONSOLE:-$HOME/nexus-lab/pvehost/appliance/console.sock} "$here/../appliance/con.py" "$@"; }
 	log "guest: $w MB of data as the first state"
@@ -329,7 +335,7 @@ step_cbt() {
 }
 
 step_hotadd() {
-	local here py=${PY:-$LAB/venv/bin/python} w=${WRITE_MB:-1024} s1 s2 dev
+	local here py=$PY w=${WRITE_MB:-1024} s1 s2 dev
 	here=$(dirname "$0")
 	cbt() { "$py" "$here/esxi_cbt.py" "$@"; }
 	on() { GUEST=$1 guest "${@:2}"; }

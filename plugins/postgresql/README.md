@@ -107,4 +107,4 @@ targets, tablespace remapping and the start command (`pitr.rs`).
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.4.0.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.4.1.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).

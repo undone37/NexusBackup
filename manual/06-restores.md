@@ -403,7 +403,10 @@ plugin's own restore test on the newest local snapshot of every database and of 
 - **Cluster snapshots** are restored point-in-time to their end into a throwaway directory below the source's
   **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
   must answer a query once recovery has ended. The server is stopped and the directory removed afterwards. The
-  restore host needs PostgreSQL of the same major version (`pg_ctl`, `psql`).
+  restore host needs PostgreSQL of the same major version (`pg_ctl`, `psql`), ideally on the same operating system
+  release as the source: a different C library changes the collation, PostgreSQL then warns about a "collation
+  version mismatch" and text indexes may need a rebuild after a real restore (the test passes, the warning is in
+  the restored server's log).
 
 The result row shows what was restored and checked; a failure raises the same **restore_test** warning as a VM
 test and names the reason (for example a table with fewer rows than the dump). A single snapshot can be tested by

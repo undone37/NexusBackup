@@ -26,6 +26,8 @@
 #   patroni.sh failover   the leader's VM is stopped hard; waits for a new leader, starts the VM again
 #   patroni.sh restore    dump of labdb restored into the cluster as labdb_copy (compared), and point-in-time
 #                         restores on pg-ctl to every mark (patroni.sh mark) and to the end, row counts compared
+#   patroni.sh rtest      restore tests (Phase 44): verify_dir on pg-ctl, schedules on both groups, the scheduler's
+#                         verify restores (dump into a throwaway database, cluster PITR started and queried) awaited
 #   patroni.sh mark NAME  remember now as a restore target (state in $LAB/marks)
 #   patroni.sh matrix V…  per PostgreSQL version: new nodes, deploy, slot, writer, source, scenario, cleanup
 #                         (e.g. `patroni.sh matrix 14 15 16 18`; results per version in the log)
@@ -442,6 +444,34 @@ step_matrix() {
 		step_nowriter
 		step_cleanpitr
 	done
+}
+
+step_rtest() {
+	apienv
+	local src cfg g id r
+	src=$(jq -r .source "$LAB/state.json")
+	on pg-ctl 'install -d -o postgres -g postgres -m 700 /srv/pitr/verify' </dev/null
+	# the stored config without its secrets (they stay when omitted) plus the test directory
+	cfg=$(api admin GET /sources | jq -c --argjson s "$src" '.[] | select(.id == $s) | .config
+		| del(.password, .restore_password, .ssh_key) | with_entries(select(.key | endswith("_set") | not))
+		| .verify_dir = "/srv/pitr/verify" | .verify_port = 5499')
+	name=$(api admin GET /sources | jq -r --argjson s "$src" '.[] | select(.id == $s) | .name')
+	api admin PUT "/sources/$src" "$(jq -nc --arg n "$name" --argjson c "$cfg" '{name:$n, config:$c}')" >/dev/null
+	expect 200 "source with verify_dir"
+	for g in dump_group cluster_group; do
+		id=$(jq -r ".$g" "$LAB/state.json")
+		api admin PUT "/restore-tests/schedules/$id" '{"every_days": 1}' >/dev/null
+		expect 200 "restore test schedule of group $id"
+	done
+	log "schedules set; waiting for the scheduler's restore tests"
+	local end=$(($(date +%s) + 1800)) n
+	until n=$(api admin GET '/restore-tests?tenant=pgha' | jq --argjson s "$src" \
+		'[.[] | select(.source | startswith("plugin-postgresql-\($s)"))] | length') && [ "$n" -ge 2 ]; do
+		[ "$(date +%s)" -lt "$end" ] || die "no restore test results after 30 minutes"
+		sleep 20
+	done
+	api admin GET '/restore-tests?tenant=pgha' | jq -r --argjson s "$src" \
+		'.[] | select(.source | startswith("plugin-postgresql-\($s)")) | "  \(.source) \(.time): \(.state) (\(.finished - .started) s): \(.summary // .error)"' >&2
 }
 
 step_ssh() {

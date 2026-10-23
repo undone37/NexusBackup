@@ -976,6 +976,12 @@ RMAN and archive logs, log backups on their own schedule); listed in the README 
   `READ_REPLICATION_SLOT`; the slot check is skipped there and following worked the same.
 - [ ] The PITR dialog bounds the target by the recoverable range; the plugin could also refuse a target outside it
   before restoring (today PostgreSQL refuses after the restore).
+- [x] Restore tests through the appliance (2026-10-23, VM 201 on 0.0.22-dev, plugin 1.4.1, PostgreSQL 18 cluster,
+  `patroni.sh rtest`): schedules on both groups; the scheduler's verify restores: `labdb` dump into a throwaway
+  database on the cluster, 412 rows counted against the dump, dropped (1 s); cluster snapshot PITR to the end into
+  `/srv/pitr/verify/…` on pg-ctl, started and queried (passed), directory removed. On the way: the check query took
+  the answer from psql's whole output, and a collation-version warning (source Debian 12 glibc 2.36, restore host
+  Debian 13 2.41) failed the test; 1.4.1 takes the last line.
 - Lab left running with the writer stopped (`patroni.sh writer` / `nowriter`); `patroni.sh destroy` removes it.
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
