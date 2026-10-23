@@ -4937,7 +4937,7 @@ dependencies = [
 
 [[package]]
 name = "postgresql"
-version = "1.4.1"
+version = "1.4.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

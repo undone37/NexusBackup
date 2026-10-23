@@ -1086,4 +1086,12 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
 - [ ] A custom SQL check per group; a random PITR target inside the recoverable range; MySQL contents (counts only).
 - [ ] Lab scripts as scheduled regression runs: where they run is open (the dev machine drives the lab today;
   maintainer: a timer on a lab VM, or CI with lab access?).
-- [ ] Fault injection (network loss, reboot, failover during a backup, full store, corrupt chunks, clock jumps).
+- [x] Fault injection, failover during a backup (2026-10-23, `patroni.sh fault`, PostgreSQL 18): a 1.3 GB table, the
+  first (full) cluster backup of a new source, the leader's VM stopped hard while it streams. The job fails, no
+  snapshot is committed, the scheduler queues a retry; the next run takes a full base backup from the new primary
+  (36 s) and its restore test passes. Found: the failure surfaced only after the 600 s read timeout (a hard-stopped
+  VM sends no reset); plugin 1.4.3 uses 180 s on replication connections: detected after 184 s.
+  On the way (lab only): autobase's 4 GB swap file filled the 16 GB node disks during the bulk load; without it,
+  its `vm.overcommit_memory = 2` at ratio 50 let a 4 GB node commit only 2 GB (etcd, sshd and big statements
+  failed): the deploy now sets no swap file and ratio 100.
+- [ ] Fault injection, the rest: network loss, appliance reboot during a backup, full store, corrupt chunks, clock jumps.

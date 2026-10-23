@@ -28,6 +28,9 @@
 #                         restores on pg-ctl to every mark (patroni.sh mark) and to the end, row counts compared
 #   patroni.sh rtest      restore tests (Phase 44): verify_dir on pg-ctl, schedules on both groups, the scheduler's
 #                         verify restores (dump into a throwaway database, cluster PITR started and queried) awaited
+#   patroni.sh fault      fault injection (Phase 44): a ~1.3 GB table, a new source, its first (full) cluster backup,
+#                         the leader's VM stopped hard while the base backup streams; the job must fail cleanly,
+#                         the next run succeed and its restore test pass; the table is dropped again
 #   patroni.sh mark NAME  remember now as a restore target (state in $LAB/marks)
 #   patroni.sh matrix V…  per PostgreSQL version: new nodes, deploy, slot, writer, source, scenario, cleanup
 #                         (e.g. `patroni.sh matrix 14 15 16 18`; results per version in the log)
@@ -161,6 +164,8 @@ patroni_cluster_name: nexus-lab
 patroni_superuser_password: "$(secret PG_SUPERUSER)"
 patroni_replication_password: "$(secret PG_REPLICATION)"
 pgbouncer_install: false
+# no swap file: it took 4 GB of the 16 GB lab disks (the fault test filled them); the commit ratio is raised below
+swap_file_create: false
 with_haproxy_load_balancing: false
 dcs_type: etcd
 synchronous_mode: false
@@ -202,6 +207,12 @@ EOF
 		mkdir -p \$c && ln -sfn /opt/autobase/automation \$c/autobase
 		cd /opt/autobase/automation && /opt/ansible/bin/ansible-playbook -i /root/inventory -e @/root/lab-vars.yml \
 			playbooks/deploy_pgcluster.yml >/root/deploy.log 2>&1; rc=\$?; tail -25 /root/deploy.log; exit \$rc" </dev/null
+	# autobase sets vm.overcommit_memory = 2 (ratio 50): without the swap file a 4 GB node may commit only 2 GB,
+	# and etcd, sshd and big statements fail with "Cannot allocate memory" (lab 2026-10-23)
+	local n
+	for n in pg1 pg2 pg3; do
+		on "$n" 'echo "vm.overcommit_ratio = 100" >/etc/sysctl.d/99-nexus-lab.conf; sysctl -q -w vm.overcommit_ratio=100' </dev/null
+	done
 	step_status
 }
 
@@ -279,7 +290,8 @@ step_source() {
 		--arg ctl "$(ip_of pg-ctl)" --arg key "$(cat "$LAB/pitr_ed25519")" \
 		--arg hk "$(on pg-ctl 'cat /etc/ssh/ssh_host_ed25519_key.pub' </dev/null | cut -d' ' -f1-2)" \
 		'{host:$h1, hosts:[$h2, $h3], port:5432, user:"nexus_backup", password:$pw, sslmode:"require",
-		databases_include:["labdb"], ssh_host:$ctl, ssh_user:"postgres", ssh_key:$key, ssh_host_key:$hk}')
+		databases_include:["labdb"], ssh_host:$ctl, ssh_user:"postgres", ssh_key:$key, ssh_host_key:$hk,
+		verify_dir:"/srv/pitr/verify", verify_port:5499}')
 	src=$(api admin POST /sources "$(jq -nc --argjson c "$cfg" --arg n "patroni-lab-pg$PG_VERSION-$(date +%s)" '{tenant:"pgha", kind:"plugin:postgresql", name:$n, config:$c}')" | jq -r .id)
 	expect 201 "create source"
 	j=$(job admin plugin_validate "$(jq -nc --argjson s "$src" '{source_id:$s}')" 300)
@@ -472,6 +484,51 @@ step_rtest() {
 	done
 	api admin GET '/restore-tests?tenant=pgha' | jq -r --argjson s "$src" \
 		'.[] | select(.source | startswith("plugin-postgresql-\($s)")) | "  \(.source) \(.time): \(.state) (\(.finished - .started) s): \(.summary // .error)"' >&2
+}
+
+step_fault() {
+	local old id r j st
+	log "writing the table big (about 1.3 GB)"
+	# in batches: autobase's strict memory overcommit refuses one 2-million-row generate_series
+	sql "DROP TABLE IF EXISTS big; CREATE TABLE big (g int, pad text)"
+	local b
+	for b in $(seq 0 9); do
+		sql "INSERT INTO big SELECT g, repeat(md5(g::text), 20) FROM generate_series($((b * 200000 + 1)), $(((b + 1) * 200000))) g"
+	done
+	log "big: $(sql "SELECT pg_size_pretty(pg_total_relation_size('big'))")"
+	step_source
+	apienv
+	r=$(api admin POST /jobs "$(jq -nc --argjson g "$(jq -r .cluster_group "$LAB/state.json")" '{kind:"backup", tenant:"pgha", params:{group_id:$g}}')")
+	expect 202 "cluster backup"
+	id=$(jq -r .id <<<"$r")
+	# stop the leader once the base backup streams (the job has read something)
+	# (or after 15 s of running, when the plugin reports no progress during the base backup)
+	local n=0
+	for _ in $(seq 120); do
+		r=$(api admin GET "/jobs/$id")
+		st=$(jq -r '.progress.done // 0' <<<"$r")
+		[ "${st%.*}" -gt 300000000 ] 2>/dev/null && break
+		[ "$(jq -r .state <<<"$r")" = running ] && n=$((n + 1))
+		[ "$n" -ge 15 ] && break
+		sleep 1
+	done
+	old=$(leader)
+	log "job $id at $st bytes: stopping the leader $old (VM $(id_of "$old")) hard"
+	pve "qm stop $(id_of "$old") --skiplock" >/dev/null
+	j=$(wait_job admin "$id" 1800)
+	log "job $id: $(jq -r .state <<<"$j"): $(jq -r .log <<<"$j" | grep -iE 'error|fail' | tail -2 | tr '\n' ' ' | cut -c1-300)"
+	log "snapshots of the source after the failed run: $(api admin GET '/snapshots?tenant=pgha' | jq --arg p "plugin-postgresql-$(jq -r .source "$LAB/state.json")" '[.[] | select(.source == $p)] | length')"
+	pve "qm start $(id_of "$old")" >/dev/null
+	for _ in $(seq 60); do on "$old" true </dev/null 2>/dev/null && break; sleep 5; done
+	sleep 30
+	step_status
+	j=$(job admin backup "$(jq -c '{group_id: .cluster_group}' "$LAB/state.json")")
+	log "next run: job $(jq -r .id <<<"$j") ok in $(jq '.finished - .started' <<<"$j") s: $(jq -r .log <<<"$j" | grep -E 'summary|full backup|following' | head -2 | tr '\n' ' ' | cut -c1-250)"
+	local s
+	s=$(api admin GET '/snapshots?tenant=pgha' | jq -c --arg p "plugin-postgresql-$(jq -r .source "$LAB/state.json")" '[.[] | select(.source == $p)] | sort_by(.time) | .[-1]')
+	j=$(job admin plugin_restore "$(jq -nc --argjson s "$s" '{source:$s.source, time:$s.time, restore:"verify", params:{}}')" 3600)
+	log "restore test of that snapshot: $(jq -r .state <<<"$j"): $(jq -r '.result.summary // ""' <<<"$j" | cut -c1-160)"
+	sql "DROP TABLE big"
 }
 
 step_ssh() {

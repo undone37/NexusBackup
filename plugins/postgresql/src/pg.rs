@@ -77,13 +77,25 @@ pub struct Conn {
 /// Messages larger than this are refused (CopyData of BASE_BACKUP/WAL are ≤ ~1 MiB).
 const MAX_MSG: usize = 256 << 20;
 
+/// Seconds a read may wait. A server that stops talking must not hang the job forever (the host's idle
+/// limit is 15 min); a query may be silent for minutes (an index build during a restore), a replication
+/// stream is not: a base backup sends data once its checkpoint is done, WAL streaming a keepalive every
+/// `wal_sender_timeout / 2` (30 s by default). A primary that vanished without closing the connection (a
+/// failover by a hard stop) is noticed after 3 minutes instead of 10 (lab 2026-10-23).
+pub fn read_timeout(replication: bool) -> u64 {
+    if replication {
+        180
+    } else {
+        600
+    }
+}
+
 impl Conn {
     pub fn connect(o: &Opts) -> Result<Conn> {
         let tcp =
             TcpStream::connect((o.host.as_str(), o.port)).with_context(|| format!("connect {}:{}", o.host, o.port))?;
         tcp.set_nodelay(true)?;
-        // a server that stops talking must not hang the job forever (the host's idle limit is 15 min)
-        tcp.set_read_timeout(Some(Duration::from_secs(600)))?;
+        tcp.set_read_timeout(Some(Duration::from_secs(read_timeout(o.replication))))?;
         let io: Box<dyn Io> = if o.ssl == SslMode::Disable {
             Box::new(tcp)
         } else {
