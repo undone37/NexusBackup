@@ -140,9 +140,10 @@ fn backup_through_proxy() {
         let mut transport = Transport::Proxy {
             proxy: &proxy,
             session: &mut s,
+            map: &mut map,
         };
         let mut lines = Vec::new();
-        let m = backup_vm(&c, &store, &mut map, &mut transport, &spec, &mut |l| {
+        let m = backup_vm(&c, &store, &mut transport, &spec, &mut |l| {
             eprintln!("{l}");
             lines.push(l.to_owned());
         })
@@ -244,7 +245,6 @@ fn nfc_read_disk() {
 /// stored disk index must reconstruct a bootable disk (MBR/GPT signature). Needs NEXUS_VC* as above.
 #[test]
 fn nfc_backup() {
-    use agent_conn::map::MapDb;
     use chunkstore::{Keyring, Options, Store};
     use std::time::Duration;
     use vmware::backup::{backup_vm, Spec, Transport};
@@ -258,11 +258,10 @@ fn nfc_backup() {
         .unwrap();
     let store_dir = d.path().join("store");
     let store = Store::open(&store_dir, Keyring::new("lab", &[(1, [5; 32])]), Options::default()).unwrap();
-    let mut map = MapDb::open(&store_dir).unwrap();
     let c = Client::login(&vc, 443, &pem, "administrator@vsphere.local", &pw).unwrap();
     let vms = c.vms().unwrap();
     let vm = vms.iter().find(|(_, n)| n == "nx-cbt").unwrap().0.clone();
-    let mut run = |job, full| {
+    let run = |job, full| {
         let spec = Spec {
             vm: &vm,
             datacenter: "ha-datacenter",
@@ -273,7 +272,7 @@ fn nfc_backup() {
             timeout: Duration::from_secs(60),
         };
         let mut lines = Vec::new();
-        let m = backup_vm(&c, &store, &mut map, &mut transport, &spec, &mut |l| {
+        let m = backup_vm(&c, &store, &mut transport, &spec, &mut |l| {
             eprintln!("{l}");
             lines.push(l.to_owned());
         })

@@ -50,8 +50,13 @@ pub struct Spec<'a> {
 pub enum Transport<'a> {
     /// over NFC directly, no proxy VM (a fresh ticket per disk; `crate::nfc`)
     Nfc { timeout: Duration },
-    /// through a hot-add proxy VM: `proxy` is the proxy's moref, `session` the mTLS session to its agent
-    Proxy { proxy: &'a MoRef, session: &'a mut Session },
+    /// through a hot-add proxy VM: `proxy` is the proxy's moref, `session` the mTLS session to its agent, `map`
+    /// the store's agent mapping index (plain block hash -> chunk; only this transport needs it)
+    Proxy {
+        proxy: &'a MoRef,
+        session: &'a mut Session,
+        map: &'a mut MapDb,
+    },
 }
 
 pub use crate::names::source_name;
@@ -192,7 +197,6 @@ fn read_disk_proxy(
 pub fn backup_vm(
     c: &Client,
     store: &Store,
-    map: &mut MapDb,
     transport: &mut Transport,
     spec: &Spec,
     log: &mut dyn FnMut(&str),
@@ -214,18 +218,7 @@ pub fn backup_vm(
     let snap = c
         .create_snapshot(spec.vm, &format!("nexus-backup-{}", spec.job), info.tools)
         .with_context(|| format!("snapshot of {}", info.name))?;
-    let r = with_snapshot(
-        c,
-        store,
-        map,
-        transport,
-        spec,
-        &info.vmx,
-        &source,
-        &snap,
-        prev.as_ref(),
-        log,
-    );
+    let r = with_snapshot(c, store, transport, spec, &info.vmx, &source, &snap, prev.as_ref(), log);
     if let Err(e) = c.remove_snapshot(&snap) {
         // the backup itself may have worked: report the leftover by name
         log(&format!(
@@ -240,7 +233,6 @@ pub fn backup_vm(
 fn with_snapshot(
     c: &Client,
     store: &Store,
-    map: &mut MapDb,
     transport: &mut Transport,
     spec: &Spec,
     vmx_path: &str,
@@ -291,7 +283,7 @@ fn with_snapshot(
                 read_disk_nfc(c, store, spec.vm, d, prev_index.as_ref(), &changed, *timeout, log)
                     .with_context(|| format!("{name}: NFC read"))?
             }
-            Transport::Proxy { proxy, session } => read_disk_proxy(
+            Transport::Proxy { proxy, session, map } => read_disk_proxy(
                 c,
                 store,
                 map,
