@@ -24,16 +24,27 @@
 #   esxi.sh ssh CMD     a command on the ESXi shell (lab ECDSA key in $LAB: ESXi's FIPS sshd refuses ed25519)
 #   esxi.sh destroy     stop and remove VM $VMID (ours: IDs from 200, AGENTS.md "Labs")
 #
-# env: PVE_HOST (10.2.34.200), SSH_KEY (~/nexus-lab/pve-lab-key), LAB (~/nexus-lab/esxi), VMID (250),
-#      ISO_NAME (VMware-VMvisor-Installer-7.0U3g-20328353.x86_64.iso: ESXi 8 no longer supports this host's
-#      Haswell CPU), STORAGE (vmpool), BRIDGE (vmbr0)
+# env: ESXI (7 or 8), PVE_HOST (10.2.34.200), SSH_KEY (~/nexus-lab/pve-lab-key), LAB (~/nexus-lab/esxi, esxi8),
+#      VMID (250, 251),
+#      ISO_NAME (7.0U3g; with ESXI=8 the Dell 8.0U3 image on the host), STORAGE (vmpool), BRIDGE (vmbr0)
 set -euo pipefail
 PVE_HOST=${PVE_HOST:-10.2.34.200}
 SSH_KEY=${SSH_KEY:-$HOME/nexus-lab/pve-lab-key}
-LAB=${LAB:-$HOME/nexus-lab/esxi}
-VMID=${VMID:-250}
+# ESXI=8: ESXi 8.0U3 as VM 251 with its own state; the lab host's Haswell CPU is below ESXi 8's minimum, so
+# the installer and the installed host boot with allowLegacyCPU=true
+ESXI=${ESXI:-7}
+if [ "$ESXI" = 8 ]; then
+	LAB=${LAB:-$HOME/nexus-lab/esxi8}
+	VMID=${VMID:-251}
+	ISO_NAME=${ISO_NAME:-VMware-VMvisor-Installer-8.0.0.update03-24280767.x86_64-Dell_Customized-A02.iso}
+	KOPT=" allowLegacyCPU=true"
+else
+	LAB=${LAB:-$HOME/nexus-lab/esxi}
+	VMID=${VMID:-250}
+	ISO_NAME=${ISO_NAME:-VMware-VMvisor-Installer-7.0U3g-20328353.x86_64.iso}
+	KOPT=
+fi
 GUEST=${GUEST:-nx-cbt}
-ISO_NAME=${ISO_NAME:-VMware-VMvisor-Installer-7.0U3g-20328353.x86_64.iso}
 STORAGE=${STORAGE:-vmpool}
 BRIDGE=${BRIDGE:-vmbr0}
 ISO=/var/lib/vz/template/iso
@@ -81,22 +92,27 @@ step_install() {
 	pw="Nx$(head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 12)7!"
 	printf '%s\n' "$pw" >"$LAB/root.password"
 	chmod 600 "$LAB/root.password"
+	# root's SSH key (ECDSA: ESXi's FIPS sshd refuses ed25519), installed at the first boot
+	[ -f "$LAB/esxi_ecdsa" ] || ssh-keygen -q -t ecdsa -b 384 -N '' -C nexus-lab-esxi -f "$LAB/esxi_ecdsa"
 	log "remastering $ISO_NAME with a kickstart file"
 	# the kickstart goes over stdin: the password never appears in a command line on the host
 	{
 		printf 'vmaccepteula\ninstall --firstdisk --overwritevmfs\nrootpw %s\n' "$pw"
 		printf 'network --bootproto=dhcp --device=vmnic0\nreboot\n'
+		# the installed host needs the installer's CPU override as well (ESXi 8 on an older CPU)
+		[ -z "$KOPT" ] || printf '%%post --interpreter=busybox\nfor f in /vmfs/volumes/*/boot.cfg /altbootbank/boot.cfg; do [ -f "$f" ] && sed -i "s|^kernelopt=.*|&%s|" "$f"; done\n' "$KOPT"
 		printf '%%firstboot --interpreter=busybox\nvim-cmd hostsvc/enable_ssh\nvim-cmd hostsvc/start_ssh\n'
+		printf 'echo "%s" >> /etc/ssh/keys-root/authorized_keys\n' "$(cat "$LAB/esxi_ecdsa.pub")"
 	} | pve "set -e; w=\$(mktemp -d); trap 'umount \$w/src 2>/dev/null || true; rm -rf \$w' EXIT
 		mkdir \$w/src \$w/iso; mount -o loop,ro $ISO/$ISO_NAME \$w/src; cp -a \$w/src/. \$w/iso/; umount \$w/src
 		chmod -R u+w \$w/iso; cat > \$w/iso/ks.cfg
 		for f in \$w/iso/boot.cfg \$w/iso/efi/boot/boot.cfg; do
-			[ -f \$f ] && sed -i 's|^kernelopt=.*|kernelopt=runweasel ks=cdrom:/KS.CFG|' \$f
+			[ -f \$f ] && sed -i 's|^kernelopt=.*|kernelopt=runweasel ks=cdrom:/KS.CFG$KOPT|' \$f
 		done
 		genisoimage -quiet -relaxed-filenames -J -R -o $ISO/$KS_ISO -b isolinux.bin -c boot.cat \
 			-no-emul-boot -boot-load-size 4 -boot-info-table \$w/iso"
 	log "creating VM $VMID"
-	pve "qm create $VMID --name nx-esxi7 --memory 16384 --cores 4 --cpu host --ostype other \
+	pve "qm create $VMID --name nx-esxi$ESXI --memory 16384 --cores 4 --cpu host --ostype other \
 		--sata0 $STORAGE:96 --net0 e1000e,bridge=$BRIDGE --ide2 local:iso/$KS_ISO,media=cdrom \
 		--boot 'order=sata0;ide2' --serial0 socket"
 	pve "qm start $VMID"

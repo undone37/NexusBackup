@@ -1336,6 +1336,10 @@ only if the spike shows it is needed).
   enrolment, one proxy per host or per shared datastore, vSAN/NFS check. **Decided (maintainer, 2026-10-23):** the
   proxy ships as an OVA that the admin deploys and enrols; no automatic deployment. Lab tests run on nested ESXi
   7.0U3 and 8.0U3 (ESXi 8 on the lab's older CPU through `allowLegacyCPU=true` or a custom CPU model).
+- **Proposal (2026-10-23, docs/vmware-design.md), open for the maintainer:** a native connector `nexus-vmware`
+  (trusted, like `nexus-pve`) plus the proxy as an enrolled agent with a `block-read` capability, instead of a
+  sandboxed plugin: a plugin cannot drive an agent, and the native route keeps the PVE VM snapshot layout
+  (instant restore, file index, restore tests) and deduplicated transfer.
 Spike done (ESXi 7.0U3 standalone); implementation not started.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
