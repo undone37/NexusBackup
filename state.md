@@ -962,8 +962,8 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   SET_RES_POOL does reply.
 - [ ] M3: scheduler job + connector binary, web-api source + UI (transport choice, proxy per cluster), restore to
   PVE, the proxy OVA, manual chapter, lab e2e. vSAN/NFS, quiesced Windows snapshots, proxy on another host.
-- Lab leftovers to clean up when done: VixDiskLib 7.0.1 + nbdkit packages were installed on the regression VM
-  (VM 280) while evaluating the VDDK/nbdkit path (not used in the end); `/opt/vddk-7.0.1`.
+- VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
+  (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle
