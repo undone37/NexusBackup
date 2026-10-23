@@ -7428,6 +7428,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "tempfile",
  "truenas",
 ]

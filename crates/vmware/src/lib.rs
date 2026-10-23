@@ -2,4 +2,5 @@
 //! the backup through a hot-add proxy (an enrolled agent with `block-read`).
 
 pub mod backup;
+pub mod nfc;
 pub mod vsphere;

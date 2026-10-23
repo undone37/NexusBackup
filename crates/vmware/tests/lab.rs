@@ -89,9 +89,9 @@ fn backup_through_proxy() {
     use agent_conn::ca::Ca;
     use agent_conn::map::MapDb;
     use agent_conn::tls::{session_config, Session};
-    use chunkstore::{Index, Keyring, Options, Store};
+    use chunkstore::{Keyring, Options, Store};
     use std::time::Duration;
-    use vmware::backup::{backup_vm, Spec};
+    use vmware::backup::{backup_vm, Spec, Transport};
     let (Ok(host), Ok(proxy_ip)) = (std::env::var("NEXUS_ESXI"), std::env::var("NEXUS_PROXY")) else {
         eprintln!("NEXUS_ESXI / NEXUS_PROXY not set, skipped");
         return;
@@ -133,13 +133,16 @@ fn backup_through_proxy() {
     let mut run = |job, full| {
         let spec = Spec {
             vm: &vm,
-            proxy: &proxy,
             datacenter: "ha-datacenter",
             job,
             full,
         };
+        let mut transport = Transport::Proxy {
+            proxy: &proxy,
+            session: &mut s,
+        };
         let mut lines = Vec::new();
-        let m = backup_vm(&c, &store, &mut map, &mut s, &spec, &mut |l| {
+        let m = backup_vm(&c, &store, &mut map, &mut transport, &spec, &mut |l| {
             eprintln!("{l}");
             lines.push(l.to_owned());
         })
@@ -148,22 +151,149 @@ fn backup_through_proxy() {
     };
     let (m1, _) = run(1, false);
     let (m2, log2) = run(2, false);
-    let (m3, _) = run(3, true);
-    let disks: Vec<&String> = m1.indexes.iter().filter(|n| *n != "config").collect();
-    assert!(!disks.is_empty(), "{:?}", m1.indexes);
-    for n in &disks {
-        let chunks = |m| match store.load_index(m, n).unwrap() {
-            Index::Fixed { chunks, .. } => chunks,
-            _ => panic!("{n}: not a fixed index"),
-        };
-        assert_eq!(chunks(&m1), chunks(&m2), "{n}: incremental differs");
-        assert_eq!(chunks(&m1), chunks(&m3), "{n}: full read differs");
+    // each backup must reconstruct a bootable disk (MBR/GPT signature); the incremental reuses the base's blocks
+    // for the unchanged part (an idle guest still writes a few blocks, so the indexes are not byte-identical)
+    for m in [&m1, &m2] {
+        let n = m.indexes.iter().find(|n| *n != "config").expect("a disk index");
+        let idx = store.load_index(m, n).unwrap();
+        let mut r = store.image_reader(&idx).unwrap();
+        let mut head = vec![0u8; 1 << 20];
+        r.read_at(0, &mut head).unwrap();
+        assert_eq!(
+            &head[510..512],
+            &[0x55, 0xAA],
+            "{n}: reconstructed disk has no boot signature"
+        );
     }
     assert!(log2.iter().any(|l| l.contains("(incremental)")), "{log2:?}");
-    assert!(log2.iter().any(|l| l.contains(" 0 fetched")), "{log2:?}");
+    // the second run reused most of the first run's blocks (few fetched)
+    assert!(log2.iter().any(|l| l.contains("already in the store")), "{log2:?}");
     // no snapshot and no hot-added disk left behind
     let (pd, _) = c.devices(&proxy).unwrap();
     assert_eq!(pd.len(), 1, "proxy disks: {pd:?}");
     c.logout();
     s.close();
+}
+
+/// The NFC read path (no proxy VM) against the lab vCenter 8: with `NEXUS_VC` (vCenter address),
+/// `NEXUS_VC_PASSWORD` (administrator@vsphere.local) and `NEXUS_VC_CERT` (its certificate PEM). Snapshot nx-cbt,
+/// get an NFC ticket, open the snapshot disk over NFC and read it. Ground truth: the disk begins with an MBR/GPT
+/// (signature 0x55AA at offset 510) and is not all zeros; a read spanning server fragments is self-consistent.
+#[test]
+fn nfc_read_disk() {
+    use std::time::Duration;
+    use vmware::nfc::NfcDisk;
+    let Ok(vc) = std::env::var("NEXUS_VC") else {
+        eprintln!("NEXUS_VC not set, skipped");
+        return;
+    };
+    let pw = std::env::var("NEXUS_VC_PASSWORD").unwrap();
+    let pem = std::fs::read(std::env::var("NEXUS_VC_CERT").unwrap()).unwrap();
+    let c = Client::login(&vc, 443, &pem, "administrator@vsphere.local", &pw).unwrap();
+    eprintln!("{}", c.about());
+    let vms = c.vms().unwrap();
+    let vm = vms
+        .iter()
+        .find(|(_, n)| n == "nx-cbt")
+        .expect("nx-cbt in vCenter inventory")
+        .0
+        .clone();
+    if !c.cbt_enabled(&vm).unwrap() {
+        c.set_cbt(&vm, true).unwrap();
+    }
+    let snap = c.create_snapshot(&vm, "nexus-nfc-lab", false).unwrap();
+    // the snapshot is removed even when a check fails
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (disks, _) = c.devices(&snap).unwrap();
+        let d = disks.first().expect("a disk").clone();
+        let ticket = c.nfc_ticket(&vm).unwrap();
+        eprintln!(
+            "ticket host={} port={} service={}",
+            ticket.host, ticket.port, ticket.service
+        );
+        let mut disk = NfcDisk::open(&ticket, &d.file, d.capacity, Duration::from_secs(60)).unwrap();
+        assert_eq!(disk.capacity(), d.capacity);
+
+        // sector 0: MBR/GPT boot signature
+        let mut first = vec![0u8; 1 << 20];
+        disk.read_at(0, &mut first).unwrap();
+        assert_eq!(&first[510..512], &[0x55, 0xAA], "no boot signature at offset 510");
+        assert!(first.iter().any(|&b| b != 0), "first MiB is all zeros");
+
+        // a 5 MiB read crossing the 2 MiB server fragment boundary, read twice: identical
+        let mut a = vec![0u8; 5 << 20];
+        let mut b = vec![0u8; 5 << 20];
+        disk.read_at(8 << 20, &mut a).unwrap();
+        disk.read_at(8 << 20, &mut b).unwrap();
+        assert_eq!(a, b, "two reads of the same range differ");
+
+        // the first MiB matches when read as part of a larger request
+        let mut big = vec![0u8; 16 << 20];
+        disk.read_at(0, &mut big).unwrap();
+        assert_eq!(&big[..1 << 20], &first[..], "overlapping reads disagree");
+        disk.close();
+    }));
+    c.remove_snapshot(&snap).unwrap();
+    c.logout();
+    if let Err(e) = r {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// A full backup through the NFC transport (no proxy VM) against the lab vCenter 8, then an incremental one. Each
+/// stored disk index must reconstruct a bootable disk (MBR/GPT signature). Needs NEXUS_VC* as above.
+#[test]
+fn nfc_backup() {
+    use agent_conn::map::MapDb;
+    use chunkstore::{Keyring, Options, Store};
+    use std::time::Duration;
+    use vmware::backup::{backup_vm, Spec, Transport};
+    let Ok(vc) = std::env::var("NEXUS_VC") else {
+        eprintln!("NEXUS_VC not set, skipped");
+        return;
+    };
+    let pw = std::env::var("NEXUS_VC_PASSWORD").unwrap();
+    let pem = std::fs::read(std::env::var("NEXUS_VC_CERT").unwrap()).unwrap();
+    let d = tempfile::tempdir_in(std::env::var("NEXUS_TMP").unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").into()))
+        .unwrap();
+    let store_dir = d.path().join("store");
+    let store = Store::open(&store_dir, Keyring::new("lab", &[(1, [5; 32])]), Options::default()).unwrap();
+    let mut map = MapDb::open(&store_dir).unwrap();
+    let c = Client::login(&vc, 443, &pem, "administrator@vsphere.local", &pw).unwrap();
+    let vms = c.vms().unwrap();
+    let vm = vms.iter().find(|(_, n)| n == "nx-cbt").unwrap().0.clone();
+    let mut run = |job, full| {
+        let spec = Spec {
+            vm: &vm,
+            datacenter: "ha-datacenter",
+            job,
+            full,
+        };
+        let mut transport = Transport::Nfc {
+            timeout: Duration::from_secs(60),
+        };
+        let mut lines = Vec::new();
+        let m = backup_vm(&c, &store, &mut map, &mut transport, &spec, &mut |l| {
+            eprintln!("{l}");
+            lines.push(l.to_owned());
+        })
+        .unwrap();
+        (m, lines)
+    };
+    let (m1, _) = run(1, false);
+    let (m2, log2) = run(2, false);
+    for m in [&m1, &m2] {
+        let n = m.indexes.iter().find(|n| *n != "config").expect("a disk index");
+        let idx = store.load_index(m, n).unwrap();
+        let mut r = store.image_reader(&idx).unwrap();
+        let mut head = vec![0u8; 1 << 20];
+        r.read_at(0, &mut head).unwrap();
+        assert_eq!(
+            &head[510..512],
+            &[0x55, 0xAA],
+            "{n}: reconstructed disk has no boot signature"
+        );
+    }
+    assert!(log2.iter().any(|l| l.contains("(incremental)")), "{log2:?}");
+    c.logout();
 }

@@ -17,14 +17,25 @@ agent), not a sandboxed plugin.
 - Not usable: `changeId = "*"` to skip free space on a full (it reported the whole partition); the proxy reads the
   whole disk, unallocated blocks are cheap and deduplicate.
 
-## Components
+## Transports
+
+Two ways to read a snapshot's disk data; both share the vSphere session, CBT and snapshot layout and differ only
+in the read path:
+
+- **NFC (network mode), no proxy VM** (`crates/vmware/src/nfc.rs`, docs/nfc-protocol.md): the appliance speaks the
+  NFC protocol to the ESXi NFC service (TCP 902) and reads the snapshot disk directly. This is what VDDK calls
+  network mode, reimplemented from the public protocol (no VMware library shipped). Default where it reaches the
+  ESXi management network; one less moving part than the proxy. Lab: vCenter 8.0.3 and ESXi 7.0.3/8.0.3.
+- **Hot-add proxy** (below): a proxy VM on the host reads the disk at virtual-disk speed. Use it where the NFC
+  path is too slow or the management network is not reachable from the appliance.
 
 ```text
  scheduler ── nexus-vmware (connector binary, like nexus-pve) ── vSphere API (HTTPS, SOAP) ── ESXi / vCenter
-                   │                                                        │
-                   │ agent protocol (mTLS, agent-conn)                      │ ReconfigVM: hot-add / remove
-                   ▼                                                        ▼
-             proxy VM (bootc image, proxy role) ── reads /dev/sdX of the hot-added snapshot disk
+                   │                                 │                       │
+    NFC (TCP 902)  │       agent protocol (mTLS)     │  ReconfigVM: hot-add  │
+                   ▼                                 ▼                       ▼
+        reads the snapshot disk          proxy VM (bootc image, proxy role) reads /dev/sdX of the hot-added disk
+        over NFC directly
 ```
 
 - **`nexus-vmware`** (new crate, trusted like `nexus-pve`): vSphere session, CBT enablement per VM, snapshots

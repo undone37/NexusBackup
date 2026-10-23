@@ -71,6 +71,21 @@ pub struct VmInfo {
     pub tools: bool,
 }
 
+/// A one-time NFC ticket (`vim.HostServiceTicket` from `NfcGetVmFiles`): where and how to reach the ESXi NFC
+/// service (authd on TCP 902) to read a VM's disk files without a proxy VM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NfcTicket {
+    /// ESXi management / NFC address
+    pub host: String,
+    pub port: u16,
+    /// SHA-1 of the ESXi TLS certificate, colon-separated hex (pin the authd TLS to it)
+    pub ssl_thumbprint: String,
+    /// authd `PROXY` argument (`vpxa-nfc` on vCenter, `ha-nfc` on a host)
+    pub service: String,
+    /// one-time authd `SESSION` token
+    pub session_id: String,
+}
+
 /// `[datastore] dir/file` into (datastore, path).
 pub fn split_ds_path(p: &str) -> Option<(&str, &str)> {
     let (ds, path) = p.strip_prefix('[')?.split_once("] ")?;
@@ -83,6 +98,8 @@ pub struct Client {
     content: Content,
     /// `vmware_soap_session=...` from the login answer
     cookie: String,
+    /// the host this client connected to (fallback for a ticket with an empty host)
+    host: String,
 }
 
 /// The service content morefs this client uses.
@@ -214,6 +231,7 @@ impl Client {
                 about: String::new(),
             },
             cookie: String::new(),
+            host: host.to_string(),
         };
         c.content = c.service_content()?;
         let body = format!(
@@ -542,6 +560,35 @@ impl Client {
             "<urn:Logout>{}</urn:Logout>",
             self.content.session_manager.xml("_this")
         ));
+    }
+
+    /// A read-only NFC ticket for a VM's files (`NfcGetVmFiles`): it opens the authd NFC service to read any of
+    /// the VM's disk files (a snapshot's delta or base included) over NFC. Single-use: each call issues a new one.
+    pub fn nfc_ticket(&self, vm: &MoRef) -> Result<NfcTicket> {
+        // the NfcService moref differs between a host and vCenter
+        let svc = if self.content.about.contains("vCenter") {
+            "nfcService"
+        } else {
+            "ha-nfc"
+        };
+        let t = self.call(&format!(
+            r#"<urn:NfcGetVmFiles><urn:_this type="NfcService">{svc}</urn:_this>{}</urn:NfcGetVmFiles>"#,
+            vm.xml("vm")
+        ))?;
+        let doc = roxmltree::Document::parse(&t)?;
+        let rv = doc
+            .descendants()
+            .find(|n| n.tag_name().name() == "returnval")
+            .context("NfcGetVmFiles: no ticket in the answer")?;
+        Ok(NfcTicket {
+            host: text(kid(rv, "host"))
+                .filter(|h| !h.is_empty())
+                .unwrap_or_else(|| self.host.clone()),
+            port: text(kid(rv, "port")).and_then(|p| p.parse().ok()).unwrap_or(902),
+            ssl_thumbprint: text(kid(rv, "sslThumbprint")).context("NFC ticket without sslThumbprint")?,
+            service: text(kid(rv, "service")).unwrap_or_else(|| "ha-nfc".into()),
+            session_id: text(kid(rv, "sessionId")).context("NFC ticket without sessionId")?,
+        })
     }
 }
 

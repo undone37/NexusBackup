@@ -19,10 +19,16 @@ bin=$(cd "$here/../.." && cargo test -q -p vmware --test lab --no-run --message-
 [ -x "$bin" ] || { echo "no test binary" >&2; exit 1; }
 scp -q "${O[@]}" "$bin" "root@$R:/root/vmware-lab"
 proxy=$(LAB=$LAB "$here/esxi.sh" ssh "vim-cmd vmsvc/get.guest \$(vim-cmd vmsvc/getallvms | awk '\$2==\"nx-proxy\" {print \$1}') | sed -n 's/^ *ipAddress = \"\([0-9.]*\)\".*/\1/p' | head -1" 2>/dev/null || true)
+# vCenter for the NFC read test (lab/pvehost/vcenter.sh), if deployed
+VC_LAB=$HOME/nexus-lab/vcenter
+vc=""
+[ -s "$VC_LAB/ip" ] && [ -s "$VC_LAB/secrets.env" ] && vc=$(cat "$VC_LAB/ip")
 {
 	printf 'NEXUS_ESXI_PASSWORD=%s\n' "$(cat "$LAB/root.password")"
 	[ -s "$LAB/proxy.token" ] && [ -n "$proxy" ] && printf 'NEXUS_PROXY=%s\nNEXUS_PROXY_TOKEN=%s\n' "$proxy" "$(cat "$LAB/proxy.token")"
+	[ -n "$vc" ] && printf 'NEXUS_VC=%s\nNEXUS_VC_PASSWORD=%s\n' "$vc" "$(sed -n 's/^SSO_PW=//p' "$VC_LAB/secrets.env")"
 } | ssh "${O[@]}" "root@$R" "umask 077; cat > /root/vmware-lab.env
 	openssl s_client -connect $E:443 </dev/null 2>/dev/null | openssl x509 > /root/esxi.pem
+	${vc:+openssl s_client -connect $vc:443 </dev/null 2>/dev/null | openssl x509 > /root/vc.pem}
 	set -a; . /root/vmware-lab.env; rm -f /root/vmware-lab.env; mkdir -p /var/tmp/vmware-lab
-	NEXUS_ESXI=$E NEXUS_ESXI_CERT=/root/esxi.pem NEXUS_TMP=/var/tmp/vmware-lab timeout 3600 /root/vmware-lab --nocapture --test-threads 1 ${1:-} 2>&1"
+	NEXUS_ESXI=$E NEXUS_ESXI_CERT=/root/esxi.pem ${vc:+NEXUS_VC_CERT=/root/vc.pem} NEXUS_TMP=/var/tmp/vmware-lab timeout 3600 /root/vmware-lab --nocapture --test-threads 1 ${1:-} 2>&1"
