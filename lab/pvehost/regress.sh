@@ -81,6 +81,8 @@ step_files() {
 		pve-lab-key pve-lab-key.pub lab_ed25519 lab_ed25519.pub pvehost patroni esxi8 esxi/netrc esxi/root.password \
 		esxi/esxi_ecdsa esxi/esxi_ecdsa.pub esxi/ip 2>/dev/null |
 		on "umask 077; mkdir -p /root/nexus-lab; tar -C /root/nexus-lab -xzf -"
+	# the PVE host's key as this workstation knows it (pinned, not accepted on first use)
+	ssh-keygen -F "$PVE_HOST" | grep -v '^#' | on "umask 077; mkdir -p /root/.ssh; cat >> /root/.ssh/known_hosts; sort -u -o /root/.ssh/known_hosts /root/.ssh/known_hosts"
 	on 'du -sh /root/nexus-lab; ls /root/nexus-lab' </dev/null
 }
 
