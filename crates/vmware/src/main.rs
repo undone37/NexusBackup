@@ -5,7 +5,6 @@
 //! `result {json}` at the end of a backup (exit status 1 if any VM failed); `inventory` prints
 //! `{"guests":[{id, title, kind, tags}]}` with the VM UUID as the guest id; progress lines go to stderr.
 
-use agent_conn::map::MapDb;
 use anyhow::{bail, Context, Result};
 use chunkstore::progress;
 use chunkstore::{Options, Store};
@@ -142,8 +141,6 @@ fn main() -> Result<()> {
 /// Backs up every VM of `cfg.vms`; false if any failed (the others are still committed).
 fn backup(cfg: &Config) -> Result<bool> {
     let store = cfg.store()?;
-    let root = cfg.store.as_ref().context("config: store missing")?;
-    let mut map = MapDb::open(root).context("mapping index")?;
     let c = cfg.client()?;
     let vms = c.vm_list()?;
     let job = cfg.job.unwrap_or_else(now);
@@ -166,7 +163,8 @@ fn backup(cfg: &Config) -> Result<bool> {
             timeout: Duration::from_secs(cfg.timeout_secs),
         };
         let t0 = Instant::now();
-        match backup_vm(&c, &store, &mut map, &mut transport, &spec, &mut |l| println!("{l}")) {
+        // NFC needs no agent mapping index (only the proxy transport does; #85)
+        match backup_vm(&c, &store, &mut transport, &spec, &mut |l| println!("{l}")) {
             Ok(m) => {
                 item.ok();
                 println!(
