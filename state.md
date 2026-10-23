@@ -944,11 +944,28 @@ Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL S
 RMAN and archive logs, log backups on their own schedule); listed in the README under "Planned sources". Not started.
 
 ## Lab: PostgreSQL HA cluster with Patroni (added 2026-10-23, maintainer request)
-- [ ] Three-node PostgreSQL cluster deployed with autobase (Patroni, etcd) on pve-test VMs (IDs from 200).
-- [ ] Back up the cluster with the `postgresql` plugin: logical dumps and physical base + WAL, including runs after a
-  switchover and a failover (new leader, new timeline, replication slot on the new leader).
-- [ ] Restores: dump to the cluster and to an alternate server; PITR to a time before and after a failover (WAL
-  across the timeline change); record the numbers here.
+- [x] Lab (2026-10-23, `lab/pvehost/patroni.sh`): three Debian 12 nodes pg1-pg3 (VMs 261-263) with PostgreSQL 17.11,
+  Patroni and etcd from autobase 2.11.0 (TLS on), deployed from control VM pg-ctl (260, Debian 13: autobase's
+  ansible 14 needs Python 3.12+; its collections and `netaddr` installed there, nothing on the dev machine). Writer
+  on pg-ctl: one row per second through a multi-host connection string, it follows the leader.
+- [x] Backups through the appliance (VM 201, plugin installed with the TEST key and two-person approval): `labdb`
+  dump 1 s; cluster full 48.6 MB in 9 s, incrementals 1 s (only WAL, 1275 data files unchanged); after a switchover
+  (pg1 -> pg3) and a hard failover (VM of pg3 stopped, pg2 leader after about 30 s) the plugin found the new primary
+  and took a new base backup on the new timeline. Patroni removed the `nexusbackup` slot from the old primary when
+  it rejoined.
+- [x] Restores: dump into the cluster as `labdb_copy`: 2243 rows, equal to the source. **PITR**, plugin 1.2.1, six
+  marks across timelines 3-5: every mark with a later backup on its timeline restores exactly (a1 2016, a4 2119, a6
+  2220 rows = the cluster's count at that second, 3-4 s each). Marks between a timeline's last backup and the next
+  base backup (before/after the switchover, after the failover) fail with "requested recovery stop point is before
+  consistent recovery point": that WAL is in no snapshot (plan.md Phase 44).
+- [x] Fixed on the way: plugin 1.2.0 PITR into a fresh configuration aborted recovery ("insufficient parameter
+  settings", Patroni's `max_connections = 1000`); 1.2.1 stores the recovery minimums in `settings.conf` and writes
+  them on restore. Scheduler: plugin snapshot metadata (recoverable range) was only stored for `plugin_backup` jobs,
+  not for group backups (every schedule).
+- [ ] WAL across a failover (Patroni permanent slot or archiving from every node), plan.md Phase 44.
+- [ ] The PITR dialog bounds the target by the recoverable range; the plugin could also refuse a target outside it
+  before restoring (today PostgreSQL refuses after the restore).
+- Lab left running with the writer stopped (`patroni.sh writer` / `nowriter`); `patroni.sh destroy` removes it.
 
 ## Phase 35 — CIS AlmaLinux OS 10 Benchmark (added 2026-10-15)
 Scope: plan.md Phase 35 (gap analysis docs/cis.md, lab scan before/after, hardening in os/, CIS report as a gate).
@@ -1012,3 +1029,12 @@ restores, UI/CLI, import into an appliance). All in this repository.
   `release/packages.sh` and `tests/dist.rs` are removed; the interop test now updates with a 9 MB binary (9 chunks).
 - [ ] 38 rest: SFTP/S3 copy against the lab testboxes, lock/log-off and wake
   triggers, 38d with 37, TUI jobs view, restores from the UI (38g).
+
+## Phase 43 — PegaProx plugin (added 2026-10-23)
+Scope: plan.md Phase 43 (Python plugin `pegaprox-plugin-nexusbackup`: backup state per VM and cluster in PegaProx,
+then "back up now"; read-only token by default, operator token only for backup jobs; lab PegaProx VM on pve-test).
+Not started.
+
+## Phase 44 — Backup and restore testing, databases first (added 2026-10-23)
+Scope: plan.md Phase 44 (scheduled restore tests of PostgreSQL / MySQL dumps and PITR with row counts and checksums,
+lab scripts as scheduled regression runs, fault injection, WAL kept across a Patroni failover). Not started.
