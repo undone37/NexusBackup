@@ -80,6 +80,15 @@ Not tested: multi-node clusters, Ceph/RBD storage, PVE 8 (not supported).
 | TrueNAS Community Edition 25.10.7 | 2026-10-09, 2026-10-20 | `lab/truenas/e2e.sh` all steps (two scheduled backups, incremental after renames, hard links, ACL/xattr changes, downloads, rotation, forced-command probes) | passed |
 | TrueNAS 27.0.0-RC1 | 2026-10-20 | as above | passed |
 
+## VMware ESXi and vCenter (connector `nexus-vmware`)
+
+| Version | Date | Test | Result |
+|---|---|---|---|
+| vCenter 8.0.3 (build 25413364) with ESXi 7.0.3 (build 20328353) | 2026-10-23/24 | `lab/pvehost/vmware-e2e.sh` on the appliance VM: inventory, backup over NFC (Debian 12 guest, 16 GiB, application-consistent), restore as a Proxmox VE VM, boot | passed |
+| ESXi 7.0.3, standalone | 2026-10-23 | `crates/vmware/tests/lab.rs`: snapshot, CBT, hot-add proxy backup (full and incremental) | passed |
+| vCenter 8.0.3 / ESXi 7.0.3 | 2026-10-23 | `crates/vmware/tests/lab.rs`: NFC reads and NFC backup (full and incremental, reconstructed disks bootable) | passed |
+| ESXi 8.0.3, nested | 2026-10-23 | transport spike: CBT and hot-add reads (`lab/pvehost/esxi.sh hotadd`) | passed |
+
 ## Other sources and targets
 
 | Component | Test | Result |

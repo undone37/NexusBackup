@@ -1355,7 +1355,7 @@ only if the spike shows it is needed).
   ESXi 7.0.3/8.0.3 (NFC read + full/incremental NFC and proxy backups, byte-correct reconstruction).
 - **M3 (next):** the scheduler job kind and connector binary, web-api source + UI (ESXi/vCenter, credentials,
   transport choice, proxy per cluster), restore to Proxmox VE, the proxy OVA, manual chapter, lab e2e.
-Spike and M1/M2 done; M3 not started. Epic #23.
+Spike, M1, M2 done; M3: source, jobs, restore to PVE done and lab-tested end to end on the appliance (2026-10-24); proxy in the binary, OVA, rest of the manual open. Epic #23.
 
 ### Phase 42 — Further hypervisors and databases (added 2026-10-21 by user request)
 

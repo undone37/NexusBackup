@@ -964,8 +964,21 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   handshake, AIO). `vmware-lab.sh nfc_read_disk` passed on vCenter 8.0.3 / ESXi 7.0.3 (MBR, fragment-boundary and
   determinism checks). Protocol details found against the lab: authd sends a plaintext 220 before TLS;
   SET_RES_POOL does reply.
-- [ ] (epic #23) M3: scheduler job + connector binary, web-api source + UI (transport choice, proxy per cluster), restore to
-  PVE, the proxy OVA, manual chapter, lab e2e. vSAN/NFS, quiesced Windows snapshots, proxy on another host.
+- [x] M3 part 1 (#32, 22bc8f80): source kind `vmware` (catalog v49), `nexus-vmware` backup / inventory / check over
+  NFC, scheduler jobs, firewall egress (443, NFC 902), SELinux domain `nexus_vmware_t` (902 as `nexus_nfc_port_t`).
+- [x] M3 part 2 (#33, fa9f7859): the source in the web API (sealed password) and UI, VM checklist from the
+  inventory, VM names, reports.
+- [x] M3 part 3 (#34, 808dfb8b): `nexus-pve restore-vmware` (the .vmx as qemu-server.conf, VirtIO for Linux, SATA +
+  e1000e for Windows), restore job, API, UI dialog, manual chapters 4 and 6.
+- [x] Lab end to end on VM 201 (2026-10-23/24, `lab/pvehost/vmware-e2e.sh`, lab vCenter 8.0.3): inventory of 5 VMs
+  by instance UUID; backup of nx-cbt (ESXi 7.0.3 host) over NFC, 16 GiB full in 238 s (~72 MB/s),
+  application-consistent (VMware Tools); restored as PVE VM 290 on pve-test in 214 s (VirtIO SCSI + VirtIO NIC,
+  link_down), boots to the Debian 12 login; 0 AVC denials. Two bugs found and fixed on the way: SELinux denied the
+  agent mapping index to nexus-vmware (#85, 03f6fabe: NFC no longer opens it); PVE restored no disk without vzdump's
+  `#qmdump#map:` hint lines (in 808dfb8b). Images 0.0.25-dev to 0.0.27-dev installed as offline updates.
+- [ ] (epic #23) rest of M3: proxy transport in the binary (#80, design note: the agent CA stays agentctl's), proxy
+  throughput (#38), the proxy OVA (#35), manual + compatibility matrix (#36), files of VMware snapshots (#83), lab
+  (#37: vSAN/NFS, quiesced Windows snapshots, proxy on another host). Small: no byte progress during NFC reads.
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 
