@@ -5888,6 +5888,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "truenas",
+ "vmware",
  "webpki-roots",
  "zeroize",
 ]
@@ -7423,6 +7424,7 @@ dependencies = [
  "agent-proto",
  "anyhow",
  "chunkstore",
+ "keyd",
  "reqwest",
  "roxmltree",
  "rustls",
@@ -7715,6 +7717,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "truenas",
+ "vmware",
  "webtls",
 ]
 

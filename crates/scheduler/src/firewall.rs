@@ -57,6 +57,31 @@ pub fn truenas_targets(src: &Value) -> Vec<(String, u16)> {
     out
 }
 
+/// NFC (VADP network mode) port of an ESXi host.
+pub const NFC_PORT: u16 = 902;
+
+/// (host, port) pairs of a VMware source: the vSphere API (`host:port`, default 443), NFC on the same host (a
+/// standalone ESXi), and NFC on `nfc_hosts` (the ESXi hosts behind a vCenter, whose tickets point there).
+/// ponytail: `nfc_hosts` is listed in the source; discovering the hosts from the vCenter inventory would drop it.
+pub fn vmware_targets(src: &Value) -> Vec<(String, u16)> {
+    let mut out = Vec::new();
+    if let Some(h) = src["host"].as_str() {
+        let h = h.trim_matches(['[', ']']).to_owned();
+        let port = src["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(443);
+        out.push((h.clone(), port));
+        out.push((h, NFC_PORT));
+    }
+    for h in src["nfc_hosts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        out.push((h.trim_matches(['[', ']']).to_owned(), NFC_PORT));
+    }
+    out
+}
+
 /// (host, port) pairs of an NFS/SMB share source (docs/nas-connector.md). The
 /// kernel client's connections leave from the appliance like any other, so the
 /// allow-list covers them: NFS the NFS port (default 2049; v4.x needs nothing

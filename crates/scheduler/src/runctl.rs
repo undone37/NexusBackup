@@ -46,6 +46,7 @@ pub(crate) fn restrict(mut g: GroupRow, p: &Value) -> GroupRow {
         .retain(|v| only.iter().any(|x| x.as_u64() == Some(u64::from(*v))));
     g.agents.retain(|a| has_str(a));
     g.datasets.retain(|d| has_str(d));
+    g.vms.retain(|u| has_str(u));
     if let Some((_, guests)) = &mut g.plugin {
         if !guests.is_empty() {
             guests.retain(|x| has_str(x));
@@ -112,6 +113,11 @@ impl Scheduler {
         for d in &g.datasets {
             if !done.contains(truenas::source_name(sid, d).as_str()) {
                 out.push(json!(d));
+            }
+        }
+        for u in &g.vms {
+            if !done.contains(vmware::names::source_name(u).as_str()) {
+                out.push(json!(u));
             }
         }
         if let Some((pid, guests)) = &g.plugin {

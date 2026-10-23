@@ -91,6 +91,14 @@ impl Scheduler {
                     cfg["full_read"] = json!(true);
                 }
                 d
+            } else if name == "vmware.json" {
+                // ponytail: one flag for the run, so every VM of the job is read in full when one is due (as for
+                // TrueNAS datasets); a per-VM list in the config if that costs too much
+                let d = due(g.vms.iter().map(|u| vmware::names::source_name(u)).collect())?;
+                if !d.is_empty() {
+                    cfg["full_read"] = json!(true);
+                }
+                d
             } else if name == "pve.json" {
                 let vmids: Vec<u64> = cfg["vmids"]
                     .as_array()

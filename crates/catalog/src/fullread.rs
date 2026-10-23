@@ -9,11 +9,11 @@ pub const ALERT_KIND: &str = "change_tracking";
 pub const MAX_DAYS: i64 = 365;
 
 /// Interval in days when the group sets none (`groups.full_read_days` NULL):
-/// Proxmox VE VMs 90 (I/O on production storage, fleecing space), agents and
+/// Proxmox VE and VMware VMs 90 (I/O on production storage, fleecing space), agents and
 /// NAS 30; other sources have no change tracking to check (0).
 pub fn default_days(source_kind: &str) -> i64 {
     match source_kind {
-        "pve" => 90,
+        "pve" | "vmware" => 90,
         "linux" | "nfs" | "smb" | "truenas" => 30,
         _ => 0,
     }
