@@ -1112,5 +1112,6 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   PVE host dropped for 120 s after 1.3 GB: the job failed ("NBD reader stopped") 205 s after it started, the temporary
   rule was removed; retry 542 stopped the leftover vzdump task, retry 543 succeeded (151 s). Leftover task because
   the failure report to the node went over the broken SSH session: nexus-pve now also stops its task through the API
-  when that report fails (saves one retry).
+  when that report fails (saves one retry). Confirmed on 0.0.24-dev: the same outage (job 549 failed after 212 s),
+  and the first retry (550) succeeded (153 s).
 - [ ] Fault injection, the rest: full store, corrupt chunks, clock jumps.
