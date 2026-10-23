@@ -776,6 +776,29 @@ impl Scheduler {
                 &format!("job/{id}"),
                 &json!({"kind": kind, "reason": "scheduler restart"}),
             )?;
+            // a backup cut off by a reboot is a failed backup like any other: the group's retry
+            // policy applies, else job_failed (lab 2026-10-23: it waited for the next schedule
+            // without either)
+            if kind == "backup" {
+                let job = self.job(id)?;
+                let log: String = self
+                    .db
+                    .conn()
+                    .query_row("SELECT log FROM jobs WHERE id = ?1", [id], |r| r.get(0))?;
+                if !self.retry_failed(&job, &log)? {
+                    let attempts = self.attempt_note(id);
+                    self.raise(
+                        "critical",
+                        "job_failed",
+                        &lifecycle::job_failed_key(&job),
+                        &format!(
+                            "backup job {id} ({}) failed{attempts}: interrupted, the appliance or its scheduler restarted",
+                            job.tenant
+                        ),
+                        lifecycle::tenant_of(&job),
+                    )?;
+                }
+            }
         }
         Ok(())
     }

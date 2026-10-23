@@ -1094,4 +1094,10 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   On the way (lab only): autobase's 4 GB swap file filled the 16 GB node disks during the bulk load; without it,
   its `vm.overcommit_memory = 2` at ratio 50 let a 4 GB node commit only 2 GB (etcd, sshd and big statements
   failed): the deploy now sets no swap file and ratio 100.
-- [ ] Fault injection, the rest: network loss, appliance reboot during a backup, full store, corrupt chunks, clock jumps.
+- [x] Fault injection, appliance reboot during a backup (2026-10-23, `lab/pvehost/faults.sh reboot`, VM 242, 0.0.22-dev):
+  rebooted after 3.5 GB read; afterwards the job is failed ("interrupted: the scheduler stopped while this job was
+  running"), no snapshot of the run exists. Found: the interrupted backup was neither retried nor alerted (crash
+  recovery only marked it failed), so the guest waited for its next schedule silently. Fixed in the scheduler: an
+  interrupted backup follows the group's retry policy, the last attempt raises `job_failed` (test `crash_recovery`);
+  lab confirmation with the next build.
+- [ ] Fault injection, the rest: network loss, full store, corrupt chunks, clock jumps.

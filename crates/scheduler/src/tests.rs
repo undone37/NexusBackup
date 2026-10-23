@@ -308,6 +308,14 @@ fn crash_recovery() {
             [],
         )
         .unwrap();
+    // the last attempt of another backup: no retry left
+    e.db.conn()
+        .execute(
+            "INSERT INTO jobs (id, kind, tenant, params, state, requested_by, created, started, log, attempt)
+             VALUES (8,'backup','t1','{\"group_id\":1}','running','scheduler',1,2,'', 99)",
+            [],
+        )
+        .unwrap();
     let s = sched(&e);
     let (st, log, fin): (String, String, Option<i64>) =
         s.db.conn()
@@ -319,13 +327,34 @@ fn crash_recovery() {
     assert!(log.starts_with("half done") && log.contains("interrupted"), "{log}");
     assert!(fin.is_some());
     assert!(!e.cfg.runtime_dir.join("job-7").exists(), "stale secrets removed");
-    let a: String =
+    // an interrupted backup follows the group's retry policy (lab 2026-10-23: a reboot left it to the
+    // next schedule, without an alert)
+    let retry: (i64, i64) =
         s.db.conn()
-            .query_row("SELECT action FROM audit ORDER BY seq DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT attempt, retry_of FROM jobs WHERE retry_of = 7", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
-    assert_eq!(a, "job.failed");
-    // key creation + sealing the 3 legacy source configs + the failed job
-    assert_eq!(s.db.verify_audit().unwrap(), 5);
+    assert_eq!(retry, (2, 7));
+    // ... and the last attempt raises job_failed
+    let failed = alerts_of(&s, "job_failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(
+        failed[0].1.contains("backup job 8") && failed[0].1.contains("interrupted"),
+        "{failed:?}"
+    );
+    let actions: Vec<String> = {
+        let c = s.db.conn();
+        let mut q = c.prepare("SELECT action FROM audit ORDER BY seq").unwrap();
+        let rows = q.query_map([], |r| r.get(0)).unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    assert!(
+        actions.iter().filter(|a| *a == "job.failed").count() == 2,
+        "{actions:?}"
+    );
+    assert!(actions.contains(&"job.retry".to_owned()), "{actions:?}");
+    assert!(s.db.verify_audit().unwrap() >= 7);
 }
 
 #[test]
