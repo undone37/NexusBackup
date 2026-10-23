@@ -8,6 +8,7 @@
 /usr/libexec/nexus/nexus-offsite	--	gen_context(system_u:object_r:nexus_offsite_exec_t,s0)
 /usr/libexec/nexus/nexus-agentctl	--	gen_context(system_u:object_r:nexus_agentctl_exec_t,s0)
 /usr/libexec/nexus/nexus-truenas	--	gen_context(system_u:object_r:nexus_truenas_exec_t,s0)
+/usr/libexec/nexus/nexus-vmware	--	gen_context(system_u:object_r:nexus_vmware_exec_t,s0)
 /usr/libexec/nexus/nexus-nas		--	gen_context(system_u:object_r:nexus_nas_exec_t,s0)
 /usr/libexec/nexus/nexus-nasmount	--	gen_context(system_u:object_r:nexus_nasmount_exec_t,s0)
 /usr/libexec/nexus/nexus-replicad	--	gen_context(system_u:object_r:nexus_replicad_exec_t,s0)

@@ -362,6 +362,15 @@ impl Client {
         Ok((parse_disks(val), parse_controllers(val)))
     }
 
+    /// Every VM with its [`VmInfo`] (the UUID is the guest id of the inventory and the snapshot source).
+    /// ponytail: one property call per VM; a large vCenter would want one RetrievePropertiesEx over the view.
+    pub fn vm_list(&self) -> Result<Vec<(MoRef, VmInfo)>> {
+        self.vms()?
+            .into_iter()
+            .map(|(m, _)| Ok((m.clone(), self.vm_info(&m)?)))
+            .collect()
+    }
+
     /// Name, instance UUID, `.vmx` path, CBT and Tools state of a VM.
     pub fn vm_info(&self, vm: &MoRef) -> Result<VmInfo> {
         let t = self.properties(

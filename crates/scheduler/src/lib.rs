@@ -167,6 +167,8 @@ pub struct Config {
     pub agentctl_bin: PathBuf,
     /// TrueNAS connector (crate truenas)
     pub truenas_bin: PathBuf,
+    /// VMware connector (crate vmware)
+    pub vmware_bin: PathBuf,
     /// NFS/SMB connector (crate nas)
     pub nas_bin: PathBuf,
     /// plugin host (crate plugin-host, docs/plugin-system.md)
@@ -289,6 +291,7 @@ impl Default for Config {
             offsite_bin: "/usr/libexec/nexus/nexus-offsite".into(),
             agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
             truenas_bin: "/usr/libexec/nexus/nexus-truenas".into(),
+            vmware_bin: "/usr/libexec/nexus/nexus-vmware".into(),
             nas_bin: "/usr/libexec/nexus/nexus-nas".into(),
             pluginhost_bin: "/usr/libexec/nexus/nexus-pluginhost".into(),
             plugins_dir: lib.join("plugins"),
@@ -388,6 +391,10 @@ struct GroupRow {
     agents: Vec<String>,
     /// datasets (truenas sources: the group's guests are dataset names)
     datasets: Vec<String>,
+    /// VM UUIDs (vmware sources: the group's guests; snapshots `vmw-<uuid>`)
+    vms: Vec<String>,
+    /// the source is a VMware one (dispatch also when `vms` is empty: nothing to back up, not a PVE group)
+    vmware: bool,
     /// nfs/smb source: the group backs up the share itself (`share-<source>`)
     share: bool,
     /// plugin source: (plugin id, guest ids; empty = the source as a whole, unless `auto`)
@@ -460,13 +467,14 @@ fn valid_agent_id(s: &str) -> bool {
 
 /// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents,
 /// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]),
-/// `share-<source>` for NFS/SMB shares.
+/// `share-<source>` for NFS/SMB shares, `vmw-<uuid>` for VMware VMs.
 pub(crate) fn group_sources(g: &GroupRow) -> Vec<String> {
     g.guests
         .iter()
         .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
         .chain(g.agents.iter().map(|a| format!("host-{a}")))
         .chain(g.datasets.iter().map(|d| truenas::source_name(g.source_id as u64, d)))
+        .chain(g.vms.iter().map(|u| vmware::names::source_name(u)))
         .chain(g.share.then(|| nas::source_name(g.source_id as u64)))
         .chain(g.plugin.iter().flat_map(|(pid, guests)| {
             let sid = g.source_id as u64;
@@ -979,6 +987,7 @@ impl Scheduler {
                 &r.get::<_, String>(10)?,
             )?;
             let nas = kind == "truenas";
+            let vmw = kind == "vmware";
             let share = kind == "nfs" || kind == "smb";
             let plugin = kind.strip_prefix("plugin:").map(|k| {
                 (
@@ -993,7 +1002,7 @@ impl Scheduler {
                         .collect::<Vec<_>>(),
                 )
             });
-            let other = nas || share || plugin.is_some();
+            let other = nas || vmw || share || plugin.is_some();
             Ok(GroupRow {
                 share,
                 plugin,
@@ -1002,6 +1011,15 @@ impl Scheduler {
                     guests
                         .iter()
                         .filter_map(|g| g.as_str().filter(|d| truenas::valid_dataset(d)).map(str::to_owned))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                vmware: vmw,
+                vms: if vmw {
+                    guests
+                        .iter()
+                        .filter_map(|g| g.as_str().filter(|u| vmware::names::valid_uuid(u)).map(str::to_owned))
                         .collect()
                 } else {
                     Vec::new()
@@ -1119,6 +1137,15 @@ impl Scheduler {
             for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
                 if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
                     targets.extend(firewall::truenas_targets(&v));
+                }
+            }
+        }
+        {
+            let c = self.db.conn();
+            let mut st = c.prepare("SELECT config FROM sources WHERE kind='vmware'")?;
+            for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
+                if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
+                    targets.extend(firewall::vmware_targets(&v));
                 }
             }
         }
@@ -2269,6 +2296,60 @@ impl Scheduler {
         Ok(plan)
     }
 
+    /// nexus-vmware config (docs/vmware-design.md). Source config: `host`, `port` (443), `ca_pem` (the vSphere
+    /// certificate or its CA, pinned), `user`, `password` (sealed), `datacenter` (`ha-datacenter` on a
+    /// standalone host), `transport` (`nfc`). The password and the certificate go into 0600 files in the job dir.
+    fn vmware_config(&self, tenant: &str, source_id: i64, dir: &Path, vms: &[String]) -> Result<Files> {
+        let src = self.source_of(tenant, source_id, "vmware")?;
+        let s = |k: &str| -> Result<String> {
+            src[k]
+                .as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("source {source_id}: missing {k}"))
+        };
+        let files: Files = vec![
+            ("ca.pem".into(), s("ca_pem")?.into_bytes()),
+            ("password".into(), s("password")?.into_bytes()),
+        ];
+        let cfg = json!({
+            "tenant": tenant,
+            "store": self.cfg.store_base.join(tenant),
+            "keyd_socket": self.cfg.keyd_socket,
+            "source_id": source_id,
+            "host": s("host")?,
+            "port": src["port"].as_u64().unwrap_or(443),
+            "ca_file": dir.join("ca.pem"),
+            "user": s("user")?,
+            "password_file": dir.join("password"),
+            "datacenter": src["datacenter"].as_str().unwrap_or("ha-datacenter"),
+            "transport": src["transport"].as_str().unwrap_or("nfc"),
+            "vms": vms,
+        });
+        let mut files = files;
+        files.push(("vmware.json".into(), serde_json::to_vec_pretty(&cfg)?));
+        Ok(files)
+    }
+
+    /// Backup of VMware VMs (one nexus-vmware run; exclusive per source: one vSphere session and the VMs'
+    /// snapshots at a time).
+    fn plan_vmware_backup(&self, mut plan: Plan, source_id: i64, vms: &[String]) -> Result<Plan> {
+        if vms.is_empty() {
+            bail!("nothing to back up: no VMs");
+        }
+        plan.key = format!("source:{source_id}");
+        plan.files = self.vmware_config(&plan.tenant, source_id, &plan.dir, vms)?;
+        plan.steps.push(Step::Cli {
+            bin: self.cfg.vmware_bin.clone(),
+            args: vec![
+                plan.dir.join("vmware.json").to_string_lossy().into_owned(),
+                "backup".into(),
+            ],
+            alert: None,
+            capture: false,
+        });
+        Ok(plan)
+    }
+
     /// nexus-nas config (docs/nas-connector.md); the SMB password / keytab go
     /// into 0600 files in the job dir (the connector hands them to the mount
     /// helper, which gives the password to the kernel as one mount parameter).
@@ -2838,6 +2919,9 @@ impl Scheduler {
                         if !g.datasets.is_empty() {
                             return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
                         }
+                        if g.vmware {
+                            return self.plan_vmware_backup(plan, g.source_id, &g.vms);
+                        }
                         if g.share {
                             return self.plan_share_backup(plan, g.source_id, &g.file_filters);
                         }
@@ -2943,6 +3027,28 @@ impl Scheduler {
             "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")) => {
                 return self.plan_plugin(job, plan);
             }
+            "retention"
+                if p["source"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(vmware::names::SOURCE_PREFIX)) =>
+            {
+                let source = ident(p, "source")?;
+                let uuid =
+                    vmware::names::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                let g = self
+                    .groups()?
+                    .into_iter()
+                    .find(|g| g.tenant == tenant && g.vms.iter().any(|u| u == uuid));
+                plan.key = match &g {
+                    Some(g) => format!("source:{}", g.source_id),
+                    None => format!("vmware:{uuid}"),
+                };
+                plan.steps.push(Step::Retention {
+                    sources: vec![source.to_owned()],
+                    prefixes: Vec::new(),
+                    gfs: g.map_or_else(Gfs::default, |g| g.gfs),
+                });
+            }
             "retention" if p["source"].as_str().is_some_and(|s| s.starts_with("share-")) => {
                 let source = ident(p, "source")?;
                 let sid = nas::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
@@ -2962,7 +3068,7 @@ impl Scheduler {
                 let (_source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
-                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share || g.plugin.is_some() {
+                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share || g.vmware || g.plugin.is_some() {
                             plan.key = format!("source:{}", g.source_id);
                             plan.steps.push(Step::Retention {
                                 sources: group_sources(&g),

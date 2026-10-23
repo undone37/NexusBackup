@@ -9,6 +9,8 @@
 //!   otherwise `crash` (volume snapshot only);
 //! - `share-` (NFS/SMB): `inconsistent …` → inconsistent, else `crash` (NAS snapshot);
 //! - `nas-` (TrueNAS): `crash` (ZFS snapshot);
+//! - `vmw-` (VMware): nexus-vmware's `consistency` line: `application` when VMware Tools quiesced the
+//!   snapshot, else `crash`;
 //! - `plugin-`: `inconsistent …` → inconsistent; else the manifest's
 //!   `backup.consistent` (`application` or else `crash`).
 //!

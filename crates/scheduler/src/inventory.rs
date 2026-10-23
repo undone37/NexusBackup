@@ -22,6 +22,7 @@ fn guest_ids(g: &GroupRow) -> BTreeSet<String> {
         .iter()
         .map(u32::to_string)
         .chain(g.datasets.iter().cloned())
+        .chain(g.vms.iter().cloned())
         .chain(g.plugin.iter().flat_map(|(_, x)| x.iter().cloned()))
         .collect()
 }
@@ -31,6 +32,7 @@ fn valid_guest(kind: &str, id: &str) -> bool {
     match kind {
         "pve" => id.parse::<u32>().is_ok_and(|v| v > 0) && !id.starts_with('0'),
         "truenas" => truenas::valid_dataset(id),
+        "vmware" => vmware::names::valid_uuid(id),
         k if k.starts_with("plugin:") => plugin_proto::valid_guest_id(id),
         _ => false,
     }
@@ -51,7 +53,7 @@ impl Scheduler {
             .into_iter()
             .filter(|(_, t, _)| !replicated.contains_key(t))
             .filter(|(_, _, kind)| match kind.strip_prefix("plugin:") {
-                None => kind == "pve" || kind == "truenas",
+                None => kind == "pve" || kind == "truenas" || kind == "vmware",
                 Some(k) => plugin_manager::current_for_kind(&c, k)
                     .ok()
                     .flatten()
@@ -125,6 +127,18 @@ impl Scheduler {
                 .collect();
             let out = json!({ "guests": guests }).to_string();
             plan.steps.push(Step::Func(InProc(Box::new(move || Ok(out.clone())))));
+        } else if kind == "vmware" {
+            // the VMs of the ESXi host or vCenter, the VM UUID as guest id (the snapshot source is vmw-<uuid>)
+            plan.files = self.vmware_config(&job.tenant, sid, &plan.dir, &[])?;
+            plan.steps.push(Step::Cli {
+                bin: self.cfg.vmware_bin.clone(),
+                args: vec![
+                    plan.dir.join("vmware.json").to_string_lossy().into_owned(),
+                    "inventory".into(),
+                ],
+                alert: Some("inventory_refresh"),
+                capture: true,
+            });
         } else if kind.starts_with("plugin:") {
             let (cur, k, config) = self.plugin_source(&job.tenant, sid)?;
             plan.files = self.plugin_cfg(job, &cur, &k, sid, config, json!({}))?;

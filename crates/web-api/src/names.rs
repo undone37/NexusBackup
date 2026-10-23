@@ -45,7 +45,12 @@ pub async fn names(State(st): State<St>, ctx: Ctx, Q(q): Q<NamesQ>) -> ApiResult
              SELECT so.tenant, 'plugin-' || substr(so.kind, 8) || '-' || so.id || '-' || i.guest,
                     replace(replace(so.name || ' / ' || CASE WHEN i.name != '' THEN i.name ELSE i.guest END, ', ', ' '), ',', ' ')
              FROM inventory i JOIN sources so ON so.id = i.source_id
-             WHERE so.kind LIKE 'plugin:%' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)",
+             WHERE so.kind LIKE 'plugin:%' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)
+             UNION ALL
+             -- VMware VMs (vmware::names::source_name): the guest id is the VM UUID
+             SELECT so.tenant, 'vmw-' || i.guest, replace(replace(i.name, ', ', ' '), ',', ' ')
+             FROM inventory i JOIN sources so ON so.id = i.source_id
+             WHERE so.kind = 'vmware' AND i.name != '' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)",
         )?
         .query_map(params![q.tenant, ctx.scope()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;

@@ -54,10 +54,7 @@ pub enum Transport<'a> {
     Proxy { proxy: &'a MoRef, session: &'a mut Session },
 }
 
-/// The snapshot source of a VM: its instance UUID (stable across renames).
-pub fn source_name(uuid: &str) -> String {
-    format!("vmw-{uuid}")
-}
+pub use crate::names::source_name;
 
 /// The index name of a disk: controller kind, bus and unit (`scsi0-1`).
 pub fn disk_name(d: &Disk, controllers: &[Controller]) -> String {

@@ -1022,12 +1022,27 @@ const SCHEMA_V48: &str = r#"
 ALTER TABLE api_tokens ADD COLUMN only_kinds TEXT;
 "#;
 
+/// v49 (Phase 41, VMware): source kind `vmware` (ESXi host or vCenter). Rebuilds `sources` for the wider kind
+/// CHECK like v8, now with `maintenance_until` (v14). Foreign keys are off while migrations run, so the drop does
+/// not cascade to `inventory` and the other tables referencing `sources(id)`.
+const SCHEMA_V49: &str = r#"
+CREATE TABLE sources_v49 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas','nfs','smb','vmware')
+    OR (kind GLOB 'plugin:[a-z0-9]*' AND kind NOT GLOB 'plugin:*[^a-z0-9-]*' AND length(kind) <= 39)),
+  name TEXT NOT NULL, config TEXT NOT NULL, maintenance_until INTEGER, UNIQUE (tenant, name));
+INSERT INTO sources_v49 (id, tenant, kind, name, config, maintenance_until)
+  SELECT id, tenant, kind, name, config, maintenance_until FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v49 RENAME TO sources;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48, SCHEMA_V49,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1521,6 +1536,65 @@ mod tests {
     /// written by the v7 release (all earlier kinds, groups, replication rows)
     /// migrates without losing rows, ids or references; the plugin tables exist;
     /// the v7 release can still read the file afterwards.
+    /// v49 rebuilds `sources` for the `vmware` kind: rows, `maintenance_until`, the inventory (ON DELETE CASCADE)
+    /// and the groups referencing a source survive the rebuild.
+    #[test]
+    fn migration_v49_adds_vmware() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.db");
+        let n = MIGRATIONS.len() - 1;
+        {
+            let c = Connection::open(&p).unwrap();
+            c.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for (i, m) in MIGRATIONS[..n].iter().enumerate() {
+                c.execute_batch(m).unwrap();
+                c.pragma_update(None, "user_version", (i + 1) as i64).unwrap();
+            }
+            c.execute_batch(
+                r#"INSERT INTO tenants (name) VALUES ('acme');
+                 INSERT INTO sources (id, tenant, kind, name, config, maintenance_until)
+                   VALUES (7, 'acme', 'pve', 'cluster', '{}', 1800000000);
+                 INSERT INTO inventory (source_id, guest, name, seen) VALUES (7, '101', 'web', 1);
+                 INSERT INTO policies (id, name, schedule, gfs) VALUES (1, 'p', 'daily 22:00', '{}');
+                 INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (3, 'acme', 7, 1, 'g', '[101]');"#,
+            )
+            .unwrap();
+            assert!(c
+                .execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'vmware', 'vc', '{}')",
+                    []
+                )
+                .is_err());
+        }
+        let c = Catalog::open(&p).unwrap();
+        let conn = c.conn();
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, MIGRATIONS.len() as i64);
+        let until: i64 = conn
+            .query_row("SELECT maintenance_until FROM sources WHERE id = 7", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(until, 1_800_000_000);
+        let inv: i64 = conn
+            .query_row("SELECT COUNT(*) FROM inventory WHERE source_id = 7", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(inv, 1, "the rebuild must not cascade to the inventory");
+        let groups: i64 = conn
+            .query_row("SELECT COUNT(*) FROM groups WHERE source_id = 7", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(groups, 1);
+        conn.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'vmware', 'vc', '{}')",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'esx', 'x', '{}')",
+                []
+            )
+            .is_err());
+    }
+
     #[test]
     fn migration_v8_adds_plugins() {
         let d = tempfile::tempdir().unwrap();
@@ -2472,7 +2546,7 @@ mod tests {
         ] {
             let conn = c.conn();
             conn.execute("INSERT INTO tenants (name) VALUES ('t')", []).unwrap();
-            for k in ["pve", "linux", "truenas", "nfs", "smb", "plugin:files"] {
+            for k in ["pve", "linux", "truenas", "nfs", "smb", "vmware", "plugin:files"] {
                 conn.execute(
                     "INSERT INTO sources (tenant, kind, name, config) VALUES ('t', ?1, ?1, '{}')",
                     [k],

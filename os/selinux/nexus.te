@@ -14,6 +14,7 @@ policy_module(nexus, 1.0.0)
 #               ├─ nexus_agentctl_exec_t > nexus_agentctl_t  Linux/Windows agents (TCP 7444, mTLS),
 #               │                                          stores, agent CA (only this domain)
 #               ├─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
+#               ├─ nexus_vmware_exec_t > nexus_vmware_t    vSphere API (https 443) + NFC (902), stores
 #               ├─ nexus_nas_exec_t ──> nexus_nas_t        NFS/SMB shares: reads nfs_t/cifs_t through the
 #               │                                          mount fd from nexus-nasmount, stores
 #               ├─ nexus_replica_exec_t > nexus_replica_t  secondary: pulls from a primary (TLS), stores
@@ -99,6 +100,7 @@ nexus_job(pve)
 nexus_job(offsite)
 nexus_job(agentctl)
 nexus_job(truenas)
+nexus_job(vmware)
 nexus_job(nas)
 nexus_daemon(nasmount)
 nexus_job(replica)
@@ -181,6 +183,10 @@ files_pid_file(nexus_nasmount_var_run_t)
 # backup agents listen on 7444/tcp (docs/agent-protocol.md)
 type nexus_agent_port_t;
 corenet_port(nexus_agent_port_t)
+# ESXi NFC service (VADP network mode) on 902/tcp; the base policy covers 902 only by the 512-1023
+# hi_reserved_port_t range (nexus-port.cil labels it)
+type nexus_nfc_port_t;
+corenet_port(nexus_nfc_port_t)
 type nexus_replicad_var_lib_t;	# replication CA key + token-sealing key (nexus-replicad only)
 files_type(nexus_replicad_var_lib_t)
 type nexus_replicad_var_run_t;	# replicad socket, published ca.pem / seal.pub (web-api reads)
@@ -362,6 +368,7 @@ domtrans_pattern(nexus_scheduler_t, nexus_pve_exec_t, nexus_pve_t)
 domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
 domtrans_pattern(nexus_scheduler_t, nexus_agentctl_exec_t, nexus_agentctl_t)
 domtrans_pattern(nexus_scheduler_t, nexus_truenas_exec_t, nexus_truenas_t)
+domtrans_pattern(nexus_scheduler_t, nexus_vmware_exec_t, nexus_vmware_t)
 domtrans_pattern(nexus_scheduler_t, nexus_nas_exec_t, nexus_nas_t)
 # the scheduler runs with NoNewPrivileges, inherited by its jobs
 allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
@@ -613,6 +620,17 @@ files_dontaudit_search_home(nexus_truenas_t)
 # files get: tar/zip downloads for the web-api
 manage_files_pattern(nexus_truenas_t, nexus_downloads_t, nexus_downloads_t)
 allow nexus_truenas_t nexus_downloads_t:dir rw_dir_perms;
+
+########################################
+# nexus-vmware (crate vmware, docs/vmware-design.md): vSphere SOAP API over https (certificate
+# pinned from the job dir, password from the job dir), disk reads over NFC to the ESXi hosts,
+# VM snapshots in the tenant store (job domain rules: job dir, store, keyd). No catalog, no exec.
+
+# vSphere API on 443 (http_port_t) or another configured port (unreserved)
+corenet_tcp_connect_http_port(nexus_vmware_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_vmware_t)
+# NFC on the ESXi hosts (902, nexus_nfc_port_t)
+allow nexus_vmware_t nexus_nfc_port_t:tcp_socket name_connect;
 
 ########################################
 # NAS shares (crate nas, docs/nas-connector.md). Decision: kernel NFS/CIFS mounts,

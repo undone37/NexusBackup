@@ -34,6 +34,7 @@ regex = { version = "1", default-features = false, features = ["std", "perf", "u
 # protocol types only (no chunk store, no keyd): docs/replication.md §2
 repl_proto = { package = "replication", path = "../replication", default-features = false }
 truenas = { path = "../truenas", default-features = false }
+vmware = { path = "../vmware", default-features = false }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "http1", "http2", "service"] }
 rand = "0.8"

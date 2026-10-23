@@ -8,19 +8,43 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# the connector (vSphere client, transports, backup, CLI); without features only the snapshot names and their
+# validation (web-api, scheduler)
+default = ["connector"]
+connector = [
+    "dep:agent-conn",
+    "dep:agent-proto",
+    "dep:chunkstore",
+    "dep:keyd",
+    "dep:reqwest",
+    "dep:roxmltree",
+    "dep:rustls",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:sha1",
+    "dep:truenas",
+]
+
 [dependencies]
-agent-conn = { path = "../agent-conn" }
-agent-proto = { path = "../agent-proto" }
+agent-conn = { path = "../agent-conn", optional = true }
+agent-proto = { path = "../agent-proto", optional = true }
 anyhow = "1"
-chunkstore = { path = "../chunkstore" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-roxmltree = "0.20"
-serde = { version = "1", features = ["derive"] }
-sha1 = "0.10"
-serde_json = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+chunkstore = { path = "../chunkstore", optional = true }
+keyd = { path = "../keyd", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+roxmltree = { version = "0.20", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+sha1 = { version = "0.10", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 # the pinned-certificate TLS verifier (ESXi's certificate is self-signed; truenas::api::tls_config)
-truenas = { path = "../truenas", default-features = false, features = ["client"] }
+truenas = { path = "../truenas", default-features = false, features = ["client"], optional = true }
+
+[[bin]]
+name = "nexus-vmware"
+path = "src/main.rs"
+required-features = ["connector"]
 
 [dev-dependencies]
 tempfile = "3"

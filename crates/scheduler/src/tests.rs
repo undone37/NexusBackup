@@ -2432,3 +2432,101 @@ fn keep_until_locks_new_snapshots() {
             .unwrap();
     assert_eq!(n, 1);
 }
+
+/// VMware sources (Phase 41): a group backup runs one nexus-vmware with the VM UUIDs, the password and the
+/// certificate in 0600 files (sealed in the catalog), group and per-source retention on `vmw-<uuid>`, an
+/// inventory step, the firewall allows vSphere and NFC, and an empty group never falls through to PVE.
+#[test]
+fn vmware_jobs() {
+    let e = env(4);
+    let (u1, u2) = (
+        "5003c9a6-1b2e-4f7a-9d3c-0123456789ab",
+        "5003c9a6-1b2e-4f7a-9d3c-0123456789cd",
+    );
+    let src = json!({"host": "vc.lab", "port": 443, "ca_pem": "CERT", "user": "backup@vsphere.local",
+                     "password": "s3cret", "datacenter": "dc1", "nfc_hosts": ["esx1.lab", "esx2.lab"]});
+    e.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (6,'t1','vmware','vc','{src}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (2,'q','daily 22:00','{{\"daily\":8}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (6,'t1',6,2,'vms','[\"{u1}\",\"{u2}\",\"not-a-uuid\"]');
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (7,'t1',6,2,'none','[]');"
+        ))
+        .unwrap();
+    let s = sched(&e);
+    let raw: String =
+        s.db.conn()
+            .query_row("SELECT config FROM sources WHERE id = 6", [], |r| r.get(0))
+            .unwrap();
+    assert!(!raw.contains("s3cret"), "{raw}");
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(30, "backup", json!({"group_id": 6}))).unwrap();
+    assert_eq!(p.key, "source:6");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["ca.pem", "password", "vmware.json"]);
+    let file = |n: &str| p.files.iter().find(|f| f.0 == n).unwrap().1.clone();
+    assert_eq!(file("password"), b"s3cret");
+    assert!(!String::from_utf8_lossy(&file("vmware.json")).contains("s3cret"));
+    let cfg: Value = serde_json::from_slice(&file("vmware.json")).unwrap();
+    assert_eq!(cfg["vms"], json!([u1, u2]), "invalid guest ids are dropped");
+    assert_eq!(cfg["datacenter"], "dc1");
+    assert_eq!(cfg["transport"], "nfc");
+    assert_eq!(cfg["password_file"], json!(p.dir.join("password")));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => {
+            assert_eq!(bin, &e.cfg.vmware_bin);
+            assert_eq!(args[1], "backup");
+        }
+        st => panic!("{st:?}"),
+    }
+    // back up now for one VM only
+    let p = s
+        .plan(&job(31, "backup", json!({"group_id": 6, "guests": [u2]})))
+        .unwrap();
+    let cfg: Value = serde_json::from_slice(&p.files.iter().find(|f| f.0 == "vmware.json").unwrap().1).unwrap();
+    assert_eq!(cfg["vms"], json!([u2]));
+    // an empty VMware group is nothing to back up, not a PVE group
+    let err = s.plan(&job(32, "backup", json!({"group_id": 7}))).unwrap_err();
+    assert!(format!("{err:#}").contains("no VMs"), "{err:#}");
+    // retention of the group and of one VM
+    let p = s
+        .plan(&job(33, "retention", json!({"group_id": 6, "chain": true})))
+        .unwrap();
+    match &p.steps[..] {
+        [Step::Retention { sources, gfs, .. }] => {
+            assert_eq!(sources, &[format!("vmw-{u1}"), format!("vmw-{u2}")]);
+            assert_eq!(gfs.daily, 8);
+        }
+        st => panic!("{st:?}"),
+    }
+    let p = s
+        .plan(&job(34, "retention", json!({"source": format!("vmw-{u1}")})))
+        .unwrap();
+    assert_eq!(p.key, "source:6");
+    assert!(matches!(&p.steps[..], [Step::Retention { gfs, .. }] if gfs.daily == 8));
+    assert!(s.plan(&job(35, "retention", json!({"source": "vmw-nope"}))).is_err());
+    // inventory through the connector
+    let p = s.plan(&job(36, "inventory", json!({"source_id": 6}))).unwrap();
+    match &p.steps[..] {
+        [Step::Cli { bin, args, capture, .. }] => {
+            assert!(*capture && bin == &e.cfg.vmware_bin);
+            assert_eq!(args[1], "inventory");
+        }
+        st => panic!("{st:?}"),
+    }
+    // firewall: vSphere API, NFC on the host and on the listed ESXi hosts
+    assert_eq!(
+        firewall::vmware_targets(&src),
+        vec![
+            ("vc.lab".to_owned(), 443),
+            ("vc.lab".to_owned(), 902),
+            ("esx1.lab".to_owned(), 902),
+            ("esx2.lab".to_owned(), 902)
+        ]
+    );
+}

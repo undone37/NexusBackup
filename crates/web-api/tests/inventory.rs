@@ -320,7 +320,7 @@ async fn source_names_for_the_ui() {
             "INSERT OR IGNORE INTO tenants (name) VALUES ('acme'), ('globex');
              INSERT INTO sources (id, tenant, kind, name, config) VALUES
                (1, 'acme', 'pve', 'pve-a', '{}'), (2, 'acme', 'pve', 'pve-b', '{}'), (3, 'globex', 'pve', 'pve-g', '{}'),
-               (4, 'acme', 'plugin:postgresql', 'patroni, prod', '{}');
+               (4, 'acme', 'plugin:postgresql', 'patroni, prod', '{}'), (5, 'acme', 'vmware', 'vc', '{}');
              INSERT INTO agents (id, tenant, name, host, port) VALUES ('a1', 'acme', 'fs02', 'fs02', 7444);",
         )
         .unwrap();
@@ -344,6 +344,13 @@ async fn source_names_for_the_ui() {
         update(&c, 2, &[it("102", "web-b", "qemu")], 1).unwrap();
         update(&c, 3, &[it("100", "other-erp", "qemu")], 1).unwrap();
         update(&c, 4, &[it("labdb", "", "database")], 1).unwrap();
+        update(
+            &c,
+            5,
+            &[it("5003c9a6-1b2e-4f7a-9d3c-0123456789ab", "nx-cbt, linux", "vm")],
+            1,
+        )
+        .unwrap();
     }
     let alice = t.login("alice").await;
     let r = t.call(Method::GET, "/api/v1/names", &alice, None).await;
@@ -357,6 +364,11 @@ async fn source_names_for_the_ui() {
     // plugin sources: the cluster by the source's name, a database after it (commas would split the name)
     assert_eq!(r.body["acme"]["plugin-postgresql-4"], "patroni prod");
     assert_eq!(r.body["acme"]["plugin-postgresql-4-labdb"], "patroni prod / labdb");
+    // VMware VMs by their vSphere name (the guest id is the VM UUID)
+    assert_eq!(
+        r.body["acme"]["vmw-5003c9a6-1b2e-4f7a-9d3c-0123456789ab"],
+        "nx-cbt linux"
+    );
     let tina = t.login("tina").await;
     let r = t.call(Method::GET, "/api/v1/names", &tina, None).await;
     assert!(
