@@ -319,7 +319,8 @@ async fn source_names_for_the_ui() {
         c.execute_batch(
             "INSERT OR IGNORE INTO tenants (name) VALUES ('acme'), ('globex');
              INSERT INTO sources (id, tenant, kind, name, config) VALUES
-               (1, 'acme', 'pve', 'pve-a', '{}'), (2, 'acme', 'pve', 'pve-b', '{}'), (3, 'globex', 'pve', 'pve-g', '{}');
+               (1, 'acme', 'pve', 'pve-a', '{}'), (2, 'acme', 'pve', 'pve-b', '{}'), (3, 'globex', 'pve', 'pve-g', '{}'),
+               (4, 'acme', 'plugin:postgresql', 'patroni, prod', '{}');
              INSERT INTO agents (id, tenant, name, host, port) VALUES ('a1', 'acme', 'fs02', 'fs02', 7444);",
         )
         .unwrap();
@@ -342,6 +343,7 @@ async fn source_names_for_the_ui() {
         .unwrap();
         update(&c, 2, &[it("102", "web-b", "qemu")], 1).unwrap();
         update(&c, 3, &[it("100", "other-erp", "qemu")], 1).unwrap();
+        update(&c, 4, &[it("labdb", "", "database")], 1).unwrap();
     }
     let alice = t.login("alice").await;
     let r = t.call(Method::GET, "/api/v1/names", &alice, None).await;
@@ -352,6 +354,9 @@ async fn source_names_for_the_ui() {
     let both = r.body["acme"]["vm-102"].as_str().unwrap();
     assert!(both == "web / web-b" || both == "web-b / web", "{both}");
     assert_eq!(r.body["globex"]["vm-100"], "other-erp");
+    // plugin sources: the cluster by the source's name, a database after it (commas would split the name)
+    assert_eq!(r.body["acme"]["plugin-postgresql-4"], "patroni prod");
+    assert_eq!(r.body["acme"]["plugin-postgresql-4-labdb"], "patroni prod / labdb");
     let tina = t.login("tina").await;
     let r = t.call(Method::GET, "/api/v1/names", &tina, None).await;
     assert!(

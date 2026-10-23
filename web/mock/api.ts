@@ -8089,6 +8089,12 @@ on('GET', '/names', (c) => {
     for (const pre of ['vm', 'ct']) add(t, `${pre}-${vmid}`, name);
   }
   for (const a of db.agents) add(a.tenant, `host-${a.id}`, a.name);
+  // plugin sources: the source's name, a guest (database) after it
+  for (const s of db.sources.filter((x) => x.kind.startsWith('plugin:'))) {
+    const id = `plugin-${s.kind.slice(7)}-${s.id}`;
+    add(s.tenant, id, s.name);
+    for (const g of db.inventory.get(s.id) ?? []) add(s.tenant, `${id}-${g.guest}`, `${s.name} / ${g.name || g.guest}`);
+  }
   return [200, out];
 });
 interface Obj {
@@ -12226,6 +12232,57 @@ function seedRecovery(t: number) {
   });
   for (const r of run.results) rtRecord('initech', j.id, run.id, r);
   Object.assign(run, { state: 'passed', finished: at + 420 });
+  // database restore tests (Phase 44): the acme databases group, the plugin's `verify` restore of each dump
+  const dbs = db.groups.find((g) => g.tenant === 'acme' && g.name === 'acme-databases');
+  const pg = db.sources.find((s) => s.tenant === 'acme' && s.kind === 'plugin:postgresql');
+  if (dbs && pg) {
+    rt.schedules.push({
+      group_id: dbs.id,
+      every_days: 1,
+      node: '',
+      storage: '',
+      bridge: null,
+      checks: {},
+      last_run: t - 5 * 3600,
+    });
+    for (const [name, rows, tables] of [
+      ['shop', 184213, 23],
+      ['crm', 52880, 41],
+    ] as [string, number, number][]) {
+      const source = `plugin-postgresql-${pg.id}-${name}`;
+      const snap = rtLatest('acme', source);
+      if (!snap) continue;
+      const at = t - 5 * 3600 + (name === 'crm' ? 300 : 0);
+      const summary = `restore test passed: ${name}.sql restored into nexus_verify_${snap.time} on the alternate server, ${tables} tables with ${rows} rows counted against the dump, dropped again`;
+      const j = addJob(
+        'plugin_restore',
+        'acme',
+        { source, time: snap.time, restore: 'verify', params: {}, group_id: dbs.id, test: true },
+        'scheduler',
+      );
+      Object.assign(j, {
+        state: 'ok',
+        created: at,
+        started: at,
+        finished: at + 41,
+        log: `restored ${JSON.stringify({ restore: 'verify', source, summary })}`,
+      });
+      rtRecord('acme', j.id, null, {
+        source,
+        time: snap.time,
+        state: 'passed',
+        started: at,
+        finished: at + 41,
+        target: null,
+        name: null,
+        boot_secs: null,
+        checks: null,
+        error: null,
+        destroyed: null,
+        summary,
+      });
+    }
+  }
 }
 
 on('GET', '/restore-tests', (c) => {
@@ -12252,14 +12309,24 @@ on('GET', '/restore-tests/schedules', (c) => {
 on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
-  if (db.sources.find((s) => s.id === g.source_id)?.kind !== 'pve')
-    throw new HttpError(400, 'restore tests need a group of a Proxmox VE source');
+  const kind = db.sources.find((s) => s.id === g.source_id)?.kind ?? '';
+  const plugin = kind.startsWith('plugin:');
+  if (kind !== 'pve' && kind !== 'plugin:postgresql')
+    throw new HttpError(
+      400,
+      plugin
+        ? `the ${kind.slice(7)} plugin offers no restore test (restore \`verify\`); update the plugin`
+        : 'restore tests need a group of a Proxmox VE source or of a plugin with restore tests',
+    );
   const b = c.body;
   if (!(b.every_days >= 1 && b.every_days <= 365)) throw new HttpError(400, 'every_days: 1..=365');
-  rtName(b.node, 'node');
-  rtName(b.storage, 'storage');
-  if (b.bridge) rtName(b.bridge, 'bridge');
-  rtChecks(b.checks, false);
+  if (plugin) Object.assign(b, { node: '', storage: '', bridge: null, checks: {} });
+  else {
+    rtName(b.node, 'node');
+    rtName(b.storage, 'storage');
+    if (b.bridge) rtName(b.bridge, 'bridge');
+    rtChecks(b.checks, false);
+  }
   const cur = rt.schedules.find((s) => s.group_id === g.id);
   const v = {
     group_id: g.id,

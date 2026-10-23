@@ -21,8 +21,8 @@ function load() {
     .finally(() => (loading = false));
 }
 
-/** Only these have names: PVE guests and agents. */
-const named = (source: string) => /^(vm|ct|host)-/.test(source);
+/** Only these have names: PVE guests, agents and plugin sources. */
+const named = (source: string) => /^(vm|ct|host|plugin)-/.test(source);
 
 /** The display name of `source` in `tenant` (without a tenant: the name if every tenant agrees). */
 export function nameOf(tenant: string | null | undefined, source: string): string | undefined {

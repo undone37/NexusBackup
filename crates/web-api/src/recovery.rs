@@ -180,7 +180,9 @@ pub async fn list_tests(State(st): State<St>, ctx: Ctx, Q(f): Q<TestFilter>) -> 
                           "time": r.get::<_, i64>(3)?, "job_id": r.get::<_, i64>(4)?, "run_id": r.get::<_, Option<i64>>(5)?,
                           "state": r.get::<_, String>(6)?, "started": r.get::<_, i64>(7)?, "finished": r.get::<_, i64>(8)?,
                           "target": d["target"], "name": d["name"], "boot_secs": d["boot_secs"],
-                          "checks": d["checks"], "error": d["error"], "destroyed": d["destroyed"]}))
+                          "checks": d["checks"], "error": d["error"], "destroyed": d["destroyed"],
+                          // plugin restore tests (databases): what the plugin checked
+                          "summary": d["summary"]}))
             },
         )?
         .collect::<Result<Vec<_>, _>>()?;
@@ -193,12 +195,33 @@ pub async fn list_tests(State(st): State<St>, ctx: Ctx, Q(f): Q<TestFilter>) -> 
 #[serde(deny_unknown_fields)]
 pub struct ScheduleReq {
     every_days: i64,
+    /// PVE groups only (plugin groups test with the plugin's `verify` restore)
+    #[serde(default)]
     node: String,
+    #[serde(default)]
     storage: String,
     #[serde(default)]
     bridge: Option<String>,
     #[serde(default)]
     checks: Checks,
+}
+
+/// Whether the current version of a plugin declares the restore `verify` (restore test).
+fn plugin_has_verify(c: &Connection, plugin: &str) -> ApiResult<bool> {
+    let m: Option<String> = c
+        .query_row(
+            "SELECT manifest FROM plugins WHERE id = ?1 AND current = 1",
+            [plugin],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let m: Value = m.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or(Value::Null);
+    Ok(m["kinds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|k| k["restores"].as_array().into_iter().flatten())
+        .any(|r| r["id"] == "verify"))
 }
 
 /// (tenant, source kind) of a group.
@@ -236,22 +259,36 @@ pub async fn put_schedule(
     State(st): State<St>,
     ctx: Ctx,
     Path(id): Path<i64>,
-    J(r): J<ScheduleReq>,
+    J(mut r): J<ScheduleReq>,
 ) -> ApiResult<Json<Value>> {
     ctx.require(TENANT_WRITERS)?;
     let (tenant, kind) = group_of(&st.cat.conn(), id)?;
     ctx.owns(&tenant)?;
-    if kind != "pve" {
-        return Err(ApiError::bad("restore tests need a group of a Proxmox VE source"));
-    }
     if !(1..=365).contains(&r.every_days) {
         return Err(ApiError::bad("every_days: 1..=365"));
     }
-    validate::name(&r.node, "node")?;
-    validate::name(&r.storage, "storage")?;
-    opt_name(&r.bridge, "bridge")?;
-    // the group's containers get only the boot timeout (scheduler)
-    r.checks.check(false)?;
+    if let Some(plugin) = kind.strip_prefix("plugin:") {
+        // databases (Phase 44): the plugin's own restore test, no PVE target
+        if !plugin_has_verify(&st.cat.conn(), plugin)? {
+            return Err(ApiError::bad(format!(
+                "the {plugin} plugin offers no restore test (restore `verify`); update the plugin"
+            )));
+        }
+        r.node.clear();
+        r.storage.clear();
+        r.bridge = None;
+        r.checks = Checks::default();
+    } else if kind != "pve" {
+        return Err(ApiError::bad(
+            "restore tests need a group of a Proxmox VE source or of a plugin with restore tests",
+        ));
+    } else {
+        validate::name(&r.node, "node")?;
+        validate::name(&r.storage, "storage")?;
+        opt_name(&r.bridge, "bridge")?;
+        // the group's containers get only the boot timeout (scheduler)
+        r.checks.check(false)?;
+    }
     st.cat.conn().execute(
         "INSERT INTO restore_test_schedules (group_id, every_days, node, storage, bridge, checks) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (group_id) DO UPDATE SET every_days = excluded.every_days, node = excluded.node,

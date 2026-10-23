@@ -1,6 +1,7 @@
 //! Display names of snapshot sources (maintainer request 2026-10-22): the UI shows a PVE guest by its name
 //! with `vm-100` muted next to it, which tells guests apart across clusters and tenants. Names come from the
-//! source inventory (PVE: `lxc` = container, otherwise VM) and from the agents.
+//! source inventory (PVE: `lxc` = container, otherwise VM), from the agents and, for plugin sources, from the
+//! source's name and its inventory (a database: `<source> / <database>`).
 
 use crate::auth::Ctx;
 use crate::{ApiError, ApiResult, St, Q};
@@ -35,7 +36,16 @@ pub async fn names(State(st): State<St>, ctx: Ctx, Q(q): Q<NamesQ>) -> ApiResult
              GROUP BY 1, 2
              UNION ALL
              SELECT tenant, 'host-' || id, name FROM agents
-             WHERE (?1 IS NULL OR tenant = ?1) AND (?2 IS NULL OR tenant = ?2)",
+             WHERE (?1 IS NULL OR tenant = ?1) AND (?2 IS NULL OR tenant = ?2)
+             UNION ALL
+             -- plugin sources (plugin_proto::source_name): the source's name, a guest (database) after it
+             SELECT tenant, 'plugin-' || substr(kind, 8) || '-' || id, replace(replace(name, ', ', ' '), ',', ' ') FROM sources
+             WHERE kind LIKE 'plugin:%' AND (?1 IS NULL OR tenant = ?1) AND (?2 IS NULL OR tenant = ?2)
+             UNION ALL
+             SELECT so.tenant, 'plugin-' || substr(so.kind, 8) || '-' || so.id || '-' || i.guest,
+                    replace(replace(so.name || ' / ' || CASE WHEN i.name != '' THEN i.name ELSE i.guest END, ', ', ' '), ',', ' ')
+             FROM inventory i JOIN sources so ON so.id = i.source_id
+             WHERE so.kind LIKE 'plugin:%' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)",
         )?
         .query_map(params![q.tenant, ctx.scope()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;

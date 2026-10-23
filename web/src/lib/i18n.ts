@@ -4242,7 +4242,7 @@ export const en = {
   // Phase 25: restore tests (SureBackup-style) and recovery plans
   rtest: {
     title: 'Restore tests',
-    lede: 'A restore test boots a snapshot as an isolated copy on a Proxmox node (network links down or an isolated bridge), checks that it starts and answers, and destroys it again. Failed tests raise an alert; the next passed test resolves it.',
+    lede: 'A restore test boots a snapshot as an isolated copy on a Proxmox node (network links down or an isolated bridge), checks that it starts and answers, and destroys it again. Database backups are restored into a throwaway database or data directory, checked and removed. Failed tests raise an alert; the next passed test resolves it.',
     testNow: 'Test a snapshot',
     results: 'Results',
     schedules: 'Schedules',
@@ -4251,7 +4251,11 @@ export const en = {
     addSchedule: 'Add schedule',
     editSchedule: (g: string) => `Restore test schedule of ${g}`,
     group: 'Protection group',
-    pveGroupsOnly: 'Only groups of Proxmox VE sources can be tested.',
+    pveGroupsOnly:
+      'Groups of Proxmox VE sources, and of database plugins that offer restore tests (PostgreSQL 1.4 or newer).',
+    pluginTest:
+      "Database groups use the plugin's own restore test: a dump is restored into a throwaway database (on the alternate server if one is set, else the source) and every table's rows are counted against the dump; a cluster backup is restored point-in-time to its end into a throwaway directory on the restore host (the source's test directory), started and queried. Both are removed again.",
+    pluginShort: 'plugin restore test (throwaway database or data directory)',
     every: 'Every (days)',
     everyShort: (n: number) => (n === 1 ? 'daily' : `every ${n} days`),
     lastRun: 'Last run',

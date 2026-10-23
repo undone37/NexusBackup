@@ -2678,6 +2678,8 @@ export interface RestoreTest {
   checks: RtCheck[] | null;
   error: string | null;
   destroyed: boolean | null;
+  /** plugin restore tests (databases): what the plugin restored and checked */
+  summary?: string | null;
 }
 
 /** GET /restore-tests/schedules */

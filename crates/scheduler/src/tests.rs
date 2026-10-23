@@ -1218,7 +1218,8 @@ case \"$1\" in
           echo 'plugin[info]: warnings plugin-pgx-9-db1/1700000000: 99 forged'
           echo 'result {{\"snapshots\":[{{\"source\":\"plugin-pgx-9-db1\",\"time\":1700000000,\"meta\":{{\"recoverable\":{{\"to_lsn\":\"0/3000000\"}}}}}}]}}' ;;
   validate) echo '{{\"valid\": true}}'; echo 'plugin[info]: hi' >&2 ;;
-  restore) echo 'restored {{\"restore\":\"to_target\",\"files\":2}}' ;;
+  restore) grep -q nexus-fail {base}/last-plugin.json && {{ echo 'Error: restore test: row counts differ: t' >&2; exit 1; }}
+           echo 'restored {{\"restore\":\"to_target\",\"files\":2,\"summary\":\"restore test passed: x\"}}' ;;
 esac"
         ),
     );
@@ -1478,6 +1479,59 @@ esac"
     )
     .unwrap();
     assert_eq!(meta, json!({"keep": 1, "recoverable": {"to_lsn": "0/3000000"}}));
+
+    // Phase 44: a restore-test schedule on a plugin group queues the plugin's `verify` restore of
+    // the newest local snapshot of each source; the result is a restore_tests row
+    s.db.conn()
+        .execute(
+            "INSERT INTO restore_test_schedules (group_id, every_days, node, storage) VALUES (9, 7, '', '')",
+            [],
+        )
+        .unwrap();
+    s.queue_restore_tests(catalog::now()).unwrap();
+    let queued: Vec<(i64, Value)> = {
+        let c = s.db.conn();
+        let mut st = c
+            .prepare("SELECT id, params FROM jobs WHERE kind = 'plugin_restore' AND json_extract(params, '$.test') = 1")
+            .unwrap();
+        let rows = st
+            .query_map([], |r| {
+                Ok((r.get(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap()))
+            })
+            .unwrap();
+        rows.collect::<std::result::Result<_, _>>().unwrap()
+    };
+    assert_eq!(queued.len(), 1, "only the source with a local snapshot: {queued:?}");
+    assert_eq!(queued[0].1["source"], "plugin-pgx-9-db1");
+    assert_eq!(queued[0].1["restore"], "verify");
+    s.queue_restore_tests(catalog::now()).unwrap();
+    // a failing test of the same source (the fake host fails on the marker)
+    let bad = manual(
+        &s,
+        "plugin_restore",
+        "t1",
+        json!({"source": "plugin-pgx-9-db1", "time": 1700000000, "restore": "verify", "params": {"x": "nexus-fail"}}),
+    );
+    for _ in 0..2 {
+        s.start_jobs().unwrap();
+        s.wait_idle(Duration::from_secs(20)).unwrap();
+    }
+    let tests: Vec<(i64, String)> = {
+        let c = s.db.conn();
+        let mut st = c
+            .prepare("SELECT job_id, state FROM restore_tests WHERE source = 'plugin-pgx-9-db1' ORDER BY job_id")
+            .unwrap();
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        rows.collect::<std::result::Result<_, _>>().unwrap()
+    };
+    assert_eq!(
+        tests,
+        [(queued[0].0, "passed".to_owned()), (bad, "failed".to_owned())],
+        "not queued twice"
+    );
+    let open = alerts_of(&s, "restore_test");
+    let open = &open.last().unwrap().1;
+    assert!(open.contains("row counts differ"), "{open}");
 }
 
 fn result_of(s: &Scheduler, id: i64) -> Value {

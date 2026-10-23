@@ -339,6 +339,53 @@ async fn restore_test_schedules() {
     assert_eq!(t.delete(url, &dana).await.status, StatusCode::NOT_FOUND);
     let n: i64 = t.one("SELECT COUNT(*) FROM audit WHERE action LIKE 'restore_test.%schedule'");
     assert_eq!(n, 4);
+
+    // Phase 44: a plugin group gets a schedule when its plugin declares the restore `verify`;
+    // node, storage and checks do not apply (the plugin's restore test)
+    let manifest = |restores: Value| json!({"kinds": [{"kind": "pgx", "restores": restores}]}).to_string();
+    t.st.cat
+        .conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (4, 'acme', 'plugin:pgx', 'pg', '{{}}');
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (4, 'acme', 4, 1, 'g4', '[\"db\"]');
+             INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, uploaded_by, uploaded_at)
+               VALUES ('pgx', '1.0.0', 'PG', 'p', 'a', 'b', 1, '{}', 'k', 'installed', 1, 1, 'a', 1);",
+            manifest(json!([{"id": "to_target"}]))
+        ))
+        .unwrap();
+    let url = "/api/v1/restore-tests/schedules/4";
+    let r = t.put(url, &alice, json!({"every_days": 7})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(
+        r.body["error"].as_str().unwrap().contains("no restore test"),
+        "{:?}",
+        r.body
+    );
+    t.st.cat
+        .conn()
+        .execute(
+            "UPDATE plugins SET manifest = ?1",
+            [manifest(json!([{"id": "to_target"}, {"id": "verify"}]))],
+        )
+        .unwrap();
+    let r = t
+        .put(
+            url,
+            &alice,
+            json!({"every_days": 7, "node": "ignored", "checks": {"ports": [22]}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let (node, checks): (String, String) =
+        t.st.cat
+            .conn()
+            .query_row(
+                "SELECT node, checks FROM restore_test_schedules WHERE group_id = 4",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!((node.as_str(), checks.as_str()), ("", "{}"));
 }
 
 fn plan(name: &str) -> Value {

@@ -1061,7 +1061,7 @@ its source config declares. Installing plugins: [12 Plugins](12-plugins.md).
 
 ![PostgreSQL source form](images/source-postgresql.png)
 
-### PostgreSQL (14 or newer; tested 14, 17, 18)
+### PostgreSQL (14 or newer)
 
 Prepare the server. The role needs `REPLICATION` and `pg_read_all_data`:
 
@@ -1092,6 +1092,9 @@ Form fields (from the plugin manifest):
   (default `postgres`), **SSH private key (OpenSSH, unencrypted)**, **SSH host key (known_hosts line or public
   key)**: where point-in-time restores create a new data directory; optional **pg_ctl on the restore host**
   when the plugin starts the restored server and `pg_ctl` is not in a standard place
+- optional **Restore tests of cluster snapshots: directory on the restore host** and **port of the throwaway
+  server** (default 5499): where scheduled restore tests of cluster snapshots create their throwaway data
+  directories (see [06 Restore tests](06-restores.md#restore-tests))
 
 Click **Validate connection** to check connectivity and permissions.
 
@@ -1106,9 +1109,15 @@ What the group selects decides the backup type:
   its **recoverable range** (end of the base backup → time of the run), which the point-in-time restore dialog
   shows. Each run commits one tiny transaction on the server (it assigns a transaction ID), so that the run's time
   is reachable by a point-in-time restore even when nothing else changed.
-- **High availability:** after a failover the new primary is on a new timeline: the next cluster backup is a new
-  base backup from it (and creates the replication slot there). Drop the slot on the old primary when it comes
-  back as a standby (`SELECT pg_drop_replication_slot('nexusbackup')`), or it retains WAL.
+- **High availability:** after a switchover or failover the new primary is on a new timeline. If the new primary
+  has the replication slot with the WAL since the last backup, the next run follows the switch: it reads the old
+  timeline up to the switch point and continues on the new one, without a new base backup, so every moment
+  across the failover stays restorable. A physical slot exists only on the primary unless the cluster manager
+  keeps it on the standbys. With **Patroni**, declare it as a permanent slot once:
+  `patronictl edit-config -s 'slots.nexusbackup.type=physical'` (Patroni then creates it on every node and
+  advances it on the standbys). Without that, the next run is a new base backup on the new primary, and the time
+  between the last backup and the failover cannot be restored; drop the slot on the old primary when it comes back
+  as a standby (`SELECT pg_drop_replication_slot('nexusbackup')`), or it retains WAL.
 
 > **Caution:** the replication slot keeps WAL on the server between backups. If backups stop, WAL accumulates.
 > When you remove the source, drop the slot (`SELECT pg_drop_replication_slot('nexusbackup')`), or set

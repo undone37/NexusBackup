@@ -461,7 +461,7 @@ fn valid_agent_id(s: &str) -> bool {
 /// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents,
 /// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]),
 /// `share-<source>` for NFS/SMB shares.
-fn group_sources(g: &GroupRow) -> Vec<String> {
+pub(crate) fn group_sources(g: &GroupRow) -> Vec<String> {
     g.guests
         .iter()
         .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
@@ -1416,6 +1416,9 @@ impl Scheduler {
         } else {
             self.failed_result(&job, &log)
         };
+        if job.kind == "plugin_restore" && job.params["restore"] == "verify" && f.outcome != Outcome::Cancelled {
+            self.plugin_test_finished(&job, ok, result.as_ref(), &log)?;
+        }
         // group backups of a plugin source run as `backup` (schedules), single sources as `plugin_backup`
         if ok && (job.kind == "backup" || job.kind == "plugin_backup") {
             self.meta_bookkeeping(&job, result.as_ref())?;

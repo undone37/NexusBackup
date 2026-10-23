@@ -242,12 +242,32 @@ impl Scheduler {
                 continue;
             };
             let busy: i64 = self.db.conn().query_row(
-                "SELECT COUNT(*) FROM jobs WHERE kind = 'restore_test' AND state IN ('queued', 'running') \
-                 AND json_extract(params, '$.group_id') = ?1",
+                "SELECT COUNT(*) FROM jobs WHERE kind IN ('restore_test', 'plugin_restore') \
+                 AND state IN ('queued', 'running') AND json_extract(params, '$.group_id') = ?1",
                 [gid],
                 |r| r.get(0),
             )?;
             if busy > 0 {
+                continue;
+            }
+            // plugin groups (Phase 44, databases): the plugin's `verify` restore of the newest
+            // local snapshot of each source (a throwaway database or data directory, checked, removed)
+            if g.plugin.is_some() {
+                for source in crate::group_sources(g) {
+                    let Some((time, _)) = self.newest_local(&g.tenant, &source)? else {
+                        continue;
+                    };
+                    self.insert_job(
+                        "plugin_restore",
+                        &g.tenant,
+                        &json!({"source": source, "time": time, "restore": "verify", "params": {},
+                                "group_id": gid, "test": true}),
+                    )?;
+                }
+                self.db.conn().execute(
+                    "UPDATE restore_test_schedules SET last_run = ?2 WHERE group_id = ?1",
+                    params![gid, now],
+                )?;
                 continue;
             }
             let checks: Value = serde_json::from_str(&checks).unwrap_or(json!({}));
@@ -365,6 +385,58 @@ impl Scheduler {
     }
 
     /// Bookkeeping of a finished recovery job (results, runs, readiness, alerts).
+    /// A plugin restore test (`plugin_restore` with `restore: verify`) as a `restore_tests` row,
+    /// with the same alert as a VM's test: raised on failure, resolved by the next pass.
+    pub(crate) fn plugin_test_finished(
+        &mut self,
+        job: &Job,
+        ok: bool,
+        result: Option<&Value>,
+        log: &str,
+    ) -> Result<()> {
+        let tenant = job.tenant.as_str();
+        let source = job.params["source"].as_str().unwrap_or_default();
+        let time = job.params["time"].as_i64().unwrap_or_default();
+        let tail = log
+            .lines()
+            .rev()
+            .find(|l| l.starts_with("Error") || l.contains("error"))
+            .or_else(|| log.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("see the job log");
+        let details = if ok {
+            json!({"source": source, "time": time, "summary": result.and_then(|r| r["summary"].as_str())})
+        } else {
+            json!({"source": source, "time": time, "error": tail})
+        };
+        let now = catalog::now();
+        let started: i64 = self
+            .db
+            .conn()
+            .query_row(
+                "SELECT COALESCE(started, ?2) FROM jobs WHERE id = ?1",
+                params![job.id, now],
+                |r| r.get(0),
+            )
+            .unwrap_or(now);
+        self.db.conn().execute(
+            "INSERT OR IGNORE INTO restore_tests (tenant, source, time, job_id, run_id, state, started, finished, details) \
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8)",
+            params![tenant, source, time, job.id, if ok { "passed" } else { "failed" }, started, now, details.to_string()],
+        )?;
+        let key = test_alert_key(tenant, source);
+        if ok {
+            self.resolve(&key)
+        } else {
+            self.raise(
+                "warning",
+                "restore_test",
+                &key,
+                &format!("restore test of {source} ({time}) failed (job {}): {tail}", job.id),
+                Some(tenant),
+            )
+        }
+    }
+
     pub(crate) fn recovery_finished(&mut self, job: &Job, state: &str, log: &str, stdout: Option<&str>) -> Result<()> {
         let tenant = job.tenant.as_str();
         if job.kind == "recovery_readiness" {

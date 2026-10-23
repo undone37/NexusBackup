@@ -32,7 +32,10 @@
   const runner = $derived(can.backup(session.user));
   const writer = $derived(can.manageTenant(session.user));
   const pveIds = $derived(new Set(sources.filter((s) => s.kind === 'pve').map((s) => s.id)));
-  const pveGroups = $derived(groups.filter((g) => pveIds.has(g.source_id)));
+  // database groups: the plugin's own restore test (throwaway database or data directory)
+  const pluginIds = $derived(new Set(sources.filter((s) => s.kind.startsWith('plugin:')).map((s) => s.id)));
+  const testGroups = $derived(groups.filter((g) => pveIds.has(g.source_id) || pluginIds.has(g.source_id)));
+  const pluginGroup = (id: number) => pluginIds.has(groups.find((g) => g.id === id)?.source_id ?? -1);
   const tenants = $derived([...new Set(tests.map((x) => x.tenant))].sort());
   const shown = $derived(tests.filter((x) => (!filter || x.state === filter) && (!tenantF || x.tenant === tenantF)));
   const nodesOf = (sid: number | undefined) =>
@@ -119,7 +122,7 @@
     sf = s
       ? { group_id: s.group_id, every_days: s.every_days, node: s.node, storage: s.storage, bridge: s.bridge ?? '' }
       : {
-          group_id: pveGroups.find((g) => !schedules.some((x) => x.group_id === g.id))?.id ?? 0,
+          group_id: testGroups.find((g) => !schedules.some((x) => x.group_id === g.id))?.id ?? 0,
           every_days: 7,
           node: '',
           storage: 'local-lvm',
@@ -131,13 +134,15 @@
   const groupName = (id: number) => groups.find((g) => g.id === id)?.name ?? `#${id}`;
   async function saveSchedule(e: Event) {
     e.preventDefault();
-    const body = {
-      every_days: Number(sf.every_days),
-      node: sf.node,
-      storage: sf.storage,
-      bridge: sf.bridge.trim() || null,
-      checks: toChecks(sc, false),
-    };
+    const body = pluginGroup(sf.group_id)
+      ? { every_days: Number(sf.every_days) }
+      : {
+          every_days: Number(sf.every_days),
+          node: sf.node,
+          storage: sf.storage,
+          bridge: sf.bridge.trim() || null,
+          checks: toChecks(sc, false),
+        };
     if (await act(put(`/restore-tests/schedules/${sf.group_id}`, body), t.rtest.saved)) {
       schedOpen = false;
       load();
@@ -164,7 +169,7 @@
       <h2 id="rt-sched-h">{t.rtest.schedules}</h2>
       <div class="sub">{t.rtest.schedulesHint}</div>
     </div>
-    {#if writer}<button type="button" onclick={() => editSchedule(null)} disabled={!pveGroups.length}
+    {#if writer}<button type="button" onclick={() => editSchedule(null)} disabled={!testGroups.length}
         ><IconPlus aria-hidden="true" />{t.rtest.addSchedule}</button
       >{/if}
   </div>
@@ -191,14 +196,18 @@
               <td><strong>{s.group}</strong></td>
               {#if !session.user?.tenant}<td>{s.tenant}</td>{/if}
               <td class="nowrap">{t.rtest.everyShort(s.every_days)}</td>
-              <td class="mono">{s.node} / {s.storage}</td>
-              <td class="mono">{s.bridge ?? t.rtest.linksDown}</td>
-              <td class="mono small"
-                >{[
-                  ...(s.checks.ports ?? []).map((p) => `tcp/${p}`),
-                  ...(s.checks.command?.length ? ['command'] : []),
-                ].join(' ') || 'guest_agent'}</td
-              >
+              {#if !s.node}
+                <td colspan="3" class="muted">{t.rtest.pluginShort}</td>
+              {:else}
+                <td class="mono">{s.node} / {s.storage}</td>
+                <td class="mono">{s.bridge ?? t.rtest.linksDown}</td>
+                <td class="mono small"
+                  >{[
+                    ...(s.checks.ports ?? []).map((p) => `tcp/${p}`),
+                    ...(s.checks.command?.length ? ['command'] : []),
+                  ].join(' ') || 'guest_agent'}</td
+                >
+              {/if}
               <td class="nowrap">{s.last_run ? fmtAgo(s.last_run) : t.rtest.never}</td>
               {#if writer}
                 <td class="actions">
@@ -265,7 +274,9 @@
               >
               <td><span class="chip {stateChip(x.state)}">{t.rtest.states[x.state] ?? x.state}</span></td>
               <td>
-                <span class="mono small">{checkSummary(x.checks)}</span>
+                {#if x.summary}<div class="small">{x.summary}</div>{:else}<span class="mono small"
+                    >{checkSummary(x.checks)}</span
+                  >{/if}
                 {#each bad as c (c.name)}<div class="small bad-text">{c.name}: {c.detail}</div>{/each}
                 {#if x.error}<div class="small bad-text">{x.error}</div>{/if}
                 {#if x.destroyed === false}<div class="small bad-text">
@@ -355,7 +366,7 @@
           required
           aria-describedby="rs-group-hint"
         >
-          {#each pveGroups as g (g.id)}<option value={g.id}
+          {#each testGroups as g (g.id)}<option value={g.id}
               >{session.user?.tenant ? g.name : `${g.tenant} / ${g.name}`}</option
             >{/each}
         </select>
@@ -365,34 +376,40 @@
         <label for="rs-every">{t.rtest.every}</label>
         <input id="rs-every" type="number" min="1" max="365" required bind:value={sf.every_days} />
       </div>
-      <div class="field">
-        <label for="rs-node">{t.rtest.node}</label>
-        <input id="rs-node" required bind:value={sf.node} list="rs-nodes" />
-        <datalist id="rs-nodes"
-          >{#each nodesOf(groups.find((g) => g.id === sf.group_id)?.source_id) as n (n)}<option value={n}
-            ></option>{/each}</datalist
-        >
-      </div>
-      <div class="field">
-        <label for="rs-storage">{t.rtest.storage}</label>
-        <input id="rs-storage" required bind:value={sf.storage} />
-      </div>
-      <div class="field">
-        <label for="rs-bridge">{t.rtest.bridge}</label>
-        <input
-          id="rs-bridge"
-          bind:value={sf.bridge}
-          placeholder={t.rtest.linksDown}
-          aria-describedby="rs-bridge-hint"
-        />
-        <div class="hint" id="rs-bridge-hint">{t.rtest.bridgeHint}</div>
-      </div>
+      {#if !pluginGroup(sf.group_id)}
+        <div class="field">
+          <label for="rs-node">{t.rtest.node}</label>
+          <input id="rs-node" required bind:value={sf.node} list="rs-nodes" />
+          <datalist id="rs-nodes"
+            >{#each nodesOf(groups.find((g) => g.id === sf.group_id)?.source_id) as n (n)}<option value={n}
+              ></option>{/each}</datalist
+          >
+        </div>
+        <div class="field">
+          <label for="rs-storage">{t.rtest.storage}</label>
+          <input id="rs-storage" required bind:value={sf.storage} />
+        </div>
+        <div class="field">
+          <label for="rs-bridge">{t.rtest.bridge}</label>
+          <input
+            id="rs-bridge"
+            bind:value={sf.bridge}
+            placeholder={t.rtest.linksDown}
+            aria-describedby="rs-bridge-hint"
+          />
+          <div class="hint" id="rs-bridge-hint">{t.rtest.bridgeHint}</div>
+        </div>
+      {/if}
     </div>
-    <fieldset>
-      <legend>{t.rtest.vmOnlyChecks}</legend>
-      <RtChecksFields id="rs-c" bind:value={sc} />
-      <p class="hint">{t.rtest.ctHint}</p>
-    </fieldset>
+    {#if pluginGroup(sf.group_id)}
+      <p class="hint">{t.rtest.pluginTest}</p>
+    {:else}
+      <fieldset>
+        <legend>{t.rtest.vmOnlyChecks}</legend>
+        <RtChecksFields id="rs-c" bind:value={sc} />
+        <p class="hint">{t.rtest.ctHint}</p>
+      </fieldset>
+    {/if}
     <div class="form-actions">
       <button type="button" onclick={() => (schedOpen = false)}>{t.cancel}</button>
       <button type="submit" class="primary">{t.save}</button>

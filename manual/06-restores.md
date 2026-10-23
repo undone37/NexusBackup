@@ -355,10 +355,11 @@ need a rescan to see a hot-plugged disk. In vault mode the attach is a request t
 ## Restore tests
 
 A backup is only as good as the restore. A **restore test** proves that a VM or container snapshot boots: the
-appliance starts an isolated copy of it on a Proxmox node, checks it and destroys it again. Open **Monitor →
-Restore tests**.
+appliance starts an isolated copy of it on a Proxmox node, checks it and destroys it again. Database backups are
+tested by restoring them into a throwaway database or data directory (see [Database restore
+tests](#database-restore-tests) below). Open **Monitor → Restore tests**.
 
-![Restore tests: the production group's schedule and the latest results](images/restore-tests.png)
+![Restore tests: the schedules of the production and the databases groups, the latest results](images/restore-tests.png)
 
 What a test does:
 
@@ -387,8 +388,26 @@ storage, optionally the isolated bridge, and the checks.
 ![Test a snapshot](images/restore-test-dialog.png)
 
 **Test regularly:** **Add schedule** tests the newest local snapshot of every guest of a protection group every
-N days (one guest at a time, the first run right away). The schedule belongs to a group of a Proxmox VE source;
-deleting the group deletes the schedule.
+N days (one guest at a time, the first run right away). The schedule belongs to a group of a Proxmox VE source or
+of a database plugin; deleting the group deletes the schedule.
+
+### Database restore tests
+
+For a group of a PostgreSQL source (plugin 1.4 or newer) the schedule needs no node or storage: each run uses the
+plugin's own restore test on the newest local snapshot of every database and of the cluster:
+
+- **Database dumps** are restored into a throwaway database `nexus_verify_<snapshot time>`, on the alternate
+  restore server if the source has one, else on the source. The rows of every table are counted and compared
+  with the rows the dump holds; then the database is dropped (also when the test failed). The source's role needs
+  `CREATEDB` for that.
+- **Cluster snapshots** are restored point-in-time to their end into a throwaway directory below the source's
+  **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
+  must answer a query once recovery has ended. The server is stopped and the directory removed afterwards. The
+  restore host needs PostgreSQL of the same major version (`pg_ctl`, `psql`).
+
+The result row shows what was restored and checked; a failure raises the same **restore_test** warning as a VM
+test and names the reason (for example a table with fewer rows than the dump). A single snapshot can be tested by
+hand with the plugin restore **Restore test** in **Snapshots**.
 
 Who: admins, operators and tenant admins start tests; admins and tenant admins edit schedules; everyone sees
 the results of their tenants. Tenant users do not start tests.
