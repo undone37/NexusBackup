@@ -1074,4 +1074,14 @@ then "back up now"; read-only token by default, operator token only for backup j
 
 ## Phase 44 — Backup and restore testing, databases first (added 2026-10-23)
 Scope: plan.md Phase 44 (scheduled restore tests of PostgreSQL / MySQL dumps and PITR with row counts and checksums,
-lab scripts as scheduled regression runs, fault injection, WAL kept across a Patroni failover). Not started.
+lab scripts as scheduled regression runs, fault injection, WAL kept across a Patroni failover).
+- [x] WAL across a Patroni failover: postgresql plugin 1.3.1 (see "Lab: PostgreSQL HA cluster"), PostgreSQL 14-18.
+- [x] Restore tests of database groups (2026-10-23): plugin restore `verify` (postgresql 1.4.1: dump into a throwaway
+  database with per-table row counts, cluster PITR to the end started and queried; mysql 1.1.0: dump with a
+  `-- nexus:rows` trailer, counts compared); restore-test schedules on plugin groups, results in `restore_tests` and
+  the `restore_test` alert; Restore tests page and manual. Lab: both PostgreSQL tests pass on VM 201 (0.0.22-dev).
+- [ ] Checksums of selected tables and a custom SQL check (row counts only so far); a random PITR target inside the
+  recoverable range.
+- [ ] Lab scripts as scheduled regression runs: where they run is open (the dev machine drives the lab today;
+  maintainer: a timer on a lab VM, or CI with lab access?).
+- [ ] Fault injection (network loss, reboot, failover during a backup, full store, corrupt chunks, clock jumps).
