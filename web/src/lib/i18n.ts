@@ -402,6 +402,14 @@ export const en = {
     restoreMenuLabel: (s: string) => `Restore options for ${s}`,
     fullRestore: 'Full restore to a new VM / container',
     fullRestoreHint: 'Restore onto a Proxmox VE node',
+    vmwRestore: 'Restore as Proxmox VE VM',
+    vmwRestoreHint: 'A new VM on a Proxmox VE cluster, converted from the VMware configuration',
+    vmwHint:
+      'The VMware VM becomes a new Proxmox VE VM: CPU, memory, firmware, network cards and disks come from its .vmx. Linux guests get VirtIO; Windows guests get SATA disks and e1000e network cards until the VirtIO drivers are installed (the job log lists what to check).',
+    vmwCluster: 'Proxmox VE cluster',
+    vmwBridge: 'Network bridge',
+    vmwNoCluster: 'This tenant has no Proxmox VE source: add one under Sources to restore VMware VMs.',
+    vmwNoBrowse: 'Browsing files is not available for VMware snapshots yet: restore the VM as a Proxmox VE VM.',
     instantHintShort: 'Start now from the backup, move disks live',
     // Phase 22b: VM identity per snapshot
     identityChanged: 'New VM identity',

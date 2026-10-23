@@ -294,6 +294,9 @@
   let rKeepLinks = $state(false);
   // Phase 30: replace by rolling the VM back in place (changed chunks only)
   let rRollback = $state(false);
+  // VMware snapshots (vmw-<uuid>, #34): restored as a new VM on a Proxmox VE cluster of the tenant
+  let rCluster = $state('');
+  let rBridge = $state('vmbr0');
   let rScan: ScanFirstOpt | '' = $state('');
 
   // Phase 21e: YARA scan of a snapshot (results in ScanResults)
@@ -307,10 +310,18 @@
   }
 
   const pveSources = $derived(sources.filter((s): s is PveSource => s.kind === 'pve'));
-  const nodesOf = (tenant: string | undefined) => [
-    ...new Set(pveSources.filter((s) => s.tenant === tenant).flatMap((s) => Object.keys(s.config?.nodes ?? {}))),
+  const nodesOf = (tenant: string | undefined, cluster?: number) => [
+    ...new Set(
+      pveSources
+        .filter((s) => s.tenant === tenant && (cluster === undefined || s.id === cluster))
+        .flatMap((s) => Object.keys(s.config?.nodes ?? {})),
+    ),
   ];
-  const nodeNames = $derived(nodesOf((sel as Snapshot | null)?.tenant));
+  const isVmw = $derived(!!(sel as Snapshot | null)?.source.startsWith('vmw-'));
+  const tenantClusters = $derived(pveSources.filter((s) => s.tenant === (sel as Snapshot | null)?.tenant));
+  const nodeNames = $derived(
+    nodesOf((sel as Snapshot | null)?.tenant, isVmw && rCluster ? Number(rCluster) : undefined),
+  );
 
   function openRestore(s: Snapshot, m: 'restore' | 'instant') {
     sel = preferClean(s);
@@ -330,6 +341,8 @@
     rKeepLinks = false;
     rRollback = false;
     rScan = '';
+    rCluster = String(pveSources.find((x) => x.tenant === s.tenant)?.id ?? '');
+    rBridge = 'vmbr0';
     dlgOpen = true;
   }
   $effect(() => {
@@ -363,6 +376,10 @@
     else if (rPrefix.trim()) params.name_prefix = rPrefix.trim();
     if (rPool.trim()) params.pool = rPool.trim();
     if (rScan) params.scan_first = rScan;
+    if (sel.source.startsWith('vmw-')) {
+      params.source_id = Number(rCluster);
+      params.bridge = rBridge.trim() || 'vmbr0';
+    }
     if (rReplace && mode === 'restore') {
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
@@ -507,6 +524,16 @@
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
     if (s.source.startsWith('nas-') || s.source.startsWith('share-'))
       return s.local ? [toHost, synthetic(s)] : [toHost];
+    // VMware VMs: restored as a new Proxmox VE VM (#34)
+    if (s.source.startsWith('vmw-'))
+      return [
+        {
+          label: t.snap.vmwRestore,
+          hint: t.snap.vmwRestoreHint,
+          icon: IconRestore,
+          onselect: () => openRestore(s, 'restore'),
+        },
+      ];
     const items: MenuItem[] = [
       {
         label: t.snap.fullRestore,
@@ -871,8 +898,12 @@
                       type="button"
                       class="small"
                       onclick={() => browse(s)}
-                      title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}
-                      ><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
+                      disabled={s.source.startsWith('vmw-')}
+                      title={s.source.startsWith('vmw-')
+                        ? t.snap.vmwNoBrowse
+                        : pl && !pl.kind
+                          ? t.snap.pluginUnknown
+                          : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
                     >
                     {#if items.length}
                       <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
@@ -918,6 +949,19 @@
         onisolateNet={() => ((rLinkDown = true), (rReplace = false))}
       />
       {#if mode === 'instant'}<p class="banner info">{t.snap.instantHint}</p>{/if}
+      {#if isVmw}
+        <p class="banner info">{t.snap.vmwHint}</p>
+        {#if tenantClusters.length}
+          <div class="field">
+            <label for="r-cluster">{t.snap.vmwCluster}</label>
+            <select id="r-cluster" bind:value={rCluster} onchange={() => (node = '')} required>
+              {#each tenantClusters as c (c.id)}<option value={String(c.id)}>{c.name}</option>{/each}
+            </select>
+          </div>
+        {:else}
+          <p class="banner warn">{t.snap.vmwNoCluster}</p>
+        {/if}
+      {/if}
       <div class="field">
         <label for="r-node">{t.snap.node}</label>
         <input id="r-node" bind:value={node} list="r-nodes" required autocomplete="off" />
@@ -972,6 +1016,18 @@
             />
             <div class="hint" id="r-pool-hint">{t.ropts.poolHint}</div>
           </div>
+          {#if isVmw}
+            <div class="field">
+              <label for="r-bridge">{t.snap.vmwBridge}</label>
+              <input
+                id="r-bridge"
+                bind:value={rBridge}
+                required
+                pattern="[A-Za-z0-9_][A-Za-z0-9_\-]{'{0,31}'}"
+                spellcheck="false"
+              />
+            </div>
+          {/if}
         </div>
         <div class="field">
           <label class="inline-check"
@@ -987,7 +1043,7 @@
           <div class="hint">{t.ropts.linkDownHint}</div>
         </div>
         <ScanFirst bind:value={rScan} linkDown />
-        {#if mode === 'restore' && can.backup(session.user)}
+        {#if mode === 'restore' && can.backup(session.user) && !isVmw}
           <div class="field">
             <label class="inline-check"
               ><input id="r-replace" type="checkbox" bind:checked={rReplace} />{t.ropts.replace}</label

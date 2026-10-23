@@ -2519,6 +2519,35 @@ fn vmware_jobs() {
         }
         st => panic!("{st:?}"),
     }
+    // restore of a VM snapshot as a Proxmox VE VM: the target cluster is a pve source of the tenant (#34)
+    let restore = |p: Value| s.plan(&job(37, "restore", p));
+    let r = |sid: Value| {
+        json!({"source": format!("vmw-{u1}"), "time": 1000, "source_id": sid, "node": "pve1", "target": 230,
+               "storage": "local-lvm", "bridge": "vmbr1"})
+    };
+    let p = restore(r(json!(1))).unwrap();
+    assert_eq!(p.key, format!("guest:t1/vmw-{u1}"));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => {
+            assert_eq!(bin, &e.cfg.pve_bin);
+            assert_eq!(
+                &args[1..8],
+                ["restore-vmware", u1, "1000", "pve1", "230", "local-lvm", "vmbr1"]
+            );
+        }
+        st => panic!("{st:?}"),
+    }
+    assert!(
+        restore(r(json!(6))).is_err(),
+        "the VMware source itself is no restore target"
+    );
+    assert!(restore(r(json!(3))).is_err(), "another tenant's cluster");
+    let mut no_sid = r(json!(1));
+    no_sid.as_object_mut().unwrap().remove("source_id");
+    assert!(restore(no_sid).is_err());
+    let mut bad = r(json!(1));
+    bad["bridge"] = json!("vmbr0;id");
+    assert!(restore(bad).is_err());
     // firewall: vSphere API, NFC on the host and on the listed ESXi hosts
     assert_eq!(
         firewall::vmware_targets(&src),

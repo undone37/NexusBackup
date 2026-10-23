@@ -577,11 +577,98 @@ impl Cluster {
             &stamp,
             |params| {
                 let upid = self.api.start_restore(node, "qemu", params)?;
-                self.serve_restore(store, &m, ssh, node, &archive, &upid)
+                self.serve_restore(store, &m, ssh, node, &archive, &upid, &BTreeMap::new())
             },
         )
     }
 
+    /// Restore of a VMware VM snapshot `vmw-<uuid>/<time>` as PVE VM `target` on `node` (#34,
+    /// crate::fromvmware): the `.vmx` becomes the configuration, the disk indexes PVE drives; a temporary archive
+    /// `nexus-<target>-<time>` in the nodes' index.json carries both while PVE restores. `bridge`: the NICs'
+    /// bridge. No replace or rollback: there is no PVE original.
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_vmware(
+        &self,
+        store: &Store,
+        uuid: &str,
+        time: u64,
+        node: &str,
+        target: u32,
+        target_storage: &str,
+        bridge: &str,
+        opts: &crate::restore::RestoreOpts,
+    ) -> Result<crate::restore::Restored> {
+        if opts.replace || opts.rollback {
+            bail!("replace / rollback: a VMware snapshot has no Proxmox VE original to replace");
+        }
+        let m = store.load_manifest(&format!("vmw-{uuid}"), time)?;
+        let vmx = read_config(store, &m, crate::fromvmware::VMX_FILE)?
+            .with_context(|| format!("vmw-{uuid}/{time}: no {} in the snapshot", crate::fromvmware::VMX_FILE))?;
+        let mut disks = Vec::new();
+        for name in m.indexes.iter().filter(|n| *n != "config") {
+            if let Index::Fixed { size, .. } = store.load_index(&m, name)? {
+                disks.push(crate::fromvmware::VmDisk {
+                    index: name.clone(),
+                    size,
+                });
+            }
+        }
+        let conv = crate::fromvmware::convert(&vmx, &disks, target, target_storage, bridge)?;
+        for n in &conv.notes {
+            println!("note: {n}");
+        }
+        let archive = format!("nexus-{target}-{time}");
+        let volid = format!("{}:backup/{archive}", self.storage);
+        // ponytail: a regular index push (another backup finishing) in the seconds between this push and PVE
+        // reading the entry (restore_vm_init) drops it and fails the restore; a retry works. A lock shared with
+        // the index pushes would close that window.
+        let mut index = build_index(store)?;
+        let entry = CatalogArchive {
+            volname: format!("backup/{archive}"),
+            vmid: target,
+            kind: "qemu",
+            ctime: time,
+            size: conv.devices.iter().map(|d| d.2).sum(),
+            devices: conv.devices.iter().map(|d| d.0.clone()).collect(),
+            device_sizes: conv.devices.iter().map(|d| (d.0.clone(), d.2)).collect(),
+            config: conv.conf.clone(),
+            firewall: None,
+            notes: format!("restored from VMware snapshot vmw-{uuid}/{time}"),
+            protected: false,
+        };
+        index["archives"]
+            .as_array_mut()
+            .context("index without archives")?
+            .push(serde_json::to_value(&entry)?);
+        self.push_index_value(&index)?;
+        let map: BTreeMap<String, String> = conv.devices.iter().map(|d| (d.0.clone(), d.1.clone())).collect();
+        let ssh = self.ssh(node)?;
+        let stamp = crate::restore::stamp(crate::restore::unix_now());
+        let r = crate::restore::run(
+            self,
+            "qemu",
+            node,
+            target,
+            target,
+            &volid,
+            target_storage,
+            Some(&conv.name),
+            opts,
+            &stamp,
+            |params| {
+                let upid = self.api.start_restore(node, "qemu", params)?;
+                self.serve_restore(store, &m, ssh, node, &archive, &upid, &map)
+            },
+        );
+        // the temporary archive leaves the catalog again (also after a failure)
+        if let Err(e) = self.push_index(store) {
+            eprintln!("warning: removing the temporary archive {archive} from the nodes' catalog failed: {e:#}");
+        }
+        r
+    }
+
+    /// `map`: PVE device -> snapshot index, for snapshots whose index names are not PVE device names (VMware).
+    #[allow(clippy::too_many_arguments)]
     fn serve_restore(
         &self,
         store: &Store,
@@ -590,6 +677,7 @@ impl Cluster {
         node: &str,
         archive: &str,
         upid: &str,
+        map: &BTreeMap<String, String>,
     ) -> Result<()> {
         let excluded = read_excluded(store, m)?;
         let mut served = std::collections::HashSet::new();
@@ -612,6 +700,16 @@ impl Cluster {
                 continue;
             }
             if device == "config" {
+                bail!("snapshot has no device {device}");
+            }
+            if let Some(index) = map.get(&device) {
+                let idx = store.load_index(m, index)?;
+                let at = (served.len() as u32, map.len() as u32);
+                serve_device(store, ssh, archive, &device, &idx, at)
+                    .with_context(|| format!("serve {device} ({index})"))?;
+                continue;
+            }
+            if !map.is_empty() {
                 bail!("snapshot has no device {device}");
             }
             if !m.indexes.contains(&device) {
@@ -640,7 +738,11 @@ impl Cluster {
 
     /// Writes the catalog the node plugin needs for offline calls to every node.
     pub fn push_index(&self, store: &Store) -> Result<()> {
-        let json = serde_json::to_vec(&build_index(store)?)?;
+        self.push_index_value(&build_index(store)?)
+    }
+
+    fn push_index_value(&self, index: &serde_json::Value) -> Result<()> {
+        let json = serde_json::to_vec(index)?;
         for (name, ssh) in &self.nodes {
             ssh.run(&format!("put-index {}", self.storage), Some(&json))
                 .with_context(|| format!("push index to {name}"))?;

@@ -212,6 +212,25 @@ attaches the appliance's NBD export to `/dev/nbdX` with the node's own `qemu-nbd
 
 Helper additions: `restore-job <archive>`, `restore-serve <archive> <device>`; archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
+### Restore of a VMware VM (Phase 41, `crates/pve/src/fromvmware.rs`)
+
+`nexus-pve <cfg> restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts]` restores a VMware
+snapshot `vmw-<uuid>/<time>` (crates/vmware) as a new PVE VM with the same flow as above:
+
+1. The snapshot's `vm.vmx` becomes a `qemu-server.conf`: name (DNS characters of `displayName`), memory, sockets
+   and cores, `ostype`, OVMF + q35 for `firmware = "efi"` (no EFI disk: default variables), NICs with their MACs
+   on `<bridge>`. Linux guests: VirtIO SCSI disks and VirtIO NICs. Windows and other guests: SATA disks (at most
+   6) and e1000e NICs, both with built-in Windows drivers; the job log says to install the VirtIO drivers and
+   switch over. Disks in controller order (SCSI, SATA, NVMe, IDE; bus, unit), the first is the boot disk.
+2. A temporary archive `nexus-<target>-<time>` with that config and the drives (`drive-scsi0`, … with the
+   snapshot's index sizes) is added to the nodes' index.json; PVE restores it like a PVE backup, the appliance
+   serves each drive from the mapped VMware disk index (`scsi0-0`, `sata0-1`, …).
+3. A regular index push removes the archive again (also after a failure). Limit: a regular push by another job
+   in the seconds before PVE reads the entry fails the restore; a retry works.
+
+No replace, rollback or instant recovery (there is no PVE original). The scheduler's `restore` job takes the
+target cluster as `source_id` (a `pve` source of the tenant) and the bridge as `bridge`.
+
 ### Restore options (Phase 15a)
 Step 1 also carries `name=<name>` (containers: `hostname`), `pool=<pool>`, `start=1` (only when nothing must change
 before the first boot), and for **replace original** `unique=0` + `onboot=0`; PVE applies extra parameters to the

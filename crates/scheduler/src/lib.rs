@@ -3162,6 +3162,42 @@ impl Scheduler {
                     }
                 }
             }
+            // a VMware VM snapshot restored as a Proxmox VE VM (#34): `source_id` is the target PVE cluster
+            "restore"
+                if p["source"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with(vmware::names::SOURCE_PREFIX)) =>
+            {
+                let source = ident(p, "source")?;
+                let uuid =
+                    vmware::names::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                let sid = p["source_id"]
+                    .as_i64()
+                    .context("restore of a VMware VM: source_id (the target Proxmox VE cluster) is required")?;
+                self.source_of(tenant, sid, "pve")
+                    .context("restore of a VMware VM: source_id must be a Proxmox VE source of the tenant")?;
+                plan.key = format!("guest:{tenant}/{source}");
+                plan.files = self.pve_config(tenant, sid, &dir, &[])?;
+                let bridge = p["bridge"].as_str().unwrap_or("vmbr0");
+                if !bridge
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                    || bridge.len() > 32
+                {
+                    bail!("invalid bridge {bridge:?}");
+                }
+                let mut args = vec![
+                    "restore-vmware".to_owned(),
+                    uuid.to_owned(),
+                    num(p, "time")?.to_string(),
+                    ident(p, "node")?.to_owned(),
+                    u32::try_from(num(p, "target")?).context("target")?.to_string(),
+                    ident(p, "storage")?.to_owned(),
+                    bridge.to_owned(),
+                ];
+                args.extend(restore_flags(job)?);
+                plan.steps.push(pve(args));
+            }
             "restore" | "restore_ct" | "instant_recover" => {
                 let source = ident(p, "source")?;
                 let (ct, vmid) = guest(source)?;
