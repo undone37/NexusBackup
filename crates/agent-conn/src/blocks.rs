@@ -8,7 +8,91 @@ use crate::{hex, name};
 use agent_proto::{Hash, Message, BLOCK_SIZE, CAP_BLOCK_READ, CAP_LZ4, MAX_BATCH};
 use anyhow::{bail, Context, Result};
 use chunkstore::{ChunkId, Index, Store};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+/// What one proxy job reads (written by `nexus-vmware … proxy-prepare`, read by `nexus-agentctl … block-read`):
+/// the disks hot-added to the proxy, at their SCSI targets. The agent CA stays with nexus-agentctl; the vSphere
+/// side never talks to agents (docs/vmware-design.md, #80).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReadPlan {
+    /// block read job ids on the proxy are `job * 16 + target`
+    pub job: u64,
+    pub disks: Vec<DiskRead>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DiskRead {
+    /// index name in the snapshot (`scsi0-0`); also the output file `<name>.idx` / `<name>.err`
+    pub name: String,
+    /// SCSI target 0:N on the proxy
+    pub target: u32,
+    pub size: u64,
+    /// `(first block, count)` ([`block_ranges`])
+    pub ranges: Vec<(u64, u64)>,
+    /// the previous snapshot `(source, time)` whose index `name` supplies the unchanged blocks
+    pub prev: Option<(String, u64)>,
+}
+
+/// Reads every disk of `plan` and writes `<out>/<name>.idx` (the fixed index, JSON) or `<out>/<name>.err` (why it
+/// failed). Returns the number of failed disks: a failed disk does not stop the others, and the caller still
+/// exits 0 so the job's cleanup step (detach, snapshot removal) runs.
+pub fn read_plan(
+    store: &Store,
+    map: &mut MapDb,
+    s: &mut Session,
+    plan: &ReadPlan,
+    out: &Path,
+    log: &mut dyn FnMut(&str),
+) -> Result<usize> {
+    let mut failed = 0;
+    for d in &plan.disks {
+        if !valid_index_name(&d.name) {
+            bail!("plan: invalid disk name {:?}", d.name);
+        }
+        let r = (|| -> Result<(Index, BlockReport)> {
+            let prev = match &d.prev {
+                Some((source, time)) => Some(store.load_index(&store.load_manifest(source, *time)?, &d.name)?),
+                None => None,
+            };
+            read_disk(
+                store,
+                map,
+                s,
+                plan.job * 16 + u64::from(d.target),
+                d.target,
+                d.size,
+                &d.ranges,
+                prev.as_ref(),
+                log,
+            )
+        })();
+        match r {
+            Ok((idx, rep)) => {
+                log(&format!(
+                    "{}: {} blocks read ({} bytes), {} fetched ({} bytes on the wire)",
+                    d.name, rep.blocks, rep.bytes, rep.wanted, rep.wire_bytes
+                ));
+                std::fs::write(out.join(format!("{}.idx", d.name)), serde_json::to_vec(&idx)?)
+                    .with_context(|| format!("{}.idx", d.name))?;
+            }
+            Err(e) => {
+                failed += 1;
+                log(&format!("{}: block read failed: {e:#}", d.name));
+                std::fs::write(out.join(format!("{}.err", d.name)), format!("{e:#}"))?;
+            }
+        }
+    }
+    Ok(failed)
+}
+
+/// Disk index names as the VMware connector writes them (`scsi0-1`): also file names, so no separators.
+pub fn valid_index_name(n: &str) -> bool {
+    (1..=32).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
 
 /// What one disk read cost.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

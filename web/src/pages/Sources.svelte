@@ -188,6 +188,9 @@
     vm_user: '',
     datacenter: 'ha-datacenter',
     nfc_hosts: '',
+    transport: 'nfc',
+    proxy_vm: '',
+    proxy_agent: '',
     // nfs / smb shares
     version: '4.2',
     export: '',
@@ -277,6 +280,9 @@
       vm_user: v?.user ?? '',
       datacenter: v?.datacenter ?? 'ha-datacenter',
       nfc_hosts: (v?.nfc_hosts ?? []).join('\n'),
+      transport: v?.transport ?? 'nfc',
+      proxy_vm: v?.proxy_vm ?? '',
+      proxy_agent: v?.proxy_agent ?? '',
       version: sh?.version ?? (x?.kind === 'smb' ? '3' : '4.2'),
       export: sh?.export ?? '',
       mount_port: sh?.mount_port ?? 20048,
@@ -442,8 +448,12 @@
       ca_pem: f.ca_pem,
       user: f.vm_user.trim(),
       datacenter: f.datacenter.trim(),
-      transport: 'nfc',
+      transport: f.transport,
     };
+    if (f.transport === 'hotadd') {
+      config.proxy_vm = f.proxy_vm.trim();
+      config.proxy_agent = f.proxy_agent;
+    }
     const hosts = lines(f.nfc_hosts);
     if (hosts.length) config.nfc_hosts = hosts;
     if (f.password) config.password = f.password;
@@ -1038,11 +1048,36 @@
         </div>
         <div class="field">
           <label for="v-tr">{t.sources.vm.transport}</label>
-          <select id="v-tr" disabled aria-describedby="v-tr-hint">
-            <option value="nfc" selected>{t.sources.vm.transportNfc}</option>
+          <select id="v-tr" bind:value={f.transport} aria-describedby="v-tr-hint">
+            <option value="nfc">{t.sources.vm.transportNfc}</option>
+            <option value="hotadd">{t.sources.vm.transportHotadd}</option>
           </select>
           <div class="hint" id="v-tr-hint">{t.sources.vm.transportHint}</div>
         </div>
+        {#if f.transport === 'hotadd'}
+          <div class="field">
+            <label for="v-pvm">{t.sources.vm.proxyVm}</label>
+            <input
+              id="v-pvm"
+              class="mono"
+              bind:value={f.proxy_vm}
+              required
+              spellcheck="false"
+              placeholder="5003c9a6-1b2e-4f7a-9d3c-0123456789ab"
+              aria-describedby="v-pvm-hint"
+            />
+            <div class="hint" id="v-pvm-hint">{t.sources.vm.proxyVmHint}</div>
+          </div>
+          <div class="field">
+            <label for="v-pag">{t.sources.vm.proxyAgent}</label>
+            <select id="v-pag" bind:value={f.proxy_agent} required aria-describedby="v-pag-hint">
+              {#each tenantAgents as a (a.id)}<option value={a.id}>{a.name} ({a.host})</option>{/each}
+            </select>
+            <div class="hint" id="v-pag-hint">
+              {tenantAgents.length ? t.sources.vm.proxyAgentHint : t.sources.noAgents}
+            </div>
+          </div>
+        {/if}
       {:else}
         <div class="field">
           <label for="s-host">{t.sources.host}</label>

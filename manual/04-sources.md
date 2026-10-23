@@ -998,7 +998,8 @@ tracking (CBT), which the appliance switches on per VM at the first backup.
 | **ESXi host or vCenter**, **HTTPS port** | e.g. `vc01.acme.example.com`, 443 |
 | **User**, **Password of that user** | see above; the password is write-only, sealed to host, port, certificate and user (changing one of those needs it again) |
 | **Datacenter** | `ha-datacenter` on a standalone host, the datacenter name on a vCenter |
-| **Disk transport** | NFC (network mode). A hot-add proxy for hosts the appliance cannot reach on 902 is planned. |
+| **Disk transport** | **NFC** (network mode, default): the appliance reads the disks from the ESXi hosts on 902. **Hot-add**: the snapshot disks are attached to a proxy VM and the agent inside it reads them; for hosts the appliance cannot reach on 902 |
+| **Proxy VM UUID**, **Agent on the proxy VM** | hot-add only: a Linux VM on the same hosts and datastores as the protected VMs, with a SCSI controller 0 that has free units and an enrolled agent ([agents](#linux-and-windows-hosts-agents)). One VM is read at a time; a job removes the disks and the snapshot when it ends, and the next job cleans up what an aborted one left |
 | **ESXi / vCenter certificate or CA (PEM)** | **pinned**, as for TrueNAS: public CAs are never trusted |
 | **ESXi hosts behind the vCenter** | one per line: the hosts that run the protected VMs (NFC on 902 is allowed to them). Not needed for a standalone host. |
 

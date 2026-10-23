@@ -278,8 +278,12 @@ export interface VmwareSourceConfig {
   password_set?: boolean;
   /** datacenter of the VM configuration downloads (`ha-datacenter` on a standalone host) */
   datacenter: string;
-  /** `nfc`: disks read over NFC, no proxy VM */
-  transport: 'nfc';
+  /** `nfc`: disks read over NFC, no proxy VM; `hotadd`: disks attached to the proxy VM, read by its agent */
+  transport: 'nfc' | 'hotadd';
+  /** hot-add: UUID of the proxy VM */
+  proxy_vm?: string;
+  /** hot-add: the agent on the proxy VM */
+  proxy_agent?: string;
   /** the ESXi hosts behind a vCenter (NFC on 902 is allowed to them) */
   nfc_hosts?: string[];
 }

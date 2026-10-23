@@ -142,6 +142,8 @@ type nexus_catalog_t;		# SQLite catalog (WAL)
 files_type(nexus_catalog_t)
 type nexus_downloads_t;		# file-restore downloads
 files_type(nexus_downloads_t)
+type nexus_vmware_work_t;	# hot-add proxy handoff in a job dir (plan, state, disk indexes; #80)
+files_type(nexus_vmware_work_t)
 type nexus_keyd_var_lib_t;	# wrapped KEK + DEKs
 files_type(nexus_keyd_var_lib_t)
 type nexus_store_t;		# chunk stores, offsite inventories, scheduler state
@@ -631,6 +633,17 @@ corenet_tcp_connect_http_port(nexus_vmware_t)
 corenet_tcp_connect_all_unreserved_ports(nexus_vmware_t)
 # NFC on the ESXi hosts (902, nexus_nfc_port_t)
 allow nexus_vmware_t nexus_nfc_port_t:tcp_socket name_connect;
+# hot-add proxy (#80): proxy-prepare creates vm-<n>/ in its job dir (own type, the job dir's configs stay
+# read-only) with the read plan; nexus-agentctl block-read writes the disk indexes there; proxy-finish reads them.
+# The scheduler removes the job dir.
+allow nexus_vmware_t nexus_scheduler_var_run_t:dir { add_name write };
+type_transition nexus_vmware_t nexus_scheduler_var_run_t:dir nexus_vmware_work_t;
+manage_dirs_pattern(nexus_vmware_t, nexus_vmware_work_t, nexus_vmware_work_t)
+manage_files_pattern(nexus_vmware_t, nexus_vmware_work_t, nexus_vmware_work_t)
+rw_dirs_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
+manage_files_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
+manage_dirs_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
+manage_files_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
 
 ########################################
 # NAS shares (crate nas, docs/nas-connector.md). Decision: kernel NFS/CIFS mounts,

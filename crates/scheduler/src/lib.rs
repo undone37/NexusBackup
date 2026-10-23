@@ -2332,12 +2332,56 @@ impl Scheduler {
 
     /// Backup of VMware VMs (one nexus-vmware run; exclusive per source: one vSphere session and the VMs'
     /// snapshots at a time).
-    fn plan_vmware_backup(&self, mut plan: Plan, source_id: i64, vms: &[String]) -> Result<Plan> {
+    /// Hot-add (#80): per VM `proxy-prepare`, `nexus-agentctl block-read` on the proxy's agent, `proxy-finish`.
+    fn plan_vmware_backup(&self, job: &Job, mut plan: Plan, source_id: i64, vms: &[String]) -> Result<Plan> {
         if vms.is_empty() {
             bail!("nothing to back up: no VMs");
         }
         plan.key = format!("source:{source_id}");
         plan.files = self.vmware_config(&plan.tenant, source_id, &plan.dir, vms)?;
+        let src = self.source_of(&plan.tenant, source_id, "vmware")?;
+        if src["transport"] == "hotadd" {
+            let agent = src["proxy_agent"]
+                .as_str()
+                .with_context(|| format!("source {source_id}: missing proxy_agent"))?;
+            let a = self.agent(&plan.tenant, agent)?;
+            let mut base: Value = serde_json::from_slice(&plan.files.pop().context("vmware.json")?.1)?;
+            base["proxy"] = src["proxy_vm"].clone();
+            base["job"] = json!(job.id);
+            // ponytail: a failed step ends the job, so the VMs after a failed one wait for the next run; the next
+            // proxy-prepare removes what an aborted run left (snapshot, hot-added disks)
+            for (i, uuid) in vms.iter().enumerate() {
+                let work = plan.dir.join(format!("vm-{i}"));
+                let name = format!("vmware-{i}.json");
+                let mut cfg = base.clone();
+                cfg["vms"] = json!([uuid]);
+                cfg["work_dir"] = json!(work);
+                plan.files.push((name.clone(), serde_json::to_vec_pretty(&cfg)?));
+                let vmw = |cmd: &str| Step::Cli {
+                    bin: self.cfg.vmware_bin.clone(),
+                    args: vec![plan.dir.join(&name).to_string_lossy().into_owned(), cmd.into()],
+                    alert: None,
+                    capture: false,
+                };
+                let extra = json!({"block_read": {"plan": work.join("plan.json"), "out_dir": work}});
+                let file = (
+                    format!("agent-{}-{i}.json", a.id),
+                    serde_json::to_vec_pretty(&self.agentctl_base(&plan.tenant, job, Some(&a), extra))?,
+                );
+                let read = Step::Cli {
+                    bin: self.cfg.agentctl_bin.clone(),
+                    args: vec![
+                        plan.dir.join(&file.0).to_string_lossy().into_owned(),
+                        "block-read".into(),
+                    ],
+                    alert: None,
+                    capture: false,
+                };
+                plan.files.push(file);
+                plan.steps.extend([vmw("proxy-prepare"), read, vmw("proxy-finish")]);
+            }
+            return Ok(plan);
+        }
         plan.steps.push(Step::Cli {
             bin: self.cfg.vmware_bin.clone(),
             args: vec![
@@ -2920,7 +2964,7 @@ impl Scheduler {
                             return self.plan_truenas_backup(plan, g.source_id, &g.datasets);
                         }
                         if g.vmware {
-                            return self.plan_vmware_backup(plan, g.source_id, &g.vms);
+                            return self.plan_vmware_backup(job, plan, g.source_id, &g.vms);
                         }
                         if g.share {
                             return self.plan_share_backup(plan, g.source_id, &g.file_filters);

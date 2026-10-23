@@ -5,7 +5,7 @@
 
 use crate::nfc::NfcDisk;
 use crate::vsphere::{Client, Controller, Disk, MoRef};
-use agent_conn::blocks::{block_ranges, read_disk};
+use agent_conn::blocks::{block_ranges, read_disk, DiskRead, ReadPlan};
 use agent_conn::map::MapDb;
 use agent_conn::tls::Session;
 use anyhow::{bail, Context, Result};
@@ -13,6 +13,7 @@ use chunkstore::progress;
 use chunkstore::{FileEntry, Index, Manifest, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Configuration entry with the VMware state of a snapshot: the disks and their change ids.
@@ -316,17 +317,282 @@ fn with_snapshot(
         names.push(name);
         indexes.push(idx);
     }
-    let mut entries = vec![config_entry(store, STATE_FILE, &serde_json::to_vec_pretty(&state)?)?];
-    match c.download(vmx_path, spec.datacenter, MAX_VMX) {
+    commit_vm(
+        c,
+        store,
+        spec.datacenter,
+        source,
+        &state,
+        names,
+        indexes,
+        prev.map(|(m, _)| m.time),
+        log,
+    )
+}
+
+/// Commits the snapshot of one VM: the disk indexes plus the config index (`vmware.json`, the `.vmx`).
+#[allow(clippy::too_many_arguments)]
+fn commit_vm(
+    c: &Client,
+    store: &Store,
+    datacenter: &str,
+    source: &str,
+    state: &State,
+    mut names: Vec<String>,
+    mut indexes: Vec<Index>,
+    prev_time: Option<u64>,
+    log: &mut dyn FnMut(&str),
+) -> Result<Manifest> {
+    let mut entries = vec![config_entry(store, STATE_FILE, &serde_json::to_vec_pretty(state)?)?];
+    match c.download(&state.vm, datacenter, MAX_VMX) {
         Ok(vmx) => entries.push(config_entry(store, "vm.vmx", &vmx)?),
         Err(e) => log(&format!("warning: the .vmx was not stored: {e:#}")),
     }
     names.push("config".into());
     indexes.push(Index::Dynamic { entries });
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    let time = now.max(prev.map_or(0, |(m, _)| m.time + 1));
+    let time = now.max(prev_time.map_or(0, |t| t + 1));
     let refs: Vec<(&str, Index)> = names.iter().map(String::as_str).zip(indexes).collect();
     Ok(store.commit_snapshot(source, time, &refs)?)
+}
+
+// ---- hot-add proxy in three job steps (#80): the agent CA stays with nexus-agentctl -------------------------
+
+/// What `proxy-prepare` leaves for `proxy-finish`: the snapshot and the disks hot-added to the proxy.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyState {
+    pub vm: MoRef,
+    pub vm_name: String,
+    pub snap: MoRef,
+    pub proxy: MoRef,
+    /// key of the proxy's SCSI controller 0
+    pub bus0: i32,
+    pub source: String,
+    /// `[ds] dir/vm.vmx`
+    pub vmx: String,
+    /// VMware Tools quiesced the snapshot
+    pub quiesced: bool,
+    pub prev_time: Option<u64>,
+    pub disks: Vec<ProxyDisk>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyDisk {
+    pub name: String,
+    /// SCSI unit on the proxy's controller 0
+    pub unit: i32,
+    pub file: String,
+    pub capacity: u64,
+    pub change_id: Option<String>,
+}
+
+/// Removes what an aborted proxy job left: `nexus-backup-*` snapshots of the VM and disks of other VMs still
+/// hot-added to the proxy (any disk on controller 0 outside the proxy's own directory).
+/// ponytail: assumes one proxy job per proxy at a time (the scheduler runs one backup per source); two sources
+/// sharing a proxy concurrently would detach each other's disks.
+fn proxy_cleanup(c: &Client, vm: &MoRef, proxy: &MoRef, log: &mut dyn FnMut(&str)) -> Result<()> {
+    for (s, name) in c.snapshots(vm)? {
+        if name.starts_with("nexus-backup-") {
+            log(&format!("removing the leftover snapshot {name}"));
+            c.remove_snapshot(&s)?;
+        }
+    }
+    let own = c.vm_info(proxy)?.vmx;
+    let own_dir = own.rsplit_once('/').map_or(own.as_str(), |(d, _)| d);
+    let (pdisks, pcontrollers) = c.devices(proxy)?;
+    let bus0 = pcontrollers.iter().find(|k| k.kind == "scsi" && k.bus == 0);
+    for d in pdisks {
+        if bus0.is_some_and(|b| b.key == d.controller_key) && !d.file.starts_with(&format!("{own_dir}/")) {
+            log(&format!("detaching the leftover disk {} from the proxy", d.file));
+            c.detach(proxy, &d)?;
+        }
+    }
+    Ok(())
+}
+
+/// Step 1: snapshot of the VM, its disks hot-added to `proxy`, the read plan for nexus-agentctl (`job`: the
+/// block read job ids on the proxy). Undoes itself (detach, snapshot removal) when it fails half way.
+pub fn proxy_prepare(
+    c: &Client,
+    store: &Store,
+    spec: &Spec,
+    proxy: &MoRef,
+    log: &mut dyn FnMut(&str),
+) -> Result<(ProxyState, ReadPlan)> {
+    let info = c.vm_info(spec.vm)?;
+    let source = source_name(&info.uuid);
+    proxy_cleanup(c, spec.vm, proxy, log).context("cleanup of an earlier proxy job")?;
+    if !info.cbt {
+        log(&format!("{}: changed block tracking enabled", info.name));
+        c.set_cbt(spec.vm, true)?;
+    }
+    let prev = if spec.full { None } else { previous(store, &source)? };
+    if !info.tools {
+        log(&format!(
+            "{}: VMware Tools not running: crash-consistent snapshot",
+            info.name
+        ));
+    }
+    let snap = c
+        .create_snapshot(spec.vm, &format!("nexus-backup-{}", spec.job), info.tools)
+        .with_context(|| format!("snapshot of {}", info.name))?;
+    let mut state = ProxyState {
+        vm: spec.vm.clone(),
+        vm_name: info.name.clone(),
+        snap: snap.clone(),
+        proxy: proxy.clone(),
+        bus0: 0,
+        source,
+        vmx: info.vmx.clone(),
+        quiesced: info.tools,
+        prev_time: prev.as_ref().map(|(m, _)| m.time),
+        disks: Vec::new(),
+    };
+    let mut plan = ReadPlan {
+        job: spec.job,
+        disks: Vec::new(),
+    };
+    let r = (|| -> Result<()> {
+        let (disks, controllers) = c.devices(&snap)?;
+        let (pdisks, pcontrollers) = c.devices(proxy)?;
+        state.bus0 = pcontrollers
+            .iter()
+            .find(|k| k.kind == "scsi" && k.bus == 0)
+            .context("the proxy has no SCSI controller 0")?
+            .key;
+        let mut free = (1..=agent_proto::MAX_BLOCK_TARGET as i32)
+            .filter(|u| *u != 7 && !pdisks.iter().any(|x| x.controller_key == state.bus0 && x.unit == *u));
+        for d in &disks {
+            let name = disk_name(d, &controllers);
+            let base = prev.as_ref().and_then(|(m, st)| Some((m, st.disks.get(&name)?)));
+            let changed = match base {
+                Some((m, ds)) if m.indexes.contains(&name) => match &ds.change_id {
+                    Some(id) => match c.changed_areas(spec.vm, &snap, d, id) {
+                        Ok(x) => Some((x, ds.size, m.time)),
+                        Err(e) => {
+                            log(&format!("{name}: no changed blocks ({e:#}): full read"));
+                            None
+                        }
+                    },
+                    None => None,
+                },
+                _ => None,
+            };
+            let unit = free.next().context("no free SCSI unit on the proxy's controller 0")?;
+            c.attach(proxy, state.bus0, unit, &d.file, d.capacity)
+                .with_context(|| format!("hot-add of {} to the proxy", d.file))?;
+            state.disks.push(ProxyDisk {
+                name: name.clone(),
+                unit,
+                file: d.file.clone(),
+                capacity: d.capacity,
+                change_id: d.change_id.clone(),
+            });
+            let (ranges, prev) = match &changed {
+                Some((x, psize, t)) => (block_ranges(x, d.capacity, *psize), Some((state.source.clone(), *t))),
+                None => (block_ranges(&[], d.capacity, 0), None),
+            };
+            log(&format!(
+                "{name}: {} bytes, {} block range(s){} at the proxy's SCSI 0:{unit}",
+                d.capacity,
+                ranges.len(),
+                if prev.is_some() { " (incremental)" } else { " (full)" }
+            ));
+            plan.disks.push(DiskRead {
+                name,
+                target: unit as u32,
+                size: d.capacity,
+                ranges,
+                prev,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        let _ = proxy_detach(c, &state, log);
+        let _ = c.remove_snapshot(&snap);
+        return Err(e);
+    }
+    Ok((state, plan))
+}
+
+/// Removes the hot-added disks from the proxy; the first error after trying all.
+fn proxy_detach(c: &Client, state: &ProxyState, log: &mut dyn FnMut(&str)) -> Result<()> {
+    let (now, _) = c.devices(&state.proxy)?;
+    let mut first = None;
+    for d in &state.disks {
+        if let Some(x) = now.iter().find(|x| x.controller_key == state.bus0 && x.unit == d.unit) {
+            if let Err(e) = c.detach(&state.proxy, x) {
+                log(&format!("warning: {} not removed from the proxy: {e:#}", d.file));
+                first.get_or_insert(e);
+            }
+        }
+    }
+    first.map_or(Ok(()), Err)
+}
+
+/// Step 3: the disks removed from the proxy and the snapshot removed (always), then the snapshot committed from
+/// the indexes nexus-agentctl wrote to `dir` (`<name>.idx`; a `<name>.err` fails the VM).
+pub fn proxy_finish(
+    c: &Client,
+    store: &Store,
+    state: &ProxyState,
+    dir: &Path,
+    datacenter: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<Manifest> {
+    let detached = proxy_detach(c, state, log);
+    if let Err(e) = c.remove_snapshot(&state.snap) {
+        log(&format!("warning: snapshot of {} not removed: {e:#}", state.vm_name));
+    }
+    detached.context("removal of the disks from the proxy")?;
+    if let Ok(err) = std::fs::read_to_string(dir.join("block-read.err")) {
+        bail!("block read through the proxy failed: {err}");
+    }
+    let mut names = Vec::new();
+    let mut indexes = Vec::new();
+    let mut disks = BTreeMap::new();
+    for d in &state.disks {
+        if let Ok(err) = std::fs::read_to_string(dir.join(format!("{}.err", d.name))) {
+            bail!("{}: block read through the proxy failed: {err}", d.name);
+        }
+        let idx: Index = serde_json::from_slice(
+            &std::fs::read(dir.join(format!("{}.idx", d.name)))
+                .with_context(|| format!("{}: no index from the block read", d.name))?,
+        )
+        .with_context(|| format!("{}.idx", d.name))?;
+        match &idx {
+            Index::Fixed { size, .. } if *size == d.capacity => {}
+            _ => bail!("{}: the block read's index does not match the disk", d.name),
+        }
+        disks.insert(
+            d.name.clone(),
+            DiskState {
+                size: d.capacity,
+                change_id: d.change_id.clone(),
+                file: d.file.clone(),
+            },
+        );
+        names.push(d.name.clone());
+        indexes.push(idx);
+    }
+    let st = State {
+        vm: state.vmx.clone(),
+        disks,
+    };
+    commit_vm(
+        c,
+        store,
+        datacenter,
+        &state.source,
+        &st,
+        names,
+        indexes,
+        state.prev_time,
+        log,
+    )
 }
 
 #[cfg(test)]

@@ -3383,9 +3383,14 @@ function vmwareConfig(cfg: Json, old?: Json): Json {
   if (!/^[A-Za-z0-9._@\\-]{1,256}$/.test(c.user ?? ''))
     throw new HttpError(400, 'user: 1..=256 characters of A-Z a-z 0-9 . _ - @ \\');
   if (!c.datacenter) throw new HttpError(400, 'datacenter: required (ha-datacenter on a standalone host)');
-  if ((c.transport ?? 'nfc') !== 'nfc') throw new HttpError(400, 'transport: `nfc`');
+  c.transport = c.transport ?? 'nfc';
+  if (c.transport === 'hotadd') {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(c.proxy_vm ?? ''))
+      throw new HttpError(400, "proxy_vm: expected the proxy VM's UUID");
+    if (!c.proxy_agent) throw new HttpError(400, 'transport `hotadd`: proxy_vm and proxy_agent required');
+  } else if (c.transport !== 'nfc') throw new HttpError(400, 'transport: `nfc` or `hotadd`');
+  else if (c.proxy_vm || c.proxy_agent) throw new HttpError(400, 'proxy_vm, proxy_agent: only with transport `hotadd`');
   c.port = c.port ?? 443;
-  c.transport = 'nfc';
   if (!c.password) {
     if (!old?.password) throw new HttpError(400, 'config.password: required');
     if (['host', 'port', 'ca_pem', 'user'].some((k) => c[k] !== old[k]))

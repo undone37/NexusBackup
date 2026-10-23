@@ -2490,6 +2490,61 @@ fn vmware_jobs() {
         .unwrap();
     let cfg: Value = serde_json::from_slice(&p.files.iter().find(|f| f.0 == "vmware.json").unwrap().1).unwrap();
     assert_eq!(cfg["vms"], json!([u2]));
+    // hot-add proxy (#80): per VM prepare, block read on the proxy's agent, finish
+    let proxy = "5003c9a6-1b2e-4f7a-9d3c-0123456789ef";
+    let hot = json!({"host": "vc.lab", "ca_pem": "CERT", "user": "u", "password": "pw", "datacenter": "dc1",
+                     "transport": "hotadd", "proxy_vm": proxy, "proxy_agent": "0123456789abcdef"});
+    s.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (8,'t1','vmware','vc-hot','{hot}');
+             INSERT INTO agents (id, tenant, name, host, port, cert_sha256) VALUES ('0123456789abcdef','t1','proxy','10.0.0.9',7444,'ab');
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (8,'t1',8,2,'hot','[\"{u1}\",\"{u2}\"]');"
+        ))
+        .unwrap();
+    let p = s.plan(&job(38, "backup", json!({"group_id": 8}))).unwrap();
+    assert_eq!(p.key, "source:8");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "ca.pem",
+            "password",
+            "vmware-0.json",
+            "agent-0123456789abcdef-0.json",
+            "vmware-1.json",
+            "agent-0123456789abcdef-1.json"
+        ]
+    );
+    let file = |n: &str| -> Value { serde_json::from_slice(&p.files.iter().find(|f| f.0 == n).unwrap().1).unwrap() };
+    let v1 = file("vmware-1.json");
+    assert_eq!(v1["vms"], json!([u2]));
+    assert_eq!(v1["proxy"], proxy);
+    assert_eq!(v1["job"], 38);
+    assert_eq!(v1["work_dir"], json!(p.dir.join("vm-1")));
+    let a1 = file("agent-0123456789abcdef-1.json");
+    assert_eq!(a1["agent"]["host"], "10.0.0.9");
+    assert_eq!(a1["block_read"]["out_dir"], json!(p.dir.join("vm-1")));
+    assert_eq!(a1["block_read"]["plan"], json!(p.dir.join("vm-1/plan.json")));
+    let cmds: Vec<(&PathBuf, &str)> = p
+        .steps
+        .iter()
+        .map(|st| match st {
+            Step::Cli { bin, args, .. } => (bin, args[1].as_str()),
+            st => panic!("{st:?}"),
+        })
+        .collect();
+    let (v, a) = (&e.cfg.vmware_bin, &e.cfg.agentctl_bin);
+    assert_eq!(
+        cmds,
+        [
+            (v, "proxy-prepare"),
+            (a, "block-read"),
+            (v, "proxy-finish"),
+            (v, "proxy-prepare"),
+            (a, "block-read"),
+            (v, "proxy-finish")
+        ]
+    );
     // an empty VMware group is nothing to back up, not a PVE group
     let err = s.plan(&job(32, "backup", json!({"group_id": 7}))).unwrap_err();
     assert!(format!("{err:#}").contains("no VMs"), "{err:#}");
