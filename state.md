@@ -962,7 +962,15 @@ RMAN and archive logs, log backups on their own schedule); listed in the README 
   settings", Patroni's `max_connections = 1000`); 1.2.1 stores the recovery minimums in `settings.conf` and writes
   them on restore. Scheduler: plugin snapshot metadata (recoverable range) was only stored for `plugin_backup` jobs,
   not for group backups (every schedule).
-- [ ] WAL across a failover (Patroni permanent slot or archiving from every node), plan.md Phase 44.
+- [x] WAL across a failover (2026-10-23, plugin 1.3.1): with `nexusbackup` as a Patroni permanent slot
+  (`patroni.sh slot`), a run after a timeline change streams the old timeline up to the switch point, stores the
+  history files and continues on the new timeline, without a new base backup. Scenario (timelines 7 -> 8
+  switchover pg3 -> pg1, 8 -> 9 hard failover pg1 -> pg2): **all six marks restore exactly**, including the ones
+  right before and after each switch (2876 / 2907 / 2932 / 2972 / 3008 / 3033 rows = the cluster's counts, 4-5 s
+  each). On the way: the slot check compares segments (Patroni advances a standby's slot to a position inside the
+  segment the next run starts with). Without the permanent slot the behaviour is as before (new base backup).
+- [ ] Same scenario on PostgreSQL 14, 15, 16 and 18 (maintainer request; `PG_VERSION=… patroni.sh`). Before 15 the
+  slot cannot be checked first (`READ_REPLICATION_SLOT`).
 - [ ] The PITR dialog bounds the target by the recoverable range; the plugin could also refuse a target outside it
   before restoring (today PostgreSQL refuses after the restore).
 - Lab left running with the writer stopped (`patroni.sh writer` / `nowriter`); `patroni.sh destroy` removes it.

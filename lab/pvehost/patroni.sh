@@ -13,6 +13,8 @@
 #   patroni.sh status     patronictl list on the first node
 #   patroni.sh pitrhost   PostgreSQL $PG_VERSION binaries on pg-ctl (the restore host), an SSH key for the
 #                         appliance as user postgres there ($LAB/pitr_ed25519)
+#   patroni.sh slot       nexusbackup as a Patroni permanent slot (on every node, advanced on the standbys):
+#                         backups follow a switchover or failover without losing WAL (plugin 1.3.1)
 #   patroni.sh roles      role nexus_backup and database labdb if the deploy did not get that far
 #   patroni.sh nowriter   stop the writer (the backup slot keeps WAL while no backups run: stop it when idle)
 #   patroni.sh writer     labdb.ticks gets a row per second from pg-ctl (transient unit nexus-ticks), through
@@ -229,6 +231,14 @@ step_pitrhost() {
 		chown postgres:postgres /var/lib/postgresql/.ssh/authorized_keys; chmod 600 /var/lib/postgresql/.ssh/authorized_keys
 		umask 077; echo '*:5432:*:postgres:$(secret PG_SUPERUSER)' >/root/.pgpass" </dev/null
 	log "pg-ctl: PostgreSQL $PG_VERSION binaries, restores below /srv/pitr"
+}
+
+step_slot() {
+	on pg1 "patronictl -c /etc/patroni/patroni.yml edit-config -s 'slots.nexusbackup.type=physical' --force >/dev/null" </dev/null
+	sleep 15
+	for n in pg1 pg2 pg3; do
+		log "$n: $(on "$n" "psql -qtAX -U postgres -h /var/run/postgresql -c \"SELECT slot_name || ' ' || coalesce(restart_lsn::text, '-') FROM pg_replication_slots WHERE slot_name = 'nexusbackup'\"" </dev/null)"
+	done
 }
 
 step_nowriter() {

@@ -1399,9 +1399,10 @@ source kind checked continuously, starting with databases.
   build, with their numbers recorded in state.md.
 - **Fault injection:** network loss, appliance reboot and source failover during a backup, a full store, corrupt
   chunks (detected by verify and repair), clock jumps; each with the expected outcome written down first.
-- **Known gap to close here:** WAL between the last backup and a Patroni failover is lost today (lab 2026-10-23); the
-  plugin needs either a permanent slot kept by Patroni on every node (`slots:` in the DCS) or WAL archiving from
-  every node, then PITR across the timeline switch.
+- **WAL across a Patroni failover (done 2026-10-23, plugin 1.3.1):** PostgreSQL 17's failover slots are logical only,
+  so the physical slot is declared as a Patroni permanent slot (maintainer's choice: slot + Patroni documentation);
+  the plugin follows the timeline switch through `TIMELINE_HISTORY` and keeps the history files. Other cluster
+  managers without slots on the standbys get a new base backup after a failover, as before.
 Not started.
 
 ## 16. Risks and Open Questions

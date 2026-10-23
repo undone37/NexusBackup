@@ -53,6 +53,11 @@ pub struct State {
     pub base_end: u64,
     #[serde(default)]
     pub base_time: u64,
+    /// the complete files of `wal/` (segments and timeline history files) once a run
+    /// followed a timeline switch (names carry several timelines then); None: derived
+    /// from `wal_from..next` on `tli` (states before plugin 1.3.1)
+    #[serde(default)]
+    pub wal_files: Option<Vec<String>>,
 }
 
 /// State blobs are ≤ 1 MiB; a larger path list is dropped (= the next backup is full).
@@ -244,8 +249,16 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<
         Err(e) if crate::pg::sqlstate(&e) == Some("42704") => {}
         r => r.context("dropping the old replication slot")?,
     }
-    c.exec(&format!("CREATE_REPLICATION_SLOT {slot} PHYSICAL RESERVE_WAL"))
-        .context("creating the replication slot")?;
+    match c.exec(&format!("CREATE_REPLICATION_SLOT {slot} PHYSICAL RESERVE_WAL")) {
+        // Patroni keeps a permanent slot of this name and may have re-created it after the
+        // drop: it reserves WAL from now on as well (the base backup carries its own WAL)
+        Err(e) if crate::pg::sqlstate(&e) == Some("42710") => {
+            ctx.info(format!(
+                "slot {slot} re-created by the cluster manager (Patroni permanent slot): kept"
+            ));
+        }
+        r => r.context("creating the replication slot")?,
+    }
     let cmd = if c.major >= 15 {
         "BASE_BACKUP (LABEL 'nexusbackup', CHECKPOINT 'fast', WAL true, WAIT true, MANIFEST 'yes', TABLESPACE_MAP true)"
     } else {
@@ -353,6 +366,7 @@ fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<
         files: encode_paths(&files),
         base_end: end,
         base_time,
+        wal_files: Some(Vec::new()),
     };
     // this snapshot holds the WAL up to the end of the backup only
     let meta = range(&st, base_time, end);
@@ -512,17 +526,37 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
     let to_time = marker(ctx, sql).floor() as u64;
     let mut c = Conn::connect(o)?;
     let (system, tli, target) = identify(&mut c)?;
-    if system != p.system || tli != p.tli {
-        ctx.info(format!(
-            "cluster or timeline changed ({} tl {} → {system} tl {tli}): full backup",
-            p.system, p.tli
-        ));
+    if system != p.system {
+        ctx.info(format!("another cluster ({} → {system}): full backup", p.system));
         return Ok(None);
     }
+    // what to stream: (timeline, from, to); after a switchover or failover the old
+    // timeline up to its switch point first, then each newer one (`follow`)
+    let (steps, history) = match follow(&mut c, p, slot, tli, target) {
+        Ok(s) => s,
+        Err(why) => {
+            ctx.info(format!("timeline {} → {tli}: {why}: full backup", p.tli));
+            return Ok(None);
+        }
+    };
+    if tli != p.tli {
+        ctx.info(format!(
+            "timeline {} → {tli}: following the switch ({}), no new base backup",
+            p.tli,
+            steps
+                .iter()
+                .map(|(t, f, e)| format!("tl {t} {}..{}", fmt_lsn(*f), fmt_lsn(*e)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let data = decode_paths(&p.files)?;
-    let old_wal: Vec<String> = (p.wal_from / p.seg..p.next / p.seg)
-        .map(|s| format!("wal/{}", seg_name(p.tli, s * p.seg, p.seg)))
-        .collect();
+    let old_wal: Vec<String> = match &p.wal_files {
+        Some(w) => w.clone(),
+        None => (p.wal_from / p.seg..p.next / p.seg)
+            .map(|s| format!("wal/{}", seg_name(p.tli, s * p.seg, p.seg)))
+            .collect(),
+    };
     let paths: Vec<Vec<u8>> = data.iter().chain(&old_wal).map(|s| s.as_bytes().to_vec()).collect();
     let base: HashMap<Vec<u8>, Meta> = sink.base(&paths)?.into_iter().map(|e| (e.path, e.meta)).collect();
     if paths.iter().any(|p| !base.contains_key(p)) {
@@ -533,20 +567,9 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
     // start streaming before sending anything: if the slot lost the WAL, a full backup follows
     let streaming = target > p.next;
     if streaming {
-        c.query_start(&format!(
-            "START_REPLICATION SLOT {slot} PHYSICAL {} TIMELINE {tli}",
-            fmt_lsn(p.next)
-        ))?;
-        loop {
-            let (t, b) = c.recv()?;
-            match t {
-                b'W' => break,
-                b'E' => {
-                    ctx.warn(format!("WAL streaming refused ({}): full backup", error(&b)));
-                    return Ok(None);
-                }
-                _ => {}
-            }
+        if let Err(e) = start_stream(&mut c, slot, steps[0].0, steps[0].1)? {
+            ctx.warn(format!("WAL streaming refused ({e}): full backup"));
+            return Ok(None);
         }
     }
     let t0 = now();
@@ -564,41 +587,67 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
         sink.unchanged(path, base[path].clone())?;
     }
     let mut new = 0u64;
+    let next = target - target % p.seg;
+    let mut wal_files = old_wal.clone();
+    for (name, text) in &history {
+        sink.file(
+            format!("wal/{name}").as_bytes(),
+            meta(Kind::File, 0o600, text.len() as u64, t0),
+            &mut text.as_slice(),
+        )?;
+        wal_files.push(format!("wal/{name}"));
+    }
     if streaming {
-        let mut w = Wal {
-            c: &mut c,
-            pos: p.next,
-            target,
-            buf: Vec::new(),
-            off: 0,
-            flush: p.next,
-            status_at: Instant::now(),
-        };
-        // the slot may now drop everything before the previous snapshot's end
-        w.status()?;
-        let mut lsn = p.next;
-        while lsn < target {
-            let name = seg_name(tli, lsn, p.seg);
-            let mut s = Seg {
-                w: &mut w,
-                at: lsn,
-                end: lsn + p.seg,
+        for (i, &(st_tli, from, to)) in steps.iter().enumerate() {
+            if i > 0 {
+                if let Err(e) = start_stream(&mut c, slot, st_tli, from)? {
+                    bail!("WAL streaming on timeline {st_tli} refused: {e}");
+                }
+            }
+            let mut w = Wal {
+                c: &mut c,
+                pos: from,
+                target: to,
+                buf: Vec::new(),
+                off: 0,
+                flush: p.next,
+                status_at: Instant::now(),
             };
-            sink.file(
-                format!("wal/{name}").as_bytes(),
-                meta(Kind::File, 0o600, p.seg, t0),
-                &mut s,
-            )?;
-            new += 1;
-            lsn += p.seg;
-            ctx.progress(lsn - p.next, target - p.next, format!("WAL {name}"));
+            // the slot may now drop everything before the previous snapshot's end
+            w.status()?;
+            let mut lsn = from;
+            while lsn < to {
+                let name = seg_name(st_tli, lsn, p.seg);
+                let mut s = Seg {
+                    w: &mut w,
+                    at: lsn,
+                    end: lsn + p.seg,
+                };
+                sink.file(
+                    format!("wal/{name}").as_bytes(),
+                    meta(Kind::File, 0o600, p.seg, t0),
+                    &mut s,
+                )?;
+                new += 1;
+                // complete: every segment of an older timeline, on the last one all
+                // but the partial segment (streamed again next time)
+                if i + 1 < steps.len() || lsn + p.seg <= next {
+                    wal_files.push(format!("wal/{name}"));
+                }
+                lsn += p.seg;
+                ctx.progress(lsn - p.next, target - p.next, format!("WAL {name}"));
+            }
+            if i + 1 < steps.len() {
+                end_stream(&mut c)?;
+            }
         }
         let _ = c.send(b'c', &[]);
     }
     c.close();
-    let next = target - target % p.seg;
     let st = State {
         next: next.max(p.next),
+        tli,
+        wal_files: Some(wal_files),
         ..p.clone()
     };
     let meta = range(&st, to_time, target);
@@ -613,6 +662,146 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
             fmt_lsn(target)
         ),
     }))
+}
+
+/// Parses a timeline history file: `(parent timeline, switch point)` per line.
+pub fn parse_history(text: &str) -> Result<Vec<(u32, u64)>> {
+    let mut out = Vec::new();
+    for l in text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        let mut f = l.split_whitespace();
+        let (Some(t), Some(lsn)) = (f.next(), f.next()) else {
+            bail!("timeline history: bad line {l:?}");
+        };
+        out.push((t.parse()?, crate::pg::parse_lsn(lsn)?));
+    }
+    Ok(out)
+}
+
+/// The streaming plan from the previous state's position to `target` on timeline `tli`:
+/// `(timeline, from, to)` steps (one when the timeline is the same) and the history
+/// files of the newer timelines. Err = the WAL cannot be followed (another branch, or
+/// the switch lies before what the last backup streamed).
+pub fn plan_steps(
+    p: &State,
+    tli: u32,
+    target: u64,
+    hist: &[(u32, u64)],
+) -> std::result::Result<Vec<(u32, u64, u64)>, String> {
+    if tli == p.tli {
+        return Ok(vec![(tli, p.next, target)]);
+    }
+    if tli < p.tli {
+        return Err("the server is on an older timeline".into());
+    }
+    let chain: Vec<(u32, u64)> = hist.iter().copied().filter(|(t, _)| *t >= p.tli).collect();
+    match chain.first() {
+        Some((t, sw)) if *t == p.tli && *sw >= p.next => {}
+        Some((t, _)) if *t == p.tli => return Err("the switch lies before the last backup's end".into()),
+        _ => return Err(format!("timeline {} is not an ancestor of {tli}", p.tli)),
+    }
+    let mut steps = Vec::new();
+    let mut from = p.next;
+    for &(t, sw) in &chain {
+        steps.push((t, from, sw));
+        from = sw - sw % p.seg;
+    }
+    steps.push((tli, from, target));
+    Ok(steps)
+}
+
+/// History files `(name, content)` of the newer timelines.
+type History = Vec<(String, Vec<u8>)>;
+/// `(timeline, from, to)` streaming steps.
+type Steps = Vec<(u32, u64, u64)>;
+
+/// Plan (`plan_steps`) plus the history files, read from the server; on PostgreSQL 15+
+/// also checks that the slot still holds the WAL from the last backup's end.
+fn follow(c: &mut Conn, p: &State, slot: &str, tli: u32, target: u64) -> std::result::Result<(Steps, History), String> {
+    let mut history = Vec::new();
+    let mut hist = Vec::new();
+    if tli > p.tli {
+        {
+            let r = c.query(&format!("TIMELINE_HISTORY {tli}")).map_err(|e| e.to_string())?;
+            let row = r.first().ok_or("TIMELINE_HISTORY: no row")?;
+            let name = row.first().cloned().flatten().unwrap_or_default();
+            let text = row.get(1).cloned().flatten().unwrap_or_default();
+            hist = parse_history(&text).map_err(|e| e.to_string())?;
+            // every newer timeline's own history file: recovery may look for each
+            for (t, _) in hist.iter().filter(|(t, _)| *t > p.tli) {
+                let r = c.query(&format!("TIMELINE_HISTORY {t}")).map_err(|e| e.to_string())?;
+                if let Some(row) = r.first() {
+                    let n = row.first().cloned().flatten().unwrap_or_default();
+                    history.push((n, row.get(1).cloned().flatten().unwrap_or_default().into_bytes()));
+                }
+            }
+            history.push((name, text.into_bytes()));
+        }
+    }
+    let steps = plan_steps(p, tli, target, &hist)?;
+    if tli != p.tli && c.major >= 15 {
+        // a slot that no longer holds the last backup's end would refuse every run: check first
+        let r = c
+            .query(&format!("READ_REPLICATION_SLOT {slot}"))
+            .map_err(|e| e.to_string())?;
+        let restart = r.first().and_then(|row| row.get(1).cloned().flatten());
+        match restart {
+            None => {
+                return Err(format!(
+                    "no slot {slot} on the new primary (Patroni: a permanent slot, see the README)"
+                ))
+            }
+            Some(l) if !slot_reaches(crate::pg::parse_lsn(&l).map_err(|e| e.to_string())?, p.next, p.seg) => {
+                return Err(format!("slot {slot} starts at {l}, after the last backup's end"))
+            }
+            Some(_) => {}
+        }
+    }
+    Ok((steps, history))
+}
+
+/// Whether a slot at `restart` still serves streaming from `next` (segment-aligned): the
+/// server keeps WAL by whole segments, and a cluster manager advances a standby's slot
+/// to a position inside a segment (lab 2026-10-23: Patroni at 0/12011E88, next 0/12000000).
+pub fn slot_reaches(restart: u64, next: u64, seg: u64) -> bool {
+    restart - restart % seg <= next
+}
+
+/// START_REPLICATION and wait for the copy to begin; Ok(Err) = refused by the server.
+fn start_stream(c: &mut Conn, slot: &str, tli: u32, from: u64) -> Result<std::result::Result<(), String>> {
+    c.query_start(&format!(
+        "START_REPLICATION SLOT {slot} PHYSICAL {} TIMELINE {tli}",
+        fmt_lsn(from)
+    ))?;
+    loop {
+        let (t, b) = c.recv()?;
+        match t {
+            b'W' => return Ok(Ok(())),
+            b'E' => {
+                // the error ends the command: wait for ReadyForQuery
+                let e = error(&b);
+                while c.recv()?.0 != b'Z' {}
+                return Ok(Err(e.to_string()));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// End of an old timeline's stream: the server sent everything up to the switch point;
+/// both sides end the copy, the server answers with the next timeline and ReadyForQuery.
+fn end_stream(c: &mut Conn) -> Result<()> {
+    c.send(b'c', &[])?;
+    loop {
+        match c.recv()? {
+            (b'Z', _) => return Ok(()),
+            (b'E', b) => bail!("ending the WAL stream: {}", error(&b)),
+            _ => {}
+        }
+    }
 }
 
 /// Physical replication stream from `pos`; bytes up to `target` are used.
@@ -729,6 +918,58 @@ mod tests {
         assert_eq!(e[3], "11:/112");
         assert_eq!(decode_paths(&e).unwrap(), p);
         assert!(decode_paths(&["9:x".into()]).is_err());
+    }
+
+    fn state(tli: u32, next: u64) -> State {
+        State {
+            v: 1,
+            system: "7".into(),
+            tli,
+            seg: 16 << 20,
+            full_time: 0,
+            wal_from: 0,
+            next,
+            files: vec![],
+            base_end: 0,
+            base_time: 0,
+            wal_files: Some(vec![]),
+        }
+    }
+
+    #[test]
+    fn timeline_switches_are_followed() {
+        // history of timeline 5 as a Patroni cluster writes it: 3 -> 4 at 0/F0000A0, 4 -> 5 at 0/12000060
+        let h = parse_history(
+            "3\t0/F0000A0\tno recovery target specified\n\n4\t0/12000060\tno recovery target specified\n",
+        )
+        .unwrap();
+        assert_eq!(h, [(3, 0xF00_00A0), (4, 0x1200_0060)]);
+        let seg = 16u64 << 20;
+        // same timeline: one step
+        assert_eq!(
+            plan_steps(&state(5, 0x1300_0000), 5, 0x1350_0000, &[]).unwrap(),
+            [(5, 0x1300_0000, 0x1350_0000)]
+        );
+        // two switches since the last backup (at 0/E000000 on timeline 3)
+        let s = plan_steps(&state(3, 0xE00_0000), 5, 0x1350_0000, &h).unwrap();
+        assert_eq!(
+            s,
+            [
+                (3, 0xE00_0000, 0xF00_00A0),
+                (4, 0xF00_00A0 - 0xF00_00A0 % seg, 0x1200_0060),
+                (5, 0x1200_0000, 0x1350_0000)
+            ]
+        );
+        // the last backup streamed past the switch on the old timeline: its WAL there is not on the new branch
+        assert!(plan_steps(&state(3, 0x1000_0000), 5, 0x1350_0000, &h).is_err());
+        // another branch, or back to an older timeline
+        assert!(plan_steps(&state(2, 0xE00_0000), 5, 0x1350_0000, &h).is_err());
+        assert!(plan_steps(&state(6, 0xE00_0000), 5, 0x1350_0000, &h).is_err());
+        assert!(parse_history("3 nonsense").is_err());
+        // a slot inside the segment the next run starts with still reaches it; one segment later not
+        assert!(slot_reaches(0x1201_1E88, 0x1200_0000, seg));
+        assert!(slot_reaches(0x1100_0000, 0x1200_0000, seg));
+        assert!(!slot_reaches(0x1300_0010, 0x1200_0000, seg));
     }
 
     #[test]

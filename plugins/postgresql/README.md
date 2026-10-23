@@ -52,11 +52,15 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   warning); the job log lists every server as primary/standby/unreachable, and `validate` fails on `hosts` when
   there is none. Dumps, dump restores to the source and cluster backups all go to the primary; after a failover
   the timeline changed, so the next cluster backup is a new base backup that creates the slot on the new
-  primary. The slot on the old primary stays (drop it when it returns as a standby); Patroni removes it itself
-  when the old primary rejoins (lab 2026-10-23, Patroni through autobase 2.11). **Gap:** the WAL between the last
-  backup and a switchover or failover is in no snapshot, so times in that window cannot be restored; the next base
-  backup on the new timeline starts a new recoverable range (plan.md Phase 44: permanent slot or WAL archiving from
-  every node).
+  primary. **Following a switchover or failover** (1.3.1): when the new primary still has the slot with the WAL
+  from the last backup's end, the next run streams the old timeline up to its switch point, stores the newer
+  timelines' history files in `wal/` and continues on the new timeline, without a new base backup, so every time
+  across the failover stays restorable. A physical slot exists only on the primary unless a cluster manager keeps it
+  on the standbys: with **Patroni**, declare it as a permanent slot (`patronictl edit-config -s
+  'slots.nexusbackup.type=physical'`; Patroni creates it on every node and advances it on the standbys). Without
+  that (or before PostgreSQL 15, where the slot cannot be checked first), the run after a failover is a new base
+  backup on the new timeline and the WAL between the last backup and the failover is lost: times in that window
+  cannot be restored (lab 2026-10-23). The slot on the old primary stays when it rejoins without Patroni; drop it.
 - **Recovery minimums** (1.2.1): every cluster backup stores the source's `max_connections`,
   `max_worker_processes`, `max_wal_senders`, `max_prepared_transactions` and `max_locks_per_transaction` in
   `settings.conf`; the point-in-time restore writes them into `postgresql.auto.conf`. PostgreSQL aborts recovery when
@@ -97,4 +101,4 @@ targets, tablespace remapping and the start command (`pitr.rs`).
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.2.1.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.3.1.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).

@@ -264,7 +264,7 @@ NexusBackup column is from the lab runs in [state.md](state.md), including a thr
 | **Logical backups** | per database; owners/grants, comments, RLS, large objects and roles not covered yet | no (physical only) | yes (also MySQL/MariaDB, MongoDB) |
 | **Physical backups** | base backup + WAL from a replication slot; incrementals send only new WAL, a new base backup every 7 days | full, differential, incremental, block-level incremental | yes, incremental with PostgreSQL's native mechanism |
 | **Point-in-time restore** | yes, to a time, LSN or restore point, into a new data directory over SSH | yes | yes (WAL streaming) |
-| **Patroni / HA** | finds the primary among the configured nodes; after a switchover or failover a new base backup on the new timeline; the WAL between the last backup and the failover is not kept (lab 2026-10-23) | standard companion of Patroni (archiving from every node, backups from a standby) | not documented |
+| **Patroni / HA** | finds the primary among the configured nodes; with a Patroni permanent slot it follows switchovers and failovers without a new base backup, every time across them restorable (lab 2026-10-23, PostgreSQL 17); without one a new base backup and a gap | standard companion of Patroni (archiving from every node, backups from a standby) | not documented |
 | **Parallelism, backup from standby** | no, from the primary | yes, both | parallel backups |
 | **Storage** | the appliance's deduplicated store, offsite copy to SFTP / S3 / second appliance | POSIX, S3, Azure, GCS, SFTP, several repositories at once | local, S3, R2, SFTP, NAS, Google Drive, Dropbox, rclone and more |
 | **Encryption** | always, per tenant keys on the appliance | repository encryption (optional) | AES-256-GCM |
@@ -273,8 +273,8 @@ NexusBackup column is from the lab runs in [state.md](state.md), including a thr
 | **Restore checks** | none automatic for PostgreSQL yet | `verify` checks the repository, no test restore | test restore into a container after each backup or on a schedule |
 | **UI, approvals** | web UI shared with all other sources, multi-person approval for destructive actions | CLI only | web UI, workspaces with roles, audit log |
 
-For PostgreSQL alone, pgBackRest is the proven choice, especially with Patroni: WAL archiving from every node keeps
-the history across failovers, which the plugin does not yet. Databasus is the closer match in scope (web UI, logical
+For PostgreSQL alone, pgBackRest is the proven choice, especially with Patroni: years of production use, backups
+from a standby and parallel transfers, where the plugin has one lab day behind it. Databasus is the closer match in scope (web UI, logical
 and physical backups, restore checks). NexusBackup fits where PostgreSQL is one source among VMs, hosts and shares
 that should share one store, one key model and one approval process.
 
