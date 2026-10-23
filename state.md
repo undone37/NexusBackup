@@ -1041,7 +1041,18 @@ restores, UI/CLI, import into an appliance). All in this repository.
 ## Phase 43 — PegaProx plugin (added 2026-10-23)
 Scope: plan.md Phase 43 (Python plugin `pegaprox-plugin-nexusbackup`: backup state per VM and cluster in PegaProx,
 then "back up now"; read-only token by default, operator token only for backup jobs; lab PegaProx VM on pve-test).
-Not started.
+- [x] API token scope `backup` (catalog v48 `only_kinds`): read and start backup jobs, nothing else (tests: the
+  scope matrix, the migration); UI token dialog, manual screenshots.
+- [x] Plugin `integrations/pegaprox/nexusbackup` (PegaProx 1.4): tab with the state per guest (protected / late or
+  failed / no backup yet / not protected; newest backup, group and policy, next run, lock, restore test, alerts),
+  "Back up now" behind `allow_backup` plus PegaProx `backup.create`/`vm.backup` on the cluster; the API client pins
+  the appliance certificate before the token is sent (`test_core.py`, 6 tests incl. a local TLS server).
+- [x] Lab (2026-10-23, `lab/pvehost/pegaprox.sh`): PegaProx v1.4.0 from source on VM 270 (Debian 13), pve-test added
+  through a read-only PVE user `pegaprox-lab@pve` (PVEAuditor, API token), plugin enabled with a read token of
+  VM 201: 30 guests listed, VM 101 (group windows) and VM 200 (lab-arm64) protected with their newest backups, the
+  rest unprotected, as on the appliance.
+- [ ] "Back up now" in the lab once VM 201 runs a build with the `backup` scope; screenshots of the tab; submit to the
+  PegaProx catalogue (maintainer's decision, then its own repository).
 
 ## Phase 44 — Backup and restore testing, databases first (added 2026-10-23)
 Scope: plan.md Phase 44 (scheduled restore tests of PostgreSQL / MySQL dumps and PITR with row counts and checksums,
