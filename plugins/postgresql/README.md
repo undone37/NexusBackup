@@ -62,8 +62,10 @@ rustls, SCRAM-SHA-256/md5/password; no new crates, all were already in the works
   backup on the new timeline and the WAL between the last backup and the failover is lost: times in that window
   cannot be restored (lab 2026-10-23). The slot on the old primary stays when it rejoins without Patroni; drop it.
 - **Restore test** (1.4.0, restore `verify`, plan.md Phase 44): a dump is restored into `nexus_verify_<snapshot
-  time>` (on the alternate server if one is configured, else the source), every table's rows are counted against
-  the dump's, and the database is dropped again; a cluster snapshot is restored point-in-time to its end into
+  time>` (on the alternate server if one is configured, else the source), every table's rows are compared with the
+  dump's by count and, for dumps from 1.4.2 on, by content (an order-independent SHA-256 sum of the COPY rows, read
+  back with the dump's column list; 1.4.2 dumps fix TimeZone UTC, DateStyle ISO, IntervalStyle, extra_float_digits
+  and bytea_output so the text is the same on any server), and the database is dropped again; a cluster snapshot is restored point-in-time to its end into
   `<verify_dir>/nexus-verify-<time>-<pid>` on the SSH restore host, started on `verify_port` (default 5499),
   queried (`psql`, databases other than templates) and stopped and removed. Scheduled through the appliance's
   restore-test schedules of the group; results and alerts as for VM restore tests.
@@ -107,4 +109,4 @@ targets, tablespace remapping and the start command (`pitr.rs`).
 ## Packaging
 Build against glibc ≤ 2.39 (e.g. in an AlmaLinux 10 container, like the image's builder stage) or statically for
 `x86_64-unknown-linux-musl` (needs a musl C toolchain for `ring`), then `nexus-plugin pack manifest.json <binary>
-postgresql-1.4.1.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).
+postgresql-1.4.2.nxplugin` and sign it (docs/plugin-sdk.md, lab/appliance/plugins.sh).

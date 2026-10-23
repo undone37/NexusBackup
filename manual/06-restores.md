@@ -400,7 +400,8 @@ database (and, for PostgreSQL, of the cluster):
 - **Database dumps** are restored into a throwaway database `nexus_verify_<snapshot time>`, on the alternate
   restore server if the source has one, else on the source. The rows of every table are counted and compared
   with the rows the dump holds; then the database is dropped (also when the test failed). The source's role needs
-  `CREATEDB` for that.
+  `CREATEDB` for that. Dumps from plugin 1.4.2 on are also compared by content: every table is read back and its
+  rows must be the same as in the dump (in any order).
 - **MySQL/MariaDB dumps** are tested the same way (`nexus_verify_<snapshot time>`, dropped afterwards). Dumps the
   appliance made over the connection carry the row count of every table, which the test compares; dumps made with
   `mysqldump` over SSH carry none, so their test checks that the whole dump restores without an error.

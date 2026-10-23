@@ -67,6 +67,9 @@ pub fn dump(c: &mut Conn, w: &mut dyn Write) -> Result<DumpStats> {
         "SELECT pg_catalog.set_config('search_path', '', false); SET row_security = off; \
          SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0",
     )?;
+    // the COPY text of every value independent of the server's defaults: a restore test reads the
+    // restored tables back with the same settings and compares the rows byte for byte
+    c.exec(CANONICAL)?;
     let db = c.value("SELECT current_database()")?.unwrap_or_default();
     let enc = c
         .value("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")?
@@ -76,6 +79,7 @@ pub fn dump(c: &mut Conn, w: &mut dyn Write) -> Result<DumpStats> {
         st: DumpStats::default(),
     };
     writeln!(o.w, "-- nexus:dump 1 encoding={enc}")?;
+    writeln!(o.w, "{FORMAT_LINE}")?;
     writeln!(
         o.w,
         "-- NexusBackup logical dump of database {db:?} (PostgreSQL {}).\n\
@@ -429,8 +433,33 @@ pub struct RestoreStats {
     pub statements: u64,
     pub tables: u64,
     pub rows: u64,
-    /// per COPY: the table as the dump names it and the rows it held
-    pub copied: Vec<(String, u64)>,
+    /// the dump was made with [`CANONICAL`] settings: contents comparable
+    pub canonical: bool,
+    /// per COPY: the table as the dump names it, the statement that reads it back
+    /// (`COPY … TO STDOUT`), the rows it held and their [`row_digest`] sum
+    pub copied: Vec<Copied>,
+}
+
+/// Output settings of the dump's session (as pg_dump fixes them, plus UTC).
+pub const CANONICAL: &str = "SET TimeZone = 'UTC'; SET DateStyle = 'ISO, MDY'; SET IntervalStyle = 'postgres'; \
+     SET extra_float_digits = 3; SET bytea_output = 'hex'";
+/// Marks a dump made with [`CANONICAL`] settings (dumps before plugin 1.4.2: row counts only).
+pub const FORMAT_LINE: &str = "-- nexus:format canonical";
+
+#[derive(Debug)]
+pub struct Copied {
+    pub table: String,
+    pub out: String,
+    pub rows: u64,
+    pub digest: u128,
+}
+
+/// One COPY text row (with its newline) as a number; a table's digest is the wrapping sum, so
+/// the order of the rows does not matter (a restored table may come back in another order).
+pub fn row_digest(line: &[u8]) -> u128 {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(line);
+    u128::from_be_bytes(h[..16].try_into().expect("16 bytes"))
 }
 
 /// The table of a dump's `COPY <table> (<columns>) FROM stdin`.
@@ -449,22 +478,35 @@ pub fn copy_table(stmt: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// Restore test: every table holds as many rows as the dump had for it.
-pub fn check_counts(c: &mut Conn, st: &RestoreStats) -> Result<()> {
+/// Restore test: every table holds the rows the dump had for it, by count and by content
+/// (the [`row_digest`] sum of the rows read back with the dump's own column list).
+pub fn check_tables(c: &mut Conn, st: &RestoreStats) -> Result<()> {
+    if st.canonical {
+        c.exec(CANONICAL)?;
+    }
     let mut bad = Vec::new();
-    for (t, want) in &st.copied {
-        // the name as the dump's own COPY statement spells it (quoted identifiers)
-        let have: u64 = c
-            .value(&format!("SELECT count(*) FROM {t}"))?
-            .unwrap_or_default()
-            .parse()
-            .unwrap_or(u64::MAX);
-        if have != *want {
-            bad.push(format!("{t}: {have} rows, the dump had {want}"));
+    for t in &st.copied {
+        let (mut rows, mut digest, mut part) = (0u64, 0u128, Vec::new());
+        c.copy_out(&t.out, &mut |d| {
+            part.extend_from_slice(d);
+            while let Some(i) = part.iter().position(|&b| b == b'\n') {
+                digest = digest.wrapping_add(row_digest(&part[..=i]));
+                rows += 1;
+                part.drain(..=i);
+            }
+            Ok(())
+        })?;
+        if rows != t.rows {
+            bad.push(format!("{}: {rows} rows, the dump had {}", t.table, t.rows));
+        } else if st.canonical && digest != t.digest {
+            bad.push(format!(
+                "{}: {rows} rows, but their content differs from the dump",
+                t.table
+            ));
         }
     }
     if !bad.is_empty() {
-        bail!("restore test: row counts differ: {}", bad.join("; "));
+        bail!("restore test: tables differ: {}", bad.join("; "));
     }
     Ok(())
 }
@@ -490,6 +532,9 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
             (false, n)
         } else if let Some(n) = l.strip_prefix("-- nexus:copy ") {
             (true, n)
+        } else if l == FORMAT_LINE {
+            st.canonical = true;
+            continue;
         } else if l.is_empty() || l.starts_with("--") {
             continue;
         } else {
@@ -513,6 +558,7 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
         }
         c.copy_in(&stmt).with_context(|| format!("restoring `{}`", what()))?;
         let rows_before = st.rows;
+        let mut digest = 0u128;
         let mut buf = Vec::with_capacity(1 << 20);
         loop {
             line.clear();
@@ -523,6 +569,7 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
                 break;
             }
             st.rows += 1;
+            digest = digest.wrapping_add(row_digest(&line));
             buf.extend_from_slice(&line);
             if buf.len() >= 1 << 20 {
                 c.copy_data(&buf)?;
@@ -534,8 +581,13 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
         }
         c.copy_end().with_context(|| format!("restoring `{}`", what()))?;
         st.tables += 1;
-        if let Some(t) = copy_table(&stmt) {
-            st.copied.push((t.to_owned(), st.rows - rows_before));
+        if let (Some(t), Some(head)) = (copy_table(&stmt), stmt.strip_suffix(" FROM stdin;")) {
+            st.copied.push(Copied {
+                table: t.to_owned(),
+                out: format!("{head} TO STDOUT"),
+                rows: st.rows - rows_before,
+                digest,
+            });
         }
     }
     if !ended {
@@ -550,6 +602,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn row_digests_ignore_order() {
+        let (a, b) = (row_digest(b"1\tx\n"), row_digest(b"2\ty\n"));
+        assert_eq!(a.wrapping_add(b), b.wrapping_add(a));
+        assert_ne!(a, row_digest(b"1\tx \n"));
+    }
+
+    #[test]
     fn copy_tables() {
         assert_eq!(copy_table(r#"COPY public.t (id, v) FROM stdin"#), Some("public.t"));
         assert_eq!(
@@ -562,6 +621,11 @@ mod tests {
             Some(r#"public."a (b""#)
         );
         assert_eq!(copy_table("SELECT 1"), None);
+    }
+
+    #[test]
+    fn format_line_is_a_comment_for_psql() {
+        assert!(FORMAT_LINE.starts_with("-- "));
     }
 
     #[test]

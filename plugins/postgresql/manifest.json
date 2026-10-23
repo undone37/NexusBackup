@@ -1,7 +1,7 @@
 {
   "id": "postgresql",
   "name": "PostgreSQL",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [

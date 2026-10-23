@@ -391,7 +391,7 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
         let res = Conn::connect(&o).and_then(|mut c| {
             let st = dump::restore(&mut c, &mut r)?;
             if verify {
-                dump::check_counts(&mut c, &st)?;
+                dump::check_tables(&mut c, &st)?;
             }
             Ok(st)
         });
@@ -405,8 +405,8 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
     let st = summary.context("the dump stream is missing from the snapshot")?;
     if verify {
         return Ok(format!(
-            "restore test passed: {stream} restored into {db} on the {} server, {} tables with {} rows counted \
-             against the dump, dropped again",
+            "restore test passed: {stream} restored into {db} on the {} server, {} tables with {} rows compared \
+             with the dump (counts and contents), dropped again",
             if alternate { "alternate" } else { "source" },
             st.tables,
             st.rows
