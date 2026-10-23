@@ -969,8 +969,11 @@ RMAN and archive logs, log backups on their own schedule); listed in the README 
   right before and after each switch (2876 / 2907 / 2932 / 2972 / 3008 / 3033 rows = the cluster's counts, 4-5 s
   each). On the way: the slot check compares segments (Patroni advances a standby's slot to a position inside the
   segment the next run starts with). Without the permanent slot the behaviour is as before (new base backup).
-- [ ] Same scenario on PostgreSQL 14, 15, 16 and 18 (maintainer request; `PG_VERSION=… patroni.sh`). Before 15 the
-  slot cannot be checked first (`READ_REPLICATION_SLOT`).
+- [x] Same scenario on PostgreSQL 14, 15, 16 and 18 (2026-10-23, `patroni.sh matrix 14 15 16 18`, plugin 1.3.1, fresh
+  three-node cluster per version from autobase): on every version both switches (switchover and hard failover) were
+  followed without a new base backup, the dump restore matched, and **all six PITR marks restored exactly** (row
+  counts equal to the cluster's at that second, 3-4 s each; 0 mismatches over 24 restores). PostgreSQL 14 has no
+  `READ_REPLICATION_SLOT`; the slot check is skipped there and following worked the same.
 - [ ] The PITR dialog bounds the target by the recoverable range; the plugin could also refuse a target outside it
   before restoring (today PostgreSQL refuses after the restore).
 - Lab left running with the writer stopped (`patroni.sh writer` / `nowriter`); `patroni.sh destroy` removes it.

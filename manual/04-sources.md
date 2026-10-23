@@ -1125,7 +1125,9 @@ What the group selects decides the backup type:
 >
 > **Status:** Logical dumps do not cover owners/grants, comments, RLS policies, aggregates, operators, range types,
 > rules, foreign tables, table inheritance, large objects, publications, event triggers, statistics objects or
-> roles. Each backup warns about the ones present; use a cluster backup where they matter. The plugin (1.2.0,
+> roles. Each backup warns about the ones present; use a cluster backup where they matter. Patroni clusters
+> (three nodes, autobase) on PostgreSQL 14, 15, 16, 17 and 18 passed a lab run with a switchover and a hard failover:
+> backups followed both, and point-in-time restores to six moments around them were exact. The plugin (1.2.0,
 > incl. a streaming replica, failover by promotion, tablespaces) passed integration tests against real PostgreSQL
 > 14 and 17 servers. A run on the appliance image (signed bundle, UI) is still pending.
 
