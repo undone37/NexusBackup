@@ -965,6 +965,55 @@ restorable until retention removes them. When you finally delete the built-in so
 > **Status:** The TrueNAS plugin passed its integration tests (sandbox, fake TrueNAS, local sshd). The lab run
 > against a real TrueNAS VM and through the appliance image is still pending.
 
+## VMware ESXi and vCenter
+
+Backs up VMware VMs for moving to (or protecting alongside) Proxmox VE. Tested: ESXi 7.0 U3 and 8.0 U3, standalone
+and under vCenter 8.0 U3. The appliance takes a VMware snapshot (quiesced through VMware Tools when they run), reads
+the disks' changed blocks over **NFC** directly from the ESXi host that runs the VM, and removes the snapshot again.
+No proxy VM and no VMware software are needed on your side. Changed blocks come from VMware's changed block
+tracking (CBT), which the appliance switches on per VM at the first backup.
+
+### 1. Prepare vSphere
+
+1. A **licensed** ESXi: the free ESXi hypervisor's API cannot create snapshots.
+2. A user for the appliance. On a standalone host `root` works. On a vCenter create a user (e.g.
+   `nexus-backup@vsphere.local`) with a role holding at least: *Datastore → Browse datastore, Low level file
+   operations*; *Virtual machine → Change configuration → Toggle disk change tracking*; *Virtual machine →
+   Snapshot management → Create snapshot, Remove snapshot*; *Virtual machine → Provisioning → Allow read-only
+   disk access, Allow virtual machine download*. Assign it on the VMs (or the datacenter) to protect.
+3. The certificate to pin: the one the host or vCenter serves (e.g. `openssl s_client -connect vc01:443`), or the
+   CA that issued it (the vCenter's VMCA root, *Administration → Certificates*).
+4. Network: the appliance must reach the vCenter or host on 443 and **every ESXi host on TCP 902** (NFC). The
+   appliance's firewall allows exactly these addresses from the source settings.
+
+> **Status:** The lab runs used `administrator@vsphere.local` and `root`; the role above is the documented
+> minimum for snapshot-and-read backups and has not been verified privilege by privilege yet.
+
+### 2. Create the source
+
+![VMware source form](images/source-vmware.png)
+
+| Field | Content |
+|---|---|
+| **ESXi host or vCenter**, **HTTPS port** | e.g. `vc01.acme.example.com`, 443 |
+| **User**, **Password of that user** | see above; the password is write-only, sealed to host, port, certificate and user (changing one of those needs it again) |
+| **Datacenter** | `ha-datacenter` on a standalone host, the datacenter name on a vCenter |
+| **Disk transport** | NFC (network mode). A hot-add proxy for hosts the appliance cannot reach on 902 is planned. |
+| **ESXi / vCenter certificate or CA (PEM)** | **pinned**, as for TrueNAS: public CAs are never trusted |
+| **ESXi hosts behind the vCenter** | one per line: the hosts that run the protected VMs (NFC on 902 is allowed to them). Not needed for a standalone host. |
+
+The source has a guest inventory (**More → Inventory**): its VMs with their names. In a group you tick VMs, or take
+all VMs or VMs with tags ([chapter 5](05-policies-and-groups.md)). Snapshots are named `vmw-<VM UUID>` (the VM's
+instance UUID; on a standalone host its BIOS UUID) and are shown with the VM's name. Each snapshot holds one disk
+image per virtual disk plus the VM's `.vmx`.
+
+A VMware snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-vms-as-proxmox-ve-vms)).
+
+Limits: a crash of the ESXi host or a hard power-off can leave CBT "unclean"; the next backup of that VM then reads
+its disks in full (logged). Joining a host to a vCenter (or renewing certificates) changes the certificate the pin
+expects: backups fail with a TLS error until you update the source. Encrypted VMs and vSAN / vVols datastores are
+untested.
+
 ## NFS and SMB shares
 
 The appliance mounts a share read-only and walks it. Unchanged files are detected from the previous snapshot by

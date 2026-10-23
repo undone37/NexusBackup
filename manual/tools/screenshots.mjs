@@ -427,6 +427,17 @@ async function main() {
       await until(`return !!document.querySelector('#fw-host')`, 'forwarding settings');
       await shot('settings-forwarding', { height: 1300 });
     }],
+    // Phase 41: a VMware snapshot restored as a new Proxmox VE VM
+    ['vmware', async () => {
+      await go('/snapshots?source=vmw-5003c9a6-1b2e-4f7a-9d3c-0123456789ab');
+      await ev(`$rowClick('acme-sql01', 'Restore'); return true;`);
+      await until(`return !!$button('Restore as Proxmox VE VM')`, 'VMware restore menu');
+      await ev(`$click('Restore as Proxmox VE VM'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #r-cluster')`, 'VMware restore dialog');
+      await ev(`$fill('#r-target', '9200'); $fill('#r-storage', 'local-lvm'); $check('#r-linkdown'); return true;`);
+      await shot('restore-vmware', { height: 1300 });
+      await closeDialogs();
+    }],
     ['snapshots', async () => {
       await go('/snapshots?tenant=initech');
       await shot('snapshots');
@@ -699,6 +710,7 @@ async function main() {
       await edit('pve-cluster', 'source-pve', 1150);
       await edit('web01-files', 'source-agent', 1400);
       await edit('nas01', 'source-truenas', 1700);
+      await edit('vc01', 'source-vmware', 1300);
       await edit('filer-projects', 'source-nfs', 1150);
       await edit('fs01-data', 'source-smb', 1250);
       await edit('pg-shop', 'source-postgresql', 2000);

@@ -36,6 +36,7 @@ The snapshot name tells you what was backed up. The menu follows from it:
 | `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Clean-file restore…** | **Browse files** |
 | `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
+| `vmw-<VM UUID>` | VMware VM (ESXi / vCenter) | **Restore as Proxmox VE VM** | — |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
@@ -285,6 +286,32 @@ example a whole protection group after losing a cluster.
 
 Replacing originals is not offered here. Request it per guest, so that each replacement gets its own
 approval.
+
+## VMware VMs as Proxmox VE VMs
+
+A VMware snapshot (`vmw-<VM UUID>`, [chapter 4](04-sources.md#vmware-esxi-and-vcenter)) is restored as a **new
+VM on a Proxmox VE cluster** of the same tenant: **Restore → Restore as Proxmox VE VM**.
+
+![Restore a VMware VM as a Proxmox VE VM](images/restore-vmware.png)
+
+Choose the **Proxmox VE cluster**, its **Node**, the new **VMID**, the target **Storage** and the **Network bridge**
+for the VM's network cards; name, pool, start and disconnected NICs work as for a full restore. The VM's settings
+come from its VMware configuration (`.vmx`):
+
+| VMware | Proxmox VE |
+|---|---|
+| name, memory, vCPUs and cores per socket | name (DNS characters), memory, sockets × cores |
+| guest OS | `ostype` (Linux, Windows 10/11 or Server, other) |
+| firmware EFI | OVMF (UEFI) on q35, without an EFI disk: the firmware starts with default variables. Add an EFI disk under *Hardware* if the guest needs persistent boot entries. Secure Boot is off. |
+| disks (SCSI, SATA, NVMe, IDE, in that order) | Linux guests: VirtIO SCSI disks; Windows and other guests: SATA disks (at most 6) |
+| network cards (MAC kept) | Linux guests: VirtIO; Windows and other guests: e1000e, on the chosen bridge |
+
+Windows has no built-in VirtIO drivers. The restored Windows VM therefore boots from SATA with e1000e network cards;
+install the VirtIO drivers (virtio-win ISO), then switch disks and network cards to VirtIO for speed. The job log
+lists these notes. Linux guests may name their network card differently after the move (e.g. `ens192` → `ens18`):
+check the network configuration on the first boot.
+
+Replace, roll back and instant recovery are not offered for VMware snapshots: there is no Proxmox VE original.
 
 ## Instant recovery (VMs)
 

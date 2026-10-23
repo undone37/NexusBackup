@@ -2096,8 +2096,8 @@ function seed() {
   series('acme', `host-${fs02.id}`, 210, { hh: 22, skip: 1, days: 6 });
   series('acme', `nas-${sNas01.id}-tank.projects`, 1_800, { hh: 22, skip: 1, days: 5 });
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
-  series('acme', `vmw-${VC_VMS[0][0]}`, 61_440, { hh: 21, skip: 1, days: 5 });
-  series('acme', `vmw-${VC_VMS[1][0]}`, 24_576, { hh: 21, skip: 1, days: 5 });
+  series('acme', `vmw-${VC_VMS[0][0]}`, 60, { hh: 21, skip: 1, days: 5 });
+  series('acme', `vmw-${VC_VMS[1][0]}`, 24, { hh: 21, skip: 1, days: 5 });
   // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
   for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
     (s as Json).meta = {

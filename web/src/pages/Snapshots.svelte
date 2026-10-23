@@ -898,8 +898,12 @@
                       type="button"
                       class="small"
                       onclick={() => browse(s)}
-                      title={pl && !pl.kind ? t.snap.pluginUnknown : undefined}
-                      ><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
+                      disabled={s.source.startsWith('vmw-')}
+                      title={s.source.startsWith('vmw-')
+                        ? t.snap.vmwNoBrowse
+                        : pl && !pl.kind
+                          ? t.snap.pluginUnknown
+                          : undefined}><IconFolder aria-hidden="true" />{download?.title ?? t.snap.browse}</button
                     >
                     {#if items.length}
                       <Menu label={t.snap.restoreMenu} ariaLabel={t.snap.restoreMenuLabel(s.source)} {items} />
