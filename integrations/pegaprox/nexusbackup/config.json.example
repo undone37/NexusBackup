@@ -1,0 +1,14 @@
+{
+    "appliances": [
+        {
+            "url": "https://backup.example.com:8443",
+            "token": "nxt_xxxxxxxx_...",
+            "cert_sha256": "SHA-256 of the appliance certificate (Settings > Certificate in NexusBackup)",
+            "clusters": {
+                "<PegaProx cluster id>": { "tenant": "<NexusBackup tenant>", "source_id": 1 }
+            }
+        }
+    ],
+    "allow_backup": false,
+    "cache_seconds": 60
+}

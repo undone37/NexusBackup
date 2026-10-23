@@ -1,0 +1,10 @@
+{
+    "id": "nexusbackup",
+    "name": "NexusBackup",
+    "version": "0.1.0",
+    "author": "NexusBackup project",
+    "description": "Backup state of every guest from a NexusBackup appliance (newest backup, schedule, locks, restore tests, alerts); optionally start a backup of a guest.",
+    "min_pegaprox": "1.4.0",
+    "has_frontend": true,
+    "frontend_route": "ui"
+}

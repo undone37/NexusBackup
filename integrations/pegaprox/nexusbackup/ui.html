@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NexusBackup</title>
+<style>
+  :root { --bg: #fff; --fg: #1d2330; --muted: #667085; --line: #e4e7ec; --ok: #12805c; --warn: #b54708; --bad: #b42318;
+          --chip: #f2f4f7; --accent: #0b6e69; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171f; --fg: #e6e8ee; --muted: #98a2b3; --line: #2a2f3a; --ok: #3ccb8f; --warn: #f5a524; --bad: #f97066;
+            --chip: #222734; --accent: #3fb6ad; }
+  }
+  body { margin: 0; padding: 16px; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0 auto 0 0; }
+  select, button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
+                   background: var(--bg); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .tiles { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; min-width: 90px; }
+  .tile b { display: block; font-size: 18px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 10px; background: var(--chip); font-size: 12px; }
+  .ok { color: var(--ok); } .late, .never { color: var(--warn); } .unprotected, .failed { color: var(--bad); }
+  .banner { padding: 8px 12px; border-radius: 6px; background: var(--chip); margin-bottom: 12px; }
+  .banner.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>NexusBackup</h1>
+  <label for="cluster" class="muted">Cluster</label>
+  <select id="cluster"></select>
+  <button id="reload" type="button">Refresh</button>
+</header>
+<div id="msg" role="status"></div>
+<div class="tiles" id="tiles"></div>
+<table>
+  <thead><tr><th>Guest</th><th>State</th><th>Newest backup</th><th>Group / policy</th><th>Next run</th>
+    <th>Restore test</th><th><span class="muted">Action</span></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<script>
+"use strict";
+const API = location.pathname.replace(/\/ui$/, "");
+const $ = (id) => document.getElementById(id);
+let allowBackup = false;
+const STATES = { ok: "Protected", late: "Late or failed", never: "No backup yet", unprotected: "Not protected" };
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
+function ago(s) {
+  if (s == null) return "";
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} min ago` : m < 2880 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+}
+function when(t) { return t ? new Date(t * 1000).toLocaleString() : ""; }
+function msg(text, bad) { $("msg").innerHTML = text ? `<div class="banner ${bad ? "bad" : ""}">${esc(text)}</div>` : ""; }
+
+async function call(path, body) {
+  const r = await fetch(`${API}/${path}`, {
+    method: body ? "POST" : "GET",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(v.error || `HTTP ${r.status}`);
+  return v;
+}
+
+async function loadClusters() {
+  try {
+    const v = await call("clusters");
+    allowBackup = v.allow_backup;
+    $("cluster").innerHTML = v.clusters.map((c) => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    if (!v.clusters.length) msg("No cluster is mapped to a NexusBackup appliance, or you may not see its backups. Map clusters in the plugin settings.");
+    else load();
+  } catch (e) { msg(e.message, true); }
+}
+
+async function load() {
+  const cid = $("cluster").value;
+  if (!cid) return;
+  msg("Loading...");
+  try {
+    const v = await call(`vms?cluster=${encodeURIComponent(cid)}`);
+    msg("");
+    $("tiles").innerHTML = ["ok", "late", "never", "unprotected"].map((k) =>
+      `<div class="tile"><b class="${k}">${v.summary[k] || 0}</b><span class="muted">${STATES[k]}</span></div>`).join("");
+    $("rows").innerHTML = v.vms.map((r) => {
+      const b = r.last_backup, g = r.group, t = r.restore_test;
+      const lock = b && b.lock_until && b.lock_until * 1000 > Date.now() ? ` <span class="chip">locked until ${esc(when(b.lock_until))}</span>` : "";
+      return `<tr>
+        <td>${esc(r.name)} <span class="muted">${esc(r.vmid)}${r.type === "lxc" ? " (CT)" : ""}</span></td>
+        <td class="${r.state}">${STATES[r.state]}${r.alerts.length ? `<div class="muted">${r.alerts.map(esc).join("<br>")}</div>` : ""}</td>
+        <td>${b ? `${esc(when(b.time))}<div class="muted">${ago(b.age_s)}${b.offsite ? ", offsite copy" : ""}</div>${lock}` : "-"}</td>
+        <td>${g ? `${esc(g.name)}<div class="muted">${esc(g.policy || "")}${g.paused ? ", paused" : ""}</div>` : "-"}</td>
+        <td>${g && g.next_backup ? esc(when(g.next_backup)) : "-"}</td>
+        <td>${t ? `<span class="${t.state === "passed" ? "ok" : "failed"}">${esc(t.state)}</span><div class="muted">${esc(when(t.finished))}</div>` : "-"}</td>
+        <td>${allowBackup && g ? `<button type="button" class="primary" data-vmid="${r.vmid}">Back up now</button>` : ""}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { msg(e.message, true); }
+}
+
+$("rows").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-vmid]");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const v = await call("backup", { cluster: $("cluster").value, vmid: Number(btn.dataset.vmid) });
+    msg(`Backup started: job ${v.job} (group ${v.group}). Its progress is in NexusBackup under Jobs.`);
+  } catch (err) { msg(err.message, true); btn.disabled = false; }
+});
+$("cluster").addEventListener("change", load);
+$("reload").addEventListener("click", load);
+loadClusters();
+</script>
+</body>
+</html>
