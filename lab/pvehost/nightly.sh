@@ -6,7 +6,7 @@
 #
 #   nightly.sh [steps]   default: tunnel exact reboot patroni esxi8
 #     tunnel    deploy.sh tunnel: console socket and API of the appliance
-#     exact     verify.sh exact: VM 200 backed up, restored, byte-identical
+#     exact     verify.sh cleanup exact cleanup: VM 200 backed up, restored as VM 211, byte-identical, VM 211 removed
 #     reboot    faults.sh reboot: the appliance reboots during a backup of VM 242; retry and a new snapshot
 #     patroni   VMs 260-263 started, patroni.sh writer scenario nowriter (PITR around a switchover and a failover), stopped
 #     esxi8     VM 251 started, esxi.sh up hotadd (CBT + hot-add on ESXi 8), stopped
@@ -54,7 +54,7 @@ step() {
 }
 
 s_tunnel() { "$here/deploy.sh" tunnel; }
-s_exact() { "$here/verify.sh" exact; }
+s_exact() { "$here/verify.sh" cleanup exact cleanup; } # the restored VM 211 must not be left from an earlier run
 s_reboot() { AFTER=500000000 "$here/faults.sh" reboot; }
 s_patroni() {
 	local rc
