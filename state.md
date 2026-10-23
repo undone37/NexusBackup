@@ -936,8 +936,12 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   (independent-nonpersistent) to proxy VM nx-proxy on the same host: full 16.16 GB in 38.7 s (418 MB/s), incremental
   657 MB in 2.0 s (336 MB/s), check against a full read: 0 mismatched blocks. No snapshots or attached disks left.
   docs/vmware-transport-spike.md "Lab results"; the product proxy would be the appliance's bootc image.
-- [ ] Phase 41 design decision: hot-add proxy as the transport (plan.md); vSAN/NFS, quiesced snapshots, proxy on
-  another host.
+- [x] ESXi 8.0.3 in the lab (2026-10-23, VM 251, `ESXI=8 esxi.sh`): the Dell 8.0U3 image installs on the lab's
+  Haswell CPU with `--forceunsupportedinstall` and `allowLegacyCPU=true` (installer and installed boot.cfg). Same
+  findings as 7.0U3: `/folder` refuses the running VM's base disk (500); hot-add full 447 MB/s, incremental of 659 MB
+  (119 extents) 386 MB/s, 0 mismatches. No snapshots or attached disks left.
+- [ ] Phase 41 design decision: hot-add proxy as the transport and the component split in docs/vmware-design.md
+  (maintainer); vSAN/NFS, quiesced snapshots, proxy on another host.
 
 ## Phase 42 — Further hypervisors and databases (added 2026-10-21)
 Scope: plan.md Phase 42 (Hyper-V with RCT, XCP-ng/XenServer with XAPI CBT, SQL Server log chain and PITR, Oracle

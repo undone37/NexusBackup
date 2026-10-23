@@ -179,6 +179,10 @@ transport does, done with plain vSphere API calls (`ReconfigVM_Task` adds the ba
 | incremental, CBT extents since cbt1 (124 extents) | 657 MB | 2.0 s | 336 |
 | check: full read at cbt2 against cbt1 plus the incremental | 16.16 GB | 37.6 s | 0 mismatched 1 MiB blocks |
 
+**ESXi 8.0.3** (2026-10-23, nested on the same old CPU with `allowLegacyCPU=true`, `ESXI=8 esxi.sh`): the same
+results. `/folder` refuses the base disk of the running VM during a snapshot (HTTP 500); hot-add full read 16.16 GB
+in 36.1 s (447 MB/s), incremental 659 MB in 119 extents in 1.7 s (386 MB/s), 0 mismatches against a full read.
+
 The disk attaches while nx-cbt keeps running with its snapshot (the VMX's lock allows a second read-only opener; the
 shell `dd` does not get one). About 12 GB of the 16 GB thin disk are unallocated and read fast, so the incremental
 figure is the better guide for real data. That is more than ten times the `/folder` path.
