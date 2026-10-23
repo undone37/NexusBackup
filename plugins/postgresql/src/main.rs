@@ -307,23 +307,47 @@ impl Plugin for Postgres {
     fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String> {
         match ctx.params["restore"].as_str() {
             Some("to_target") => restore_dump(self, ctx, src),
-            Some("pitr") => pitr::pitr(ctx, src, &ssh_of(ctx)?),
+            Some("pitr") => pitr::pitr(ctx, &ctx.params["params"], src, &ssh_of(ctx)?),
+            // restore test (Phase 44): a dump into a throwaway database, a cluster snapshot
+            // point-in-time into a throwaway directory; checked and removed again
+            Some("verify") if ctx.guest().is_some() || has_dump(ctx) => restore_dump(self, ctx, src),
+            Some("verify") => pitr::verify(ctx, src, &ssh_of(ctx)?),
             r => Err(error(95, format!("unknown restore {r:?}"))),
         }
     }
 }
 
-/// A logical dump into a (new) database on the source or the alternate server.
+fn has_dump(ctx: &Ctx) -> bool {
+    ctx.params["streams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|s| s["name"].as_str().is_some_and(|n| n.ends_with(".sql")))
+}
+
+/// A logical dump into a (new) database on the source or the alternate server. As a
+/// restore test (`verify`): into `nexus_verify_<time>` on the alternate server if there
+/// is one (else the source), the rows of every table counted against the dump, dropped.
 fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String> {
+    let verify = ctx.params["restore"] == "verify";
     let p = &ctx.params["params"];
-    let db = p["database"].as_str().unwrap_or_default().to_owned();
+    let db = if verify {
+        format!(
+            "nexus_verify_{}",
+            ctx.params["snapshot"]["time"].as_i64().unwrap_or_default()
+        )
+    } else {
+        p["database"].as_str().unwrap_or_default().to_owned()
+    };
     if db.is_empty() || db.len() > 63 {
         return Err(error(22, "params.database: 1..63 characters"));
     }
-    let prefix = match p["server"].as_str().unwrap_or("source") {
-        "alternate" => "restore_",
-        _ => "",
+    let alternate = if verify {
+        ctx.config["restore_host"].as_str().is_some_and(|h| !h.is_empty())
+    } else {
+        p["server"].as_str() == Some("alternate")
     };
+    let prefix = if alternate { "restore_" } else { "" };
     let stream = ctx.params["streams"]
         .as_array()
         .into_iter()
@@ -332,7 +356,7 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
         .find(|n| n.ends_with(".sql"))
         .context("this snapshot holds no database dump (restore a cluster snapshot point-in-time)")?
         .to_owned();
-    let into_existing = p["into_existing"].as_bool().unwrap_or(false);
+    let into_existing = !verify && p["into_existing"].as_bool().unwrap_or(false);
     // the source server = its primary (HA)
     let admin_opts = if prefix.is_empty() {
         pg.src(ctx, "postgres", false)?
@@ -364,8 +388,14 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
             dbname: db.clone(),
             ..admin_opts.clone()
         };
-        let res = Conn::connect(&o).and_then(|mut c| dump::restore(&mut c, &mut r));
-        if res.is_err() && !exists {
+        let res = Conn::connect(&o).and_then(|mut c| {
+            let st = dump::restore(&mut c, &mut r)?;
+            if verify {
+                dump::check_counts(&mut c, &st)?;
+            }
+            Ok(st)
+        });
+        if (res.is_err() || verify) && !exists {
             // leave nothing half-restored behind
             let _ = admin.exec(&format!("DROP DATABASE IF EXISTS {}", ident(&db)));
         }
@@ -373,6 +403,15 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
         Ok(())
     })?;
     let st = summary.context("the dump stream is missing from the snapshot")?;
+    if verify {
+        return Ok(format!(
+            "restore test passed: {stream} restored into {db} on the {} server, {} tables with {} rows counted \
+             against the dump, dropped again",
+            if alternate { "alternate" } else { "source" },
+            st.tables,
+            st.rows
+        ));
+    }
     Ok(format!(
         "{stream} restored into {db} on {}: {} statements, {} tables, {} rows",
         if prefix.is_empty() {

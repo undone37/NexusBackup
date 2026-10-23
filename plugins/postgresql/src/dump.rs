@@ -429,6 +429,44 @@ pub struct RestoreStats {
     pub statements: u64,
     pub tables: u64,
     pub rows: u64,
+    /// per COPY: the table as the dump names it and the rows it held
+    pub copied: Vec<(String, u64)>,
+}
+
+/// The table of a dump's `COPY <table> (<columns>) FROM stdin`.
+pub fn copy_table(stmt: &str) -> Option<&str> {
+    let rest = stmt.strip_prefix("COPY ")?;
+    // the name ends at the first space outside double quotes
+    let mut quoted = false;
+    let end = rest.char_indices().find_map(|(i, ch)| match ch {
+        '"' => {
+            quoted = !quoted;
+            None
+        }
+        ' ' if !quoted => Some(i),
+        _ => None,
+    })?;
+    Some(&rest[..end])
+}
+
+/// Restore test: every table holds as many rows as the dump had for it.
+pub fn check_counts(c: &mut Conn, st: &RestoreStats) -> Result<()> {
+    let mut bad = Vec::new();
+    for (t, want) in &st.copied {
+        // the name as the dump's own COPY statement spells it (quoted identifiers)
+        let have: u64 = c
+            .value(&format!("SELECT count(*) FROM {t}"))?
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or(u64::MAX);
+        if have != *want {
+            bad.push(format!("{t}: {have} rows, the dump had {want}"));
+        }
+    }
+    if !bad.is_empty() {
+        bail!("restore test: row counts differ: {}", bad.join("; "));
+    }
+    Ok(())
 }
 
 /// Runs a dump (after [`read_header`]) in one transaction on `c`.
@@ -474,6 +512,7 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
             continue;
         }
         c.copy_in(&stmt).with_context(|| format!("restoring `{}`", what()))?;
+        let rows_before = st.rows;
         let mut buf = Vec::with_capacity(1 << 20);
         loop {
             line.clear();
@@ -495,6 +534,9 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
         }
         c.copy_end().with_context(|| format!("restoring `{}`", what()))?;
         st.tables += 1;
+        if let Some(t) = copy_table(&stmt) {
+            st.copied.push((t.to_owned(), st.rows - rows_before));
+        }
     }
     if !ended {
         bail!("dump: truncated (no end marker)");
@@ -506,6 +548,21 @@ pub fn restore(c: &mut Conn, r: &mut dyn BufRead) -> Result<RestoreStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_tables() {
+        assert_eq!(copy_table(r#"COPY public.t (id, v) FROM stdin"#), Some("public.t"));
+        assert_eq!(
+            copy_table(r#"COPY "my schema"."T x" ("a b") FROM stdin"#),
+            Some(r#""my schema"."T x""#)
+        );
+        assert_eq!(copy_table("COPY public.empty FROM stdin"), Some("public.empty"));
+        assert_eq!(
+            copy_table(r#"COPY public."a (b" (x) FROM stdin"#),
+            Some(r#"public."a (b""#)
+        );
+        assert_eq!(copy_table("SELECT 1"), None);
+    }
 
     #[test]
     fn header() {

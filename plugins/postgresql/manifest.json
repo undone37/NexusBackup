@@ -1,7 +1,7 @@
 {
   "id": "postgresql",
   "name": "PostgreSQL",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -83,6 +83,17 @@
             "type": "string",
             "title": "pg_ctl on the restore host (optional; default: of the restored major version)",
             "pattern": "^/[A-Za-z0-9._/-]{1,1023}$"
+          },
+          "verify_dir": {
+            "type": "string",
+            "title": "Restore tests of cluster snapshots: directory on the restore host for the throwaway data directories",
+            "pattern": "^/[A-Za-z0-9._/-]{1,1023}$"
+          },
+          "verify_port": {
+            "type": "integer",
+            "format": "port",
+            "title": "Restore tests: port of the throwaway server",
+            "default": 5499
           }
         }
       },
@@ -97,6 +108,12 @@
       "backup": { "incremental": true, "consistent": "application" },
       "restores": [
         { "id": "download", "title": "Download (tar/zip)" },
+        {
+          "id": "verify",
+          "title": "Restore test (dump: throwaway database, row counts checked; cluster: point-in-time to the end in a throwaway directory, started, queried; removed again)",
+          "applies_to": "any",
+          "params_schema": { "type": "object", "properties": {} }
+        },
         {
           "id": "to_target",
           "title": "Restore database dump to a server",

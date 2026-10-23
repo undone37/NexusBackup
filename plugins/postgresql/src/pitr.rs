@@ -280,6 +280,57 @@ fn unpack(
 /// Starts PostgreSQL on `dir`: `pg_ctl` from `pg_ctl` (config `ssh_pg_ctl`), else
 /// of the data directory's major version (Debian/Ubuntu and PGDG RPM paths), else
 /// from PATH. Waits up to 10 minutes; the log is `<dir>/nexus_restore.log`.
+/// Restore test of a cluster snapshot: point-in-time to its end into a fresh directory
+/// below `verify_dir` on the restore host, started (`pg_ctl -w` returns once recovery
+/// ended), a query answered, then stopped and removed (also when a step failed).
+pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
+    let base = ctx.config["verify_dir"].as_str().unwrap_or_default();
+    if !valid_dir(base) {
+        bail!("restore tests of cluster snapshots need a test directory on the restore host (verify_dir)");
+    }
+    let t = ctx.params["snapshot"]["time"].as_i64().unwrap_or_default();
+    let dir = format!("{}/nexus-verify-{t}-{}", base.trim_end_matches('/'), std::process::id());
+    let port = ctx.config["verify_port"].as_u64().unwrap_or(5499);
+    let p = serde_json::json!({"directory": dir, "port": port, "start": true});
+    let restored = pitr(ctx, &p, src, ssh);
+    let check = restored.as_ref().ok().map(|_| ssh.run(&check_cmd(&dir, port)));
+    let pg_ctl = ctx.config["ssh_pg_ctl"].as_str().filter(|s| valid_dir(s));
+    let cleanup = ssh.run(&cleanup_cmd(&dir, pg_ctl));
+    let summary = restored?;
+    check
+        .transpose()
+        .context("the restored server started but did not answer a query")?;
+    cleanup.with_context(|| format!("the restore test passed, but {dir} could not be removed"))?;
+    Ok(format!(
+        "restore test passed: {summary}; the server answered and was removed again"
+    ))
+}
+
+/// The local `psql` of the restored server's version: databases other than templates.
+pub fn check_cmd(dir: &str, port: u64) -> String {
+    let d = sh_quote(dir);
+    format!(
+        "d={d}; v=$(cat \"$d/PG_VERSION\") || exit 1; q=; \
+         for x in \"/usr/lib/postgresql/$v/bin/psql\" \"/usr/pgsql-$v/bin/psql\" \"$(command -v psql)\"; do \
+         [ -n \"$x\" ] && [ -x \"$x\" ] && {{ q=$x; break; }}; done; \
+         n=$(\"$q\" -X -p {port} -d postgres -Atc 'SELECT count(*) FROM pg_database WHERE NOT datistemplate' 2>&1) && \
+         [ \"$n\" -ge 1 ] 2>/dev/null || {{ echo \"check query: $n\" >&2; exit 1; }}"
+    )
+}
+
+/// Stops a restored test server (if it runs) and removes its directory.
+pub fn cleanup_cmd(dir: &str, pg_ctl: Option<&str>) -> String {
+    let d = sh_quote(dir);
+    let first = pg_ctl.map(sh_quote).unwrap_or_default();
+    format!(
+        "d={d}; case \"$d\" in */nexus-verify-*) ;; *) exit 2 ;; esac; \
+         v=$(cat \"$d/PG_VERSION\" 2>/dev/null); \
+         for x in {first} \"/usr/lib/postgresql/$v/bin/pg_ctl\" \"/usr/pgsql-$v/bin/pg_ctl\" \"$(command -v pg_ctl)\"; do \
+         [ -n \"$x\" ] && [ -x \"$x\" ] && {{ \"$x\" -D \"$d\" -m fast -w stop >/dev/null 2>&1; break; }}; done; \
+         rm -rf -- \"$d\""
+    )
+}
+
 pub fn start_cmd(dir: &str, pg_ctl: Option<&str>) -> String {
     let d = sh_quote(dir);
     let first = pg_ctl.map(sh_quote).unwrap_or_default();
@@ -293,8 +344,7 @@ pub fn start_cmd(dir: &str, pg_ctl: Option<&str>) -> String {
     )
 }
 
-pub fn pitr(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
-    let p = &ctx.params["params"];
+pub fn pitr(ctx: &Ctx, p: &Value, src: &mut Source, ssh: &Ssh) -> Result<String> {
     let dir = p["directory"].as_str().unwrap_or_default();
     if !valid_dir(dir) {
         bail!("directory: an absolute path of [A-Za-z0-9._/-], without `..`");
@@ -495,6 +545,15 @@ mod tests {
             recovery_minimums(s),
             "max_connections = 1000\nmax_wal_senders = 10\nmax_worker_processes = 8\n"
         );
+    }
+
+    #[test]
+    fn verify_cleanup_only_removes_test_directories() {
+        let c = cleanup_cmd("/srv/pitr/nexus-verify-17-9", None);
+        assert!(c.starts_with("d='/srv/pitr/nexus-verify-17-9'; case"), "{c}");
+        assert!(c.contains("*/nexus-verify-*) ;; *) exit 2") && c.ends_with("rm -rf -- \"$d\""));
+        let q = check_cmd("/srv/pitr/nexus-verify-17-9", 5499);
+        assert!(q.contains("-p 5499 -d postgres") && q.contains("NOT datistemplate"));
     }
 
     #[test]

@@ -161,7 +161,7 @@ impl Box {
             // as a web form's password field delivers it: without line breaks
             "ssh_key": std::fs::read_to_string(self.var("SSH_KEY")).unwrap().replace('\n', " "),
             "ssh_host_key": self.var("SSH_HOST_KEY"),
-            "databases_exclude": ["app_*", "pitr*", "postgres"],
+            "databases_exclude": ["app_*", "pitr*", "postgres", "ha"],
         })
     }
 
@@ -286,6 +286,18 @@ fn validate_guests_dump_and_restore() {
         h.log()
     );
     assert!(r.summary.contains("rows"), "{}", r.summary);
+
+    // restore test (Phase 44): a throwaway database, row counts against the dump, dropped again
+    let v = h.restore(&cfg, &r.source, r.time, "verify", json!({})).unwrap();
+    assert!(v.summary.starts_with("restore test passed:"), "{}", v.summary);
+    assert_eq!(
+        b.psql(
+            false,
+            "postgres",
+            "SELECT count(*) FROM pg_database WHERE datname LIKE 'nexus_verify_%'"
+        ),
+        "0"
+    );
 
     // to the source under another name: identical schema and data (as pg_dump sees them)
     let out = h
@@ -455,6 +467,23 @@ fn cluster_backup_and_point_in_time_restore() {
     )
     .unwrap();
     assert_eq!(start_and_count(&b, "pitr4", 5495), "300");
+    // restore test of the cluster snapshot: started, queried, removed (verify_dir on the restore host)
+    b.exec(&["mkdir", "-p", "/var/lib/postgresql/verify"]);
+    let mut vcfg = cfg.clone();
+    vcfg["verify_dir"] = json!("/var/lib/postgresql/verify");
+    vcfg["verify_port"] = json!(5494);
+    let v = h.restore(&vcfg, &inc2.source, inc2.time, "verify", json!({})).unwrap();
+    assert!(v.summary.starts_with("restore test passed:"), "{}", v.summary);
+    assert_eq!(
+        b.exec(&["ls", "-A", "/var/lib/postgresql/verify"]).1.trim(),
+        "",
+        "removed again"
+    );
+    // without a test directory the cluster test explains what is missing
+    let e = h
+        .restore(&cfg, &inc2.source, inc2.time, "verify", json!({}))
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("verify_dir"), "{e:#}");
     // the base backup alone (full snapshot: only the WAL in its pg_wal)
     h.restore(
         &cfg,
@@ -728,6 +757,7 @@ fn ha_primary_and_failover() {
     assert_eq!(start_and_count_db(&b, "ha1", 5497, "ha"), "20");
     b.exec(&["rm", "-rf", "/var/lib/postgresql/ha1"]);
     stop_rm(&b, &["replica"]);
+    b.psql(false, "postgres", "DROP DATABASE IF EXISTS ha WITH (FORCE)");
 }
 
 /// Waits for the end of recovery of a server the plugin started, counts t in `db`.
