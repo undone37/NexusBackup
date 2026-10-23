@@ -660,6 +660,25 @@ fn ha_primary_and_failover() {
     assert_eq!(v["valid"], true, "{v} {:?}", h.log());
     let want = format!("servers: 127.0.0.1:{rport} standby, 127.0.0.1:{port} primary");
     assert!(h.log().iter().any(|l| l.contains(&want)), "{:?}", h.log());
+    // data that must survive the failover, and the slot on the replica as Patroni keeps a permanent one
+    b.psql(false, "postgres", "DROP DATABASE IF EXISTS ha WITH (FORCE)");
+    b.psql(false, "postgres", "CREATE DATABASE ha");
+    b.psql(
+        false,
+        "ha",
+        "CREATE TABLE t (id int); INSERT INTO t SELECT generate_series(1, 10)",
+    );
+    let t0 = Instant::now();
+    while b.psql_port(false, 5433, "ha", "SELECT count(*) FROM t") != "10" {
+        assert!(t0.elapsed() < Duration::from_secs(60), "replica does not catch up");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    b.psql_port(
+        false,
+        5433,
+        "postgres",
+        "SELECT pg_create_physical_replication_slot('nexusbackup', true)",
+    );
     let full = h.backup(&cfg, None).unwrap();
     assert!(
         full.summary.starts_with("full:") && full.summary.ends_with(&format!("(from 127.0.0.1:{port})")),
@@ -678,22 +697,36 @@ fn ha_primary_and_failover() {
     let mut after = b.config();
     after["port"] = json!(9); // the old primary: nothing listens there
     after["hosts"] = json!([format!("127.0.0.1:{rport}")]);
+    b.psql_port(false, 5433, "ha", "INSERT INTO t SELECT generate_series(11, 20)");
+    // 1.3.1: the promoted replica has the slot: the old timeline up to the switch, then timeline 2,
+    // no new base backup
     let again = h.backup(&after, None).unwrap();
     assert!(
-        again.summary.starts_with("full:") && again.summary.ends_with(&format!("(from 127.0.0.1:{rport})")),
+        again.summary.starts_with("incremental:"),
         "{} {:?}",
         again.summary,
         h.log()
     );
-    // no slot on the promoted replica (no cluster manager keeps one there): a new base backup
     assert!(
         h.log()
             .iter()
-            .any(|l| l.contains("timeline 1 → 2: no slot") && l.contains("full backup")),
+            .any(|l| l.contains("timeline 1 → 2: following the switch")),
         "{:?}",
         h.log()
     );
     assert_eq!(again.meta.as_ref().unwrap()["recoverable"]["timeline"], 2);
+    // the end of the backup: both batches, the second one written on timeline 2
+    b.exec(&["rm", "-rf", "/var/lib/postgresql/ha1"]);
+    h.restore(
+        &after,
+        &again.source,
+        again.time,
+        "pitr",
+        json!({"directory": "/var/lib/postgresql/ha1", "port": 5497}),
+    )
+    .unwrap();
+    assert_eq!(start_and_count_db(&b, "ha1", 5497, "ha"), "20");
+    b.exec(&["rm", "-rf", "/var/lib/postgresql/ha1"]);
     stop_rm(&b, &["replica"]);
 }
 
