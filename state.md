@@ -1098,10 +1098,14 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   rebooted after 3.5 GB read; afterwards the job is failed ("interrupted: the scheduler stopped while this job was
   running"), no snapshot of the run exists. Found: the interrupted backup was neither retried nor alerted (crash
   recovery only marked it failed), so the guest waited for its next schedule silently. Fixed in the scheduler: an
-  interrupted backup follows the group's retry policy, the last attempt raises `job_failed` (test `crash_recovery`);
-  lab confirmation with the next build.
+  interrupted backup follows the group's retry policy, the last attempt raises `job_failed` (test `crash_recovery`).
 - [x] Found by the reboot test as well: the vzdump task of the interrupted run kept the guest's backup lock on the node
   and waits for an appliance up to the PVE plugin's job timeout (6 h); every retry failed with "another backup task
   ... still waits". nexus-pve now stops such tasks when the same API token started them before (other users' tasks
-  stay), and the retry goes through (test `stale_tasks_of_the_same_token_only`); lab confirmation with the next build.
+  stay), and the retry goes through (test `stale_tasks_of_the_same_token_only`).
+- [x] Both confirmed on VM 201 with 0.0.23-dev (2026-10-23, `faults.sh reboot` again): reboot during job 533 after
+  1.6 GB; after the restart 533 is failed and retry 534 queued; 534 found the stale vzdump task of the interrupted
+  run, stopped it and failed; retry 536 backed VM 242 up (153 s), about 10 minutes after the reboot, without anyone
+  touching the node. (Could be one retry shorter if recovery stopped the task itself: the interrupted job's log has
+  its UPID.)
 - [ ] Fault injection, the rest: network loss, full store, corrupt chunks, clock jumps.
