@@ -8,6 +8,10 @@ export const can = {
   // Tenant-owned config (sources, agents, groups, the tenant's users): admins, and tenant admins
   // within their own tenant (Phase 19b).
   manageTenant: (u: User | null) => u?.role === 'admin' || u?.role === 'tenant_admin',
+  // Agents > Updates read-only (releases, versions, rollouts: GET /agent-rollouts readers, docs/agent-update-plan.md)
+  // for the appliance-wide roles that do not manage agents
+  viewAgentUpdates: (u: User | null) =>
+    !!u && !u.tenant && (u.role === 'security_officer' || u.role === 'operator' || u.role === 'viewer'),
   backup: (u: User | null) => u?.role === 'admin' || u?.role === 'operator' || u?.role === 'tenant_admin',
   // viewers: read-only, no job kinds at all (Phase 14d)
   restore: (u: User | null) => !!u && u.role !== 'security_officer' && u.role !== 'viewer',

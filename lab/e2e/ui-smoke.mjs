@@ -112,12 +112,20 @@ const visit = async (hash, theme, user) => {
   // a page is settled when its heading is there and no spinner is left
   const ok = await until(`return !!document.querySelector('main h1') && !document.querySelector('[aria-busy="true"]')`, 20000);
   await sleep(600);
-  if (!ok) problems.push(`${where}: page did not render`);
+  if (!ok) {
+    problems.push(`${where}: page did not render`);
+    await failShot(where);
+  }
   visited.push(where);
   if (theme === 'dark' && hash === '#/') {
     const r = await cdp('Page.captureScreenshot', { format: 'png' });
     writeFileSync(`${OUT}/${user}-dashboard-dark.png`, Buffer.from(r.result.data, 'base64'));
   }
+};
+// a screenshot of a problem (the page as the check saw it) next to the report
+const failShot = async (where) => {
+  const r = await cdp('Page.captureScreenshot', { format: 'png' });
+  writeFileSync(`${OUT}/problem-${where.replace(/[^a-z0-9]+/gi, '_')}.png`, Buffer.from(r.result.data, 'base64'));
 };
 const signIn = async (user, pw, secret) => {
   await cdp('Network.clearBrowserCookies');
@@ -132,6 +140,16 @@ const signIn = async (user, pw, secret) => {
   await ev(`$fill('#l-name', ${JSON.stringify(user)}); $fill('#l-pw', ${JSON.stringify(pw)}); $fill('#l-totp', '${code}');
             document.querySelector('form').requestSubmit();`);
   if (!(await until(`return !!document.querySelector('.topbar')`))) throw new Error(`sign-in as ${user} failed`);
+  // a risk mark (Phase 29, e.g. a sign-in at an hour the account has not used, common in the lab): the first change
+  // answers 428 and the UI asks for re-authentication; done here once, as lab/e2e/api-lib.sh login does
+  const me = await ev(`return await (await fetch('/api/v1/auth/me')).json();`);
+  if (me?.step_up && !me.step_up.done) {
+    const c2 = await freshCode(user, secret);
+    const st = await ev(`return (await fetch('/api/v1/auth/step-up', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': ${JSON.stringify(me.csrf)} },
+      body: JSON.stringify({ current_password: ${JSON.stringify(pw)}, current_totp: '${c2}' }) })).status;`);
+    if (st !== 200) throw new Error(`step-up as ${user}: HTTP ${st}`);
+  }
 };
 
 for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so', sec.SO_PW, sec.SO_TOTP]]) {
@@ -166,7 +184,10 @@ for (const [user, pw, secret] of [['admin', sec.ADMIN_PW, sec.ADMIN_TOTP], ['so'
     await visit('#/agents?tab=updates', theme, user);
     where = `${user}/${theme}#/agents?tab=updates (sections)`;
     if (!(await until(`return !!document.querySelector('[data-testid="agent-releases"]') && !!document.querySelector('[data-testid="agent-versions"]') && !!document.querySelector('[data-testid="agent-rollouts"]')`, 10000)))
+    {
       problems.push(`${where}: releases, versions or rollouts section missing`);
+      await failShot(where);
+    }
     visited.push(where);
     for (const tab of TABS) {
       // tabs the role may not see fall back to the first one: still a valid render

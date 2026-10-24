@@ -152,7 +152,14 @@
       section: 'config',
       icon: IconSources,
     },
-    { path: '/agents', comp: Agents, allow: can.manageTenant, nav: t.nav.agents, section: 'config', icon: IconAgents },
+    {
+      path: '/agents',
+      comp: Agents,
+      allow: (u) => can.manageTenant(u) || can.viewAgentUpdates(u),
+      nav: t.nav.agents,
+      section: 'config',
+      icon: IconAgents,
+    },
     {
       path: '/replication',
       comp: Replication,
