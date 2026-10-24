@@ -40,6 +40,12 @@ pub fn recovery_conf(p: &Value) -> Result<(String, String)> {
             if !t.bytes().all(|b| b.is_ascii_digit() || b" -:.+TZ".contains(&b)) {
                 bail!("target_time: e.g. 2026-10-10 14:30:00+00");
             }
+            // the server checks the setting before time zone abbreviations are loaded: `Z` is refused there
+            // (lab 2026-10-24, PostgreSQL 18: "invalid value for parameter"), the ISO `T` normalised along
+            let t = t.replacen('T', " ", 1);
+            let t = t
+                .strip_suffix('Z')
+                .map_or(t.clone(), |s| format!("{}+00", s.trim_end()));
             conf += &format!("recovery_target_time = '{t}'\n");
             format!("time {t}")
         }
@@ -291,7 +297,11 @@ pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     let t = ctx.params["snapshot"]["time"].as_i64().unwrap_or_default();
     let dir = format!("{}/nexus-verify-{t}-{}", base.trim_end_matches('/'), std::process::id());
     let port = ctx.config["verify_port"].as_u64().unwrap_or(5499);
-    let p = serde_json::json!({"directory": dir, "port": port, "start": true});
+    let mut p = serde_json::json!({"directory": dir, "port": port, "start": true});
+    // #46: the scheduler picks a random point inside the recoverable range (none: the end)
+    if let Some(tt) = ctx.params["params"]["target_time"].as_str() {
+        p["target_time"] = tt.into();
+    }
     let restored = pitr(ctx, &p, src, ssh);
     let check = restored.as_ref().ok().map(|_| ssh.run(&check_cmd(&dir, port)));
     let pg_ctl = ctx.config["ssh_pg_ctl"].as_str().filter(|s| valid_dir(s));
@@ -299,22 +309,28 @@ pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     let summary = restored?;
     check
         .transpose()
-        .context("the restored server started but did not answer a query")?;
+        .context("the restored server did not finish recovery or did not answer a query")?;
     cleanup.with_context(|| format!("the restore test passed, but {dir} could not be removed"))?;
     Ok(format!(
         "restore test passed: {summary}; the server answered and was removed again"
     ))
 }
 
-/// The local `psql` of the restored server's version: databases other than templates. The answer is
-/// the last line: warnings come first (lab 2026-10-23: a collation version mismatch between the
-/// source's and the restore host's C library is a WARNING, not a failure of the test).
+/// The local `psql` of the restored server's version: first until recovery has ended (`pg_ctl -w` returns
+/// as soon as a hot standby accepts read-only connections, before the target is reached; a target the
+/// WAL does not reach stops the server: lab 2026-10-24), then databases other than templates. The
+/// answer is the last line: warnings come first (lab 2026-10-23: a collation version mismatch between
+/// the source's and the restore host's C library is a WARNING, not a failure of the test).
 pub fn check_cmd(dir: &str, port: u64) -> String {
     let d = sh_quote(dir);
     format!(
         "d={d}; v=$(cat \"$d/PG_VERSION\") || exit 1; q=; \
          for x in \"/usr/lib/postgresql/$v/bin/psql\" \"/usr/pgsql-$v/bin/psql\" \"$(command -v psql)\"; do \
-         [ -n \"$x\" ] && [ -x \"$x\" ] && {{ q=$x; break; }}; done; \
+         [ -n \"$x\" ] && [ -x \"$x\" ] && {{ q=$x; break; }}; done; i=0; \
+         while o=$(\"$q\" -X -p {port} -d postgres -Atc 'SELECT pg_is_in_recovery()' 2>&1); \
+         r=$(printf '%s\\n' \"$o\" | tail -n 1); [ \"$r\" != f ]; do \
+         [ \"$r\" = t ] && [ $i -lt 3600 ] || {{ echo \"recovery did not end: $o\" >&2; \
+         tail -n 5 \"$d/nexus_restore.log\" >&2; exit 1; }}; i=$((i + 2)); sleep 2; done; \
          o=$(\"$q\" -X -p {port} -d postgres -Atc 'SELECT count(*) FROM pg_database WHERE NOT datistemplate' 2>&1); \
          n=$(printf '%s\\n' \"$o\" | tail -n 1); \
          [ \"$n\" -ge 1 ] 2>/dev/null || {{ echo \"check query: $o\" >&2; exit 1; }}"
@@ -496,6 +512,9 @@ mod tests {
         let (c, u) = recovery_conf(&json!({"target_time": "2026-10-10 14:30:00+00", "port": 5499})).unwrap();
         assert!(c.contains("recovery_target_time = '2026-10-10 14:30:00+00'\n") && c.contains("port = 5499\n"));
         assert_eq!(u, "time 2026-10-10 14:30:00+00");
+        let (c, u) = recovery_conf(&json!({"target_time": "2026-10-24T18:05:39Z"})).unwrap();
+        assert!(c.contains("recovery_target_time = '2026-10-24 18:05:39+00'\n"), "{c}");
+        assert_eq!(u, "time 2026-10-24 18:05:39+00");
         let (c, _) = recovery_conf(&json!({"target_lsn": "0/3000060", "target_time": ""})).unwrap();
         assert!(c.contains("recovery_target_lsn = '0/3000060'\n"));
         let (c, u) = recovery_conf(&json!({"target_name": "before_upgrade"})).unwrap();
@@ -557,6 +576,42 @@ mod tests {
         assert!(c.contains("*/nexus-verify-*) ;; *) exit 2") && c.ends_with("rm -rf -- \"$d\""));
         let q = check_cmd("/srv/pitr/nexus-verify-17-9", 5499);
         assert!(q.contains("-p 5499 -d postgres") && q.contains("NOT datistemplate"));
+    }
+
+    /// The check waits while the server is in recovery and fails once it is gone (a target the WAL
+    /// does not reach stops it): a fake `psql` answers from a script of lines.
+    #[test]
+    fn check_waits_for_the_end_of_recovery() {
+        let run = |answers: &str| {
+            let d = tempfile::tempdir().unwrap();
+            std::fs::write(d.path().join("PG_VERSION"), "99\n").unwrap();
+            std::fs::write(
+                d.path().join("nexus_restore.log"),
+                "FATAL:  recovery ended before configured recovery target was reached\n",
+            )
+            .unwrap();
+            std::fs::write(d.path().join("answers"), answers).unwrap();
+            let psql = d.path().join("psql");
+            std::fs::write(&psql, format!(
+                "#!/bin/sh\nf={}/answers; a=$(head -n 1 \"$f\"); sed -i 1d \"$f\"; echo \"$a\"; [ \"$a\" != refused ]\n",
+                d.path().display()
+            )).unwrap();
+            std::fs::set_permissions(&psql, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            let cmd = check_cmd(d.path().to_str().unwrap(), 5499).replace("sleep 2", "true");
+            let o = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .env("PATH", format!("{}:/usr/bin:/bin", d.path().display()))
+                .output()
+                .unwrap();
+            (o.status.success(), String::from_utf8_lossy(&o.stderr).into_owned())
+        };
+        assert_eq!(run("t\nt\nf\n3\n"), (true, String::new()));
+        let (ok, err) = run("t\nrefused\n");
+        assert!(
+            !ok && err.contains("recovery did not end: refused") && err.contains("target was reached"),
+            "{err}"
+        );
     }
 
     #[test]

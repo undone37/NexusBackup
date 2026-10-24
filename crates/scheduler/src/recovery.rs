@@ -55,6 +55,18 @@ fn results(log: &str) -> Vec<Value> {
         .collect()
 }
 
+/// A random point after the start of a snapshot's recoverable range (`meta.recoverable`, plugin
+/// metadata) up to its end; None without a range of at least two seconds (tested to the end).
+fn pitr_target(meta: &str) -> Option<i64> {
+    let m: Value = serde_json::from_str(meta).ok()?;
+    let (from, to) = (
+        m["recoverable"]["from_time"].as_i64()?,
+        m["recoverable"]["to_time"].as_i64()?,
+    );
+    // after `from` (the base backup's end): recovery must reach consistency before its target
+    (to - from >= 2).then(|| rand::Rng::gen_range(&mut rand::thread_rng(), from + 1..=to))
+}
+
 impl Scheduler {
     /// The newest local snapshot time of a guest source.
     fn newest_local(&self, tenant: &str, source: &str) -> Result<Option<(i64, i64)>> {
@@ -257,10 +269,20 @@ impl Scheduler {
                     let Some((time, _)) = self.newest_local(&g.tenant, &source)? else {
                         continue;
                     };
+                    // #46: a point-in-time capable snapshot is recovered to a random point of its range
+                    let meta: Option<String> = self.db.conn().query_row(
+                        "SELECT meta FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                        params![g.tenant, source, time],
+                        |r| r.get(0),
+                    )?;
+                    let p = match meta.as_deref().and_then(pitr_target) {
+                        Some(ts) => json!({"target_time": crate::forward::rfc3339(ts)}),
+                        None => json!({}),
+                    };
                     self.insert_job(
                         "plugin_restore",
                         &g.tenant,
-                        &json!({"source": source, "time": time, "restore": "verify", "params": {},
+                        &json!({"source": source, "time": time, "restore": "verify", "params": p,
                                 "group_id": gid, "test": true}),
                     )?;
                 }
@@ -729,5 +751,21 @@ impl Scheduler {
             ),
             Some(tenant),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn pitr_target_is_inside_the_range() {
+        let m = r#"{"recoverable":{"from_time":100,"to_time":110}}"#;
+        for _ in 0..200 {
+            assert!((101..=110).contains(&super::pitr_target(m).unwrap()));
+        }
+        assert_eq!(
+            super::pitr_target(r#"{"recoverable":{"from_time":100,"to_time":101}}"#),
+            None
+        );
+        assert_eq!(super::pitr_target(r#"{"rows":3}"#), None);
     }
 }

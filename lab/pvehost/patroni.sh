@@ -35,7 +35,7 @@
 #   patroni.sh matrix V…  per PostgreSQL version: new nodes, deploy, slot, writer, source, scenario, cleanup
 #                         (e.g. `patroni.sh matrix 14 15 16 18`; results per version in the log)
 #   patroni.sh scenario   marks and backups around a switchover and a hard failover, then restore (new marks)
-#   patroni.sh ssh N CMD  a command as root on VM N (ctl, pg1, pg2, pg3)
+#   patroni.sh ssh N CMD  a command as root on VM N (pg-ctl, pg1, pg2, pg3)
 #   patroni.sh destroy    stop and remove the VMs (KEEP_CTL=1: the nodes only, e.g. for another PG_VERSION)
 #   patroni.sh cleanpitr  stop the restored servers on pg-ctl and remove /srv/pitr/*
 #
@@ -320,6 +320,7 @@ job() { # USER KIND PARAMS [timeout] -> final job JSON (dies unless ok)
 
 step_backup() {
 	apienv
+	source_config
 	local g j
 	for g in dump_group cluster_group; do
 		j=$(job admin backup "$(jq -c --arg g "$g" '{group_id: .[$g]}' "$LAB/state.json")")
@@ -372,6 +373,7 @@ step_failover() {
 
 step_restore() {
 	apienv
+	source_config
 	local snaps snap s r j name at rows tl want have dir port=5440
 	# the dump into the cluster as labdb_copy: ticks up to the dump compared
 	# this lab's source only (one per PostgreSQL version)
@@ -458,18 +460,27 @@ step_matrix() {
 	done
 }
 
-step_rtest() {
-	apienv
-	local src cfg g id r
+# the source's config with the current addresses of the VMs (DHCP: pg-ctl came back on another address after
+# the VMs were stopped for a day) plus $1 (jq); a changed endpoint needs the password again, so it and the SSH key
+# are sent as in step_source
+source_config() {
+	local src cfg name
 	src=$(jq -r .source "$LAB/state.json")
-	on pg-ctl 'install -d -o postgres -g postgres -m 700 /srv/pitr/verify' </dev/null
-	# the stored config without its secrets (they stay when omitted) plus the test directory
-	cfg=$(api admin GET /sources | jq -c --argjson s "$src" '.[] | select(.id == $s) | .config
-		| del(.password, .restore_password, .ssh_key) | with_entries(select(.key | endswith("_set") | not))
-		| .verify_dir = "/srv/pitr/verify" | .verify_port = 5499')
+	cfg=$(api admin GET /sources | jq -c --argjson s "$src" --arg h1 "$(ip_of pg1)" --arg h2 "$(ip_of pg2)" \
+		--arg h3 "$(ip_of pg3)" --arg ctl "$(ip_of pg-ctl)" --arg pw "$(secret PG_BACKUP)" --arg key "$(cat "$LAB/pitr_ed25519")" \
+		'.[] | select(.id == $s) | .config | with_entries(select(.key | endswith("_set") | not))
+		| .host = $h1 | .hosts = [$h2, $h3] | .ssh_host = $ctl | .password = $pw | .ssh_key = $key | '"${1:-.}")
 	name=$(api admin GET /sources | jq -r --argjson s "$src" '.[] | select(.id == $s) | .name')
 	api admin PUT "/sources/$src" "$(jq -nc --arg n "$name" --argjson c "$cfg" '{name:$n, config:$c}')" >/dev/null
-	expect 200 "source with verify_dir"
+	expect 200 "source $src: current addresses${1:+, $1}"
+}
+
+step_rtest() {
+	apienv
+	local src g id r
+	src=$(jq -r .source "$LAB/state.json")
+	on pg-ctl 'install -d -o postgres -g postgres -m 700 /srv/pitr/verify' </dev/null
+	source_config '.verify_dir = "/srv/pitr/verify" | .verify_port = 5499'
 	for g in dump_group cluster_group; do
 		id=$(jq -r ".$g" "$LAB/state.json")
 		api admin PUT "/restore-tests/schedules/$id" '{"every_days": 1}' >/dev/null

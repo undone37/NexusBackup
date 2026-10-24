@@ -439,9 +439,11 @@ database (and, for PostgreSQL, of the cluster):
   on they also carry a content digest of every table, and the test reads each table back and compares its rows
   (in any order). Dumps made with `mysqldump` over SSH carry neither, so their test checks that the whole dump
   restores without an error.
-- **Cluster snapshots** are restored point-in-time to their end into a throwaway directory below the source's
+- **Cluster snapshots** are restored point-in-time into a throwaway directory below the source's
   **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
-  must answer a query once recovery has ended. The server is stopped and the directory removed afterwards. The
+  must end recovery (a target the backed-up WAL does not reach fails the test) and answer a query. A scheduled test recovers to a random time inside the snapshot's
+  recoverable range (plugin 1.5.0; the job's parameters show it), so every point of the range gets exercised over
+  time, not only the end. The server is stopped and the directory removed afterwards. The
   restore host needs PostgreSQL of the same major version (`pg_ctl`, `psql`), ideally on the same operating system
   release as the source: a different C library changes the collation, PostgreSQL then warns about a "collation
   version mismatch" and text indexes may need a rebuild after a real restore (the test passes, the warning is in
