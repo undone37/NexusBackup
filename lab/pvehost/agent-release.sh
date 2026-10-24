@@ -9,6 +9,8 @@
 #   agent-release.sh upload    RELEASE_TAR (nexus-agent-release-<v>-signed.tar) uploaded, listed as signed
 #   agent-release.sh testkey   the image's $SHIPPED .deb (TEST key pinned) installed on the VM: the packaged agent
 #                              pins the production key and refuses TEST-signed releases (checked first)
+#   agent-release.sh bundle    instead of testkey: the package removed, the image's $SHIPPED bundle (tar.gz,
+#                              install.sh) installed with a new token and enrolled again (update: bundle swap)
 #   agent-release.sh update    agent "clean-$VM" (clean-restore.sh vm enrol) updated to the uploaded version
 #   agent-release.sh selinux   AVC denials of today on the appliance (root console), none for the release path
 #
@@ -57,9 +59,16 @@ step_testkey() {
 	[ "$(jq -r .state <<<"$j")" != ok ] && jq -r '.log // ""' <<<"$j" | grep -q 'does not verify with any pinned release key' ||
 		die "a production-key agent accepted a TEST-signed release: $(jq -r '.log // ""' <<<"$j" | tail -n 5)"
 	log "the packaged agent (production key) refuses the TEST-signed release"
-	deb=$(ls "$repo"/os/agent-release/"$SHIPPED"/linux-x86_64/nexus-agent_"$SHIPPED"-1_amd64.deb)
-	scp -q "${SSHO[@]}" "$deb" "root@$VM_IP:/tmp/agent.deb"
-	vm "dpkg -i /tmp/agent.deb >/dev/null && systemctl restart nexus-agent && nexus-agent version | head -1"
+	# .deb or .rpm, whichever the VM's package manager takes
+	if vm 'command -v dpkg >/dev/null'; then
+		deb=$(ls "$repo"/os/agent-release/"$SHIPPED"/linux-x86_64/nexus-agent_"$SHIPPED"-1_amd64.deb)
+		scp -q "${SSHO[@]}" "$deb" "root@$VM_IP:/tmp/agent.deb"
+		vm "dpkg -i /tmp/agent.deb >/dev/null && systemctl restart nexus-agent && nexus-agent version | head -1"
+	else
+		deb=$(ls "$repo"/os/agent-release/"$SHIPPED"/linux-x86_64/nexus-agent-"$SHIPPED"-1.x86_64.rpm)
+		scp -q "${SSHO[@]}" "$deb" "root@$VM_IP:/tmp/agent.rpm"
+		vm "rpm -U --quiet /tmp/agent.rpm && systemctl restart nexus-agent && nexus-agent version | head -1"
+	fi
 }
 
 step_list() {
@@ -80,6 +89,27 @@ step_upload() {
 	api admin GET /agent-releases | jq -e --arg v "$v" '.releases[] | select(.version == $v) | .signed' >/dev/null ||
 		die "uploaded release $v is not listed as signed"
 	log "release $v uploaded (HTTP $(cat "$S/status")): signed"
+}
+
+step_bundle() {
+	local a r j tgz
+	a=$(api admin GET /agents | jq -r --arg n "clean-$VM" '.[] | select(.name == $n) | .id')
+	[ -n "$a" ] || die "no agent clean-$VM (clean-restore.sh vm enrol)"
+	tgz=$(ls "$repo"/os/agent-release/"$SHIPPED"/linux-x86_64/nexus-agent-"$SHIPPED"-x86_64.tar.gz)
+	scp -q "${SSHO[@]}" "$tgz" "root@$VM_IP:/tmp/agent.tar.gz"
+	r=$(api admin POST "/agents/$a/token")
+	expect 200 "agent token"
+	vm "set -e; systemctl stop nexus-agent
+		if command -v dpkg >/dev/null; then dpkg --purge nexus-agent >/dev/null; else rpm -e nexus-agent; fi
+		rm -rf /tmp/agent && mkdir /tmp/agent && tar -xzf /tmp/agent.tar.gz -C /tmp/agent
+		cd /tmp/agent/nexus-agent-$SHIPPED-x86_64 && ./install.sh --token - >/dev/null && nexus-agent version | head -1" <<<"$(jq -r .token <<<"$r")"
+	r=$(api admin POST "/agents/$a/enroll")
+	expect 202 "enroll"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 300)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll: $(jq -r '.log // ""' <<<"$j" | tail -n 15)"
+	api admin GET /agents | jq -e --arg id "$a" '.[] | select(.id == $id) | .install == "bundle"' >/dev/null ||
+		die "agent not reported as a bundle install"
+	log "agent clean-$VM: bundle $SHIPPED installed and enrolled"
 }
 
 step_update() {

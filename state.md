@@ -483,7 +483,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   0.1.0 -> 0.1.1 in-band via apt-get in the transient unit, postinst restart, update state `ok` in 6 s; same version refused;
   a signed 9.9.9 .deb with an unmet dependency: apt-get exit 100 reported as `failed` with the apt output, agent stays on
   0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
-- [ ] (#66) Linux agent update labs: plan.md Phase 39 L6
+- [ ] (#66) Linux agent update labs: plan.md Phase 39 L6 Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/agent-release.sh`,
+  TEST-signed releases 0.1.1 -> 0.1.2): .deb on debian-13 (7 s), .rpm on alma-10 (5 s), bundle install with
+  install.sh and the binary swap on debian-13 (10 s); the packaged production-key agents refuse TEST-signed
+  releases. Open: desktop package with the GUI running, watchdog revert of a broken bundle, arm64 (needs aarch64
+  packages), an edge-connected laptop.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
