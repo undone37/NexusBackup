@@ -721,7 +721,13 @@ Phase 30's), threat model T70–T75.
   `synthetic_restore_download_and_to_host` (fake agent), web-api `tests/phase33.rs`, catalog production rule; UI
   (Snapshots menu, dialog, job result with report and download), mock, manual 06, screenshots (scene `p33synthetic`),
   threat model T73
-- [ ] (#76) Clean-file restore lab: plan.md Phase 39 L16
+- [x] (#76) Clean-file restore lab (2026-10-24, appliance 0.0.31-dev, agent 0.1.0 on debian-13 VM 225,
+  `lab/pvehost/clean-restore.sh`): 200 files backed up, then 169 encrypted and renamed to `*.locked`, one with a
+  YARA marker, 20 edited legitimately, ransom notes `HOW_TO_DECRYPT.txt`; second backup, YARA scan (1 match).
+  Clean-file restore of the second snapshot as a download and onto the host (new directory): all 200 files as
+  expected (renamed ones and the infected one from snapshot 1, the edits from snapshot 2), no `*.locked`, no
+  note; 3 s each. A note named `README_RESTORE_FILES.txt` matches none of the built-in patterns and is restored
+  (as documented: the anomaly setting `ransom_notes` adds names).
 - [x] cases (M365 compliance search on the name index; item metadata search not built, design in docs/m365.md):
   catalog `cases` / `case_snapshots`, `file_search` `source_prefix` + case bookkeeping, web-api `/cases` (create,
   search, hold, export, close), Cases page, mock, manual 06, screenshot (scene `p33cases`), ui-smoke, threat model

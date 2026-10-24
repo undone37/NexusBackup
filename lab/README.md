@@ -150,6 +150,10 @@ Stop the VMs when no test runs (`qm stop`): together they hold 28 GB of the host
 (`lab/linux/e2e.sh appliance`): reset to clean-os + package, firewall rule for 7444 (firewalld), init, enrol,
 backup, incremental, restore compared with `lab/linux/manifest.py`; `agent-matrix.sh summary` prints the table.
 
+`lab/pvehost/clean-restore.sh` runs a clean-file restore after a simulated ransomware run on one of these VMs
+against the appliance VM (default `debian-13`): test tree, backup, encrypt and rename most files, a ransom note, a
+YARA marker, backup, scan, then the clean-file restore as a download and onto the host, both compared file by file.
+
 ## Server test VMs on the PVE lab host (`lab/pvehost/server-vms.sh`)
 
 | ID | Name | What | Sizing |
