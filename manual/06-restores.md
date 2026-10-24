@@ -36,7 +36,7 @@ The snapshot name tells you what was backed up. The menu follows from it:
 | `host-<agent id>` | Linux/Windows host (agent) | **Restore to path**, **Clean-file restore…** | **Browse files** |
 | `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
-| `vmw-<VM UUID>` | VMware VM (ESXi / vCenter) | **Restore as Proxmox VE VM** | — |
+| `vmw-<VM UUID>` | VMware VM (ESXi / vCenter) | **Restore as Proxmox VE VM** | **Browse files** |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
