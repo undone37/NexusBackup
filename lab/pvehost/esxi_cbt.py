@@ -16,6 +16,7 @@ env: LAB (~/nexus-lab/esxi: ip, root.password), VM (nx-cbt)
 """
 import json
 import os
+import re
 import ssl
 import sys
 
@@ -33,11 +34,16 @@ def read(name):
 
 
 def find_vm(si, name=None):
+    """The VM on this host by name; under vCenter a name another host already uses becomes `name (1)` (the
+    ESXi 8 lab next to ESXi 7, nightly run 2026-10-24: "no VM nx-cbt")."""
+    want = name or VM
     view = si.content.viewManager.CreateContainerView(si.content.rootFolder, [vim.VirtualMachine], True)
-    try:
-        return next(v for v in view.view if v.name == (name or VM))
-    except StopIteration:
-        sys.exit(f"no VM {name or VM}")
+    found = [v for v in view.view if v.name == want] or [
+        v for v in view.view if re.fullmatch(re.escape(want) + r" \(\d+\)", v.name)
+    ]
+    if len(found) != 1:
+        sys.exit(f"no VM {want}" if not found else f"several VMs named {want}: {[v.name for v in found]}")
+    return found[0]
 
 
 def find_snap(tree, name):

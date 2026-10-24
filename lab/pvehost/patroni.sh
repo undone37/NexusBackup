@@ -387,8 +387,11 @@ step_restore() {
 	log "dump restore into the cluster: labdb_copy has $have (rows, max id), equal to the source"
 	# point in time: every mark from the newest cluster snapshot that covers it, then the end
 	snap=$(jq -c '[.[] | select(.source | endswith("-labdb") | not)] | sort_by(.time)' <<<"$snaps")
+	# every mark is tried; a failed or wrong one fails the step at the end (the nightly run only logged them)
+	local bad=0 n=0
 	while read -r name at rows tl; do
 		[ -n "$name" ] || continue
+		n=$((n + 1))
 		dir=/srv/pitr/$name-$(date +%s)
 		# the first cluster snapshot after the mark: its WAL reaches the mark if any snapshot's does
 		s=$(jq -c --argjson m "$(date -d "$at" +%s)" '[.[] | select(.time >= $m)][0]' <<<"$snap")
@@ -399,14 +402,16 @@ step_restore() {
 		if [ "$(jq -r .state <<<"$j")" != ok ]; then
 			log "PITR to $name ($at, timeline $tl) from snapshot $(jq -r .time <<<"$s"): FAILED: $(jq -r .log <<<"$j" | grep -iE 'error|fatal|recover|target' | tail -3 | tr '\n' ' ')"
 			port=$((port + 1))
+			bad=$((bad + 1))
 			continue
 		fi
 		have=$(on pg-ctl "sudo -u postgres psql -p $port -h /var/run/postgresql -qtAX -d labdb -c \"SELECT count(*) FROM ticks WHERE at <= '$at'\"" </dev/null)
 		log "PITR to $name ($at, timeline $tl) from snapshot $(jq -r .time <<<"$s"): $have rows up to then, the cluster had $rows ($(jq '.finished - .started' <<<"$j") s)"
-		[ "$have" = "$rows" ] || log "MISMATCH at $name"
+		[ "$have" = "$rows" ] || { log "MISMATCH at $name"; bad=$((bad + 1)); }
 		on pg-ctl "sudo -u postgres /usr/lib/postgresql/$PG_VERSION/bin/pg_ctl -D $dir stop -m fast >/dev/null" </dev/null
 		port=$((port + 1))
 	done <"$LAB/marks"
+	[ "$bad" = 0 ] || die "$bad of $n point-in-time restores failed or did not match"
 }
 
 step_scenario() {
