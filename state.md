@@ -1306,4 +1306,18 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   the failure report to the node went over the broken SSH session: nexus-pve now also stops its task through the API
   when that report fails (saves one retry). Confirmed on 0.0.24-dev: the same outage (job 549 failed after 212 s),
   and the first retry (550) succeeded (153 s).
-- [ ] (#48) Fault injection, the rest: full store, corrupt chunks, clock jumps.
+- [x] (#48) Fault injection, the rest (2026-10-24, VM 201 on 0.0.22-dev, `lab/pvehost/faults.sh dgroup full corrupt
+  clock`, agent VM 225 as the guest with new random data):
+  - full: /var (store and catalog on one disk) filled to 512 MiB before a backup with 2 GiB of new data: the job
+    failed after 16 s with "No space left on device", no snapshot, a retry queued; the API kept answering; space
+    freed: the next backup (28 s) and a verification (2683 chunks, 0 corrupt) passed. Found: the capacity alert came
+    only with the 15-minute refresh (373 s): now checked every tick.
+  - corrupt: a new chunk of vm-225 in today's verification share overwritten: verify failed (1 corrupt), critical
+    `verify:lab` and `snapshot_damaged:lab`, the snapshot marked damaged; its restore failed. Found: the restore said
+    only "No such file or directory" (the chunk had been moved aside): the error now names the chunk and why; PVE
+    left a stub guest (VMID taken, `memory: 128`): a failed restore now removes the guest it created. The next
+    backup stored the data again; after another verification both alerts resolved, the snapshot whole again.
+  - clock: 15 min ahead with chronyd stopped: critical `clock_skew` after 31 s with the right text; back and
+    chronyd started. Found: the lab clock still lagged 28 h from an earlier power-off (info), and the open alert
+    stayed critical with the lag's text (alerts never lower their level): the clock check now resolves the worse
+    alert and raises the current level.

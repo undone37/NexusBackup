@@ -154,8 +154,14 @@ impl Scheduler {
             )
             .optional()?;
         match open {
-            // still open at the same or a higher level: refresh the text, do not count a repeat per tick
-            Some(old) if alerting::rank(sev) <= alerting::rank(&old) => {
+            // the worse state ended (a jump undone on top of a lag after a restart, lab #48): that alert resolves
+            // and the current state gets its own, not a critical alert with an info text
+            Some(old) if alerting::rank(sev) < alerting::rank(&old) => {
+                self.resolve(KEY)?;
+                self.raise(sev, KEY, KEY, &msg, None)
+            }
+            // still open at the same level: refresh the text, do not count a repeat per tick
+            Some(old) if alerting::rank(sev) == alerting::rank(&old) => {
                 self.db.conn().execute(
                     "UPDATE alerts SET message = ?2, last_ts = ?3 WHERE key = ?1 AND resolved_at IS NULL",
                     params![KEY, msg, now],

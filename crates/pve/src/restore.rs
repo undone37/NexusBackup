@@ -176,6 +176,8 @@ pub trait GuestOps {
     /// clean shutdown, hard stop after the timeout
     fn stop(&self, node: &str, kind: &str, vmid: u32) -> Result<()>;
     fn start(&self, node: &str, kind: &str, vmid: u32) -> Result<()>;
+    /// hard stop and purge
+    fn destroy(&self, node: &str, kind: &str, vmid: u32) -> Result<()>;
 }
 
 /// Outcome of [`run`], printed as `restored {json}` for the job result.
@@ -241,7 +243,19 @@ pub fn run(
         Some((_, cfg)) => o.name_for(cfg_str(cfg, name_key(kind)).as_deref(), &fallback),
         None => o.name_for(backed_up_name, &fallback),
     };
-    restore(&restore_params(kind, target, archive, storage, &name, o)).context("restore")?;
+    if let Err(e) = restore(&restore_params(kind, target, archive, storage, &name, o)) {
+        // the VMID was free: what PVE created of it is half a guest that PVE leaves behind ("state is NOT
+        // cleaned up") and that blocks the VMID for the next attempt (#48 lab)
+        match ops.locate(target) {
+            Ok(Some((n, k))) => match ops.destroy(&n, &k, target) {
+                Ok(()) => eprintln!("removed the incomplete guest {target}"),
+                Err(d) => eprintln!("the incomplete guest {target} could not be removed: {d:#}"),
+            },
+            Ok(None) => {}
+            Err(l) => eprintln!("guest {target} after the failed restore: {l:#}"),
+        }
+        return Err(e.context("restore"));
+    }
     eprintln!("restored {kind} {target} ({name})");
     if o.link_down {
         let cfg = ops.config(node, kind, target)?;
@@ -386,6 +400,9 @@ impl GuestOps for crate::backup::Cluster {
     }
     fn start(&self, node: &str, kind: &str, vmid: u32) -> Result<()> {
         self.api.guest_power(node, kind, vmid, "start", &[])
+    }
+    fn destroy(&self, node: &str, kind: &str, vmid: u32) -> Result<()> {
+        crate::ir::destroy_guest(&self.api, node, kind, vmid)
     }
 }
 
@@ -551,6 +568,10 @@ mod tests {
                 cfg.insert("onboot".into(), b.into());
             }
             self.guests.borrow_mut().insert(id, (cfg, get(p, "start") == Some("1")));
+            // PVE created the guest, then the data restore failed
+            if self.fail.borrow().as_deref() == Some("restore-data") {
+                bail!("copy failed");
+            }
             Ok(())
         }
     }
@@ -591,6 +612,11 @@ mod tests {
             self.guests.borrow_mut().get_mut(&vmid).unwrap().1 = true;
             Ok(())
         }
+        fn destroy(&self, _: &str, _: &str, vmid: u32) -> Result<()> {
+            self.check(format!("destroy:{vmid}"))?;
+            self.guests.borrow_mut().remove(&vmid);
+            Ok(())
+        }
     }
 
     fn replace_opts() -> RestoreOpts {
@@ -615,6 +641,17 @@ mod tests {
             "202610122130",
             |p| f.restore(p),
         )
+    }
+
+    /// #48 lab: PVE leaves a half-created guest when the data restore fails; the VMID was free, so it goes
+    #[test]
+    fn a_failed_restore_removes_the_guest_it_created() {
+        let f = Fake::with_original();
+        *f.fail.borrow_mut() = Some("restore-data".into());
+        let e = go(&f, &RestoreOpts::default()).unwrap_err();
+        assert!(format!("{e:#}").contains("copy failed"), "{e:#}");
+        assert!(f.calls.borrow().contains(&"destroy:105".to_owned()));
+        assert!(!f.guests.borrow().contains_key(&105) && f.guests.borrow().contains_key(&100));
     }
 
     #[test]
