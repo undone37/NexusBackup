@@ -1240,7 +1240,12 @@ restores, UI/CLI, import into an appliance). All in this repository.
   a second copy uploaded nothing (5 small top-level files replaced); one more backup: 4 new files; fetch into an
   empty directory, open with the 24 words, restore: identical to /etc. Found: the copy target's tag is `kind`, the
   user doc had no example (added). S3 still open: needs an S3 test box on a lab VM.
-- [ ] (#30, #31) 38 rest: S3 copy against a lab test box, lock/log-off and wake
+- [x] (#31) Standalone jobs on lock, log-off and wake (2026-10-24): `"on"` in standalone.json; the service's
+  minute pass compares with the previous one (gap > 3 min = wake; a session that became locked / is gone); at most
+  once an hour, with the usual waits. Sessions: logind's local `user` sessions (SSH logins are `Remote=yes` and do not
+  count; checked on VM 225), Windows WTS sessions with a user. Tests: event detection, the hour gap, a queued job run
+  by the next pass, the loginctl parser; Windows code checked for the target (not run in the lab yet).
+- [ ] (#30) 38 rest: S3 copy against a lab test box
   triggers, 38d with 37, TUI jobs view, restores from the UI (38g).
 
 ## Phase 43 — PegaProx plugin (added 2026-10-23)

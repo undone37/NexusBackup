@@ -777,6 +777,52 @@ pub struct Job {
     /// after the backup and prune: mirror the repository to this target file (SFTP, S3, directory)
     #[serde(default)]
     pub copy: Option<String>,
+    /// also run on these events (#31): `lock` (a user locks the session), `logoff`, `wake` (the machine
+    /// resumes); at most once per [`EVENT_GAP`], with the usual waits
+    #[serde(default)]
+    pub on: Vec<String>,
+}
+
+/// The interactive user sessions (id, locked) as [`crate::server::Platform::user_sessions`] gives them.
+pub type Sessions = Option<Vec<(String, bool)>>;
+
+/// The events a job can run on.
+pub const EVENTS: [&str; 3] = ["lock", "logoff", "wake"];
+/// An event runs a job only when its last run is at least this old (seconds): locking the screen ten times
+/// an hour is one backup. ponytail: fixed, a per-job setting when someone needs another gap.
+pub const EVENT_GAP: i64 = 3600;
+/// A pass this much later than the previous one (the loop runs every minute): the machine slept.
+const SLEPT: i64 = 180;
+
+/// The events between two passes of the job loop: `wake` after a gap, `lock` for a session that became
+/// locked, `logoff` for one that is gone. ponytail: polled once a minute, so a lock shorter than that can
+/// be missed; OS notifications when that matters.
+pub fn events(
+    prev: Option<(i64, &Sessions)>,
+    now: i64,
+    sessions: &Sessions,
+) -> std::collections::BTreeSet<&'static str> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some((then, before)) = prev else {
+        return out;
+    };
+    if now - then > SLEPT {
+        out.insert("wake");
+    }
+    if let (Some(before), Some(now)) = (before, sessions) {
+        for (id, was_locked) in before {
+            match now.iter().find(|(i, _)| i == id) {
+                None => {
+                    out.insert("logoff");
+                }
+                Some((_, true)) if !was_locked => {
+                    out.insert("lock");
+                }
+                _ => {}
+            }
+        }
+    }
+    out
 }
 
 fn default_keep() -> String {
@@ -845,6 +891,9 @@ pub fn load_jobs(paths: &Paths) -> Result<Vec<Job>, String> {
         }
         if j.min_battery > 100 {
             return Err(format!("job {}: min_battery 0..=100", j.name));
+        }
+        if let Some(e) = j.on.iter().find(|e| !EVENTS.contains(&e.as_str())) {
+            return Err(format!("job {}: on: {e:?} is not one of lock, logoff, wake", j.name));
         }
     }
     Ok(f.jobs)
@@ -987,9 +1036,44 @@ pub fn tick<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::
     log
 }
 
+/// Queues the jobs that run on one of `events` and did not run for [`EVENT_GAP`]. Log lines.
+pub fn queue_on_events(paths: &Paths, events: &std::collections::BTreeSet<&str>, now: i64) -> Vec<String> {
+    if events.is_empty() {
+        return Vec::new();
+    }
+    let Ok(jobs) = load_jobs(paths) else {
+        return Vec::new();
+    };
+    let states = job_states(paths);
+    let mut log = Vec::new();
+    for j in jobs {
+        let Some(e) = j.on.iter().find(|e| events.contains(e.as_str())) else {
+            continue;
+        };
+        if now - states.get(&j.name).map_or(0, |s| s.last_run) < EVENT_GAP {
+            continue;
+        }
+        RUN_NOW
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(j.name.clone());
+        log.push(format!("job {}: queued on {e}", j.name));
+    }
+    log
+}
+
 /// The agent service's job loop: a pass every minute, forever (a thread of `run`).
 pub fn run_jobs<P: Platform>(platform: &P, paths: &Paths, settings: &crate::config::Settings) {
+    let mut prev: Option<(i64, Sessions)> = None;
     loop {
+        let t = now() as i64;
+        let sessions = platform.user_sessions();
+        let ev = events(prev.as_ref().map(|(p, s)| (*p, s)), t, &sessions);
+        prev = Some((t, sessions));
+        for l in queue_on_events(paths, &ev, t) {
+            eprintln!("nexus-agent: {l}");
+        }
         for l in tick(platform, paths, settings, now() as i64) {
             eprintln!("nexus-agent: {l}");
         }

@@ -331,6 +331,10 @@ impl Platform for Linux {
         crate::power::state()
     }
 
+    fn user_sessions(&self) -> Option<Vec<(String, bool)>> {
+        crate::power::sessions()
+    }
+
     fn block_device(&self, target: u32) -> Result<PathBuf, String> {
         let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
         let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();

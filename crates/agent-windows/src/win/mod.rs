@@ -370,6 +370,9 @@ impl Platform for Windows {
     fn power_state(&self) -> agent_proto::PowerState {
         power::state()
     }
+    fn user_sessions(&self) -> Option<Vec<(String, bool)>> {
+        power::sessions()
+    }
 
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
         let packaged = agent_core::update::packaged(&agent_core::update::package_marker());

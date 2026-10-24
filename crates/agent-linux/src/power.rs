@@ -58,15 +58,21 @@ pub fn battery(dir: &Path) -> (Option<bool>, Option<u8>) {
 }
 
 fn busctl(args: &[&str]) -> Option<String> {
-    let mut c = Command::new("busctl")
-        .args(["--system", "--timeout=2"])
+    let mut all = vec!["--system", "--timeout=2"];
+    all.extend(args);
+    output("busctl", &all)
+}
+
+/// The standard output of a successful command, `None` on failure or after 5 s.
+fn output(cmd: &str, args: &[&str]) -> Option<String> {
+    let mut c = Command::new(cmd)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    // busctl honours --timeout; this guards against a hung bus connection
+    // busctl honours --timeout; this guards against a hung bus connection (and a hung loginctl)
     let end = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         match c.try_wait().ok()? {
@@ -83,6 +89,42 @@ fn busctl(args: &[&str]) -> Option<String> {
     let mut out = String::new();
     std::io::Read::read_to_string(&mut c.stdout.take()?, &mut out).ok()?;
     Some(out)
+}
+
+/// The user sessions logind knows (#31, standalone job triggers): (id, locked). `None` without loginctl.
+pub fn sessions() -> Option<Vec<(String, bool)>> {
+    let list = output("loginctl", &["list-sessions", "--no-legend", "--no-pager"])?;
+    let ids: Vec<&str> = list.lines().filter_map(|l| l.split_whitespace().next()).collect();
+    if ids.is_empty() {
+        return Some(Vec::new());
+    }
+    let mut args = vec![
+        "show-session",
+        "-p",
+        "Id",
+        "-p",
+        "Class",
+        "-p",
+        "Remote",
+        "-p",
+        "LockedHint",
+    ];
+    args.extend(&ids);
+    Some(parse_sessions(&output("loginctl", &args)?))
+}
+
+/// `loginctl show-session -p Id -p Class -p Remote -p LockedHint A B ...`: one block per session, blank lines
+/// between; only local sessions of the `user` class (not greeters, lock screens, managers or SSH logins: an
+/// SSH logout is not someone leaving the machine).
+pub fn parse_sessions(s: &str) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    for block in s.split("\n\n") {
+        let get = |k: &str| block.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('='));
+        if let (Some(id), Some("user"), Some("no")) = (get("Id"), get("Class"), get("Remote")) {
+            out.push((id.to_owned(), get("LockedHint") == Some("yes")));
+        }
+    }
+    out
 }
 
 const NM: &str = "org.freedesktop.NetworkManager";
@@ -128,6 +170,14 @@ pub fn parse_string(out: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logind_sessions() {
+        let s = "Id=2\nClass=user\nRemote=no\nLockedHint=yes\n\nId=c1\nClass=greeter\nRemote=no\nLockedHint=no\n\n\
+                 Id=44\nClass=user\nRemote=yes\nLockedHint=no\n\nId=5\nClass=user\nRemote=no\nLockedHint=no\n";
+        assert_eq!(parse_sessions(s), [("2".to_owned(), true), ("5".to_owned(), false)]);
+        assert!(parse_sessions("").is_empty());
+    }
 
     fn supply(root: &Path, name: &str, files: &[(&str, &str)]) {
         let d = root.join(name);
