@@ -1321,3 +1321,6 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     chronyd started. Found: the lab clock still lagged 28 h from an earlier power-off (info), and the open alert
     stayed critical with the lag's text (alerts never lower their level): the clock check now resolves the worse
     alert and raises the current level.
+  - Again on 0.0.37-dev with the fixes (`nexusctl`-uploaded lab image): the capacity alert was open when the failed
+    backup ended (0 s); the restore log names the chunk ("failed verification and was moved aside: the snapshot is
+    damaged"), VM 212 is gone after the failed restore; after the jump the alert is info (the remaining lag).

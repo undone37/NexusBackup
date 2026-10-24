@@ -222,7 +222,11 @@ step_clock() {
 		sleep 5
 	done
 	[ -z "$a" ] || [ "$(jq -r .severity <<<"$a")" = info ] || die "clock_skew still $(jq -r .severity <<<"$a"): $(jq -r .message <<<"$a")"
-	log "after the jump: ${a:+$(jq -r '.severity + ": " + .message' <<<"$a" | cut -c1-160)}${a:-no clock_skew alert}"
+	if [ -n "$a" ]; then
+		log "after the jump: $(jq -r '.severity + ": " + .message' <<<"$a" | cut -c1-160)"
+	else
+		log "after the jump: no clock_skew alert"
+	fi
 }
 
 step_reboot() {
