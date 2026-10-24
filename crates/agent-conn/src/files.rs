@@ -113,7 +113,8 @@ pub fn list(entries: &[TreeEntry], dir: &str) -> Result<Vec<ListEntry>> {
     let d = request_path(dir)?;
     let mut out = Vec::new();
     // folders above a backed-up path that the tree has no entry for (a Windows root such as `C/nexus-lab/data`
-    // comes without `C` and `C/nexus-lab`): listed as plain directories so the browser can walk down to it
+    // comes without `C` and `C/nexus-lab`): listed as plain directories after the tree's own entries, so the
+    // browser can walk down to it
     let mut implicit = BTreeSet::new();
     for e in entries {
         let parent = match e.path.iter().rposition(|b| *b == b'/') {
@@ -161,7 +162,6 @@ pub fn list(entries: &[TreeEntry], dir: &str) -> Result<Vec<ListEntry>> {
             });
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
