@@ -24,8 +24,9 @@
 
   // Phase 24d: tabs Agents | Fleet (fleet secrets, discovered agents, CSV bulk enrollment)
   // Phase 27: Updates (releases, versions, rollouts, automatic mode)
-  const TABS = ['agents', 'fleet', 'updates'];
-  const tab = $derived(TABS.includes(route.query.get('tab') ?? '') ? route.query.get('tab')! : 'agents');
+  // the appliance-wide read-only roles see the Updates tab only (can.viewAgentUpdates)
+  const TABS = $derived(can.manageTenant(session.user) ? ['agents', 'fleet', 'updates'] : ['updates']);
+  const tab = $derived(TABS.includes(route.query.get('tab') ?? '') ? route.query.get('tab')! : TABS[0]);
   const tabsId = $props.id();
   function keys(e: KeyboardEvent) {
     if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return;
