@@ -979,9 +979,24 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
 - [x] Hot-add proxy transport in the binary (#80, 2026-10-24): `proxy-prepare` / `nexus-agentctl block-read` /
   `proxy-finish` as three job steps per VM (the agent CA stays agentctl's), source fields `proxy_vm` +
   `proxy_agent`, UI, SELinux `nexus_vmware_work_t`. Unit and plan tests only; no appliance lab run yet.
-- [ ] (epic #23) rest of M3: appliance lab run of the hot-add transport (#88, needs an enrolled agent in
-  a proxy VM on ESXi), proxy throughput (#38), the proxy OVA (#35), files of VMware snapshots (#83), lab (#37:
-  vSAN/NFS, quiesced Windows snapshots, proxy on another host).
+- [x] Files of VMware snapshots (#83, 7bae4539): browse, download, file index and search like PVE VM snapshots;
+  VMware groups get the index-files switch. Plan and API tests; appliance check still to do (lab image 0.0.30-dev
+  has it).
+- [x] Hot-add lab run on the appliance (#88, 2026-10-24, images 0.0.28-dev and 0.0.30-dev on VM 201, vCenter 8.0.3
+  with ESXi 7.0.3): agent on nx-proxy (ESXi 7) enrolled with the appliance, source `vc-hot` (transport hotadd),
+  group with nx-cbt (Debian 12, 16 GiB). Incremental from the earlier NFC snapshot: 25 changed 4 MiB blocks,
+  100 MB read, 11 MB on the wire (LZ4), job 20 s, application-consistent. Restored as PVE VM 290 (200 s), boots to
+  the login. Full read (scheduled change-tracking check forced due): job 136 s = prepare 7 s, scan 56 s (16 GiB
+  read and hashed on the proxy, 306 MB/s), fetch 65 s (1899 distinct blocks, 7.96 GB raw, 6.3 GB on the wire,
+  97 MB/s), finish 6 s. No snapshot or disk left on ESXi; no AVC denial in nexus_vmware_t / nexus_agentctl_t.
+  Found and fixed: scheduled full reads never reached hot-add configs and two systemd SELinux gaps (f4262897), a
+  due VMware full read repeated on every backup (#91), the nightly shut down VM 251 with the vCenter on it
+  (25920942; nx-vcsa now autostarts on ESXi 8).
+- [x] Proxy throughput (#38): the 10 MB/s were the library lab test; on the appliance the hot-add full read runs
+  at about 126 MB/s for the job, the fetch at 97 MB/s on the wire, i.e. about the 1 GbE line rate of the nested
+  lab. Not done (no need measured): avoiding the proxy's second read of fetched blocks, pipelined Want batches.
+- [ ] (epic #23) rest of M3: the proxy OVA (#35), lab (#37: vSAN/NFS, quiesced Windows snapshots, proxy on another
+  host).
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 
