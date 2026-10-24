@@ -1256,7 +1256,18 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
 - [x] Table contents in PostgreSQL dump restore tests (plugin 1.4.2): an order-independent SHA-256 sum of the COPY
   rows, read back with the dump's columns under canonical output settings. Lab: 435 rows (timestamptz, inet) of the
   Patroni cluster's `labdb` compared, passed.
-- [ ] (#45, #46, #47) A custom SQL check per group; a random PITR target inside the recoverable range; MySQL contents (counts only).
+- [ ] (#45, #47) A custom SQL check per group; MySQL contents (counts only).
+- [x] (#46) A random PITR target in restore tests (2026-10-24, VM 201, plugin build of the PR packed as 1.5.x for the
+  lab, Patroni cluster on PostgreSQL 18): the scheduler picks a time after the base backup's end up to the end of
+  the snapshot's recoverable range. Lab, `verify` of a cluster snapshot whose range spans 35 h: targets 22 h and
+  11 h before the end and 1 min before it passed (30-34 s each). Found: (1) `recovery_target_time` in ISO form
+  with `Z` is refused at server start ("invalid value for parameter"): the plugin writes `+00`; (2) a target past
+  the end passed too: `pg_ctl -w` returns as soon as the hot standby accepts connections, before recovery ends, so
+  the check query ran on a server that stopped moments later ("recovery ended before configured recovery target
+  was reached"). The check now waits until `pg_is_in_recovery()` is false and fails with the server log once it is
+  gone: that run fails as it should. On the way: `patroni.sh` refreshes the source's addresses (pg-ctl came back on
+  another DHCP address after the VMs were stopped); VM 201's image predates the API range check (#49), so the
+  out-of-range job was accepted there.
 - [x] Lab scripts as scheduled regression runs (maintainer: a timer on a lab VM): VM 280 nx-regress (Debian 13,
   `lab/pvehost/regress.sh`) runs `lab/pvehost/nightly.sh` at 01:30 UTC after a `git pull` of main: tunnel, exact
   restore, the reboot fault test, the Patroni scenario (PostgreSQL 18), the ESXi 8 hot-add test; the VMs a step needs
