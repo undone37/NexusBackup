@@ -2545,6 +2545,18 @@ fn vmware_jobs() {
             (v, "proxy-finish")
         ]
     );
+    // a due full read (change-tracking check) reaches the hot-add VM's own config file, not the other VM's
+    s.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite, lock_until) VALUES ('t1','vmw-{u1}',4,1,1,0,0);
+             INSERT INTO full_reads (tenant, source, next_due) VALUES ('t1','vmw-{u1}',1);
+             UPDATE groups SET full_read_days = 30 WHERE id = 8;"
+        ))
+        .unwrap();
+    let p = s.plan(&job(42, "backup", json!({"group_id": 8}))).unwrap();
+    let file = |n: &str| -> Value { serde_json::from_slice(&p.files.iter().find(|f| f.0 == n).unwrap().1).unwrap() };
+    assert_eq!(file("vmware-0.json")["full_read"], true);
+    assert!(file("vmware-1.json")["full_read"].is_null());
     // an empty VMware group is nothing to back up, not a PVE group
     let err = s.plan(&job(32, "backup", json!({"group_id": 7}))).unwrap_err();
     assert!(format!("{err:#}").contains("no VMs"), "{err:#}");

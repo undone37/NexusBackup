@@ -422,6 +422,12 @@ manage_dirs_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 manage_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 manage_sock_files_pattern(nexus_pve_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
 files_tmp_filetrans(nexus_pve_t, nexus_pve_tmp_t, dir)
+# the scheduler's PrivateTmp: systemd (sd-rmrf, init_t) removes it with nexus-pve's lock and work dirs when the
+# service stops (lab 2026-10-24: remove_name/rmdir denied on nexus-pve-locks at shutdown, the dirs stayed)
+delete_dirs_pattern(init_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+delete_files_pattern(init_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+delete_sock_files_pattern(init_t, nexus_pve_tmp_t, nexus_pve_tmp_t)
+allow init_t nexus_pve_tmp_t:dir { list_dir_perms rmdir };
 allow nexus_pve_t self:unix_stream_socket { listen accept connectto };
 # checks that kernel + initramfs exist before starting QEMU
 list_dirs_pattern(nexus_pve_t, nexus_restorevm_image_t, nexus_restorevm_image_t)
@@ -900,7 +906,7 @@ manage_files_pattern(nexus_webapi_t, nexus_plugin_staging_t, nexus_plugin_stagin
 allow init_t nexus_plugin_staging_t:file { getattr read watch };
 # the same for the PathExists units of nexus-tls and nexus-diag: systemd (init_t) reads
 # and watches the request file it waits for (found in the VM: helpers never started)
-allow init_t { nexus_tls_req_t nexus_diag_var_lib_t }:file { getattr read watch };
+allow init_t { nexus_tls_req_t nexus_diag_var_lib_t nexus_update_t }:file { getattr read watch };
 miscfiles_read_generic_certs(nexus_webapi_t)
 # agent releases (Phase 27): signed uploads extracted, verified and kept below
 # /var/lib/nexus/agent-releases; the image's releases (/usr/share/nexus/agent) are read
