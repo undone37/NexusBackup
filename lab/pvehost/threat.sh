@@ -5,12 +5,15 @@
 # "lab-marker" and a file whose SHA-256 is on the uploaded IOC list "lab-ioc".
 #
 #   threat.sh setup    test tree on the VM, group (file hashes on, scheduled scan $SCAN_AT UTC daily), YARA rule
+#
+# Windows (WINDOWS=VMID): the agent of lab/windows/e2e.sh on that VM (AGENT_NAME = its host name, the files in
+# C:\nexus-lab\data, written through the guest agent).
 #   threat.sh backup   backup of the group (the file index records the SHA-256 of every file)
 #   threat.sh scan     waits for the scheduled scan of the new snapshot: matches, alert scan_hit
 #   threat.sh hunt     IOC list with the file's SHA-256, hunt: the file found, alert hash_hunt_hit
 #
 # env: as vmware-e2e.sh (LAB, PORT, PVE_HOST, SSH_KEY); VM (debian-13), VM_IP (from clean-restore.sh), VM_KEY,
-#      DATA (/srv/clean: the source's path), SCAN_AT (now + 4 minutes, HH:MM UTC)
+#      TENANT (lab; windows for the agent of lab/windows/e2e.sh), DATA (/srv/clean: the source's path), SCAN_AT (now + 4 minutes, HH:MM UTC)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -35,8 +38,11 @@ SSHO=(-i "$VM_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHost
 	-o ProxyCommand="ssh -i $SSH_KEY -o BatchMode=yes -W %h:%p root@$PVE_HOST" -o ConnectTimeout=15)
 vm() { ssh "${SSHO[@]}" "root@$VM_IP" "$@"; }
 login admin "$ADMIN_PW" "$ADMIN_TOTP"
-NAME=clean-$VM
-GROUP=threat-$VM
+WINDOWS=${WINDOWS:-}
+TENANT=${TENANT:-lab}
+NAME=${AGENT_NAME:-clean-$VM}
+[ -z "$WINDOWS" ] || DATA=${WIN_DATA:-C:\\nexus-lab\\data}
+GROUP=threat-${WINDOWS:+win-}$VM
 gid() { api admin GET /groups | jq -r --arg n "$GROUP" '.[] | select(.name == $n) | .id'; }
 agent() { api admin GET /agents | jq -r --arg n "$NAME" '.[] | select(.name == $n) | .id'; }
 
@@ -44,10 +50,17 @@ step_setup() {
 	local a src pol g
 	a=$(agent)
 	[ -n "$a" ] || die "no agent $NAME (clean-restore.sh vm enrol)"
+	if [ -n "$WINDOWS" ]; then
+		"$repo/lab/windows/gexec.py" "$WINDOWS" "New-Item -ItemType Directory -Force '$DATA\\docs' | Out-Null
+			Set-Content -NoNewline -Path '$DATA\\docs\\invoice.pdf.exe' -Value 'lab ioc file, not malware (windows)'
+			Set-Content -Path '$DATA\\docs\\dropper.txt' -Value 'NEXUS-LAB-MARKER-7f3a'
+			(Get-FileHash -Algorithm SHA256 '$DATA\\docs\\invoice.pdf.exe').Hash.ToLower()" | tr -d '\r' | tail -1 >"$OUT/ioc.sha256"
+	else
 	vm "rm -rf $DATA && mkdir -p $DATA/docs && for i in \$(seq 1 20); do echo \"report \$i\" > $DATA/docs/report-\$i.txt; done
 		printf 'lab ioc file, not malware\\n' > $DATA/docs/invoice.pdf.exe
 		echo 'NEXUS-LAB-MARKER-7f3a' > $DATA/docs/dropper.txt; sync; sha256sum $DATA/docs/invoice.pdf.exe" |
 		awk '{print $1}' >"$OUT/ioc.sha256"
+	fi
 	log "test tree $DATA: IOC file SHA-256 $(cat "$OUT/ioc.sha256"), marker file dropper.txt"
 	src=$(api admin GET /sources | jq -r --arg n "$NAME" '.[] | select(.name == $n) | .id')
 	[ -n "$src" ] || die "no source $NAME"
@@ -55,7 +68,7 @@ step_setup() {
 	if [ -z "$g" ]; then
 		pol=$(api admin GET /policies | jq -r '.[] | select(.name == "daily") | .id')
 		g=$(api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" --arg n "$GROUP" --arg a "$a" \
-			'{tenant:"lab", source_id:$s, policy_id:$p, name:$n, guests:[$a], timezone:"UTC"}')" | jq -r .id)
+			--arg tn "$TENANT" '{tenant:$tn, source_id:$s, policy_id:$p, name:$n, guests:[$a], timezone:"UTC"}')" | jq -r .id)
 		expect 201 "group $GROUP"
 	fi
 	api admin PUT "/groups/$g/file-hashes" '{"enabled":true}' >/dev/null
@@ -69,7 +82,7 @@ step_setup() {
 
 step_backup() {
 	local j
-	j=$(api admin POST /jobs "$(jq -nc --argjson g "$(gid)" '{kind:"backup", tenant:"lab", params:{group_id:$g}}')")
+	j=$(api admin POST /jobs "$(jq -nc --argjson g "$(gid)" --arg tn "$TENANT" '{kind:"backup", tenant:$tn, params:{group_id:$g}}')")
 	expect 202 "backup"
 	j=$(wait_job admin "$(jq -r .id <<<"$j")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r '.log // ""' <<<"$j" | tail -n 10)"
@@ -78,11 +91,13 @@ step_backup() {
 }
 
 step_scan() {
-	local id= j t
+	local id= j t a
 	t=$(cat "$OUT/time")
-	log "waiting for the scheduled scan ($SCAN_AT UTC) of host-$(agent)/$t"
+	# the agent id first: an api call inside the pipeline below would race it for the shared $S/body
+	a=$(agent)
+	log "waiting for the scheduled scan ($SCAN_AT UTC) of host-$a/$t"
 	for _ in $(seq 120); do
-		id=$(api admin GET '/jobs?limit=40' | jq -r --arg s "host-$(agent)" --argjson t "$t" \
+		id=$(api admin GET '/jobs?limit=40' | jq -r --arg s "host-$a" --argjson t "$t" \
 			'[.[] | select(.requested_by == "scheduler" and .params.source == $s and .params.time == $t and (.kind | test("scan")))][0].id // empty' 2>/dev/null || true)
 		[ -n "$id" ] && break
 		sleep 10
@@ -99,7 +114,7 @@ step_hunt() {
 	local r j
 	api admin PUT /hash-lists/lab-ioc "$(jq -nc --arg h "$(cat "$OUT/ioc.sha256")" '{text: ("# lab IOC list (threat.sh)\n" + $h + "\n")}')" >/dev/null
 	expect 200 "hash list"
-	r=$(api admin POST /hunts '{"tenant":"lab","lists":["lab-ioc"]}')
+	r=$(api admin POST /hunts "$(jq -nc --arg tn "$TENANT" '{tenant:$tn, lists:["lab-ioc"]}')")
 	expect 202 "hunt"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "hunt: $(jq -r '.log // ""' <<<"$j" | tail -n 10)"

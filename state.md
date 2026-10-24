@@ -514,7 +514,7 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   without the capability, hostile hash lists), pve (CT index hashes), scheduler `tests/threat.rs`, web-api
   `tests/phase28.rs` + tenant-admin route classification; mock, manual 03/05/06/09/11/14, 7 new screenshots
   (scene `threat`), ui-smoke pages
-- [ ] (#69) Scan, hash hunt, lockdown, new-device mail labs: plan.md Phase 39 L9. Scheduled scan and hash hunt
+- [x] (#69) Scan, hash hunt, lockdown, new-device mail labs: plan.md Phase 39 L9. Scheduled scan and hash hunt
   done 2026-10-24 (appliance 0.0.34-dev, agent 0.1.0 on debian-13, `lab/pvehost/threat.sh`): group with file
   hashes on and a daily scan at a set minute; the scheduler queued the scan of the new snapshot at that minute
   (23 files, the YARA marker matched, `scan_hit`); an IOC list with one SHA-256: the hunt over 40 snapshots
@@ -524,7 +524,9 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   (`lab/pvehost/smtp-sink.py`; the lab's SMTP setting 10.2.34.254:25 answers nothing and was restored afterwards);
   the security officer's lockdown ended the administrator's session at once (401) and refused new sign-ins,
   `tenant_lockdown` raised; the lift (approval by the security officer) let the administrator sign in again.
-  Open: scheduled scan and hash hunt with a Windows agent.
+  Windows the same day: agent 0.1.0 (MSI of v0.2.0-alpha.3) on a clone of VM 242 (VM 298), `lab/windows/e2e.sh`
+  against the appliance (enrolled in 3 s, VSS backup consistent in 27 s), then `WINDOWS=298 TENANT=windows
+  threat.sh`: the scheduled scan matched the marker (450 files, `scan_hit`), the hunt found the IOC file.
 - [x] Remaining VM disk file hashes (btrfs, FAT, exFAT): plan.md Phase 39 C1 (done 2026-10-21)
 
 ## Phase 29 — NetBackup Tier 1 (2026-10-14)
