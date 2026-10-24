@@ -37,7 +37,7 @@ mkdir -p "$S"
 # shellcheck source=lab/e2e/api-lib.sh
 . "$repo/lab/e2e/api-lib.sh"
 case " ${*:-all} " in " selinux ") ;; *) login admin "$ADMIN_PW" "$ADMIN_TOTP" ;; esac
-uploaded() { tar -tf "$RELEASE_TAR" | head -1 | cut -d/ -f1; }
+uploaded() { tar -tf "$RELEASE_TAR" | awk -F/ 'NR == 1 {print $1}'; } # awk reads all: head would SIGPIPE tar (pipefail)
 PVE_HOST=${PVE_HOST:-10.2.34.200}
 SSH_KEY=${SSH_KEY:-$HOME/nexus-lab/pve-lab-key}
 VM_KEY=${VM_KEY:-$HOME/nexus-lab/lab_ed25519}
