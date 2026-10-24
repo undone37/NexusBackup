@@ -468,7 +468,11 @@ through the PVE guest agent (`lab/windows/gexec.py`, no Windows passwords), dev 
 - Fixed on the way: incrementals failed on EFI disks ("can't get block status": base:allocation only for full
   reads, full-read fallback); the node's zero scan had no progress; snapshot rows were "not local" until the next
   store scan (restore test 404 right after a backup); job logs had no times (time marks + column)
-- [ ] (#65) Restore test VM 101, pipelined reads byte-exact + timing: plan.md Phase 39 L5
+- [x] (#65) Restore test VM 101, pipelined reads byte-exact + timing: plan.md Phase 39 L5. Done 2026-10-24 on an
+  isolated copy (VM 298 = full clone of the Windows Server 2022 lab VM 242, 40 GiB SATA; `EXACT_VM=298
+  EXACT_TARGET=299 EXACT_GROUP=exact-298 lab/pvehost/verify.sh exact`, appliance 0.0.35-dev): backup read 14.4 GB of
+  43 GB (28.5 GB unallocated, not transferred), restore as VM 299 in 520 s (about 83 MB/s logical), sha256 of both
+  zvols identical. VM 101 itself is not stopped for this (maintainer's VM).
 
 ## Live job progress (2026-10-13)
 - [x] Connectors print `progress {json}` lines on stderr (`chunkstore::progress`: item/part/done/total/entries/end,

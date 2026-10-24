@@ -9,7 +9,8 @@
 #              warnings; then a restore test of $RT_VM (boot in an isolated network, guest agent answers)
 #     cleanup  remove the VMs this script restored (only names ending in -verify)
 # (cloud-init CD-ROMs are generated per VM and not compared)
-# env: as deploy.sh (PVE_HOST, NODE, SSH_KEY, LAB, PORT); EXACT_VM (200), EXACT_TARGET (211), RT_VM (101),
+# env: as deploy.sh (PVE_HOST, NODE, SSH_KEY, LAB, PORT); EXACT_VM (200), EXACT_TARGET (211), EXACT_GROUP
+#      (lab-arm64; another name is created with EXACT_VM), RT_VM (101),
 #      STORAGE (vmpool)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,6 +23,7 @@ export PORT=${PORT:-28444}
 ROOT=$LAB/appliance/root
 EXACT_VM=${EXACT_VM:-200}
 EXACT_TARGET=${EXACT_TARGET:-211}
+EXACT_GROUP=${EXACT_GROUP:-lab-arm64}
 RT_VM=${RT_VM:-101}
 STORAGE=${STORAGE:-vmpool}
 S=$ROOT/run/api
@@ -60,11 +62,20 @@ zvol_sha() { # vmid -> "key sha" per disk (scsi/virtio/sata disks, sorted by key
 }
 
 step_exact() {
-	api admin GET /groups | jq -e '.[] | select(.name=="lab-arm64")' >/dev/null || die "group lab-arm64 missing (deploy.sh groups)"
+	# EXACT_GROUP: the group holding EXACT_VM; created with that VM alone unless it is deploy.sh's lab-arm64
+	if ! api admin GET /groups | jq -e --arg g "$EXACT_GROUP" '.[] | select(.name == $g)' >/dev/null; then
+		[ "$EXACT_GROUP" != lab-arm64 ] || die "group lab-arm64 missing (deploy.sh groups)"
+		local src pol
+		src=$(api admin GET /sources | jq -r --arg n "$NODE" '.[] | select(.name == $n) | .id')
+		pol=$(api admin GET /policies | jq -r '.[] | select(.name == "daily") | .id')
+		api admin POST /groups "$(jq -nc --argjson s "$src" --argjson p "$pol" --arg n "$EXACT_GROUP" --argjson v "$EXACT_VM" \
+			'{tenant:"lab", source_id:$s, policy_id:$p, name:$n, guests:[$v]}')" >/dev/null
+		expect 201 "group $EXACT_GROUP"
+	fi
 	pve "qm config $EXACT_TARGET >/dev/null 2>&1" && die "VM $EXACT_TARGET exists; remove it first (cleanup)"
 	pve "qm shutdown $EXACT_VM --timeout 300 >/dev/null 2>&1 || qm stop $EXACT_VM >/dev/null"
 	local j t r
-	j=$(backup_group lab-arm64)
+	j=$(backup_group "$EXACT_GROUP")
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .log <<<"$j" | tail -n 20)"
 	stats "$j" | sed 's/^/  /' >&2
 	jq -r .log <<<"$j" | grep -E 'not transferred' | sed 's/^/  /' >&2 || true
@@ -75,6 +86,8 @@ step_exact() {
 	expect 202 "restore"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 14400)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "restore: $(jq -r .log <<<"$j" | tail -n 20)"
+	log "restore of vm-$EXACT_VM/$t: $(jq '.finished - .started' <<<"$j") s"
+	jq -r '.log // ""' <<<"$j" | grep -E 'MB/s|reads|pipelin' | tail -3 | sed 's/^/  /' >&2 || true
 	local a b
 	a=$(zvol_sha "$EXACT_VM")
 	b=$(zvol_sha "$EXACT_TARGET")
