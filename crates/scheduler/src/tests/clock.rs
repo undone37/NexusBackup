@@ -74,3 +74,30 @@ fn compliance_clock_ahead_is_critical() {
     assert_eq!(sev, "critical");
     assert!(msg.contains("ahead of system time"), "{msg}");
 }
+
+/// #48 lab: a jump undone while the clock still lags from a restart: the critical alert resolves and
+/// an info one (the lag) is raised, not the critical one kept with the lag's text.
+#[test]
+fn an_undone_jump_leaves_the_lag_at_its_own_level() {
+    let e = env(1);
+    let mut s = sched(&e);
+    s.raise("critical", "clock_skew", "clock_skew", "system time jumped", None)
+        .unwrap();
+    let dir = e.cfg.store_base.join("t1");
+    drop(chunkstore::Store::open(&dir, Keyring::new("t1", &[(1, [7; 32])]), test_opts()).unwrap());
+    fs::write(dir.join("clock"), format!("{}\n", catalog::now() - 3600)).unwrap();
+    s.check_clock().unwrap();
+    let (sev, msg, _) = alert(&s).unwrap();
+    assert_eq!(sev, "info", "{msg}");
+    assert!(msg.contains("since the last restart"), "{msg}");
+    let resolved: i64 = s
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE key = 'clock_skew' AND severity = 'critical' AND resolved_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(resolved, 1);
+}
