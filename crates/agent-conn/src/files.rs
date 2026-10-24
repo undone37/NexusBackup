@@ -112,12 +112,26 @@ fn kind(k: &TreeKind) -> &'static str {
 pub fn list(entries: &[TreeEntry], dir: &str) -> Result<Vec<ListEntry>> {
     let d = request_path(dir)?;
     let mut out = Vec::new();
+    // folders above a backed-up path that the tree has no entry for (a Windows root such as `C/nexus-lab/data`
+    // comes without `C` and `C/nexus-lab`): listed as plain directories so the browser can walk down to it
+    let mut implicit = BTreeSet::new();
     for e in entries {
         let parent = match e.path.iter().rposition(|b| *b == b'/') {
             Some(i) => &e.path[..i],
             None => &[][..],
         };
         if parent != d.as_slice() {
+            let below = if d.is_empty() {
+                Some(&e.path[..])
+            } else {
+                e.path.strip_prefix(d.as_slice()).and_then(|r| r.strip_prefix(b"/"))
+            };
+            if let Some(first) = below
+                .and_then(|r| r.split(|b| *b == b'/').next())
+                .filter(|f| !f.is_empty())
+            {
+                implicit.insert(first.to_vec());
+            }
             continue;
         }
         let name = &e.path[parent.len() + usize::from(!parent.is_empty())..];
@@ -132,6 +146,22 @@ pub fn list(entries: &[TreeEntry], dir: &str) -> Result<Vec<ListEntry>> {
             link: e.link_target.as_ref().map(|l| String::from_utf8_lossy(l).into_owned()),
         });
     }
+    for name in implicit {
+        let name = String::from_utf8_lossy(&name).into_owned();
+        if !out.iter().any(|x| x.name == name) {
+            out.push(ListEntry {
+                name,
+                kind: "dir",
+                size: 0,
+                mode: 0o755,
+                mtime: 0,
+                uid: 0,
+                gid: 0,
+                link: None,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 
@@ -244,4 +274,47 @@ pub fn extract(store: &Store, entries: &[TreeEntry], paths: &[String], fmt: Form
         }
     }
     Ok(sel.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, kind: TreeKind) -> TreeEntry {
+        TreeEntry {
+            path: path.as_bytes().to_vec(),
+            kind,
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+            size: 1,
+            mtime_ns: 0,
+            ctime_ns: 0,
+            inode: 0,
+            rdev: 0,
+            link_target: None,
+            xattrs: vec![],
+            chunks: vec![],
+            inconsistent: false,
+        }
+    }
+
+    #[test]
+    fn folders_above_backed_up_paths_are_listed() {
+        // a Windows agent's tree: the roots C:\Users and C:\nexus-lab\data, no entries for C and C/nexus-lab
+        let t = [
+            entry("C/Users", TreeKind::Dir),
+            entry("C/Users/a.txt", TreeKind::File),
+            entry("C/nexus-lab/data", TreeKind::Dir),
+            entry("C/nexus-lab/data/b.txt", TreeKind::File),
+        ];
+        let names =
+            |d: &str| -> Vec<(String, &str)> { list(&t, d).unwrap().into_iter().map(|e| (e.name, e.kind)).collect() };
+        assert_eq!(names("/"), [("C".into(), "dir")]);
+        assert_eq!(names("/C"), [("Users".into(), "dir"), ("nexus-lab".into(), "dir")]);
+        assert_eq!(names("/C/nexus-lab"), [("data".into(), "dir")]);
+        assert_eq!(names("/C/nexus-lab/data"), [("b.txt".into(), "file")]);
+        // an explicit entry is not listed twice
+        assert_eq!(names("/C/Users"), [("a.txt".into(), "file")]);
+    }
 }
