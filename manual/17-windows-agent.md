@@ -171,8 +171,9 @@ approved rollback) and updates only while no backup or restore runs.
 > elevated prompt; the repository is a folder (a local or USB disk, or a network share the service account can
 > reach). Scheduled jobs: `%ProgramData%\NexusAgent\config\standalone.json`, run by the NexusAgent service (also
 > when it is not enrolled), as on Linux; `nexus-agent.exe repo jobs` shows them. Copies to SFTP, S3 or another folder
-(`repo copy`, `repo fetch`, a job's `"copy"`) work as on Linux. The tray app's window lists the jobs under **Backups
-on this computer**, with **Run now** for each.
+(`repo copy`, `repo fetch`, a job's `"copy"`) work as on Linux, and so do the triggers `"on": ["lock", "logoff",
+"wake"]` (locked or signed-out Windows sessions, also over Remote Desktop). The tray app's window lists the jobs
+under **Backups on this computer**, with **Run now** for each.
 
 ```bat
 "C:\Program Files\NexusBackup\Agent\nexus-agent.exe" repo init E:\nexus

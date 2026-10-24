@@ -178,6 +178,11 @@ pub trait Platform: Send + Sync + 'static {
     fn power_state(&self) -> agent_proto::PowerState {
         agent_proto::PowerState::default()
     }
+    /// The interactive user sessions (id, locked) for the standalone job triggers `lock` and `logoff` (#31);
+    /// `None` when the platform cannot tell (no such triggers then).
+    fn user_sessions(&self) -> Option<Vec<(String, bool)>> {
+        None
+    }
     /// Host facts for protocol v1.8 (`arch=`, `install=`, `gui=` capabilities).
     /// Platforms without in-band updates (rescue agent) keep the default: no `update2`.
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {

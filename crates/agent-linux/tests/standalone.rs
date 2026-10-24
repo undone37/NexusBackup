@@ -177,6 +177,76 @@ fn scheduled_jobs_run_once_per_slot_and_wait_for_the_repository() {
     assert!(log.len() == 1 && log[0].contains("bad schedule"), "{log:?}");
 }
 
+/// #31: jobs on lock, log-off and wake: the events between two passes, the job queued (at most once an
+/// hour) and run by the next pass, an unknown event refused.
+#[test]
+fn jobs_run_on_lock_logoff_and_wake() {
+    fn s(v: &[(&str, bool)]) -> standalone::Sessions {
+        Some(v.iter().map(|(i, l)| ((*i).to_owned(), *l)).collect())
+    }
+    fn ev(prev: Option<(i64, &standalone::Sessions)>, now: i64, cur: &standalone::Sessions) -> Vec<&'static str> {
+        standalone::events(prev, now, cur).into_iter().collect()
+    }
+    let before = s(&[("1", false), ("2", false)]);
+    let (locked, gone) = (s(&[("1", true), ("2", false)]), s(&[("2", false)]));
+    assert!(
+        ev(None, 100, &before).is_empty(),
+        "the first pass knows nothing before it"
+    );
+    assert!(ev(Some((100, &before)), 160, &before).is_empty());
+    assert_eq!(ev(Some((100, &before)), 160, &locked), ["lock"]);
+    assert_eq!(ev(Some((100, &before)), 160, &gone), ["logoff"]);
+    assert_eq!(ev(Some((100, &before)), 4000, &before), ["wake"]);
+    assert!(
+        ev(Some((100, &None)), 160, &None).is_empty(),
+        "no session information: no lock or log-off"
+    );
+
+    let d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let p = paths(&d.path().join("a"));
+    fs::create_dir_all(&p.config).unwrap();
+    let settings = Settings {
+        hook_owner: nexus_agent::sys::geteuid(),
+        ..Default::default()
+    };
+    let platform = nexus_agent::server::Linux::default();
+    let data = d.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("a.txt"), b"one").unwrap();
+    let repo = d.path().join("repo");
+    standalone::init(&p, &repo, "host").unwrap();
+    let jobs = serde_json::json!({"jobs": [
+        {"name": "ev", "repo": repo, "paths": [data], "schedule": "daily 03:00", "tz": "UTC", "on": ["lock", "wake"]},
+        {"name": "plain", "repo": repo, "paths": [data], "schedule": "daily 03:00", "tz": "UTC"},
+    ]});
+    fs::write(p.config.join(standalone::JOBS_FILE), jobs.to_string()).unwrap();
+    let now = 2_000_000_000i64; // 03:33 UTC: the 03:00 slot is past
+                                // slot runs first, so the event finds both just run: within the gap nothing is queued
+    standalone::tick(&platform, &p, &settings, now);
+    let lock: std::collections::BTreeSet<&str> = ["lock"].into();
+    assert!(standalone::queue_on_events(&p, &lock, now + 600).is_empty());
+    // an hour later: the lock queues the job that runs on it, not the other one
+    let log = standalone::queue_on_events(&p, &lock, now + 3700);
+    assert_eq!(log, ["job ev: queued on lock"]);
+    let log = standalone::tick(&platform, &p, &settings, now + 3700);
+    assert!(log.len() == 1 && log[0].starts_with("job ev: snapshot "), "{log:?}");
+    let logoff: std::collections::BTreeSet<&str> = ["logoff"].into();
+    assert!(
+        standalone::queue_on_events(&p, &logoff, now + 9000).is_empty(),
+        "not a trigger of ev"
+    );
+    // an unknown event is a broken jobs file
+    fs::write(
+        p.config.join(standalone::JOBS_FILE),
+        serde_json::json!({"jobs": [{"name": "x", "repo": repo, "paths": [data], "schedule": "daily 03:00", "on": ["login"]}]})
+            .to_string(),
+    )
+    .unwrap();
+    assert!(standalone::load_jobs(&p)
+        .unwrap_err()
+        .contains("not one of lock, logoff, wake"));
+}
+
 /// Phase 38c: a copy to another place (the directory backend; SFTP and S3 share the `Remote` contract),
 /// incremental, with deletions after a prune; another machine fetches it and opens it with the words.
 #[test]

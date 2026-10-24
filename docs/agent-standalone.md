@@ -37,7 +37,8 @@ run on a Windows machine).
 
 ```json
 {"jobs": [{"name": "home", "repo": "/mnt/usb/nexus", "paths": ["/home", "/etc"], "schedule": "daily 21:00",
-           "tz": "Europe/Berlin", "keep": "24,7,4,12,0", "min_battery": 30, "skip_metered": true}]}
+           "tz": "Europe/Berlin", "keep": "24,7,4,12,0", "min_battery": 30, "skip_metered": true,
+           "on": ["logoff", "wake"]}]}
 ```
 
 - The service checks the jobs every minute (`standalone::tick`) with the appliance's schedule grammar (crate
@@ -50,8 +51,12 @@ run on a Windows machine).
 - After the backup, `keep` prunes (`""` = no pruning). State per job in `<state>/standalone/jobs.json` (last run,
   last success with its summary, last error, why it waits); `repo jobs` shows it, `repo run <job>` runs one now.
 - An agent that is not enrolled but has jobs runs them and nothing else (no listener).
-- Not yet: lock/log-off and wake triggers, retries within a slot, bandwidth limits, a status in the desktop UI
-  (38h), e-mail.
+- `"on": ["lock", "logoff", "wake"]` (#31) also runs a job when a user locks the session, logs off, or the machine
+  resumes, at most once an hour (`EVENT_GAP`) and with the same waits. The service compares each minute's pass with
+  the previous one: a gap of more than 3 minutes is a wake-up, a session that became locked a lock, one that is gone
+  a log-off (`Platform::user_sessions`: logind's local `user` sessions, not SSH logins; on Windows the WTS sessions
+  with a user). Polled, so a lock shorter than a minute can be missed.
+- Not yet: retries within a slot, bandwidth limits, e-mail.
 
 ## Copies to SFTP, S3 or another directory (38c)
 
