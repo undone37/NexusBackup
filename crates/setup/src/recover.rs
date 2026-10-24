@@ -280,6 +280,62 @@ pub fn reset_firewall(paths: &Paths) -> Result<BTreeMap<String, Vec<String>>> {
     Ok(old)
 }
 
+/// Largest offline update bundle, as the upload in the web UI (web-api `MAX_BUNDLE`).
+pub const MAX_BUNDLE: u64 = 8 << 30;
+
+/// An offline update bundle from a USB stick (or any file) at the console (#28): copied into the update
+/// control directory as `bundle.tar` with the request `import`, exactly what Settings -> Updates writes, so
+/// nexus-update runs the same checks (signature, version, checksums). Audited as `update.upload` by the
+/// console. Returns the update status once nexus-update decided, or after `wait`.
+pub fn import_update(paths: &Paths, bundle: &std::path::Path, wait: std::time::Duration) -> Result<serde_json::Value> {
+    if !paths.setup_done.exists() {
+        bail!("the appliance is not set up yet: finish the setup first");
+    }
+    let dir = &paths.update_dir;
+    if dir.join("request").exists() || dir.join("bundle.tar").exists() {
+        bail!("an update request or upload is still being processed: wait for its result (Settings -> Updates)");
+    }
+    let size = std::fs::metadata(bundle)
+        .with_context(|| format!("{}", bundle.display()))?
+        .len();
+    if size > MAX_BUNDLE {
+        bail!("{}: larger than 8 GiB, not an update bundle", bundle.display());
+    }
+    let status = || -> Option<serde_json::Value> {
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("status.json")).ok()?).ok()?;
+        Some(raw["api"].clone())
+    };
+    let before = status().and_then(|s| s["last_result"]["time"].as_i64());
+    let part = dir.join(".bundle.part");
+    std::fs::copy(bundle, &part).with_context(|| format!("copying {} to {}", bundle.display(), dir.display()))?;
+    std::fs::rename(&part, dir.join("bundle.tar"))?;
+    let tmp = dir.join(".request.tmp");
+    std::fs::write(&tmp, "import\n")?;
+    std::fs::rename(&tmp, dir.join("request"))?;
+    let cat = Catalog::open(&paths.catalog).with_context(|| format!("opening {}", paths.catalog.display()))?;
+    let name = bundle.file_name().map(|n| n.to_string_lossy().into_owned());
+    cat.audit(
+        ACTOR,
+        "update.upload",
+        "appliance/update",
+        &json!({"bytes": size, "file": name}),
+    )?;
+    let end = std::time::Instant::now() + wait;
+    loop {
+        if let Some(s) = status() {
+            let done =
+                !dir.join("request").exists() && s["checking"].is_null() && s["last_result"]["time"].as_i64() > before;
+            if done {
+                return Ok(s);
+            }
+        }
+        if std::time::Instant::now() >= end {
+            bail!("no result after {} s: see Settings -> Updates", wait.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 /// Loads the inbound sets of the (reset) policy right away (root, real appliance).
 pub fn open_firewall(paths: &Paths, nft: &std::path::Path) -> Result<()> {
     let cat = Catalog::open(&paths.catalog)?;
@@ -309,6 +365,44 @@ mod tests {
             )
             .unwrap();
         (d, paths, rk)
+    }
+
+    /// #28: the bundle and the request as the web upload writes them; nexus-update's verdict is waited for
+    #[test]
+    fn imports_an_update_bundle_from_the_console() {
+        let (_d, paths, _) = appliance();
+        std::fs::create_dir_all(&paths.update_dir).unwrap();
+        let stick = paths.root.join("stick.tar");
+        std::fs::write(&stick, b"BUNDLE").unwrap();
+        let u = paths.update_dir.clone();
+        let fake = std::thread::spawn(move || loop {
+            if std::fs::read_to_string(u.join("request")).is_ok_and(|r| r == "import\n") {
+                assert_eq!(std::fs::read(u.join("bundle.tar")).unwrap(), b"BUNDLE");
+                std::fs::remove_file(u.join("bundle.tar")).unwrap();
+                let api = json!({"status": "staged", "last_result": {"time": 5, "request": "import", "result": "staged sha256:aa"}});
+                std::fs::write(u.join("status.json"), json!({"api": api}).to_string()).unwrap();
+                std::fs::remove_file(u.join("request")).unwrap();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        });
+        let s = import_update(&paths, &stick, std::time::Duration::from_secs(20)).unwrap();
+        fake.join().unwrap();
+        assert_eq!(s["last_result"]["result"], "staged sha256:aa");
+        let n: i64 = Catalog::open(&paths.catalog)
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM audit WHERE action = 'update.upload' AND actor = 'console'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // one at a time, as in the web UI
+        std::fs::write(paths.update_dir.join("request"), "stage\n").unwrap();
+        let e = import_update(&paths, &stick, std::time::Duration::from_secs(1)).unwrap_err();
+        assert!(format!("{e:#}").contains("still being processed"), "{e:#}");
     }
 
     #[test]

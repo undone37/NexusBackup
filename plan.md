@@ -1095,8 +1095,9 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
   identity, manifest digest, version label), then `bootc switch --transport oci` from a root-only directory, the
   one path policy.json accepts for that transport (`check-trust.sh` allows exactly it). Same origin on the next
   bundle: `bootc upgrade`. **Done 2026-10-20** for 36a (release/update-bundle.sh), 36b, 36c (upload API + UI);
-  lab on the appliance VM: see state.md. Open: `nexusctl update upload`, USB at the console,
-  the greenboot rollback after a broken build and an online update after an offline one (lab).
+  lab on the appliance VM: see state.md. `nexusctl update upload` (an
+  administrator's session, not a token) and `nexus-setup import-update` (USB at the console) done 2026-10-24 (#28).
+  Open: an online update after an offline one (lab, #29).
 Open work: epic #18.
 
 ### Phase 37 — Windows bare-metal recovery (added 2026-10-20 by user request)
