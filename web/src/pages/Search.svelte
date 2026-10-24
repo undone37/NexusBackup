@@ -491,25 +491,30 @@
         <div class="hint" id="s-owner-hint">{t.search.ownerHint}</div>
       </div>
       <div class="field">
-        <label for="s-sender">{t.search.sender}</label>
-        <input
-          id="s-sender"
-          bind:value={sender}
-          spellcheck="false"
-          autocapitalize="none"
-          placeholder="cfo@contoso.com, contoso.com"
-          aria-describedby="s-mail-hint"
-        />
-      </div>
-      <div class="field">
-        <label for="s-recipient">{t.search.recipient}</label>
-        <input
-          id="s-recipient"
-          bind:value={recipient}
-          spellcheck="false"
-          autocapitalize="none"
-          aria-describedby="s-mail-hint"
-        />
+        <div class="mail-pair">
+          <div>
+            <label for="s-sender">{t.search.sender}</label>
+            <input
+              id="s-sender"
+              bind:value={sender}
+              spellcheck="false"
+              autocapitalize="none"
+              placeholder="cfo@contoso.com"
+              aria-describedby="s-mail-hint"
+            />
+          </div>
+          <div>
+            <label for="s-recipient">{t.search.recipient}</label>
+            <input
+              id="s-recipient"
+              bind:value={recipient}
+              spellcheck="false"
+              autocapitalize="none"
+              placeholder="contoso.com"
+              aria-describedby="s-mail-hint"
+            />
+          </div>
+        </div>
         <div class="hint" id="s-mail-hint">{t.search.mailHint}</div>
       </div>
       <div class="field">
@@ -802,6 +807,16 @@
 {/if}
 
 <style>
+  .mail-pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .mail-pair > div {
+    display: flex;
+    flex: 1 1 14rem;
+    flex-direction: column;
+  }
   .filters .grow {
     flex: 1 1 260px;
   }
