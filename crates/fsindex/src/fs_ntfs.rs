@@ -372,6 +372,14 @@ pub fn walk(v: &Vol, out: &mut Out, info: &mut Volume) -> Result<(), String> {
         info.drives = hive(&ntfs, &mut fs, "SYSTEM", |h| crate::regf::drive_letters(h)).unwrap_or_default();
         // Phase 39 C2: local account names for the owner column
         info.accounts = hive(&ntfs, &mut fs, "SAM", |h| crate::regf::local_accounts(h)).unwrap_or_default();
+        // #52: domain accounts that signed in here, by their profile folder (the SAM's names win)
+        let profiles = hive(&ntfs, &mut fs, "SOFTWARE", |h| crate::regf::profile_accounts(h)).unwrap_or_default();
+        for (sid, n) in profiles {
+            if !info.accounts.iter().any(|(s, _)| *s == sid) {
+                info.accounts.push((sid, n));
+            }
+        }
+        info.accounts.sort();
     }
     Ok(())
 }
