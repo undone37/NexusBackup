@@ -20,6 +20,10 @@ Type=simple
 # Runs as root. No `User=root`: with an explicit User= and NoNewPrivileges=yes, systemd
 # (seen with 257) drops CAP_SETUID from the permitted set while switching users, and
 # hooks can no longer change to the database user (setpriv: setresuid failed).
+# start watchdog of a self-update (#93): the previous, already trusted binary counts each start of a freshly
+# swapped one and puts itself back on the third start that did not reach "listening", also when the new binary
+# never runs (wrong loader or C library); without a pending update it exits at once; `-`: no .prev, no matter
+ExecStartPre=-/usr/local/sbin/nexus-agent.prev update-watchdog
 ExecStart=/usr/local/sbin/nexus-agent run
 Restart=on-failure
 RestartSec=5s

@@ -1509,6 +1509,7 @@ impl<P: Platform> Session<'_, P> {
             started: crate::update::now(),
             starts: 0,
             unit: String::new(),
+            pre: false,
         };
         if let Err(e) = crate::update::write_pending(paths, &pending) {
             self.update_abort();

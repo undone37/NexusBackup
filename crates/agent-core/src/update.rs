@@ -383,6 +383,10 @@ pub struct Pending {
     /// transient systemd unit / installer log (package installs)
     #[serde(default)]
     pub unit: String,
+    /// the starts are counted by the previous binary before each start ([`watchdog_pre`], the service's
+    /// `ExecStartPre`): the new binary does not count them again
+    #[serde(default)]
+    pub pre: bool,
 }
 
 pub fn now() -> u64 {
@@ -486,16 +490,46 @@ pub fn watchdog_on_start(
         );
         return Watchdog::Continue;
     }
+    if p.pre {
+        // counted (and, on the third start, reverted) by the previous binary before this start
+        return Watchdog::Continue;
+    }
     if p.starts < WATCHDOG_STARTS {
         p.starts += 1;
         let _ = write_pending(paths, &p);
         return Watchdog::Continue;
     }
+    revert(paths, &p, restore)
+}
+
+/// The service's `ExecStartPre`, run by the previous, already trusted binary `<exe>.prev` (#93): counts a
+/// start of a freshly swapped binary before the service manager runs it, and puts the previous binary back on
+/// the third start that did not reach "listening". Unlike [`watchdog_on_start`] this also covers a new binary
+/// that never runs its own code (a loader or C library mismatch, a binary that exits at once).
+pub fn watchdog_pre(paths: &crate::config::Paths, restore: &dyn Fn() -> Result<(), String>) -> Watchdog {
+    let Some(mut p) = read_pending(paths) else {
+        return Watchdog::Continue;
+    };
+    if p.kind != agent_proto::release::KIND_BINARY {
+        return Watchdog::Continue;
+    }
+    if p.starts < WATCHDOG_STARTS {
+        p.starts += 1;
+        p.pre = true;
+        let _ = write_pending(paths, &p);
+        return Watchdog::Continue;
+    }
+    revert(paths, &p, restore)
+}
+
+/// Puts the previous binary back and finishes the pending update as rolled back (failed when that is not
+/// possible).
+fn revert(paths: &crate::config::Paths, p: &Pending, restore: &dyn Fn() -> Result<(), String>) -> Watchdog {
     match restore() {
         Ok(()) => {
             finish(
                 paths,
-                &p,
+                p,
                 "rolled_back",
                 &format!(
                     "version {} did not start {} times in a row; the previous binary {} was put back",
@@ -510,7 +544,7 @@ pub fn watchdog_on_start(
         Err(e) => {
             finish(
                 paths,
-                &p,
+                p,
                 "failed",
                 &format!("watchdog could not restore the previous binary: {e}"),
                 vec![],
@@ -993,11 +1027,44 @@ mod tests {
             started: 1000,
             starts: 0,
             unit: String::new(),
+            pre: false,
         }
     }
 
     fn state(p: &crate::config::Paths) -> UpdateState {
         serde_json::from_str(&state_json(p)).unwrap()
+    }
+
+    #[test]
+    fn unit_watchdog_reverts_a_binary_that_never_runs() {
+        // #93: the new binary exits before its own watchdog (lab: an ELF that is /bin/false); the previous one
+        // counts in ExecStartPre and puts itself back on the third start
+        let (_t, p) = paths();
+        let restored = std::cell::Cell::new(0);
+        let restore = || {
+            restored.set(restored.get() + 1);
+            Ok(())
+        };
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue, "nothing pending");
+        write_pending(&p, &pending("binary")).unwrap();
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue);
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue);
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Reverted);
+        assert_eq!(restored.get(), 1);
+        assert_eq!(state(&p).state, "rolled_back");
+        // a new binary that does run: counted once per start, by the unit only
+        write_pending(&p, &pending("binary")).unwrap();
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue);
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue);
+        assert_eq!(watchdog_on_start(&p, "0.2.0", &restore), Watchdog::Continue);
+        assert_eq!(read_pending(&p).unwrap().starts, 2, "not counted twice per start");
+        mark_listening(&p, "0.2.0");
+        assert_eq!(state(&p).state, "ok");
+        // package installs are not binary swaps
+        write_pending(&p, &pending("deb")).unwrap();
+        assert_eq!(watchdog_pre(&p, &restore), Watchdog::Continue);
+        assert_eq!(read_pending(&p).unwrap().starts, 0);
     }
 
     #[test]
