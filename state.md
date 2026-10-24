@@ -518,8 +518,13 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   done 2026-10-24 (appliance 0.0.34-dev, agent 0.1.0 on debian-13, `lab/pvehost/threat.sh`): group with file
   hashes on and a daily scan at a set minute; the scheduler queued the scan of the new snapshot at that minute
   (23 files, the YARA marker matched, `scan_hit`); an IOC list with one SHA-256: the hunt over 40 snapshots
-  (39 without hashes) found the file in 0.3 s, `hash_hunt_hit`. Open: Windows agents, lockdown with a tenant
-  admin session, new-device mail through an SMTP sink.
+  (39 without hashes) found the file in 0.3 s, `hash_hunt_hit`. Lockdown and new-device notice the same day
+  (`lab/pvehost/lockdown.sh`, tenant ld-lab with its own tenant administrator): a sign-in with another browser
+  identification raised `login_new_device` and the notice reached the SMTP sink on VM 280
+  (`lab/pvehost/smtp-sink.py`; the lab's SMTP setting 10.2.34.254:25 answers nothing and was restored afterwards);
+  the security officer's lockdown ended the administrator's session at once (401) and refused new sign-ins,
+  `tenant_lockdown` raised; the lift (approval by the security officer) let the administrator sign in again.
+  Open: scheduled scan and hash hunt with a Windows agent.
 - [x] Remaining VM disk file hashes (btrfs, FAT, exFAT): plan.md Phase 39 C1 (done 2026-10-21)
 
 ## Phase 29 — NetBackup Tier 1 (2026-10-14)

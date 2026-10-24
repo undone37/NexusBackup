@@ -211,8 +211,8 @@ paused resume (an earlier pause comes back), the alert resolves and the tenant's
 stay** until each is released. Revoked API tokens do not come back. Audit: `tenant.lockdown`, `quorum.request`,
 `quorum.approve`.
 
-> **Status:** Implemented in Phase 28 and tested in the API (`crates/web-api/tests/phase28.rs`), the scheduler and
-> the demo backend; a run on the appliance image (lab) is pending.
+> **Status:** Implemented in Phase 28; run on the lab appliance (2026-10-24): a signed-in tenant administrator's
+> session ended at once, new sign-ins were refused until the approved lift.
 
 ### Freezes during an incident
 
