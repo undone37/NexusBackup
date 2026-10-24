@@ -673,7 +673,13 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   node: changed chunks only, fallbacks, resume; the real helper + root service (stub PVE modules) + qemu-nbd +
   NBD client end to end), crates/nbd/tests/qemu.rs (writes), pve-plugin/t/rollback.t, scheduler + web-api
   tests; UI restore dialog option, mock, manual 06, docs/pve-connector.md "Instant rollback", T67
-- [ ] (#72) Instant rollback lab: plan.md Phase 39 L12
+- [ ] (#72) Instant rollback lab: plan.md Phase 39 L12. ZFS done 2026-10-24 (appliance 0.0.31-dev, PVE 9 host
+  pve-test, nexusbackup-pve 0.1.0 with nexusbackup-rollback.socket active, `lab/pvehost/rollback.sh`): debian-12
+  VM 224 (16 GiB on vmpool) backed up running, 300 MB junk + marker written, rollback approved by the security
+  officer: the paused VM's pre-rollback snapshot 95 changed chunks (380 MB, 9 s), 95 of 4096 chunks written back,
+  job 38 s, lock and tag removed, no fallback VM; the disk equals a plain restore of the snapshot (sha256), the
+  guest boots without junk and marker. Open: dir qcow2 (the host's `local` storage takes no VM images; needs a
+  storage config change on pve-test), LVM-thin and RBD (no such storage in the lab), a paused Windows guest.
 - [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
   secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
   existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:

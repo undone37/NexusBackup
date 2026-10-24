@@ -263,9 +263,13 @@ from the state backed up in step 1.
 
 ![Roll back in place in the restore dialog](images/restore-rollback.png)
 
-> **Status:** Implemented in Phase 30 and tested against the node helper, the root service and qemu-nbd without
-> Proxmox VE; not yet run on a Proxmox VE host. Needs version 0.1.x of the `nexusbackup-pve` package on every node
-> (it adds the `nexusbackup-rollback.socket` service).
+> **Status:** Run on a Proxmox VE 9 host with a Linux VM on ZFS (2026-10-24): 95 of 4096 chunks written back in
+> 38 s, the result identical to a full restore of the snapshot. Not yet run on LVM-thin, directory (qcow2) or Ceph
+> RBD storage, nor with a Windows guest. Needs version 0.1.x of the `nexusbackup-pve` package on every node (it adds
+> the `nexusbackup-rollback.socket` service).
+>
+> When requesting it through the API, `target` is still a new, unused VMID: the job restores there only if it has
+> to fall back to the full replace.
 
 ### Restore several guests at once
 
