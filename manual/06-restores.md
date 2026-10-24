@@ -527,8 +527,7 @@ press, and **Enter** searches at once.
    (**Modified from / until**), the **Type** (files only, folders only), the **Owner** (files on VM disks: an account
    name as the guest names it, such as `alice`, a Linux uid or `uid:gid`, a Windows SID, or a built-in group such as
    Administrators; comma separated), **Sender** and **Recipient** (Microsoft 365 mails: an address or a part of it
-   such as `contoso.com`; To, Cc and Bcc count as recipients; mails backed up before the appliance recorded senders
-   carry none) and **Deleted files** (show all, only deleted, hide deleted). With a filter set, the text may stay empty: for example all `.pst` files above 2 GiB,
+   such as `contoso.com`; To, Cc and Bcc count as recipients) and **Deleted files** (show all, only deleted, hide deleted). With a filter set, the text may stay empty: for example all `.pst` files above 2 GiB,
    or everything deleted in the last week. **Reset filters** clears them.
 
 ![Search results for budget* in tenant acme, one row expanded to its version timeline](images/search.png)

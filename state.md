@@ -1056,8 +1056,8 @@ their IDs. In progress:
   carried over for unchanged mails; criteria `sender` / `recipient`; Cases page fields). Tested against the Graph
   mock; 2026-10-25 (#54) also the instant search: the index stores the record per mail version (index format 3:
   rebuilt once), sender / recipient filters match address words (`contoso.com`); a version first seen without a
-  record gets it from a later snapshot. Open: mails backed up before the records existed have none (they would have
-  to be fetched again from Graph). Lab (VM 201, 0.0.41-dev installed with `nexusctl`): the format change rebuilt the
+  record gets it from a later snapshot. (Mails without records would only come from backups before the records existed;
+  there is no installed base, so none.) Lab (VM 201, 0.0.41-dev installed with `nexusctl`): the format change rebuilt the
   three tenant indexes at start (lab about 8 s), searches gave the same hits and versions as before (NTUSER.DAT 66,
   os-release 6, hosts 43/49), a sender filter on non-mail data finds nothing; 0 AVC denials since boot. The
   install's `offline-update.sh apply` saw the new version within its wait (status within minutes of boot, #110).
