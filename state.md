@@ -349,8 +349,14 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
   found" for Agents > Updates (route limited to admins since 19b; fixed in d0c0e6c1, #97), `?offsite=lab` started
   a listing for a tenant without an offsite target (871da2bc), and the test closed the step-up dialog of the lab's
   risk-marked sessions (ui-smoke now steps up after sign-in). On 0.0.35-dev: 226 page views, 0 problems.
+  Replication and vault mode the same day (`lab/pvehost/replication.sh`, VM 201 primary, VM 202 secondary on
+  the lab network): peer for tenant windows approved, enrollment, key export approved (post-quantum key
+  wrapping), first sync 673 chunks / 214 MB in 10.4 s; on VM 202 vault mode with all preconditions (approvals,
+  no local tenants, no peers, a replication source, web inbound restricted) on after approval, a download turned
+  into a vault.restore request and ran after its approval (998 entries), a new tenant refused (409); switched off
+  with the approval and the recovery key at the console (`nexus-setup vault-disable`, audited, alert).
   Open: disks.sh (needs an appliance with extra disks and an empty store), forwarding.sh, offsite-fetch, config-restore.sh (second
-  appliance), PG 1.2.0 bundle, vault mode.
+  appliance), PG 1.2.0 bundle.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
