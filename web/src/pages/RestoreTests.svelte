@@ -114,19 +114,27 @@
 
   // ---- schedules
   let schedOpen = $state(false);
-  let sf = $state({ group_id: 0, every_days: 7, node: '', storage: 'local-lvm', bridge: '' });
+  let sf = $state({ group_id: 0, every_days: 7, node: '', storage: 'local-lvm', bridge: '', sql: '' });
   let sc = $state(emptyChecks());
   let schedEditing = $state(false);
   function editSchedule(s: RtSchedule | null) {
     schedEditing = !!s;
     sf = s
-      ? { group_id: s.group_id, every_days: s.every_days, node: s.node, storage: s.storage, bridge: s.bridge ?? '' }
+      ? {
+          group_id: s.group_id,
+          every_days: s.every_days,
+          node: s.node,
+          storage: s.storage,
+          bridge: s.bridge ?? '',
+          sql: s.checks.sql ?? '',
+        }
       : {
           group_id: testGroups.find((g) => !schedules.some((x) => x.group_id === g.id))?.id ?? 0,
           every_days: 7,
           node: '',
           storage: 'local-lvm',
           bridge: '',
+          sql: '',
         };
     sc = checksForm(s?.checks);
     schedOpen = true;
@@ -135,7 +143,7 @@
   async function saveSchedule(e: Event) {
     e.preventDefault();
     const body = pluginGroup(sf.group_id)
-      ? { every_days: Number(sf.every_days) }
+      ? { every_days: Number(sf.every_days), checks: sf.sql.trim() ? { sql: sf.sql.trim() } : {} }
       : {
           every_days: Number(sf.every_days),
           node: sf.node,
@@ -197,7 +205,7 @@
               {#if !session.user?.tenant}<td>{s.tenant}</td>{/if}
               <td class="nowrap">{t.rtest.everyShort(s.every_days)}</td>
               {#if !s.node}
-                <td colspan="3" class="muted">{t.rtest.pluginShort}</td>
+                <td colspan="3" class="muted">{t.rtest.pluginShort}{s.checks.sql ? ` ${t.rtest.withSql}` : ''}</td>
               {:else}
                 <td class="mono">{s.node} / {s.storage}</td>
                 <td class="mono">{s.bridge ?? t.rtest.linksDown}</td>
@@ -403,6 +411,12 @@
     </div>
     {#if pluginGroup(sf.group_id)}
       <p class="hint">{t.rtest.pluginTest}</p>
+      <div class="field">
+        <label for="rs-sql">{t.rtest.sqlCheck}</label>
+        <textarea id="rs-sql" rows="3" maxlength="4000" class="mono" bind:value={sf.sql} aria-describedby="rs-sql-hint"
+        ></textarea>
+        <div class="hint" id="rs-sql-hint">{t.rtest.sqlHint}</div>
+      </div>
     {:else}
       <fieldset>
         <legend>{t.rtest.vmOnlyChecks}</legend>

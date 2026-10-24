@@ -290,6 +290,10 @@ fn unpack(
 /// below `verify_dir` on the restore host, started (`pg_ctl -w` returns once recovery
 /// ended), a query answered, then stopped and removed (also when a step failed).
 pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
+    // the test server runs as the restore host's postgres superuser: no user SQL there (#45)
+    if ctx.params["params"]["sql"].is_string() {
+        bail!("the SQL check runs on restore tests of database dumps; this snapshot is a cluster snapshot");
+    }
     let base = ctx.config["verify_dir"].as_str().unwrap_or_default();
     if !valid_dir(base) {
         bail!("restore tests of cluster snapshots need a test directory on the restore host (verify_dir)");

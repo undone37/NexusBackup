@@ -1,7 +1,7 @@
 {
   "id": "mysql",
   "name": "MySQL / MariaDB",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -91,7 +91,7 @@
           "id": "verify",
           "title": "Restore test (dump into a throwaway database, row counts checked, dropped again)",
           "applies_to": "guest",
-          "params_schema": { "type": "object", "properties": {} }
+          "params_schema": { "type": "object", "properties": { "sql": { "type": "string", "maxLength": 4000, "title": "SQL check: one read-only query on the restored database (dump tests); passes when its first value is true or not zero" } } }
         },
         {
           "id": "to_target",

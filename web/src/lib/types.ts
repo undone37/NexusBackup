@@ -2676,6 +2676,8 @@ export interface RtChecks {
   command?: string[];
   expect_exit?: number;
   command_timeout?: number;
+  /** database groups (#45): one read-only query on the restored database, true or not zero passes */
+  sql?: string;
 }
 
 export interface RtCheck {

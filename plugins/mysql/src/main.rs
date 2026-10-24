@@ -15,7 +15,7 @@ mod physical;
 mod pitr;
 mod ssh;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use my::{ident, lit_str, Conn, Opts, SslMode};
 use plugin_sdk::sink::glob;
 use plugin_sdk::{error, BackupResult, Ctx, Guest, Plugin, Sink, Source, Validation};
@@ -385,7 +385,7 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
             format!("database {db:?} exists on the target (choose another name or restore into it)"),
         ));
     }
-    let mut summary = None;
+    let (mut summary, mut sql_value) = (None, None);
     src.streams(std::slice::from_ref(&stream), |_, data| {
         let mut r = BufReader::with_capacity(1 << 20, data);
         let h = dump::read_header(&mut r)?;
@@ -416,6 +416,9 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
                 if let Some(d) = &st.digests {
                     dump::check_digests(&mut c, d)?;
                 }
+                if let Some(sql) = p["sql"].as_str() {
+                    sql_value = Some(sql_check(&mut c, sql)?);
+                }
             }
             Ok(st)
         });
@@ -440,9 +443,10 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
             None => "no row counts in this dump (made with mysqldump): restored without errors".into(),
         };
         return Ok(format!(
-            "restore test passed: {stream} restored into {db} on the {} server, {} statements, {checked}, dropped again",
+            "restore test passed: {stream} restored into {db} on the {} server, {} statements, {checked}{}, dropped again",
             if alternate { "alternate" } else { "source" },
-            st.statements
+            st.statements,
+            sql_value.map(|v| format!(", the SQL check returned {v}")).unwrap_or_default()
         ));
     }
     Ok(format!(
@@ -454,6 +458,32 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
         },
         st.statements
     ))
+}
+
+/// The group's SQL check of a restore test (#45): one query (the client does not enable multiple
+/// statements) in a read-only transaction on the restored database; passes when the first value of its
+/// first row is true or not zero.
+fn sql_check(c: &mut Conn, sql: &str) -> Result<String> {
+    let q = sql.trim().trim_end_matches(';');
+    if q.trim().is_empty() || q.contains(';') || sql.len() > 4000 {
+        bail!("the SQL check must be one query of at most 4000 characters (a `;` only at the end)");
+    }
+    c.exec("START TRANSACTION READ ONLY")?;
+    let rows = c.query(q);
+    c.exec("ROLLBACK")?;
+    let v = rows
+        .context("the SQL check failed")?
+        .into_iter()
+        .next()
+        .and_then(|r| r.into_iter().next())
+        .flatten();
+    match v {
+        Some(v) if v.trim().parse::<f64>().is_ok_and(|n| n != 0.0) => Ok(v),
+        v => bail!(
+            "the SQL check returned {}, not true: {q}",
+            v.as_deref().unwrap_or("no value")
+        ),
+    }
 }
 
 fn main() {

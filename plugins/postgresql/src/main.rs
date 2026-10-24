@@ -15,7 +15,7 @@ mod physical;
 mod pitr;
 mod ssh;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use pg::{ident, lit, Conn, Opts, SslMode};
 use plugin_sdk::sink::glob;
 use plugin_sdk::{error, BackupResult, Ctx, Guest, Plugin, Sink, Source, Validation};
@@ -373,7 +373,7 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
             format!("database {db:?} exists on the target (choose another name or restore into it)"),
         ));
     }
-    let mut summary = None;
+    let (mut summary, mut sql_value) = (None, None);
     src.streams(std::slice::from_ref(&stream), |_, data| {
         let mut r = BufReader::with_capacity(1 << 20, data);
         let enc = dump::read_header(&mut r)?;
@@ -392,6 +392,9 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
             let st = dump::restore(&mut c, &mut r)?;
             if verify {
                 dump::check_tables(&mut c, &st)?;
+                if let Some(sql) = p["sql"].as_str() {
+                    sql_value = Some(sql_check(&mut c, sql)?);
+                }
             }
             Ok(st)
         });
@@ -406,10 +409,13 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
     if verify {
         return Ok(format!(
             "restore test passed: {stream} restored into {db} on the {} server, {} tables with {} rows compared \
-             with the dump (counts and contents), dropped again",
+             with the dump (counts and contents){}, dropped again",
             if alternate { "alternate" } else { "source" },
             st.tables,
-            st.rows
+            st.rows,
+            sql_value
+                .map(|v| format!(", the SQL check returned {v}"))
+                .unwrap_or_default()
         ));
     }
     Ok(format!(
@@ -425,6 +431,40 @@ fn restore_dump(pg: &mut Postgres, ctx: &Ctx, src: &mut Source) -> Result<String
     ))
 }
 
+/// The group's SQL check of a restore test (#45): one query in a read-only transaction on the restored
+/// database; passes when the first value of its first row is true or not zero.
+fn sql_check(c: &mut Conn, sql: &str) -> Result<String> {
+    let q = sql.trim().trim_end_matches(';');
+    if q.trim().is_empty() || q.contains(';') || sql.len() > 4000 {
+        bail!("the SQL check must be one query of at most 4000 characters (a `;` only at the end)");
+    }
+    // the dump restore and the content check leave `search_path = ''` and canonical output settings:
+    // the server's defaults again, so unqualified names resolve as for the application (lab 2026-10-24)
+    c.exec("RESET ALL")?;
+    c.exec("BEGIN READ ONLY")?;
+    let rows = c.query(q);
+    c.exec("ROLLBACK")?;
+    let v = rows
+        .context("the SQL check failed")?
+        .into_iter()
+        .next()
+        .and_then(|r| r.into_iter().next())
+        .flatten();
+    match v {
+        Some(v) if truthy(&v) => Ok(v),
+        v => bail!(
+            "the SQL check returned {}, not true: {q}",
+            v.as_deref().unwrap_or("no value")
+        ),
+    }
+}
+
+/// `t`/`true` or a number other than zero.
+fn truthy(v: &str) -> bool {
+    let v = v.trim();
+    matches!(v, "t" | "true") || v.parse::<f64>().is_ok_and(|n| n != 0.0)
+}
+
 fn main() {
     plugin_sdk::run(Postgres::default())
 }
@@ -432,6 +472,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::rewrap_pem;
+
+    #[test]
+    fn sql_check_values() {
+        for v in ["t", "true", "1", "412", "0.5"] {
+            assert!(super::truthy(v), "{v}");
+        }
+        for v in ["f", "false", "0", "0.0", "", "yes"] {
+            assert!(!super::truthy(v), "{v}");
+        }
+    }
 
     #[test]
     fn pem_without_line_breaks() {

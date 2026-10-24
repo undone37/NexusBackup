@@ -4295,8 +4295,12 @@ export const en = {
     pveGroupsOnly:
       'Groups of Proxmox VE sources, and of database plugins that offer restore tests (PostgreSQL 1.4, MySQL/MariaDB 1.1 or newer).',
     pluginTest:
-      "Database groups use the plugin's own restore test: a dump is restored into a throwaway database (on the alternate server if one is set, else the source) and every table's rows are counted against the dump; a cluster backup is restored point-in-time to its end into a throwaway directory on the restore host (the source's test directory), started and queried. Both are removed again.",
+      "Database groups use the plugin's own restore test: a dump is restored into a throwaway database (on the alternate server if one is set, else the source) and every table's rows are counted against the dump; a cluster backup is restored point-in-time to a random point of its range into a throwaway directory on the restore host (the source's test directory), started and queried. Both are removed again.",
     pluginShort: 'plugin restore test (throwaway database or data directory)',
+    sqlCheck: 'SQL check (optional)',
+    sqlHint:
+      "One query, run read-only on the restored database of a dump test; the test passes when its first value is true or not zero, e.g. SELECT count(*) > 0 FROM orders WHERE created > now() - interval '2 days'. Cluster snapshots take no SQL check.",
+    withSql: '+ SQL check',
     every: 'Every (days)',
     everyShort: (n: number) => (n === 1 ? 'daily' : `every ${n} days`),
     lastRun: 'Last run',

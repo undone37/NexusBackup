@@ -1513,7 +1513,14 @@ esac"
     // the newest local snapshot of each source; the result is a restore_tests row
     s.db.conn()
         .execute(
-            "INSERT INTO restore_test_schedules (group_id, every_days, node, storage) VALUES (9, 7, '', '')",
+            "INSERT INTO restore_test_schedules (group_id, every_days, node, storage, checks) VALUES (9, 7, '', '', '{\"sql\":\"SELECT 1\"}')",
+            [],
+        )
+        .unwrap();
+    // #46: a recoverable range gives a random target inside it
+    s.db.conn()
+        .execute(
+            "UPDATE snapshots SET meta = '{\"recoverable\":{\"from_time\":1699999300,\"to_time\":1699999990}}' WHERE source='plugin-pgx-9-db1' AND time=1700000000",
             [],
         )
         .unwrap();
@@ -1533,6 +1540,10 @@ esac"
     assert_eq!(queued.len(), 1, "only the source with a local snapshot: {queued:?}");
     assert_eq!(queued[0].1["source"], "plugin-pgx-9-db1");
     assert_eq!(queued[0].1["restore"], "verify");
+    // #45: the group's SQL check; #46: the target time inside the range (2023-11-14 22:xx UTC)
+    assert_eq!(queued[0].1["params"]["sql"], "SELECT 1");
+    let tt = queued[0].1["params"]["target_time"].as_str().unwrap();
+    assert!(tt.starts_with("2023-11-14T22:") && tt.ends_with('Z'), "{tt}");
     s.queue_restore_tests(catalog::now()).unwrap();
     // a failing test of the same source (the fake host fails on the marker)
     let bad = manual(
