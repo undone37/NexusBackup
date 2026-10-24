@@ -66,6 +66,10 @@ case "$1" in
     echo 'agent-info {{"agent_id":"'$id'","version":"0.1.0","os":"Debian GNU/Linux 13","caps":["update2","arch=x86_64","install=deb"]}}'
     if [ -e $D/busy-$id ]; then rm $D/busy-$id
       echo 'update-result {{"agent_id":"'$id'","state":"busy","version":"0.1.0","error":"agent error 409: jobs are running"}}'; exit 1; fi
+    if [ -e $D/lost-$id ]; then
+      echo 'agent-info {{"agent_id":"'$id'","version":"0.1.0","os":"Windows Server 2022","caps":["update2","arch=x86_64","install=msi"]}}'
+      echo 'update-plan {{"from":"0.1.0","to":"'$v'","kind":"msi"}}'
+      echo 'update-result {{"agent_id":"'$id'","state":"failed","version":"0.1.0","error":"the agent did not come back: connection refused"}}'; exit 1; fi
     if [ -e $D/fail-$id ]; then
       echo 'update-result {{"agent_id":"'$id'","state":"failed","version":"0.1.0","error":"package install failed (exit-code, exit status 100)"}}'; exit 1; fi
     echo 'agent-info {{"agent_id":"'$id'","version":"'$v'","os":"Debian GNU/Linux 13","caps":["update2","arch=x86_64","install=deb"]}}'
@@ -489,4 +493,34 @@ fn automatic_mode_starts_one_rollout_per_release_and_rollbacks_wait_for_approval
     e.round();
     assert_eq!(e.state(id), "rejected");
     assert!(e.items(id).iter().all(|i| i.2 == "cancelled"));
+}
+
+/// #96: an agent that does not come back after its update is a critical alert that says what to do on the host
+/// (a failed Windows Installer upgrade can leave no agent; the MSI by hand brings it back enrolled).
+#[test]
+fn an_agent_lost_after_its_update_is_critical() {
+    let mut e = Env::new();
+    let a = AGENTS[0];
+    fs::write(e.p.join(format!("lost-{a}")), "").unwrap();
+    e.db.conn()
+        .execute(
+            "INSERT INTO jobs (kind, tenant, params, state, requested_by, created) VALUES ('agent_update','acme',?1,'queued','alice',0)",
+            [json!({"agent_id": a}).to_string()],
+        )
+        .unwrap();
+    e.round();
+    let (sev, msg): (String, String) =
+        e.db.conn()
+            .query_row(
+                "SELECT severity, message FROM alerts WHERE kind = 'agent_update_failed' AND resolved_at IS NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!(sev, "critical");
+    assert!(
+        msg.contains("is offline after its update to 0.3.0")
+            && msg.contains("install nexus-agent 0.3.0 (.msi) by hand"),
+        "{msg}"
+    );
 }
