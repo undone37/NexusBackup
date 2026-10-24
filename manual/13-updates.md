@@ -93,8 +93,22 @@ The reason is shown on the card ("The last uploaded bundle was refused: ..."). A
 stops checking the registry by itself; **Check now** checks online again (needed only when the appliance gets
 internet access).
 
-> **Status:** Implemented in Phase 36 (unit tests for the checks, upload API test). Lab: see state.md. Not yet:
-> `nexusctl update upload` and a USB stick at the console.
+Without a browser path to the appliance there are two other ways in; both run the same checks and install
+nothing either:
+
+- **From a workstation with `nexusctl`** (manual chapter 9): `nexusctl --url https://<appliance>:8443 --ca
+  <cert.pem> update upload nexusbackup-<version>-update.tar --user <administrator>`. It asks for that
+  administrator's password and TOTP code (API tokens never act as administrators), uploads, waits for the
+  verification and prints the result; exit code 1 when the bundle was refused. A sign-in with a risk mark asks for
+  a second code. Without a terminal (scripts) the answers are read from stdin, one per line.
+- **From a USB stick at the console** (root shell): mount the stick read-only and import the file, for example
+  `mount -o ro /dev/sdb1 /mnt && nexus-setup import-update /mnt/nexusbackup-<version>-update.tar; umount /mnt`.
+  The import is audited as `update.upload` by `console` and waits for the verification.
+
+Then install it in the web interface as above (**Install now**).
+
+> **Status:** Implemented in Phase 36 (unit tests for the checks, upload API test, `nexusctl` and console import
+> tests). Lab: see state.md.
 
 ## Private image repository
 

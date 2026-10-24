@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub mod fleet;
+pub mod update;
 
 pub const USAGE: &str = "nexusctl — NexusBackup appliance API client (API tokens)
 
@@ -41,6 +42,15 @@ commands:
                                                           token_env in the JSON configuration);
                                                           --html writes a static report, --check
                                                           exits 2 when one needs attention
+  update upload <bundle.tar> --user NAME [--wait SECONDS]
+                                                          offline update bundle with the same checks as
+                                                          Settings -> Updates; signs in as that
+                                                          administrator (password and TOTP code are
+                                                          asked for; no API token), waits for the
+                                                          verification (default 1800 s), exits 1 when
+                                                          the bundle was refused; installing stays in
+                                                          the web UI (approval). Without a terminal
+                                                          the answers are read from stdin, one per line
 
 environment: NEXUS_URL, NEXUS_TOKEN, NEXUS_CA; fleet: NEXUS_FLEET (configuration file)";
 

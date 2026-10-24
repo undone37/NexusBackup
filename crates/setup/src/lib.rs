@@ -73,6 +73,8 @@ pub struct Paths {
     pub grub_user: PathBuf,
     pub setup_done: PathBuf,
     pub lock: PathBuf,
+    /// OS update control directory (nexus-update)
+    pub update_dir: PathBuf,
     /// Read-only NIC enumeration; not prefixed by `--root`.
     pub sys_class_net: PathBuf,
 }
@@ -90,6 +92,7 @@ impl Paths {
             grub_user: p("etc/nexus/grub-user.cfg"),
             setup_done: p("var/lib/nexus/setup-done"),
             lock: p("var/lib/nexus/.setup.lock"),
+            update_dir: p("var/lib/nexus/update"),
             sys_class_net: PathBuf::from("/sys/class/net"),
         }
     }
