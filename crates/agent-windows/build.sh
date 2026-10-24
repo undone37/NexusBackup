@@ -64,12 +64,13 @@ run cargo build --locked -p agent-windows --release --target "$TARGET"
 bin=target/windows-container/$TARGET/release/nexus-agent-windows.exe
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/agent-windows/Cargo.toml | head -1)
 size=$(stat -c %s "$bin")
-# only system DLLs may be imported (no libgcc / winpthread DLLs next to the exe)
+# only system DLLs may be imported (no libgcc / winpthread DLLs next to the exe); wtsapi32: the sessions for
+# the standalone job triggers lock / logoff (#31)
 dlls=$(run x86_64-w64-mingw32-objdump -p "$bin" | sed -n 's/^\s*DLL Name: //p' | tr 'A-Z' 'a-z' | sort -u)
 for d in $dlls; do
 	case $d in
 	kernel32.dll | advapi32.dll | ntdll.dll | ole32.dll | oleaut32.dll | vssapi.dll | ws2_32.dll | userenv.dll | \
-		bcrypt.dll | bcryptprimitives.dll | api-ms-win-*.dll | msvcrt.dll | secur32.dll | crypt32.dll | user32.dll) ;;
+		bcrypt.dll | bcryptprimitives.dll | api-ms-win-*.dll | msvcrt.dll | secur32.dll | crypt32.dll | user32.dll | wtsapi32.dll) ;;
 	*)
 		echo "unexpected DLL import: $d" >&2
 		exit 1
