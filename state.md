@@ -355,8 +355,15 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
   no local tenants, no peers, a replication source, web inbound restricted) on after approval, a download turned
   into a vault.restore request and ran after its approval (998 entries), a new tenant refused (409); switched off
   with the approval and the recovery key at the console (`nexus-setup vault-disable`, audited, alert).
-  Open: disks.sh (needs an appliance with extra disks and an empty store), forwarding.sh, offsite-fetch, config-restore.sh (second
-  appliance), PG 1.2.0 bundle.
+Offsite fetch-back (`lab/pvehost/offsite.sh`): an SFTP target on the regression VM (internal-sftp, key placed on
+  the appliance by hand) for tenant windows, offsite upload, the newest snapshot's local copy removed, offsite only
+  after the refresh, listed and fetched back (local again, locked 7 days), browsable: browsing showed an empty root
+  for Windows agent snapshots (folders above the backed-up paths missing), fixed in #98. Configuration restore
+  (`lab/pvehost/config-restore.sh`): VM 201's configuration backup uploaded to that target, restored on a fresh
+  appliance VM 203 (DHCP address, not set up) with `nexus-setup restore-config --offsite` and VM 201's recovery key
+  (21 files, same recovery key), VM 201's admin signs in on VM 203, config_rekey restored the tenant keys from
+  offsite; VM 203 removed again. The PG 1.2.0 bundle is installed on VM 201 together with 1.2.1 to 1.4.0.
+  Open: disks.sh (needs an appliance with extra disks and an empty store), forwarding.sh.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
