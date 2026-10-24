@@ -171,7 +171,15 @@ pub fn parse_msi_log(b: Option<&[u8]>) -> InstallResult {
                 1925 | 1625 => "not allowed by policy",
                 _ => "installation failed",
             };
-            InstallResult::Failed(format!("msiexec exit code {c}: {why}"), tail)
+            // `Action ended 12:00:05: StartServices. Return value 3.`: the action that failed, in the message itself
+            let action = lines.get(at).and_then(|l| {
+                let a = l.split("Action ended ").nth(1)?.split_once(": ")?.1;
+                let a = a.split(". Return value").next()?.trim();
+                (!a.is_empty() && a.len() <= 64 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                    .then_some(a)
+            });
+            let at_action = action.map(|a| format!(" (failed action: {a})")).unwrap_or_default();
+            InstallResult::Failed(format!("msiexec exit code {c}: {why}{at_action}"), tail)
         }
     }
 }
@@ -258,7 +266,10 @@ mod update2_tests {
         );
         match parse_msi_log(Some(&utf16(&failed))) {
             InstallResult::Failed(e, tail) => {
-                assert!(e.contains("1603"), "{e}");
+                assert!(
+                    e.contains("1603") && e.ends_with("(failed action: StartServices)"),
+                    "{e}"
+                );
                 assert!(tail.iter().any(|l| l.contains("StartServices")), "{tail:?}");
             }
             r => panic!("{r:?}"),
