@@ -374,6 +374,62 @@ fn snapshot_exists(st: &St, tenant: &str, source: &str, time: i64) -> ApiResult<
     found.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "no such snapshot".into()))
 }
 
+/// A point-in-time target as unix seconds: `YYYY-MM-DD HH:MM:SS` (or `T`), optional fraction, then `Z`, `+HH`,
+/// `+HHMM` or `+HH:MM` (as the restore dialog writes it); `None` for other forms (the plugin's server checks those).
+fn target_secs(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let b = s.as_bytes();
+    if b.len() < 19 || !(b[10] == b' ' || b[10] == b'T') {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, se) = (
+        num(0..4)?,
+        num(5..7)?,
+        num(8..10)?,
+        num(11..13)?,
+        num(14..16)?,
+        num(17..19)?,
+    );
+    if b[4] != b'-'
+        || b[7] != b'-'
+        || b[13] != b':'
+        || b[16] != b':'
+        || !(1..=12).contains(&mo)
+        || !(1..=31).contains(&d)
+    {
+        return None;
+    }
+    let mut rest = &s[19..];
+    if let Some(f) = rest.strip_prefix('.') {
+        rest = f.trim_start_matches(|c: char| c.is_ascii_digit());
+    }
+    let off = match rest {
+        "Z" | "" => 0,
+        _ => {
+            let sign = match rest.as_bytes()[0] {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let digits: String = rest[1..].chars().filter(|c| *c != ':').collect();
+            let (oh, om) = match digits.len() {
+                2 => (digits.parse::<i64>().ok()?, 0),
+                4 => (digits[..2].parse::<i64>().ok()?, digits[2..].parse::<i64>().ok()?),
+                _ => return None,
+            };
+            sign * (oh * 3600 + om * 60)
+        }
+    };
+    // days from the civil date (Howard Hinnant)
+    let (yy, m) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let doy = (153 * m + 2) / 5 + d - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + se - off)
+}
+
 /// Validates and canonicalises the params of a job request.
 pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiResult<Value> {
     Ok(match kind {
@@ -718,6 +774,32 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 Some(schema) => crate::plugins::check_schema(schema, &r.params, "params", &[])?,
                 None if r.params.as_object().is_some_and(serde_json::Map::is_empty) => {}
                 None => return Err(ApiError::bad("params: this restore takes no parameters")),
+            }
+            // #49: a point-in-time target outside the snapshot's recoverable range (plugin metadata) is refused here
+            // too, not only by the dialog (the server would end recovery before reaching it)
+            if let Some(ts) = r.params["target_time"].as_str().and_then(target_secs) {
+                let meta: Option<String> = st
+                    .cat
+                    .conn()
+                    .query_row(
+                        "SELECT meta FROM snapshots WHERE tenant = ?1 AND source = ?2 AND time = ?3",
+                        params![tenant, r.source, r.time],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                let range = meta.and_then(|m| serde_json::from_str::<Value>(&m).ok());
+                let (from, to) = match range.as_ref().map(|m| &m["recoverable"]) {
+                    Some(rc) => (rc["from_time"].as_i64(), rc["to_time"].as_i64()),
+                    None => (None, None),
+                };
+                if let (Some(from), Some(to)) = (from, to) {
+                    if ts < from || ts > to {
+                        return Err(ApiError::bad(format!(
+                            "params.target_time: outside the recoverable range of this snapshot ({from} to {to}, unix seconds)"
+                        )));
+                    }
+                }
             }
             if let Some(tid) = r.target_source_id {
                 // only sources of the same appliance tenant (source_of) and plugin kind
@@ -1351,4 +1433,28 @@ pub async fn delete_snapshot(
         json!({"tenant": tenant, "source": source, "time": time}),
     )?;
     Ok(crate::quorum::accepted(o, json!({})))
+}
+
+#[cfg(test)]
+mod pitr_tests {
+    use super::target_secs;
+
+    #[test]
+    fn target_time_forms() {
+        // 2026-10-10 14:30:00 UTC = 1791642600
+        assert_eq!(target_secs("2026-10-10 14:30:00+00"), Some(1_791_642_600));
+        assert_eq!(target_secs("2026-10-10T14:30:00Z"), Some(1_791_642_600));
+        assert_eq!(target_secs("2026-10-10 16:30:00.250+02:00"), Some(1_791_642_600));
+        assert_eq!(target_secs("2026-10-10 09:30:00-0500"), Some(1_791_642_600));
+        assert_eq!(target_secs("1970-01-01 00:00:00+00"), Some(0));
+        for bad in [
+            "",
+            "yesterday",
+            "2026-13-01 00:00:00+00",
+            "2026-10-10 14:30:00 CET",
+            "2026-10-10",
+        ] {
+            assert_eq!(target_secs(bad), None, "{bad}");
+        }
+    }
 }

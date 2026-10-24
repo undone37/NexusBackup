@@ -59,7 +59,7 @@ fn manifest(version: &str) -> Vec<u8> {
             "restores": [{"id": "download", "title": "Download", "params_schema": {"type": "object",
                             "properties": {"mail_format": {"type": "string", "enum": ["eml", "mbox", "pst"]}}}},
                          {"id": "to_target", "title": "Restore", "applies_to": "guest", "params_schema": {"type": "object", "required": ["database"],
-                            "properties": {"database": {"type": "string", "pattern": "^[a-z]+$"}}}},
+                            "properties": {"database": {"type": "string", "pattern": "^[a-z]+$"}, "target_time": {"type": "string"}}}},
                          {"id": "to_other", "title": "Other source", "target_source": true},
                          {"id": "mount", "title": "Mount", "params_schema": {"type": "object", "properties": {}}}]}]
     }))
@@ -427,6 +427,28 @@ async fn plugin_lifecycle_sources_and_jobs() {
         )
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // #49: a point-in-time target outside the snapshot's recoverable range is refused (1000..2000 here)
+    t.st.cat
+        .conn()
+        .execute(
+            r#"UPDATE snapshots SET meta = '{"recoverable":{"from_time":1000,"to_time":2000}}' WHERE source = ?1"#,
+            [format!("plugin-pgx-{sid}-db1")],
+        )
+        .unwrap();
+    for (at, want) in [
+        ("1970-01-01 00:50:00+00", StatusCode::BAD_REQUEST),
+        ("1970-01-01 00:25:00+00", StatusCode::ACCEPTED),
+    ] {
+        let r = t
+            .call(
+                Method::POST,
+                "/api/v1/jobs",
+                &tina,
+                Some(restore(json!({"database": "app", "target_time": at}))),
+            )
+            .await;
+        assert_eq!(r.status, want, "{at}: {:?}", r.body);
+    }
     // manifest v1.4 applies_to: to_target is a per-database (guest) restore, not
     // offered on a whole-source snapshot
     t.st.cat
