@@ -678,8 +678,11 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   VM 224 (16 GiB on vmpool) backed up running, 300 MB junk + marker written, rollback approved by the security
   officer: the paused VM's pre-rollback snapshot 95 changed chunks (380 MB, 9 s), 95 of 4096 chunks written back,
   job 38 s, lock and tag removed, no fallback VM; the disk equals a plain restore of the snapshot (sha256), the
-  guest boots without junk and marker. Open: dir qcow2 (the host's `local` storage takes no VM images; needs a
-  storage config change on pve-test), LVM-thin and RBD (no such storage in the lab), a paused Windows guest.
+  guest boots without junk and marker. Windows the same day: a full clone of VM 242 (Windows Server 2022, 40 GiB
+  SATA, VM 295), junk and marker through the guest agent: pre-rollback snapshot of the paused guest 412 chunks
+  (1.7 GB, 21 s), 412 of 10240 chunks written back, job 77 s, disk identical (qemu-img compare), Windows boots
+  with the guest agent up, junk and marker gone. Open: dir qcow2 (the host's `local` storage takes no VM images;
+  needs a storage config change on pve-test), LVM-thin and RBD (no such storage in the lab).
 - [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
   secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
   existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:

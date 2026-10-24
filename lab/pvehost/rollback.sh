@@ -19,7 +19,7 @@
 #
 # env: as vmware-e2e.sh (LAB, PORT, PVE_HOST, SSH_KEY, NODE pve-test); VM (debian-12), VM_KEY, CHECK (291),
 #      SPARE (293), STORAGE (vmpool), JUNK_MB (300), OUT (~/nexus-lab/scratch/rollback); dir storage:
-#      CLONE=294 STORAGE=local FORMAT=qcow2
+#      CLONE=294 STORAGE=local FORMAT=qcow2; Windows: CLONE=295 SRC_VMID=242 STORAGE=vmpool FORMAT=raw WINDOWS=1
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -54,6 +54,20 @@ vmid() { [ -n "${CLONE:-}" ] && echo "$CLONE" || "$here/agent-vms.sh" list | awk
 case " ${*:-all} " in " vm " | " cleanup " | " vm cleanup ") ;; *) login admin "$ADMIN_PW" "$ADMIN_TOTP" ;; esac
 GROUP=rollback-$VM${CLONE:+-$CLONE}
 FORMAT=${FORMAT:-qcow2}
+# WINDOWS=1 (with CLONE and SRC_VMID, e.g. 242): a Windows guest, changed and checked through the QEMU guest agent
+WINDOWS=${WINDOWS:-}
+gexec() { # gexec POWERSHELL: run in the Windows guest (encoded: no quoting through two shells), true on exit 0
+	local enc
+	enc=$(printf '%s' "$1" | iconv -t UTF-16LE | base64 -w0)
+	pve "qm guest exec $(vmid) --timeout 900 -- powershell -NoProfile -EncodedCommand $enc" | jq -e '.exitcode == 0' >/dev/null
+}
+wait_ga() {
+	for _ in $(seq 120); do
+		pve "qm agent $(vmid) ping" >/dev/null 2>&1 && return
+		sleep 5
+	done
+	die "VM $(vmid): no guest agent"
+}
 
 step_vm() {
 	"$here/agent-vms.sh" reset "$VM" </dev/null
@@ -73,9 +87,15 @@ step_clone() {
 	local src ip=
 	[ -n "${CLONE:-}" ] && [ "$CLONE" -ge 200 ] || die "CLONE: the VMID of the clone (from 200)"
 	pve "qm status $CLONE" >/dev/null 2>&1 && die "VM $CLONE exists (step cleanup)"
-	src=$("$here/agent-vms.sh" list | awk -v n="$VM" '$2 == n {print $1}')
+	src=${SRC_VMID:-$("$here/agent-vms.sh" list | awk -v n="$VM" '$2 == n {print $1}')}
 	pve "qm status $src | grep -q stopped || qm shutdown $src --timeout 120 --forceStop 1"
-	pve "qm clone $src $CLONE --full 1 --storage $STORAGE --format $FORMAT --name rb-$VM-$FORMAT >/dev/null && qm start $CLONE"
+	pve "qm clone $src $CLONE --full 1 --storage $STORAGE --format $FORMAT --name rb-$src-$FORMAT >/dev/null && qm start $CLONE"
+	if [ -n "$WINDOWS" ]; then
+		wait_ga
+		echo - >"$OUT/ip"
+		log "VM $CLONE: full clone of VM $src on $STORAGE ($FORMAT), guest agent up"
+		return
+	fi
 	for _ in $(seq 60); do
 		ip=$(pve "qm guest cmd $CLONE network-get-interfaces 2>/dev/null" | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"][0] // empty')
 		[ -n "$ip" ] && break
@@ -114,6 +134,12 @@ step_backup() {
 }
 
 step_change() {
+	if [ -n "$WINDOWS" ]; then
+		gexec "\$r=[Security.Cryptography.RandomNumberGenerator]::Create(); \$b=New-Object byte[] 1048576; \$f=[IO.File]::Create('C:\\nexus-junk.bin'); for(\$i=0;\$i -lt $JUNK_MB;\$i++){\$r.GetBytes(\$b); \$f.Write(\$b,0,\$b.Length)}; \$f.Close(); Set-Content C:\\nexus-marker.txt rolled-back-if-missing" ||
+			die "guest exec: junk and marker not written"
+		log "guest: ${JUNK_MB} MB junk and C:\\nexus-marker.txt written"
+		return
+	fi
 	vm "head -c ${JUNK_MB}M /dev/urandom > /root/junk.bin && echo rolled-back-if-missing > /root/marker && sync"
 	log "guest: ${JUNK_MB} MB junk and /root/marker written"
 }
@@ -161,14 +187,22 @@ step_compare() {
 	pve "qm status $(vmid)" | grep -q stopped || die "VM $(vmid) is not stopped"
 	# the first disk of both VMs, whatever the storage (zvol, qcow2 file): qemu-img compares the guest view
 	local pa pb
-	pa=$(pve "pvesm path \$(qm config $(vmid) | sed -n 's/^scsi0: \([^,]*\).*/\1/p')")
-	pb=$(pve "pvesm path \$(qm config $CHECK | sed -n 's/^scsi0: \([^,]*\).*/\1/p')")
+	disk() { pve "pvesm path \$(qm config $1 | grep -E '^(scsi|sata|virtio|ide)[0-9]+: ' | grep -v media=cdrom | head -1 | sed 's/^[a-z0-9]*: \([^,]*\).*/\1/')"; }
+	pa=$(disk "$(vmid)")
+	pb=$(disk "$CHECK")
 	pve "qemu-img compare -q '$pa' '$pb'" || die "the rolled-back disk differs from a plain restore of snapshot A"
 	log "qemu-img compare: the rolled-back disk ($pa) equals a plain restore of snapshot A ($pb)"
 }
 
 step_boot() {
 	pve "qm start $(vmid)"
+	if [ -n "$WINDOWS" ]; then
+		wait_ga
+		gexec "if ((Test-Path C:\\nexus-marker.txt) -or (Test-Path C:\\nexus-junk.bin)) { exit 1 }" ||
+			die "marker or junk still in the guest"
+		log "VM $(vmid) (Windows) boots after the rollback; marker and junk gone"
+		return
+	fi
 	local ok=
 	for _ in $(seq 60); do
 		vm true 2>/dev/null && ok=1 && break
