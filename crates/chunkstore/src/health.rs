@@ -42,7 +42,7 @@ impl Store {
         self.root().join(BAD_LIST)
     }
 
-    fn quarantine_path(&self, id: &ChunkId) -> PathBuf {
+    pub(crate) fn quarantine_path(&self, id: &ChunkId) -> PathBuf {
         self.chunk_path(id).with_extension("bad")
     }
 
@@ -236,6 +236,8 @@ mod tests {
         assert_eq!(s.mark_bad(&v.corrupt).unwrap(), 1);
         assert_eq!(s.mark_bad(&v.corrupt).unwrap(), 0, "listed once");
         assert!(!s.has_chunk(&id) && s.quarantine_path(&id).exists());
+        let e = s.read_chunk(&id).unwrap_err().to_string();
+        assert!(e.contains("failed verification and was moved aside"), "{e}");
         assert!(s.is_damaged(&m1).unwrap());
         assert_eq!(
             s.damaged_snapshots().unwrap(),
