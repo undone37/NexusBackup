@@ -84,7 +84,8 @@
       changed: JSON.stringify(a[k]) !== JSON.stringify(b[k]),
     }));
   }
-  const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(q.params ?? {}));
+  // nested parameters (restore.replace carries the job's `params`) field by field, like the diff
+  const others = (q: QuorumRequest) => (q.params && 'old' in q.params ? [] : Object.entries(flat(q.params ?? {})));
   const humanize = (a: string) => t.quorum.actions[a] ?? a.replace(/[_.]/g, ' ');
   // Phase 23a: a retention-weakening policy change shows its restore point preview (old dashed)
   const simOf = (p: Record<string, unknown> | undefined): SimInput | null =>
@@ -191,11 +192,13 @@
 {#if !loaded}
   <p class="muted" aria-busy="true">{t.loading}</p>
 {:else if shown.length === 0}
-  <div class="card"><p class="empty">{t.none}</p></div>
+  <div class="card">
+    <p class="empty">{onlyPending && items.length ? t.quorum.nonePending : t.none}</p>
+  </div>
 {:else}
   {#each shown as q (q.id)}
     {@const d = diff(q)}
-    {@const own = q.requested_by === session.user?.name}
+    {@const mine = q.requested_by === session.user?.name}
     <article class="card" class:focus={q.id === focus} aria-labelledby="q{q.id}">
       <h2 id="q{q.id}">
         <span>#{q.id} · {humanize(q.action)}</span>
@@ -282,14 +285,14 @@
           />
         {/if}
       {/if}
-      {#if q.state === 'pending' && myTenant(q) && !own}
+      {#if q.state === 'pending' && myTenant(q) && !mine}
         <div class="form-actions">
           <button type="button" class="danger" onclick={() => decide(q, 'reject')}>{t.quorum.refuseTenant}</button>
           <button type="button" class="primary" onclick={() => decide(q, 'approve')}>{t.quorum.approveTenant}</button>
         </div>
       {/if}
       {#if q.state === 'pending' && can.decideQuorum(session.user) && !q.approved_by}
-        {#if own}
+        {#if mine}
           <p class="muted">{t.quorum.ownRequest}</p>
         {:else}
           <div class="form-actions">

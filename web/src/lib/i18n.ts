@@ -2591,6 +2591,7 @@ export const en = {
     approved: 'Approved.',
     rejected: 'Rejected.',
     onlyPending: 'Pending only',
+    nonePending: 'No request is waiting for a decision. Clear "Pending only" to see decided and expired ones.',
     ownOnly: 'Your requests. An administrator or security officer of the provider decides them.',
     ownRequest: 'You requested this — another administrator or security officer must decide.',
     settingsLink: 'Approval settings',
