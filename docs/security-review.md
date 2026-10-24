@@ -391,6 +391,7 @@ Reviewed with the implementation (2026-10-10):
 | L-F1 | low | Non-object agent response panicked nexus-pve | 60bb445 |
 | L-F2 | low | `tenant: null` did not clear a user's tenant scope | a18c526 |
 | L-F3 | low | keyd: no write timeout on the single-threaded socket loop | 8bd8755 |
+| L-F4 | low | Agent: an unreadable package marker (ACL, scanner lock) counted as "no package", so an MSI/.deb/.rpm install could take a binary swap behind its package manager (lab #67) | (this PR) |
 
 ### Open — recommendations
 

@@ -158,9 +158,16 @@ pub fn package_marker() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// The package type if this agent was installed from a package.
+/// The package type if this agent was installed from a package. Only a missing marker means "no package": a marker
+/// that cannot be read (an ACL, a file lock of a scanner) counts as an unknown package, so a package install is never
+/// updated by a binary swap behind its package manager's back (#67: an MSI install reported `manual` while its
+/// folder's ACL denied the service account).
 pub fn packaged(marker: &Path) -> Option<String> {
-    let t = fs::read_to_string(marker).ok()?;
+    let t = match fs::read_to_string(marker) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => return Some("package".into()),
+    };
     let t = t.trim();
     Some(if t.is_empty() || t.len() > 16 {
         "package".into()
@@ -669,6 +676,11 @@ mod tests {
         assert_eq!(packaged(&m).as_deref(), Some("deb"));
         fs::write(&m, "").unwrap();
         assert_eq!(packaged(&m).as_deref(), Some("package"));
+        // unreadable (here: a directory in its place): an unknown package, no binary swap
+        let d = t.path().join("unreadable");
+        fs::create_dir(&d).unwrap();
+        assert_eq!(packaged(&d).as_deref(), Some("package"));
+        assert!(binary_swap_blocked(packaged(&d).as_deref()).is_some());
         // auto (unset) and on: allowed with the own package type; off always wins
         assert_eq!(self_update_blocked(None, None), None);
         assert_eq!(self_update_blocked(None, Some("rpm")), None);
