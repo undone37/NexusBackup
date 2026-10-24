@@ -22,8 +22,9 @@ use tantivy::schema::{
 };
 use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
-/// Format of the documents and the payload; another value rebuilds (2: owner names, Phase 39 C2).
-pub const VERSION: u32 = 2;
+/// Format of the documents and the payload; another value rebuilds (2: owner names, Phase 39 C2; 3: mail
+/// senders and recipients from the item metadata, #54).
+pub const VERSION: u32 = 3;
 const WRITER_BYTES: usize = 64 << 20;
 /// More new snapshots than this at once: rebuild the source instead of appending.
 const MAX_APPEND: usize = 4;
@@ -51,6 +52,11 @@ pub struct Fields {
     pub owner_name: Field,
     /// the same, lowercased, for the owner filter by name (indexed only)
     pub owner_name_lc: Field,
+    /// #54: a mail's item metadata record (JSON, stored only), and the words of its sender and of its
+    /// To / Cc / Bcc addresses (indexed only)
+    pub mail: Field,
+    pub sender: Field,
+    pub rcpt: Field,
 }
 
 pub fn schema() -> (Schema, Fields) {
@@ -67,7 +73,7 @@ pub fn schema() -> (Schema, Fields) {
         browse: b.add_text_field("browse", STORED),
         path_lc: b.add_text_field("path_lc", STRING | FAST),
         name_lc: b.add_text_field("name_lc", STRING),
-        tok: b.add_text_field("tok", tok),
+        tok: b.add_text_field("tok", tok.clone()),
         ext: b.add_text_field("ext", STRING),
         kind: b.add_u64_field("kind", INDEXED | STORED),
         size: b.add_u64_field("size", INDEXED | STORED | FAST),
@@ -79,6 +85,9 @@ pub fn schema() -> (Schema, Fields) {
         owner: b.add_text_field("owner", STRING | STORED),
         owner_name: b.add_text_field("owner_name", STORED),
         owner_name_lc: b.add_text_field("owner_name_lc", STRING),
+        mail: b.add_text_field("mail", STORED),
+        sender: b.add_text_field("sender", tok.clone()),
+        rcpt: b.add_text_field("rcpt", tok),
     };
     (b.build(), f)
 }
@@ -134,6 +143,9 @@ pub fn fkey(source: &str, browse: &str) -> u64 {
 pub fn rules_hash(r: &SourceRules) -> u64 {
     hash(&[serde_json::to_string(r).unwrap_or_default().as_bytes()])
 }
+
+/// The sealed side file with a plugin snapshot's item metadata (plugin-proto `ITEM_META_FILE`).
+const ITEM_META_FILE: &str = "itemmeta";
 
 /// Turns name-index paths of one snapshot into guest paths.
 pub enum Guest {
@@ -207,6 +219,8 @@ struct Open {
     kind: u8,
     owner: Option<String>,
     owner_name: Option<String>,
+    /// the item metadata record (JSON) of a plugin item, e.g. a mail's sender and recipients
+    mail: Option<String>,
 }
 
 pub struct TenantIndex {
@@ -315,6 +329,18 @@ impl TenantIndex {
             d.add_text(f.owner_name, n);
             d.add_text(f.owner_name_lc, n.to_lowercase());
         }
+        if let Some(m) = &v.mail {
+            d.add_text(f.mail, m);
+            let rec: serde_json::Value = serde_json::from_str(m).unwrap_or_default();
+            if let Some(s) = rec["from"].as_str() {
+                d.add_text(f.sender, s);
+            }
+            for k in ["to", "cc", "bcc"] {
+                for a in rec[k].as_array().into_iter().flatten().filter_map(|a| a.as_str()) {
+                    d.add_text(f.rcpt, a);
+                }
+            }
+        }
         d
     }
 
@@ -324,6 +350,16 @@ impl TenantIndex {
             return Ok(None);
         };
         let g = Guest::for_snapshot(r, source, time, &names);
+        // plugin items' metadata by their path (#54: a mail's sender and recipients), sealed with the snapshot
+        let meta: BTreeMap<String, serde_json::Value> = if source_kind(source) == "plugin" {
+            r.read_snap_file(source, time, ITEM_META_FILE)
+                .ok()
+                .flatten()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
         let mut out = HashMap::with_capacity(names.len());
         for (i, (p, size, mtime, kind)) in names.iter().enumerate() {
             let path = g.path(p);
@@ -346,6 +382,7 @@ impl TenantIndex {
                     kind,
                     owner: names.owner(i).map(str::to_owned),
                     owner_name: names.owner(i).and_then(|o| g.owner_name(o)).map(str::to_owned),
+                    mail: meta.get(p).map(serde_json::Value::to_string),
                 },
             );
         }
@@ -440,6 +477,9 @@ impl TenantIndex {
                         if o.get().owner_name.is_none() {
                             o.get_mut().owner_name = v.owner_name;
                         }
+                        if o.get().mail.is_none() {
+                            o.get_mut().mail = v.mail;
+                        }
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert(v);
@@ -490,8 +530,11 @@ impl TenantIndex {
                 None => {
                     w.add_document(self.doc(source, &v, 0))?;
                 }
-                // the first snapshot with the guest's names (Phase 39 C2): name the open version once
-                Some(o) if o.owner_name.is_none() && v.owner_name.is_some() => {
+                // the first snapshot with the guest's names (Phase 39 C2) or the item's metadata (#54): the open
+                // version gets them once
+                Some(o)
+                    if (o.owner_name.is_none() && v.owner_name.is_some()) || (o.mail.is_none() && v.mail.is_some()) =>
+                {
                     let term = Term::from_field_u64(self.f.okey, k);
                     let hits = searcher.search(
                         &TermQuery::new(term.clone(), IndexRecordOption::Basic),
@@ -500,7 +543,8 @@ impl TenantIndex {
                     for a in hits {
                         let d: TantivyDocument = searcher.doc(a)?;
                         let mut kept = self.open_of(&d);
-                        kept.owner_name = v.owner_name.clone();
+                        kept.owner_name = kept.owner_name.or_else(|| v.owner_name.clone());
+                        kept.mail = kept.mail.or_else(|| v.mail.clone());
                         w.delete_term(term.clone());
                         w.add_document(self.doc(source, &kept, 0))?;
                     }
@@ -526,6 +570,7 @@ impl TenantIndex {
                 .get_first(self.f.owner_name)
                 .and_then(|v| v.as_str())
                 .map(str::to_owned),
+            mail: d.get_first(self.f.mail).and_then(|v| v.as_str()).map(str::to_owned),
         }
     }
 

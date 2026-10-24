@@ -123,6 +123,13 @@ pub struct SearchReq {
     /// absent or empty: any. The web-api turns well-known Windows group names into their SIDs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owners: Option<Vec<String>>,
+    /// mails (Phase 39 C4, #54): the item metadata's sender contains these words (an address or a part of it,
+    /// matched word by word: `contoso.com` finds `jdoe@contoso.com`); absent: any
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    /// the same for a To, Cc or Bcc address
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recipient: Option<String>,
     /// `file` | `dir`; absent: both
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
@@ -176,9 +183,21 @@ impl SearchReq {
             || self.mtime_from.is_some()
             || self.mtime_to.is_some()
             || self.owners.as_ref().is_some_and(|o| !o.is_empty())
+            || self.sender.as_ref().is_some_and(|s| !s.trim().is_empty())
+            || self.recipient.as_ref().is_some_and(|s| !s.trim().is_empty())
             || self.deleted == Deleted::Only;
         if self.q.trim().is_empty() && !filtered {
-            return Err("q: a search term or a filter (extension, size, time, owner, deleted) is needed".into());
+            return Err(
+                "q: a search term or a filter (extension, size, time, owner, sender, recipient, deleted) is needed"
+                    .into(),
+            );
+        }
+        for (k, v) in [("sender", &self.sender), ("recipient", &self.recipient)] {
+            if v.as_ref()
+                .is_some_and(|s| s.len() > 254 || s.chars().any(char::is_control))
+            {
+                return Err(format!("{k}: at most 254 characters, no control characters"));
+            }
         }
         for o in self.owners.iter().flatten() {
             if !owner_ok(o) {
@@ -435,6 +454,15 @@ pub fn call(socket: &Path, req: &Request, timeout: Duration) -> io::Result<serde
     v.get("ok")
         .cloned()
         .ok_or_else(|| io::Error::other("nexus-index: malformed answer"))
+}
+
+/// The words of an address as the index stores them (Tantivy's default tokenizer: runs of letters and
+/// digits, lowercased, longer than 40 bytes dropped): the sender / recipient filters match them all.
+pub fn address_words(s: &str) -> Vec<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && w.len() <= 40)
+        .map(str::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]

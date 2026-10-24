@@ -152,6 +152,18 @@ pub fn build(ix: &TenantIndex, r: &SearchReq) -> Result<Box<dyn Query>, String> 
         }
         must.push((Occur::Must, Box::new(BooleanQuery::new(any))));
     }
+    // #54: every word of the sender / recipient filter in that field
+    for (v, field) in [(&r.sender, f.sender), (&r.recipient, f.rcpt)] {
+        for w in v.as_deref().map(index_proto::address_words).unwrap_or_default() {
+            must.push((
+                Occur::Must,
+                Box::new(TermQuery::new(
+                    Term::from_field_text(field, &w),
+                    IndexRecordOption::Basic,
+                )),
+            ));
+        }
+    }
     let u = |v: Option<u64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_u64(field, v)));
     let i = |v: Option<i64>, field| v.map_or(Bound::Unbounded, |v| Bound::Included(Term::from_field_i64(field, v)));
     if r.size_min.is_some() || r.size_max.is_some() {

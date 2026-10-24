@@ -59,7 +59,12 @@
   let entry = $state(qp('entry'));
   // C2: owners (SID, uid:gid, uid, or a well-known Windows group name the server turns into its SID)
   let owner = $state(qp('owner'));
-  let more = $state(!!(kinds0.length || qp('ext') || qp('entry') || qp('deleted') || qp('owner')));
+  // #54: mails by sender / recipient (item metadata of Microsoft 365 backups)
+  let sender = $state(qp('sender'));
+  let recipient = $state(qp('recipient'));
+  let more = $state(
+    !!(kinds0.length || qp('ext') || qp('entry') || qp('deleted') || qp('owner') || qp('sender') || qp('recipient')),
+  );
   let deleted = $state(qp('deleted') || 'any');
 
   let busy = $state(false);
@@ -125,6 +130,8 @@
       .map((x) => x.trim())
       .filter(Boolean)
       .join(','),
+    sender: sender.trim() || undefined,
+    recipient: recipient.trim() || undefined,
     deleted: deleted === 'any' ? undefined : deleted,
   });
   // an empty query is fine when a filter narrows the search
@@ -137,6 +144,8 @@
         params.mtime_from !== undefined ||
         params.mtime_to !== undefined ||
         !!params.owner ||
+        !!params.sender ||
+        !!params.recipient ||
         params.deleted === 'only'),
   );
   const paramQs = $derived(qs(params));
@@ -256,6 +265,8 @@
     modTo = '';
     entry = '';
     owner = '';
+    sender = '';
+    recipient = '';
     deleted = 'any';
   }
 
@@ -478,6 +489,33 @@
           aria-describedby="s-owner-hint"
         />
         <div class="hint" id="s-owner-hint">{t.search.ownerHint}</div>
+      </div>
+      <div class="field">
+        <div class="mail-pair">
+          <div>
+            <label for="s-sender">{t.search.sender}</label>
+            <input
+              id="s-sender"
+              bind:value={sender}
+              spellcheck="false"
+              autocapitalize="none"
+              placeholder="cfo@contoso.com"
+              aria-describedby="s-mail-hint"
+            />
+          </div>
+          <div>
+            <label for="s-recipient">{t.search.recipient}</label>
+            <input
+              id="s-recipient"
+              bind:value={recipient}
+              spellcheck="false"
+              autocapitalize="none"
+              placeholder="contoso.com"
+              aria-describedby="s-mail-hint"
+            />
+          </div>
+        </div>
+        <div class="hint" id="s-mail-hint">{t.search.mailHint}</div>
       </div>
       <div class="field">
         <label for="s-deleted">{t.search.deleted}</label>
@@ -769,6 +807,16 @@
 {/if}
 
 <style>
+  .mail-pair {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+  .mail-pair > div {
+    display: flex;
+    flex: 1 1 14rem;
+    flex-direction: column;
+  }
   .filters .grow {
     flex: 1 1 260px;
   }
