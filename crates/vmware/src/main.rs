@@ -98,6 +98,12 @@ impl Config {
     }
 }
 
+/// `committed <source>/<time> in <n>s: <VM name>`: the scheduler takes the snapshot from the first word, so nothing
+/// may follow the time directly (#88: `…/<time>: name` dropped the snapshot from the job result).
+fn committed(source: &str, time: u64, secs: u64, name: &str) -> String {
+    format!("committed {source}/{time} in {secs}s: {name}")
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -192,7 +198,10 @@ fn proxy_step(cfg: &Config, prepare: bool) -> Result<()> {
             });
         match res {
             Ok((st, m)) => {
-                println!("committed {}/{}: {}", m.source, m.time, st.vm_name);
+                println!(
+                    "{}",
+                    committed(&m.source, m.time, now().saturating_sub(st.started), &st.vm_name)
+                );
                 let level = if st.quiesced { "application" } else { "crash" };
                 println!("consistency {}/{}: {level}", m.source, m.time);
                 println!(
@@ -244,13 +253,7 @@ fn backup(cfg: &Config) -> Result<bool> {
         match backup_vm(&c, &store, &mut transport, &spec, &mut |l| println!("{l}")) {
             Ok(m) => {
                 item.ok();
-                println!(
-                    "committed {}/{} in {}s: {}",
-                    m.source,
-                    m.time,
-                    t0.elapsed().as_secs(),
-                    info.name
-                );
+                println!("{}", committed(&m.source, m.time, t0.elapsed().as_secs(), &info.name));
                 // quiesced through VMware Tools when they run (backup_vm), else crash-consistent
                 let level = if info.tools { "application" } else { "crash" };
                 println!("consistency {}/{}: {level}", m.source, m.time);
@@ -268,4 +271,17 @@ fn backup(cfg: &Config) -> Result<bool> {
         json!({"source_id": cfg.source_id, "snapshots": snapshots, "failed": failed})
     );
     Ok(failed.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn committed_line_parses_like_the_scheduler() {
+        let (src, time) = ("vmw-5010503d-a8fa-1617-640a-36b092405869", 1792837785);
+        let l = super::committed(src, time, 20, "nx-cbt");
+        // crates/scheduler lib.rs `result` / runctl.rs
+        let id = l.strip_prefix("committed ").unwrap().split_whitespace().next().unwrap();
+        let (s, t) = id.rsplit_once('/').unwrap();
+        assert_eq!((s, t.parse::<u64>().unwrap()), (src, time));
+    }
 }

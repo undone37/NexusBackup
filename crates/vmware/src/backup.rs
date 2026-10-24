@@ -453,6 +453,9 @@ pub struct ProxyState {
     /// a scheduled full read: finish compares with the previous snapshot (FullRead)
     #[serde(default)]
     pub full: bool,
+    /// unix time prepare started (the VM's backup time in finish's `committed` line)
+    #[serde(default)]
+    pub started: u64,
     pub disks: Vec<ProxyDisk>,
 }
 
@@ -531,6 +534,7 @@ pub fn proxy_prepare(
         quiesced: info.tools,
         prev_time: prev.as_ref().map(|(m, _)| m.time),
         full: spec.full,
+        started: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         disks: Vec::new(),
     };
     let mut plan = ReadPlan {
