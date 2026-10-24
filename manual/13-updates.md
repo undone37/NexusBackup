@@ -264,7 +264,11 @@ A rollout updates many agents to one release, in waves:
 The appliance never interrupts a backup: an agent with a running job is retried later. Agents that are offline
 (laptops, agents behind an edge proxy) are updated when they are reachable again. After an update the appliance
 waits up to 10 minutes for the agent to come back with the new version; otherwise the update counts as failed
-(alert `agent_update_failed`, resolved by the next successful update of that agent).
+(alert `agent_update_failed`, resolved by the next successful update of that agent). An agent that does not come
+back at all raises it as **critical**, sent like every critical alert (web UI and the mail rules of **Settings →
+Alert delivery**): a Linux agent restores its previous version after three failed starts, but a Windows Installer
+upgrade that fails can leave the host without the NexusAgent service. The alert then says to install the MSI by
+hand; the agent keeps its enrollment (the state in ProgramData stays) and comes back on its own.
 
 **Details** shows every agent of a rollout with its wave, state, error and job. **Pause**, **Resume** and **Cancel
 rollout** control it; updates that already run finish. All actions are recorded in the audit log

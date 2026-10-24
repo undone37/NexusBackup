@@ -152,26 +152,51 @@ impl Scheduler {
         match col {
             Some("ok") => self.resolve(&key)?,
             Some(s) => {
-                let name: String = self
+                let (name, install): (String, Option<String>) = self
                     .db
                     .conn()
-                    .query_row("SELECT name FROM agents WHERE id = ?1", [agent], |r| r.get(0))
+                    .query_row("SELECT name, install FROM agents WHERE id = ?1", [agent], |r| {
+                        Ok((r.get(0)?, r.get(1)?))
+                    })
                     .optional()?
-                    .unwrap_or_else(|| agent.to_owned());
-                self.raise(
-                    "warning",
-                    ALERT_FAILED,
-                    &key,
-                    &format!(
-                        "update of agent {name} to {} {}: {}",
-                        target.as_deref().unwrap_or("the new release"),
+                    .unwrap_or_else(|| (agent.to_owned(), None));
+                let to = target.as_deref().unwrap_or("the new release");
+                // #96: the agent is offline after its update (a failed Windows Installer upgrade can leave no
+                // agent at all): critical, with what the admin has to do on the host
+                let lost = error.as_deref().is_some_and(|e| e.contains("did not come back"));
+                let msg = if lost {
+                    let fix = if install.as_deref() == Some("msi") {
+                        let msi = target
+                            .as_deref()
+                            .map_or("the current nexus-agent .msi".to_owned(), |v| {
+                                format!("nexus-agent {v} (.msi)")
+                            });
+                        format!(
+                            "if the NexusAgent service is gone, install {msi} by hand: the enrollment in \
+                             ProgramData is kept and the agent comes back on its own"
+                        )
+                    } else {
+                        "check the agent service on the host (its previous version is restored after three \
+                         failed starts)"
+                            .to_owned()
+                    };
+                    format!("agent {name} is offline after its update to {to}: {fix}")
+                } else {
+                    format!(
+                        "update of agent {name} to {to} {}: {}",
                         if s == "rolled_back" {
                             "was rolled back"
                         } else {
                             "failed"
                         },
                         error.as_deref().unwrap_or("")
-                    ),
+                    )
+                };
+                self.raise(
+                    if lost { "critical" } else { "warning" },
+                    ALERT_FAILED,
+                    &key,
+                    &msg,
                     crate::lifecycle::tenant_of(job),
                 )?;
             }
