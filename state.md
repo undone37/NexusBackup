@@ -696,7 +696,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   VM 242: the file index did not read it (TOCBLOCK only at +2/+2045; partition records with flag 0x40), fixed in
   25d8a631 (#94): `ldm/Volume1` NTFS indexed (53 entries, 7.9 s for the whole VM). The restore micro-VM lists the
   files through the LDM data partition (vdb3), which holds a simple volume at its start; spanned or several
-  volumes on one dynamic disk are not mapped there (the kernel reads only MBR dynamic disks).
+  volumes on one dynamic disk are not mapped there (the kernel reads only MBR dynamic disks). Fixed (2026-10-24, PR #111): the micro-VM
+  agent parses the group with the `ldm` crate (split out of fsindex) and maps each volume as a read-only dm-linear
+  device. Lab `SPANNED=1 ldm.sh` (VM 201 on 0.0.40-dev): two 4 GiB GPT dynamic disks made by Windows, X: spanned over
+  both (4096 MB), Y: simple on the rest of the first (2031 MB), 50 files each: both indexed (`ldm/Volume1`,
+  `ldm/Volume2`), both mounted in the micro-VM below /ldm with their 50 files.
 - [x] Lab 10/11 (2026-10-15, merged main, Windows Server VM 101): C: from the SYSTEM hive, owners on the NTFS system
   volume (1,225 security descriptors, all 390,926 entries owned; web-api dropped them from search hits: fixed),
   file index 33.9 s first / 15.5 s next (78,202 of 94,230 directories taken over), full backup 388 s, incremental
