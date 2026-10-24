@@ -4703,6 +4703,16 @@ async fn vmware_sources() {
         .await;
     assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
     assert_eq!(g.body["guests"], json!([u.to_lowercase()]));
+    // the files in the VMs' disks are indexed by default, and the switch applies (#83)
+    assert_eq!(g.body["index_files"], true);
+    let r = t
+        .put(
+            &format!("/api/v1/groups/{}/index-files", g.body["id"]),
+            &admin,
+            json!({"enabled": false}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
     for bad in [json!([101]), json!(["vm-1"]), json!(["5003c9a6"])] {
         let g = t.post("/api/v1/groups", &admin, group("bad", bad.clone())).await;
         assert_eq!(g.status, StatusCode::BAD_REQUEST, "{bad}");

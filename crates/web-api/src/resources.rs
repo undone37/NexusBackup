@@ -2263,9 +2263,9 @@ pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>)
             ],
         )?;
         let id = c.last_insert_rowid();
-        // Phase 31: Proxmox VE groups index their guests' files by default (sandboxed parser)
+        // Phase 31: Proxmox VE (and VMware, #83) groups index their guests' files by default (sandboxed parser)
         c.execute(
-            "UPDATE groups SET index_files = 1 WHERE id = ?1 AND source_id IN (SELECT id FROM sources WHERE kind = 'pve')",
+            "UPDATE groups SET index_files = 1 WHERE id = ?1 AND source_id IN (SELECT id FROM sources WHERE kind IN ('pve', 'vmware'))",
             [id],
         )?;
         c.query_row(

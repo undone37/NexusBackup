@@ -1006,7 +1006,8 @@ tracking (CBT), which the appliance switches on per VM at the first backup.
 The source has a guest inventory (**More → Inventory**): its VMs with their names. In a group you tick VMs, or take
 all VMs or VMs with tags ([chapter 5](05-policies-and-groups.md)). Snapshots are named `vmw-<VM UUID>` (the VM's
 instance UUID; on a standalone host its BIOS UUID) and are shown with the VM's name. Each snapshot holds one disk
-image per virtual disk plus the VM's `.vmx`.
+image per virtual disk plus the VM's `.vmx`; files in it can be browsed, indexed and searched like a Proxmox VE VM's
+(the group's **Index files** switch).
 
 A VMware snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-vms-as-proxmox-ve-vms)).
 

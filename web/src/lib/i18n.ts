@@ -409,7 +409,6 @@ export const en = {
     vmwCluster: 'Proxmox VE cluster',
     vmwBridge: 'Network bridge',
     vmwNoCluster: 'This tenant has no Proxmox VE source: add one under Sources to restore VMware VMs.',
-    vmwNoBrowse: 'Browsing files is not available for VMware snapshots yet: restore the VM as a Proxmox VE VM.',
     instantHintShort: 'Start now from the backup, move disks live',
     // Phase 22b: VM identity per snapshot
     identityChanged: 'New VM identity',

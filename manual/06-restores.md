@@ -312,6 +312,7 @@ lists these notes. Linux guests may name their network card differently after th
 check the network configuration on the first boot.
 
 Replace, roll back and instant recovery are not offered for VMware snapshots: there is no Proxmox VE original.
+**Browse files**, the file index and file search work on VMware snapshots as on Proxmox VE VM snapshots (below).
 
 ## Instant recovery (VMs)
 
@@ -468,7 +469,7 @@ works as in the original. Full restores, instant recovery and rollbacks restore 
 
 **Browse files** opens a file browser for the snapshot. The appliance reads the file system from the backup:
 
-- **VM images**: the disks are attached read-only to an isolated restore micro-VM on the appliance. Its kernel
+- **VM images** (Proxmox VE and VMware VMs): the disks are attached read-only to an isolated restore micro-VM on the appliance. Its kernel
   mounts the guest file systems read-only: ext4, XFS, btrfs, NTFS, vfat, exFAT, ISO 9660, LVM, md and ZFS.
   The appliance's own kernel never mounts guest file systems. The first listing takes a few seconds.
   Not supported: encrypted volumes (LUKS, ZFS native encryption, BitLocker), Windows dynamic disks and

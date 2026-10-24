@@ -135,6 +135,8 @@
   // Phase 15e/f: disk selection (PVE) and parallel guests (PVE, plugins)
   const pveSource = $derived(sources.find((x) => x.id === Number(f.source_id))?.kind === 'pve');
   const parallelSource = $derived(pveSource || !!pluginSource);
+  // VM disks whose files the group may index (#83: VMware too)
+  const diskSource = $derived(pveSource || sources.find((x) => x.id === Number(f.source_id))?.kind === 'vmware');
   const DISK_RE = /^[a-z]+[0-9]{1,3}$/;
   const diskList = (v: string) => v.split(/[\s,]+/).filter(Boolean);
   /** `{"*": [...], "<vmid>": [...]}` from the two fields, or null (after telling the user). */
@@ -456,7 +458,7 @@
     if (r) {
       const id = editing?.id ?? (r.data as Partial<Group>).id;
       const was = editing ? !!editing.index_files : ((r.data as Partial<Group>).index_files ?? false);
-      if (pveSource && id && !r.quorum && indexFiles !== was)
+      if (diskSource && id && !r.quorum && indexFiles !== was)
         await act(
           put(`/groups/${id}/index-files`, { enabled: indexFiles }),
           indexFiles ? t.groups.indexFilesOn : t.groups.indexFilesOff,
@@ -841,7 +843,7 @@
         </div>
       </fieldset>
     {/if}
-    {#if pveSource}
+    {#if diskSource}
       <fieldset class="field">
         <legend>{t.groups.indexFiles}</legend>
         <div class="row">

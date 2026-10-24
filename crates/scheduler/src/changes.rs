@@ -313,7 +313,7 @@ impl Scheduler {
     /// written at commit). VM/CT snapshots follow their `file_index` job.
     pub(crate) fn queue_changes_after_backup(&self, tenant: &str, log: &str) -> Result<()> {
         for s in crate::stats::parse(log) {
-            if !(s.source.starts_with("vm-") || s.source.starts_with("ct-")) {
+            if !crate::guest_disks(&s.source) {
                 self.queue_file_changes(tenant, &s.source, s.time)?;
             }
         }

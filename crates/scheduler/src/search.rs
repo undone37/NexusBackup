@@ -417,9 +417,10 @@ impl Scheduler {
             }))));
             return Ok(plan);
         };
-        // the disks of one VM/CT snapshot: nexus-pve reads the store only
+        // the disks of one VM/CT snapshot (or a VMware VM's, #83): nexus-pve reads the store only
         ident(p, "source")?;
-        let (ct, vmid) = crate::guest(source)?;
+        let vmw = vmware::names::parse_source_name(source).is_some();
+        let (ct, vmid) = if vmw { (false, 0) } else { crate::guest(source)? };
         let time = num(p, "time")?;
         plan.key = format!("guest:{}/{source}", job.tenant);
         let cfg = json!({"store": plan.store, "tenant": job.tenant, "keyd_socket": self.cfg.keyd_socket});
@@ -427,7 +428,7 @@ impl Scheduler {
         let mut args = vec![
             plan.dir.join("pve.json").to_string_lossy().into_owned(),
             if ct { "ct-files" } else { "files" }.to_owned(),
-            vmid.to_string(),
+            if vmw { source.to_owned() } else { vmid.to_string() },
             time.to_string(),
             "index".into(),
         ];
@@ -470,7 +471,7 @@ impl Scheduler {
             let (Some(source), Some(time)) = (s["source"].as_str(), s["time"].as_i64()) else {
                 continue;
             };
-            if source.starts_with("vm-") || source.starts_with("ct-") {
+            if crate::guest_disks(source) {
                 // after_job: shown with its backup (follow-up jobs)
                 let mut p = json!({"source": source, "time": time, "after_job": job.id});
                 if hashes {
