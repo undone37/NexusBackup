@@ -182,7 +182,8 @@
     await load();
     // `?offsite=<tenant>` opens that tenant's offsite copy (links, ui-smoke)
     const o = items.find((x) => x.name === route.query.get('offsite'));
-    if (o && can.restore(session.user)) openCopy(o);
+    // only for a tenant with an offsite target, as the row menu offers it (else the listing job just fails)
+    if (o && remoteOf(o.offsite) && can.restore(session.user)) openCopy(o);
     // `?wizard=1` / `?idp=<tenant>` (Phase 23a; links, ui-smoke)
     if (route.query.get('wizard') && can.configure(session.user)) wizardOpen = true;
     const i = items.find((x) => x.name === route.query.get('idp'));
