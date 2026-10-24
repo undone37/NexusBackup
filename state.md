@@ -1023,6 +1023,11 @@ their IDs. In progress:
   the encrypted fsindex report into the index (`owner_name`, index format 2), also as owner filter values
   (`owner=alice`, case-insensitive); domain accounts stay SIDs. 2026-10-24 (#52): domain accounts that signed in on
   the machine by their profile folder (SOFTWARE hive `ProfileList`); others stay SIDs (no directory lookup).
+  Lab (VM 201 on 0.0.39-dev, VM 101 backed up): the report version bump made the index list the disk again once
+  (94326 directories in 41 s, nothing taken over). VM 101 cannot show a profile name: its only domain profile is the
+  domain administrator, and Windows gives files created by administrators to the Administrators group (no file on
+  the disk is owned by a domain account's SID); writing test files there is not ours to do. Needs a member with a
+  non-admin domain user's files (a lab VM of our own joined to the domain).
 - [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
   before).
 - [x] Phase 39 O1: the configuration backup also goes to the second offsite target.
