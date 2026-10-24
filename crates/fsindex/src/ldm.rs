@@ -232,11 +232,16 @@ fn parse_vblk(b: &[u8]) -> Result<Option<(u64, Rec)>, String> {
             let r_size = rel(b, 0x34, r_name)?;
             let r_parent = rel(b, 0x34, r_size)?;
             let r_diskid = rel(b, 0x34, r_parent)?;
-            let len = if flags & 0x08 != 0 {
+            let mut len = if flags & 0x08 != 0 {
                 rel(b, 0x34, r_diskid)?
             } else {
                 r_diskid
             };
+            // 0x40 (unknown to the kernel): one more variable-length field at the end; seen empty in the
+            // partition records of a GPT dynamic disk made by Windows Server 2022 (#53)
+            if flags & 0x40 != 0 {
+                len = rel(b, 0x34, len)?;
+            }
             check(len + 28)?;
             Rec::Part {
                 start: be64(b, 0x24 + r_name),
@@ -618,6 +623,33 @@ mod tests {
         p[0x18 + 2] = 0xff;
         assert!(parse_vblk(&p).is_err());
         assert!(parse_vblk(&p[..0x1a]).is_err());
+    }
+
+    #[test]
+    fn windows_2022_gpt_partition_record() {
+        // the PRT3 record of a GPT dynamic disk made by Windows Server 2022 (lab, #53): flag 0x40 and one more,
+        // empty variable-length field at the end
+        let hex = "00004033000000300105084469736b312d3031000000000000000000000003000000000000000000000000000000\
+                   00037f78000104010200";
+        let mut r = vec![0u8; 0x10];
+        r[0..4].copy_from_slice(b"VBLK");
+        r.extend((0..hex.len() / 2).map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap()));
+        r.resize(128, 0);
+        let (id, rec) = parse_vblk(&r).unwrap().unwrap();
+        assert_eq!(id, 5);
+        assert!(matches!(
+            rec,
+            Rec::Part {
+                start: 0,
+                offset: 0,
+                size: 0x7f7800,
+                parent: 4,
+                disk: 2
+            }
+        ));
+        // without the flag the extra byte makes the size wrong, as before
+        r[0x12] = 0;
+        assert!(parse_vblk(&r).is_err());
     }
 
     #[test]
