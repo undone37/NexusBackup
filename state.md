@@ -495,8 +495,13 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   only because the test build bumped the agent crates, not the desktop UI's); in-band update 0.1.5 -> 0.1.6
   through the appliance in 6 s (`agent-release.sh`, msiexec detached from the service's job object); an approved
   rollback rollout to 0.1.5 refused by the agent ("Windows Installer refuses downgrades ... install the older MSI by
-  hand"), the rollout paused after the failure. Open: the update with the GUI running in a desktop session, 1603
-  log parsing, watchdog revert of a manual install.
+  hand"), the rollout paused after the failure. Then 0.1.6 -> 0.1.7 in-band again. Folder ACL tests: with SYSTEM
+  denied on the install folder the agent reported install=manual (the package marker could not be read) and the
+  appliance planned a binary swap over the MSI install: fixed in #95 (unreadable marker = unknown package). A 1603
+  provoked by denying SYSTEM write on nexus-agent-gui.exe (0.1.7 -> 0.1.8): msiexec 1603, its rollback failed on
+  the same file, and the service was gone afterwards (#96); the MSI installed by hand brought the agent back
+  enrolled (backup ok). Open: the update with the GUI running in a desktop session, a 1603 whose rollback works,
+  watchdog revert of a manual install.
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
   listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on
