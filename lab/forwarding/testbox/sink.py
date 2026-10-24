@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Lab HTTPS JSON sink: POST /ingest with `Authorization: Bearer $TOKEN` and a JSON array body;
-each accepted body is appended as one line to /out/https.jsonl. Answers 401 for a wrong token,
-503 while /out/https.fail exists (to test the appliance's retries)."""
+each accepted body is appended as one line to $OUT_DIR/https.jsonl. Answers 401 for a wrong token,
+503 while $OUT_DIR/https.fail exists (to test the appliance's retries). OUT_DIR (/out), CERT_DIR (/certs),
+PORT (8443): the container's defaults; lab/forwarding/vm.sh runs it on a lab VM."""
 import json
 import os
 import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = os.environ.get("TOKEN", "")
-OUT = "/out/https.jsonl"
+OUT_DIR = os.environ.get("OUT_DIR", "/out")
+CERT_DIR = os.environ.get("CERT_DIR", "/certs")
+OUT = os.path.join(OUT_DIR, "https.jsonl")
 
 
 class Sink(BaseHTTPRequestHandler):
@@ -16,7 +19,7 @@ class Sink(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         if self.path != "/ingest" or self.headers.get("Authorization") != f"Bearer {TOKEN}":
             code = 401
-        elif os.path.exists("/out/https.fail"):
+        elif os.path.exists(os.path.join(OUT_DIR, "https.fail")):
             code = 503
         else:
             try:
@@ -35,7 +38,7 @@ class Sink(BaseHTTPRequestHandler):
 
 
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain("/certs/tls.crt", "/certs/tls.key")
-srv = ThreadingHTTPServer(("0.0.0.0", 8443), Sink)
+ctx.load_cert_chain(os.path.join(CERT_DIR, "tls.crt"), os.path.join(CERT_DIR, "tls.key"))
+srv = ThreadingHTTPServer(("0.0.0.0", int(os.environ.get("PORT", "8443"))), Sink)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()

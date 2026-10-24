@@ -367,8 +367,14 @@ Offsite fetch-back (`lab/pvehost/offsite.sh`): an SFTP target on the regression 
   NXLAB-D1..5 and an emulated NVMe NXLAB-NVME1 via `args`): inventory (system disk, 5 empty, NVMe), NVMe short
   self-test, RAID6 from D1..4 with approval (XFS mounted at the store, owner/mode/label right, scheduler restarted;
   the check now waits for that restart), D3 failed by hand: degraded, critical disk alert; replaced by D5 with
-  approval: rebuilt in 20 s, alerts resolved. VM 203 removed again. Open: forwarding.sh (needs a syslog TLS and
-  an HTTPS receiver in the lab).
+  approval: rebuilt in 20 s, alerts resolved. VM 203 removed again.
+  forwarding.sh (2026-10-25, VM 201 on 0.0.40-dev, receivers on VM 280 by `lab/forwarding/vm.sh`: a Python syslog
+  over TLS receiver and the testbox's HTTPS sink, nothing installed, mirrored every 2 s): test message at both;
+  audit entries 1..5176 at both sinks with equal hashes, no gaps, `audit.anchor` included; outage (receiver down,
+  HTTPS 503): cursors kept, errors recorded, backlog delivered in order after; syslog sink disabled via quorum;
+  0 AVC denials since boot. Found (lab): a long-lived appliance never resends what a sink acknowledged, so the
+  receivers keep their output (`vm.sh reset` plus new ports for a full replay); the test-message check waits for
+  the mirror. All #62 scripts now ran.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check

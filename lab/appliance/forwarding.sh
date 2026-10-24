@@ -26,7 +26,8 @@ LAB=${LAB:-/home/ah/nexus-lab}
 export ROOT=${ROOT:-$LAB/appliance/root}
 export PORT=${PORT:-28443}
 APPL_HOST=${APPL_HOST:-10.0.2.2}
-TB=$repo/lab/forwarding/testbox/run.sh
+# TB: the receivers (lab/forwarding/vm.sh on a lab VM for the PVE lab appliance, #62)
+TB=${TB:-$repo/lab/forwarding/testbox/run.sh}
 T0=$(date +%s)
 
 apienv() {
@@ -98,6 +99,11 @@ forward() {
 		sleep 5
 	done
 	jq -e '.syslog == "ok" and .https == "ok"' <<<"$r" >/dev/null || die "test from the appliance: $r"
+	# a receiver on a lab VM is mirrored every 2 s (lab/forwarding/vm.sh)
+	for _ in $(seq 15); do
+		grep -q ' nexus-lab - test \[nexus@32473\]' "$FWD_SYSLOG_LOG" && break
+		sleep 1
+	done
 	grep -q ' nexus-lab - test \[nexus@32473\]' "$FWD_SYSLOG_LOG" || die "test message not in syslog.log"
 	log "test message delivered to both sinks"
 	api admin POST /tenants '{"name":"fwd"}' >/dev/null
