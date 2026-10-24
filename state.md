@@ -965,6 +965,11 @@ their IDs. In progress:
   (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
   min), refused bundles shown as "blocked by checks"
 - [ ] (#29) an online update after an offline one (parts above 2 GiB: not needed, #27)
+- [x] (#28) `nexusctl update upload` and `nexus-setup import-update` (2026-10-24): the CLI signs in as an
+  administrator (password + TOTP, stdin without a terminal; API tokens stay below admin), uploads, waits for the
+  verification; the console import writes bundle and request as the upload does, audited by `console`. Lab: the
+  0.0.37-dev lab bundle (1.4 GB) uploaded to VM 201 with `nexusctl` from the workstation: staged, then installed
+  (booted 0.0.37-dev). The console import is covered by its unit test; on the appliance with the next image.
 - [x] (#29) Greenboot rollback after a broken bundle build (2026-10-24, VM 202, 0.0.35-dev): a 0.0.36-broken
   bundle (failing required greenboot check) applied offline; three red boots of about 10 min each, then greenboot
   booted 0.0.35-dev again (about 30 min in all); the nexus-update tick recorded `rolled back from <digest>` and

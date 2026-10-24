@@ -22,6 +22,10 @@ const USAGE: &str = "usage: nexus-setup [options]
                                 of a lost appliance from a configuration backup (a downloaded bundle, or the
                                 newest one on an offsite target: a JSON file {\"remote\": ...} as in a nexus-offsite job);
                                 asks for the recovery key of the lost appliance (stdin)
+       nexus-setup import-update BUNDLE [--root DIR] [--catalog FILE]
+                                offline update bundle from a USB stick (mount it first, e.g.
+                                mount -o ro /dev/sdb1 /mnt): the same checks as Settings -> Updates;
+                                waits for the verification; installing stays in the web UI (approval)
        nexus-setup reset-firewall [--root DIR] [--catalog FILE]
                                 clear every inbound firewall restriction (web UI reachable from any
                                 address again); reset-mgmt-allow is the old name
@@ -354,8 +358,46 @@ fn reset_firewall(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+fn import_update(args: &[String]) -> Result<ExitCode> {
+    let (bundle, rest) = match args.split_first() {
+        Some((b, rest)) if !b.starts_with("--") => (PathBuf::from(b), rest),
+        _ => bail!("usage: nexus-setup import-update BUNDLE [--root DIR] [--catalog FILE]"),
+    };
+    let o = parse(rest)?;
+    if o.dry_run || o.script.is_some() || o.force_network {
+        bail!("import-update takes only path options");
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if o.root == std::path::Path::new("/") && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    println!(
+        "Copying {} and waiting for the verification (signature, version, checksums) ...",
+        bundle.display()
+    );
+    let s = setup::recover::import_update(&o.paths, &bundle, std::time::Duration::from_secs(1800))?;
+    let result = s["last_result"]["result"].as_str().unwrap_or("?");
+    println!("{result}");
+    if !result.starts_with("staged") {
+        return Ok(ExitCode::FAILURE);
+    }
+    println!(
+        "Install it under Settings -> Updates (Install now; approved by a security officer when approvals are on)."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "import-update") {
+        return match import_update(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup import-update: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "disable-approvals") {
         keyd::harden_process();
         return match disable_approvals(&args[1..]) {
