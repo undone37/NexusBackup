@@ -93,8 +93,8 @@ The reason is shown on the card ("The last uploaded bundle was refused: ..."). A
 stops checking the registry by itself; **Check now** checks online again (needed only when the appliance gets
 internet access).
 
-> **Status:** Implemented in Phase 36 (unit tests for the checks, upload API test). Lab: see state.md. Not yet: a
-> bundle larger than GitHub's 2 GiB asset limit (parts), `nexusctl update upload` and a USB stick at the console.
+> **Status:** Implemented in Phase 36 (unit tests for the checks, upload API test). Lab: see state.md. Not yet:
+> `nexusctl update upload` and a USB stick at the console.
 
 ## Private image repository
 

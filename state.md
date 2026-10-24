@@ -964,7 +964,7 @@ their IDs. In progress:
   0.0.3-dev, truncated (477 MB), wrong key with consistent checksums. Found and fixed: Install now never shown
   (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
   min), refused bundles shown as "blocked by checks"
-- [ ] (#27, #29) an online update after an offline one; parts above 2 GiB
+- [ ] (#29) an online update after an offline one (parts above 2 GiB: not needed, #27)
 - [x] (#29) Greenboot rollback after a broken bundle build (2026-10-24, VM 202, 0.0.35-dev): a 0.0.36-broken
   bundle (failing required greenboot check) applied offline; three red boots of about 10 min each, then greenboot
   booted 0.0.35-dev again (about 30 min in all); the nexus-update tick recorded `rolled back from <digest>` and

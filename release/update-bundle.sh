@@ -67,3 +67,6 @@ jq -n --arg r "$repo" --arg v "$version" --arg d "$digest" '{format: 1, reposito
 (cd "$work/b" && find . -type f ! -name SHA256SUMS | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' sha256sum >SHA256SUMS)
 tar -C "$work/b" -cf "$out" .
 echo "bundle $out: $repo $version ($digest), $(du -h "$out" | cut -f1)" >&2
+# ponytail: no splitting into parts (#27): the bundle is about 0.6 GB; the appliance takes up to 8 GiB in one upload
+[ "$(stat -c %s "$out")" -lt $((2 << 30)) ] ||
+	echo "note: above GitHub's 2 GiB asset limit: hand the bundle over directly (the appliance takes up to 8 GiB)" >&2

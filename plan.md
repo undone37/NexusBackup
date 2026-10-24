@@ -1066,7 +1066,8 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
 - **36a Update bundle (release side):** the release workflow attaches `nexusbackup-<v>-update.tar`: the image as an
   OCI archive plus its cosign signature (the simple-signing payload and signature the registry holds in the `.sig`
   tag), `release-metadata.json` and a manifest with SHA-256 sums. Signed like the other blobs (`release/sign.sh
-  sign-blobs`). GitHub limits assets to 2 GiB; if the archive is larger, the bundle is split into numbered parts.
+  sign-blobs`). GitHub limits assets to 2 GiB; a larger bundle is handed over directly (decided 2026-10-24, #27: the bundle is
+  about 0.6 GB, the appliance accepts up to 8 GiB in one upload; `update-bundle.sh` warns above 2 GiB; no parts).
 - **36b Verification and import (appliance side), decided by a spike first:**
   - *A: local mirror.* The bundle is loaded into a registry that only listens on the appliance's loopback; a
     `registries.conf` mirror for `ghcr.io/undone37/nexusbackup` points there, so `bootc upgrade` and `policy.json`
@@ -1094,7 +1095,7 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
   identity, manifest digest, version label), then `bootc switch --transport oci` from a root-only directory, the
   one path policy.json accepts for that transport (`check-trust.sh` allows exactly it). Same origin on the next
   bundle: `bootc upgrade`. **Done 2026-10-20** for 36a (release/update-bundle.sh), 36b, 36c (upload API + UI);
-  lab on the appliance VM: see state.md. Open: parts above 2 GiB, `nexusctl update upload`, USB at the console,
+  lab on the appliance VM: see state.md. Open: `nexusctl update upload`, USB at the console,
   the greenboot rollback after a broken build and an online update after an offline one (lab).
 Open work: epic #18.
 
