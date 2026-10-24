@@ -423,8 +423,9 @@ hashes** on ([05](05-policies-and-groups.md#threat-detection-scheduled-scans-and
 Snapshots taken before **Record file hashes** was switched on, and VM disks, have no hashes; the result says how many
 snapshots could not be searched. Audit: `hash_hunt.request`, `hash_hunt.hits`.
 
-> **Status:** Implemented in Phase 28 and tested in the API, the scheduler, the store and against agents with and
-> without the hashing capability; not yet run on the lab appliance. VM disk files are not hashed.
+> **Status:** Implemented in Phase 28; run on the lab appliance with a Linux agent (2026-10-24: the IOC file found in
+> the snapshot, `hash_hunt_hit` raised; a scheduled scan of the same snapshot found the YARA marker and raised
+> `scan_hit`). VM disk files are not hashed.
 
 ### Change trends
 

@@ -514,7 +514,12 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   without the capability, hostile hash lists), pve (CT index hashes), scheduler `tests/threat.rs`, web-api
   `tests/phase28.rs` + tenant-admin route classification; mock, manual 03/05/06/09/11/14, 7 new screenshots
   (scene `threat`), ui-smoke pages
-- [ ] (#69) Scan, hash hunt, lockdown, new-device mail labs: plan.md Phase 39 L9
+- [ ] (#69) Scan, hash hunt, lockdown, new-device mail labs: plan.md Phase 39 L9. Scheduled scan and hash hunt
+  done 2026-10-24 (appliance 0.0.34-dev, agent 0.1.0 on debian-13, `lab/pvehost/threat.sh`): group with file
+  hashes on and a daily scan at a set minute; the scheduler queued the scan of the new snapshot at that minute
+  (23 files, the YARA marker matched, `scan_hit`); an IOC list with one SHA-256: the hunt over 40 snapshots
+  (39 without hashes) found the file in 0.3 s, `hash_hunt_hit`. Open: Windows agents, lockdown with a tenant
+  admin session, new-device mail through an SMTP sink.
 - [x] Remaining VM disk file hashes (btrfs, FAT, exFAT): plan.md Phase 39 C1 (done 2026-10-21)
 
 ## Phase 29 — NetBackup Tier 1 (2026-10-14)
@@ -631,7 +636,12 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   crates, contained by the helper's rlimit before, now refused up front; regression inputs in tests/regress): an
   NTFS `$INDEX_ROOT` with a huge index record size, an ext4 superblock whose block count made `ext4-view` allocate
   25 GB of block group descriptors (file system larger than its volume); `/etc/fstab` is read only up to 64 KiB
-- [ ] (#52, #53, #71) 31c rest: plan.md Phase 39 C1, C2, C3, L11
+- [ ] (#52, #53, #71) 31c rest: plan.md Phase 39 C1, C2, C3, L11. #53 2026-10-24 (`lab/pvehost/ldm.sh`): a GPT
+  dynamic disk made by Windows Server 2022 (diskpart: GPT, dynamic, simple NTFS volume, 50 files) in a clone of
+  VM 242: the file index did not read it (TOCBLOCK only at +2/+2045; partition records with flag 0x40), fixed in
+  25d8a631 (#94): `ldm/Volume1` NTFS indexed (53 entries, 7.9 s for the whole VM). The restore micro-VM lists the
+  files through the LDM data partition (vdb3), which holds a simple volume at its start; spanned or several
+  volumes on one dynamic disk are not mapped there (the kernel reads only MBR dynamic disks).
 - [x] Lab 10/11 (2026-10-15, merged main, Windows Server VM 101): C: from the SYSTEM hive, owners on the NTFS system
   volume (1,225 security descriptors, all 390,926 entries owned; web-api dropped them from search hits: fixed),
   file index 33.9 s first / 15.5 s next (78,202 of 94,230 directories taken over), full backup 388 s, incremental
