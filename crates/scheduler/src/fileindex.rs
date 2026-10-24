@@ -173,8 +173,8 @@ impl Scheduler {
                         "INSERT OR IGNORE INTO group_sources (group_id, tenant, source) VALUES (?1, ?2, ?3)",
                         params![g.id, g.tenant, s],
                     )?;
-                    let guest = s.starts_with("vm-") || s.starts_with("ct-");
-                    let enabled = !(kind == "pve" && guest) || index_files;
+                    let guest = crate::guest_disks(&s);
+                    let enabled = !((kind == "pve" || kind == "vmware") && guest) || index_files;
                     let t = per_tenant.entry(g.tenant.clone()).or_default();
                     // a source in several groups: the first group (lowest id) decides
                     t.entry(s).or_insert_with(|| group_rules(json.as_deref(), enabled));

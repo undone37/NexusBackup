@@ -859,7 +859,7 @@ function tick() {
           for (const x of db.snapshots.filter((y) => y.tenant === j.tenant && y.time === t && names.includes(y.source)))
             x.lock_until = Math.max(x.lock_until, j.params.keep_until);
         // Phase 15g: groups with index_files list the guests' file systems after the backup
-        if (g?.index_files && gsrc?.kind === 'pve')
+        if (g?.index_files && (gsrc?.kind === 'pve' || gsrc?.kind === 'vmware'))
           for (const n of names) {
             const x = addJob(
               'file_index',
@@ -4910,7 +4910,7 @@ on('POST', '/groups', async (c) => {
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
   // Phase 31b: VM/CT file index on by default for new Proxmox VE groups
-  if (src.kind === 'pve') g.index_files = true;
+  if (src.kind === 'pve' || src.kind === 'vmware') g.index_files = true;
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
   return [201, g];
@@ -4943,7 +4943,7 @@ on('PUT', '/groups/:id/index-files', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   const src = db.sources.find((s) => s.id === g.source_id);
-  if (src?.kind !== 'pve')
+  if (src?.kind !== 'pve' && src?.kind !== 'vmware')
     throw new HttpError(
       400,
       'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed',

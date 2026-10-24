@@ -1,4 +1,4 @@
-//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
+//! Dev CLI until the scheduler exists: `nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid|vmw-uuid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory`.
 //! `backup-all` backs up every guest in `vmids`, VM or container (type from /cluster/resources).
 
 use anyhow::{bail, Context, Result};
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
-        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
+        bail!("usage: nexus-pve <config.json> backup <vmid> | backup-ct <vmid> | backup-all | restore <vmid> <time> <node> <target> <storage> [opts] | restore-ct <vmid> <time> <node> <target> <storage> [opts] | restore-vmware <uuid> <time> <node> <target> <storage> <bridge> [opts] | instant-recover <vmid> <time> <node> <target> <storage> [opts] [--no-start] | instant-disk <vmid> <time> <device> <node> <target> [--key <slot>] [--move-to <storage>] | ir-serve <node> <target> | dump <vmid> <time> <device> | files <vmid|vmw-uuid> <time> mounts|ls <path>|get <out> <path>...|index | ct-files <vmid> <time> ls [dir]|get <out> <path>...|index | scan <source> <time> <rules.json> [budget-secs] [--stop-on-match] | scan-back <source> <from-time> <rules.json> [budget-secs-per-snapshot] [max-snapshots] | restore-test <spec.json> | lab-check <spec.json> | push-index | list | inventory | task-stop <upid> | p2v <req.json> <layout.json> | p2v-cleanup <node> <vmid> <volid>");
     };
     let cfg: Config = serde_json::from_slice(&fs::read(cfg_path)?).context("config")?;
     // P2V (docs/bmr.md): API only, no store or keys
@@ -115,7 +115,17 @@ fn main() -> Result<()> {
                 .write_chunks(idx.chunk_ids(), std::io::BufWriter::new(std::io::stdout().lock()))
                 .map_err(Into::into);
         }
-        ("files", [vmid, time, args @ ..]) => return pve::restorevm::cli(&store, vmid.parse()?, time.parse()?, args),
+        ("files", [vmid, time, args @ ..]) => {
+            // a PVE VM (`<vmid>`) or a VMware VM snapshot (`vmw-<uuid>`, #83): both hold fixed disk images
+            let source = match vmid.strip_prefix("vmw-") {
+                Some(u) if !u.is_empty() && u.len() <= 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => {
+                    vmid.clone()
+                }
+                Some(_) => bail!("invalid VMware source {vmid:?}"),
+                None => pve::backup::source_name(vmid.parse()?),
+            };
+            return pve::restorevm::cli(&store, &source, time.parse()?, args);
+        }
         // opt-in YARA scan in the restore micro-VM (Phase 21e, any local snapshot)
         // `--stop-on-match` (Phase 29 scan back, one job per snapshot): end at the first match
         ("scan", [source, time, rules, opt @ ..]) => {

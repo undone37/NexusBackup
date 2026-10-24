@@ -2574,6 +2574,42 @@ fn vmware_jobs() {
         }
         st => panic!("{st:?}"),
     }
+    // files of a VMware snapshot (#83): nexus-pve files on the store only, no PVE source
+    let p = s
+        .plan(&job(
+            39,
+            "files_list",
+            json!({"source": format!("vmw-{u1}"), "time": 1000, "path": "/etc"}),
+        ))
+        .unwrap();
+    assert_eq!(p.key, format!("guest:t1/vmw-{u1}"));
+    let cfg: Value = serde_json::from_slice(&p.files.iter().find(|f| f.0 == "pve.json").unwrap().1).unwrap();
+    assert!(cfg.get("host").is_none() && cfg["store"].is_string(), "{cfg}");
+    match &p.steps[..] {
+        [Step::Cli { bin, args, capture, .. }] => {
+            assert!(*capture && bin == &e.cfg.pve_bin);
+            assert_eq!(&args[1..], ["files", &format!("vmw-{u1}"), "1000", "ls", "/etc"]);
+        }
+        st => panic!("{st:?}"),
+    }
+    let p = s
+        .plan(&job(
+            40,
+            "files_get",
+            json!({"source": format!("vmw-{u1}"), "time": 1000, "paths": ["/etc/hosts"], "format": "zip",
+                   "download_token": "0123456789abcdef".repeat(4)}),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { args, .. }] if args[1..4] == ["files", &format!("vmw-{u1}"), "1000"] && args[4] == "get")
+    );
+    assert!(s
+        .plan(&job(
+            41,
+            "files_list",
+            json!({"source": "vmw-nope", "time": 1, "path": "/"})
+        ))
+        .is_err());
     // restore of a VM snapshot as a Proxmox VE VM: the target cluster is a pve source of the tenant (#34)
     let restore = |p: Value| s.plan(&job(37, "restore", p));
     let r = |sid: Value| {

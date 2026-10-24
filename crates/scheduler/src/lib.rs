@@ -547,6 +547,12 @@ fn guest(source: &str) -> Result<(bool, u32)> {
     .with_context(|| format!("invalid source {source:?} (expected vm-<id> or ct-<id>)"))
 }
 
+/// Snapshots of guest disks (PVE VMs and containers, VMware VMs: #83) whose files come from a `file_index` job,
+/// not from the backup itself like the file trees of agents and shares.
+pub(crate) fn guest_disks(source: &str) -> bool {
+    source.starts_with("vm-") || source.starts_with("ct-") || vmware::names::parse_source_name(source).is_some()
+}
+
 fn gfs_of(v: &Value) -> Gfs {
     let d = Gfs::default();
     let f = |k: &str, def: u32| v[k].as_u64().map_or(def, |n| n.min(10_000) as u32);
@@ -3420,13 +3426,20 @@ impl Scheduler {
             }
             "files_list" | "files_get" => {
                 let source = ident(p, "source")?;
-                let (ct, vmid) = guest(source)?;
+                // VMware VM snapshots (#83): fixed disk images like a PVE VM's, read from the store only
+                let vmw = vmware::names::parse_source_name(source).is_some();
+                let (ct, vmid) = if vmw { (false, 0) } else { guest(source)? };
                 plan.key = format!("guest:{tenant}/{source}");
-                plan.files = match self.resolve_source(job, Some(vmid)) {
+                let resolved = if vmw {
+                    Err(anyhow::anyhow!("VMware snapshot: no PVE source"))
+                } else {
+                    self.resolve_source(job, Some(vmid))
+                };
+                plan.files = match resolved {
                     Ok(sid) => self.pve_config(tenant, sid, &dir, &[])?,
                     // replicated VM/CT snapshots without a local PVE source: the
                     // file commands only read the store
-                    Err(_) if replicated => {
+                    Err(_) if replicated || vmw => {
                         let cfg = json!({"store": self.cfg.store_base.join(tenant), "tenant": tenant,
                                          "keyd_socket": self.cfg.keyd_socket});
                         vec![("pve.json".into(), serde_json::to_vec_pretty(&cfg)?)]
@@ -3435,7 +3448,7 @@ impl Scheduler {
                 };
                 let mut args = vec![
                     if ct { "ct-files" } else { "files" }.to_owned(),
-                    vmid.to_string(),
+                    if vmw { source.to_owned() } else { vmid.to_string() },
                     num(p, "time")?.to_string(),
                 ];
                 if job.kind == "files_list" {
