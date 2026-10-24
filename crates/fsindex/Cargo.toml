@@ -10,6 +10,7 @@ description = "nexus-fsindex: read-only, sandboxed guest file system lister for 
 ext4-view = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+ldm = { path = "../ldm" }
 libc = "0.2"
 ntfs = "0.4"
 seccompiler = "0.5"

@@ -8,8 +8,43 @@
 //! reported. All fields are big-endian; every variable-length field and record
 //! size is checked the way the kernel checks it.
 
-use crate::disk::{Io, Segment, Vol};
 use std::collections::{BTreeMap, HashMap};
+
+/// The disks a dynamic disk group is read from (snapshot disks in the file index, block devices in the
+/// restore micro-VM).
+pub trait Disks {
+    fn size(&self, disk: usize) -> u64;
+    /// Exactly `buf.len()` bytes at `off` (error beyond the end).
+    fn read(&mut self, disk: usize, off: u64, buf: &mut [u8]) -> std::io::Result<()>;
+}
+
+/// A piece of a volume: `len` bytes from volume offset `start` lie on `disk` at byte `offset`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Extent {
+    pub start: u64,
+    pub len: u64,
+    pub disk: usize,
+    pub offset: u64,
+}
+
+/// One disk of the group, read from its start.
+struct View<'a> {
+    d: &'a mut dyn Disks,
+    disk: usize,
+}
+
+impl View<'_> {
+    fn size(&self) -> u64 {
+        self.d.size(self.disk)
+    }
+    /// Up to `n` bytes at `off` (fewer at the end of the disk).
+    fn read_vec(&mut self, off: u64, n: usize) -> std::io::Result<Vec<u8>> {
+        let n = (n as u64).min(self.size().saturating_sub(off)) as usize;
+        let mut v = vec![0; n];
+        self.d.read(self.disk, off, &mut v)?;
+        Ok(v)
+    }
+}
 
 const SECTOR: u64 = 512;
 /// The TOCBLOCK copies, in sectors after `config_start` (the kernel's OFF_TOCB1..4): Windows does not always write
@@ -56,8 +91,8 @@ pub struct DynVol {
     /// the volume GUID (as `MountedDevices` names it: `DMIO:ID:` + these bytes), text
     pub guid: String,
     pub size: u64,
-    /// segments on the disks, or why it is not read
-    pub map: Result<Vec<Segment>, String>,
+    /// where its bytes lie on the disks, in volume order, or why it is not read
+    pub map: Result<Vec<Extent>, String>,
     /// mirrored: only the first plex is read
     pub mirrored: bool,
 }
@@ -82,7 +117,7 @@ fn text_guid(s: &[u8]) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn privhead(v: &Vol, at: u64) -> Result<Privhead, String> {
+fn privhead(v: &mut View, at: u64) -> Result<Privhead, String> {
     let b = v.read_vec(at, 512).map_err(|e| e.to_string())?;
     if b.get(0..8) != Some(b"PRIVHEAD") {
         return Err("LDM: no private header".into());
@@ -257,7 +292,7 @@ fn parse_vblk(b: &[u8]) -> Result<Option<(u64, Rec)>, String> {
 }
 
 /// The records of one disk's database.
-fn database(v: &Vol, ph: &Privhead) -> Result<(u32, Vec<(u64, Rec)>), String> {
+fn database(v: &mut View, ph: &Privhead) -> Result<(u32, Vec<(u64, Rec)>), String> {
     let base = ph.config_start * SECTOR;
     let toc = OFF_TOCB.iter().filter(|o| **o < ph.config_size).any(|o| {
         v.read_vec(base + o * SECTOR, 512)
@@ -321,26 +356,40 @@ fn database(v: &Vol, ph: &Privhead) -> Result<(u32, Vec<(u64, Rec)>), String> {
     Ok((last as u32, out))
 }
 
+/// A GUID as text (mixed endian, as Windows writes it).
 fn guid_text(b: &[u8]) -> String {
-    crate::part::guid(b)
+    if b.len() < 16 {
+        return String::new();
+    }
+    let hex = |s: &[u8]| s.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    format!(
+        "{:08x}-{:04x}-{:04x}-{}-{}",
+        u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+        u16::from_le_bytes([b[4], b[5]]),
+        u16::from_le_bytes([b[6], b[7]]),
+        hex(&b[8..10]),
+        hex(&b[10..16])
+    )
 }
 
 /// The dynamic volumes of the disk group on `members`; `Err` when no database is readable.
-pub fn volumes(io: &Io, members: &[Member]) -> Result<Vec<DynVol>, String> {
+pub fn volumes(io: &mut dyn Disks, members: &[Member]) -> Result<Vec<DynVol>, String> {
     let mut heads = Vec::new();
     let mut best: Option<(u32, Vec<(u64, Rec)>)> = None;
     let mut first_err = None;
     for m in members {
-        let size = io.borrow().disk_size(m.disk);
-        let v = Vol::region(io.clone(), m.disk, 0, size);
-        let ph = match privhead(&v, m.privhead) {
+        let mut v = View {
+            d: &mut *io,
+            disk: m.disk,
+        };
+        let ph = match privhead(&mut v, m.privhead) {
             Ok(p) => p,
             Err(e) => {
                 first_err.get_or_insert(e);
                 continue;
             }
         };
-        match database(&v, &ph) {
+        match database(&mut v, &ph) {
             Ok(db) if best.as_ref().is_none_or(|b| db.0 > b.0) => best = Some(db),
             Ok(_) => {}
             Err(e) => {
@@ -406,14 +455,14 @@ pub fn volumes(io: &Io, members: &[Member]) -> Result<Vec<DynVol>, String> {
                     .and_then(|s| s.checked_mul(SECTOR))
                     .ok_or("dynamic volume extent")?;
                 let len = n.checked_mul(SECTOR).ok_or("dynamic volume extent")?;
-                if phys.checked_add(len).is_none_or(|e| e > io.borrow().disk_size(d)) {
+                if phys.checked_add(len).is_none_or(|e| e > io.size(d)) {
                     return Err("dynamic volume extent beyond its disk".to_string());
                 }
-                segs.push(Segment {
+                segs.push(Extent {
                     start: at * SECTOR,
                     len,
-                    legs: vec![(d, phys)],
-                    stripe: 0,
+                    disk: d,
+                    offset: phys,
                 });
                 at += n;
                 if segs.len() > 4096 {
@@ -588,9 +637,21 @@ pub mod build {
 mod tests {
     use super::build::{component, disk4, partition, volume};
     use super::*;
-    use crate::disk::Local;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+
+    struct Mem(Vec<Vec<u8>>);
+    impl Disks for Mem {
+        fn size(&self, disk: usize) -> u64 {
+            self.0[disk].len() as u64
+        }
+        fn read(&mut self, disk: usize, off: u64, buf: &mut [u8]) -> std::io::Result<()> {
+            let d = &self.0[disk];
+            let s = d
+                .get(off as usize..off as usize + buf.len())
+                .ok_or_else(|| std::io::Error::other("beyond the end"))?;
+            buf.copy_from_slice(s);
+            Ok(())
+        }
+    }
 
     #[test]
     fn records_parse_back() {
@@ -668,32 +729,35 @@ mod tests {
         let db = build::database(&recs, 128, 2048);
         let at = cs as usize * 512;
         disk[at..at + db.len()].copy_from_slice(&db);
-        let io = |d: Vec<u8>| -> Io { Rc::new(RefCell::new(Local { disks: vec![d] })) };
+        let io = |d: Vec<u8>| Mem(vec![d]);
         let m = [Member {
             disk: 0,
             privhead: 6 * 512,
         }];
-        let v = volumes(&io(disk.clone()), &m).unwrap();
+        let v = volumes(&mut io(disk.clone()), &m).unwrap();
         assert_eq!(v.len(), 1);
-        assert_eq!(v[0].map.as_ref().unwrap()[0].legs, [(0, 63 * 512)]);
+        assert_eq!(
+            (v[0].map.as_ref().unwrap()[0].disk, v[0].map.as_ref().unwrap()[0].offset),
+            (0, 63 * 512)
+        );
         // the TOCBLOCK only in its second copy (as Windows wrote a GPT dynamic disk, #53), then in none
         let mut d = disk.clone();
         d[at + 512..at + 520].fill(0);
         d[at + 1024..at + 1032].copy_from_slice(b"TOCBLOCK");
-        assert_eq!(volumes(&io(d.clone()), &m).unwrap().len(), 1);
+        assert_eq!(volumes(&mut io(d.clone()), &m).unwrap().len(), 1);
         d[at + 1024..at + 1032].fill(0);
-        assert_eq!(volumes(&io(d), &m).unwrap_err(), "LDM: no table of contents");
+        assert_eq!(volumes(&mut io(d), &m).unwrap_err(), "LDM: no table of contents");
         // every single-byte change of the database: an answer or an error, never a panic
         for i in (at + 17 * 512..at + 17 * 512 + 1200).step_by(3) {
             for x in [0u8, 0xff, 0x08] {
                 let mut d = disk.clone();
                 d[i] = x;
-                let _ = volumes(&io(d), &m);
+                let _ = volumes(&mut io(d), &m);
             }
         }
         // a record count far beyond the area
         let mut d = disk.clone();
         d[at + 17 * 512 + 4..at + 17 * 512 + 8].copy_from_slice(&u32::MAX.to_be_bytes());
-        assert!(volumes(&io(d), &m).is_err());
+        assert!(volumes(&mut io(d), &m).is_err());
     }
 }

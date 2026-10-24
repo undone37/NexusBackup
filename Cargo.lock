@@ -2286,6 +2286,7 @@ dependencies = [
  "ext4-view",
  "fatfs",
  "flate2",
+ "ldm",
  "libc",
  "ntfs",
  "seccompiler",
@@ -3406,6 +3407,10 @@ name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
+name = "ldm"
+version = "0.1.0"
 
 [[package]]
 name = "lettre"
@@ -5550,6 +5555,7 @@ dependencies = [
 name = "restorevm-agent"
 version = "0.1.0"
 dependencies = [
+ "ldm",
  "libc",
  "serde",
  "serde_json",

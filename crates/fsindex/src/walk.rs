@@ -416,7 +416,19 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
     let ldm_vols = if ldm_members.is_empty() {
         Ok(Vec::new())
     } else {
-        ldm::volumes(&io, &ldm_members.iter().map(|m| m.0).collect::<Vec<_>>())
+        struct Disks(Io);
+        impl ldm::Disks for Disks {
+            fn size(&self, disk: usize) -> u64 {
+                self.0.borrow().disk_size(disk)
+            }
+            fn read(&mut self, disk: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
+                self.0.borrow_mut().read(disk, off, buf)
+            }
+        }
+        ldm::volumes(
+            &mut Disks(io.clone()),
+            &ldm_members.iter().map(|m| m.0).collect::<Vec<_>>(),
+        )
     };
     match ldm_vols {
         Err(why) => {
@@ -462,7 +474,16 @@ pub fn run(io: Io, names: &[String], limits: Limits, driver: &mut dyn Driver) ->
                         reason: Some(why),
                         ..info
                     }),
-                    Ok(segs) => {
+                    Ok(ext) => {
+                        let segs: Vec<Segment> = ext
+                            .iter()
+                            .map(|e| Segment {
+                                start: e.start,
+                                len: e.len,
+                                legs: vec![(e.disk, e.offset)],
+                                stripe: 0,
+                            })
+                            .collect();
                         let vol = Vol::new(io.clone(), segs.clone());
                         let info = Volume {
                             key: format!("ldm:{}:{}", dv.guid, seg_key(&segs)),
