@@ -111,6 +111,69 @@ fn dirty_of(changed: &Option<(Vec<(u64, u64)>, u64)>, capacity: u64) -> Vec<(u64
     }
 }
 
+/// Change-tracking check of a scheduled full read (scheduler `fullread.rs`, #91): blocks whose chunk differs
+/// from the previous snapshot although CBT did not report them. Printed as `full-read <source>/<time> {json}`,
+/// which also schedules the next full read.
+#[derive(Default, Debug)]
+pub struct FullRead {
+    /// time of the previous snapshot the disks were compared with (none: nothing to compare)
+    pub baseline: Option<u64>,
+    pub compared: u64,
+    pub changed: u64,
+    pub unreported: u64,
+    pub unreported_bytes: u64,
+    pub examples: Vec<String>,
+}
+
+impl FullRead {
+    /// One disk: `reported` are CBT's byte extents since the previous snapshot. Only whole blocks present in
+    /// both sizes are compared (a grown disk's new blocks are new anyway).
+    pub fn disk(&mut self, name: &str, baseline: u64, prev: &Index, new: &Index, reported: &[(u64, u64)]) {
+        let (
+            Index::Fixed {
+                chunks: p, size: ps, ..
+            },
+            Index::Fixed {
+                chunks: n, size: ns, ..
+            },
+        ) = (prev, new)
+        else {
+            return;
+        };
+        const B: u64 = agent_proto::BLOCK_SIZE;
+        let mut rep = vec![false; n.len()];
+        for &(off, len) in reported.iter().filter(|e| e.1 > 0) {
+            for b in off / B..(off + len).div_ceil(B).min(n.len() as u64) {
+                rep[b as usize] = true;
+            }
+        }
+        let whole = (*ps).min(*ns) / B;
+        for b in 0..whole.min(p.len() as u64).min(n.len() as u64) as usize {
+            self.compared += 1;
+            if p[b] != n[b] {
+                self.changed += 1;
+                if !rep[b] {
+                    self.unreported += 1;
+                    self.unreported_bytes += B;
+                    if self.examples.len() < 10 {
+                        self.examples.push(format!("{name}@{}", b as u64 * B));
+                    }
+                }
+            }
+        }
+        self.baseline = Some(baseline);
+    }
+
+    pub fn line(&self, source: &str, time: u64) -> String {
+        format!(
+            "full-read {source}/{time} {}",
+            serde_json::json!({"tracker": "cbt", "baseline": self.baseline, "compared": self.compared,
+                               "changed": self.changed, "unreported": self.unreported,
+                               "unreported_bytes": self.unreported_bytes, "examples": self.examples})
+        )
+    }
+}
+
 /// Reads a disk over NFC into a fixed index, with the unchanged blocks taken from `prev_index`.
 #[allow(clippy::too_many_arguments)]
 fn read_disk_nfc(
@@ -216,7 +279,8 @@ pub fn backup_vm(
         log(&format!("{}: changed block tracking enabled", info.name));
         c.set_cbt(spec.vm, true)?;
     }
-    let prev = if spec.full { None } else { previous(store, &source)? };
+    // a full read still compares with the previous snapshot (FullRead)
+    let prev = previous(store, &source)?;
     if !info.tools {
         log(&format!(
             "{}: VMware Tools not running: crash-consistent snapshot",
@@ -256,6 +320,7 @@ fn with_snapshot(
     };
     let mut names = Vec::new();
     let mut indexes = Vec::new();
+    let mut full = spec.full.then(FullRead::default);
     for (i, d) in disks.iter().enumerate() {
         let name = disk_name(d, &controllers);
         let base = prev.and_then(|(m, st)| Some((m, st.disks.get(&name)?)));
@@ -264,7 +329,7 @@ fn with_snapshot(
             _ => None,
         };
         // incremental: CBT byte extents against the previous change id of this disk; anything else is a full read
-        let changed = match (base, &prev_index) {
+        let mut changed = match (base, &prev_index) {
             (Some((_, ds)), Some(_)) => match &ds.change_id {
                 Some(id) => match c.changed_areas(spec.vm, snap, d, id) {
                     Ok(x) => Some((x, ds.size)),
@@ -277,6 +342,8 @@ fn with_snapshot(
             },
             _ => None,
         };
+        // scheduled full read: every block is read, CBT's answer is only kept for the check
+        let reported = if full.is_some() { changed.take() } else { None };
         log(&format!(
             "{name}: {} bytes{}",
             d.capacity,
@@ -306,6 +373,9 @@ fn with_snapshot(
             )
             .with_context(|| format!("{name}: block read through the proxy"))?,
         };
+        if let (Some(f), Some(p), Some((ext, _)), Some((m, _))) = (&mut full, &prev_index, &reported, prev) {
+            f.disk(&name, m.time, p, &idx, ext);
+        }
         state.disks.insert(
             name.clone(),
             DiskState {
@@ -326,6 +396,7 @@ fn with_snapshot(
         names,
         indexes,
         prev.map(|(m, _)| m.time),
+        full.as_ref(),
         log,
     )
 }
@@ -341,6 +412,7 @@ fn commit_vm(
     mut names: Vec<String>,
     mut indexes: Vec<Index>,
     prev_time: Option<u64>,
+    full: Option<&FullRead>,
     log: &mut dyn FnMut(&str),
 ) -> Result<Manifest> {
     let mut entries = vec![config_entry(store, STATE_FILE, &serde_json::to_vec_pretty(state)?)?];
@@ -353,7 +425,11 @@ fn commit_vm(
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let time = now.max(prev_time.map_or(0, |t| t + 1));
     let refs: Vec<(&str, Index)> = names.iter().map(String::as_str).zip(indexes).collect();
-    Ok(store.commit_snapshot(source, time, &refs)?)
+    let m = store.commit_snapshot(source, time, &refs)?;
+    if let Some(f) = full {
+        log(&f.line(source, m.time));
+    }
+    Ok(m)
 }
 
 // ---- hot-add proxy in three job steps (#80): the agent CA stays with nexus-agentctl -------------------------
@@ -374,6 +450,9 @@ pub struct ProxyState {
     /// VMware Tools quiesced the snapshot
     pub quiesced: bool,
     pub prev_time: Option<u64>,
+    /// a scheduled full read: finish compares with the previous snapshot (FullRead)
+    #[serde(default)]
+    pub full: bool,
     pub disks: Vec<ProxyDisk>,
 }
 
@@ -386,6 +465,9 @@ pub struct ProxyDisk {
     pub file: String,
     pub capacity: u64,
     pub change_id: Option<String>,
+    /// full read: CBT's byte extents since the previous snapshot, for the check in finish
+    #[serde(default)]
+    pub reported: Option<Vec<(u64, u64)>>,
 }
 
 /// Removes what an aborted proxy job left: `nexus-backup-*` snapshots of the VM and disks of other VMs still
@@ -428,7 +510,7 @@ pub fn proxy_prepare(
         log(&format!("{}: changed block tracking enabled", info.name));
         c.set_cbt(spec.vm, true)?;
     }
-    let prev = if spec.full { None } else { previous(store, &source)? };
+    let prev = previous(store, &source)?;
     if !info.tools {
         log(&format!(
             "{}: VMware Tools not running: crash-consistent snapshot",
@@ -448,6 +530,7 @@ pub fn proxy_prepare(
         vmx: info.vmx.clone(),
         quiesced: info.tools,
         prev_time: prev.as_ref().map(|(m, _)| m.time),
+        full: spec.full,
         disks: Vec::new(),
     };
     let mut plan = ReadPlan {
@@ -467,7 +550,7 @@ pub fn proxy_prepare(
         for d in &disks {
             let name = disk_name(d, &controllers);
             let base = prev.as_ref().and_then(|(m, st)| Some((m, st.disks.get(&name)?)));
-            let changed = match base {
+            let mut changed = match base {
                 Some((m, ds)) if m.indexes.contains(&name) => match &ds.change_id {
                     Some(id) => match c.changed_areas(spec.vm, &snap, d, id) {
                         Ok(x) => Some((x, ds.size, m.time)),
@@ -480,6 +563,12 @@ pub fn proxy_prepare(
                 },
                 _ => None,
             };
+            // scheduled full read: every block is read, CBT's answer is only kept for the check
+            let reported = if spec.full {
+                changed.take().map(|(x, _, _)| x)
+            } else {
+                None
+            };
             let unit = free.next().context("no free SCSI unit on the proxy's controller 0")?;
             c.attach(proxy, state.bus0, unit, &d.file, d.capacity)
                 .with_context(|| format!("hot-add of {} to the proxy", d.file))?;
@@ -489,6 +578,7 @@ pub fn proxy_prepare(
                 file: d.file.clone(),
                 capacity: d.capacity,
                 change_id: d.change_id.clone(),
+                reported,
             });
             let (ranges, prev) = match &changed {
                 Some((x, psize, t)) => (block_ranges(x, d.capacity, *psize), Some((state.source.clone(), *t))),
@@ -554,6 +644,11 @@ pub fn proxy_finish(
     let mut names = Vec::new();
     let mut indexes = Vec::new();
     let mut disks = BTreeMap::new();
+    let mut full = state.full.then(FullRead::default);
+    let base = match (state.full, state.prev_time) {
+        (true, Some(t)) => Some(store.load_manifest(&state.source, t)?),
+        _ => None,
+    };
     for d in &state.disks {
         if let Ok(err) = std::fs::read_to_string(dir.join(format!("{}.err", d.name))) {
             bail!("{}: block read through the proxy failed: {err}", d.name);
@@ -566,6 +661,11 @@ pub fn proxy_finish(
         match &idx {
             Index::Fixed { size, .. } if *size == d.capacity => {}
             _ => bail!("{}: the block read's index does not match the disk", d.name),
+        }
+        if let (Some(f), Some(m), Some(ext)) = (&mut full, &base, &d.reported) {
+            if m.indexes.contains(&d.name) {
+                f.disk(&d.name, m.time, &store.load_index(m, &d.name)?, &idx, ext);
+            }
         }
         disks.insert(
             d.name.clone(),
@@ -591,6 +691,7 @@ pub fn proxy_finish(
         names,
         indexes,
         state.prev_time,
+        full.as_ref(),
         log,
     )
 }
@@ -598,6 +699,34 @@ pub fn proxy_finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_read_finds_changes_cbt_did_not_report() {
+        const B: u64 = agent_proto::BLOCK_SIZE;
+        let fixed = |ids: &[u8], size: u64| Index::Fixed {
+            chunk_size: B as u32,
+            size,
+            chunks: ids.iter().map(|i| [*i; 32]).collect(),
+        };
+        // 4 blocks before, the disk grew to 5; blocks 1 and 3 changed, CBT reported only a byte inside block 1
+        let prev = fixed(&[0, 1, 2, 3], 4 * B);
+        let new = fixed(&[0, 9, 2, 8, 7], 5 * B);
+        let mut f = FullRead::default();
+        f.disk("scsi0-0", 1000, &prev, &new, &[(B + 10, 5)]);
+        assert_eq!((f.compared, f.changed, f.unreported), (4, 2, 1));
+        assert_eq!(f.unreported_bytes, B);
+        assert_eq!(f.examples, [format!("scsi0-0@{}", 3 * B)]);
+        let line = f.line("vmw-x", 2000);
+        let (head, js) = line.split_at(line.find('{').unwrap());
+        assert_eq!(head, "full-read vmw-x/2000 ");
+        let v: serde_json::Value = serde_json::from_str(js).unwrap();
+        assert_eq!(
+            (v["baseline"].as_u64(), v["tracker"].as_str()),
+            (Some(1000), Some("cbt"))
+        );
+        // nothing compared: no baseline (the scheduler records "no_baseline")
+        assert!(FullRead::default().line("vmw-x", 1).contains("\"baseline\":null"));
+    }
 
     #[test]
     fn disk_names() {
