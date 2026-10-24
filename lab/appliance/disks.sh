@@ -164,6 +164,8 @@ create() {
 	jq -e '.level == "raid6" and .role == "data" and (.mounts | index("/var/lib/nexus/chunkstore")) and .fs.type == "xfs"' \
 		<<<"$a" >/dev/null || die "array: $a"
 	[ "$(hw | jq -r .store.array)" = "$(jq -r .name <<<"$a")" ] || die "store not on the array"
+	# the helper restarts the scheduler after mounting the store: give it a moment (activating -> active)
+	con run 'for _ in $(seq 30); do systemctl is-active -q nexus-scheduler.service && break; sleep 2; done' >/dev/null
 	# the serial console wraps at 80 columns: FSTYPE on a line of its own
 	con run 'findmnt -no FSTYPE /var/lib/nexus/chunkstore; findmnt -no SOURCE,OPTIONS /var/lib/nexus/chunkstore; stat -c "%U %a %C" /var/lib/nexus/chunkstore;
 		systemctl is-active nexus-scheduler.service; systemctl is-enabled var-lib-nexus-chunkstore.mount;

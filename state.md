@@ -363,7 +363,12 @@ Offsite fetch-back (`lab/pvehost/offsite.sh`): an SFTP target on the regression 
   appliance VM 203 (DHCP address, not set up) with `nexus-setup restore-config --offsite` and VM 201's recovery key
   (21 files, same recovery key), VM 201's admin signs in on VM 203, config_rekey restored the tenant keys from
   offsite; VM 203 removed again. The PG 1.2.0 bundle is installed on VM 201 together with 1.2.1 to 1.4.0.
-  Open: disks.sh (needs an appliance with extra disks and an empty store), forwarding.sh.
+  Disks (`lab/appliance/disks.sh` against a fresh appliance VM 203, 10.2.34.213, with 5 virtio data disks
+  NXLAB-D1..5 and an emulated NVMe NXLAB-NVME1 via `args`): inventory (system disk, 5 empty, NVMe), NVMe short
+  self-test, RAID6 from D1..4 with approval (XFS mounted at the store, owner/mode/label right, scheduler restarted;
+  the check now waits for that restart), D3 failed by hand: degraded, critical disk alert; replaced by D5 with
+  approval: rebuilt in 20 s, alerts resolved. VM 203 removed again. Open: forwarding.sh (needs a syslog TLS and
+  an HTTPS receiver in the lab).
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
