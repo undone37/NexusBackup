@@ -313,6 +313,40 @@ pub fn local_accounts<R: HiveRead>(r: R) -> Result<Vec<(String, String)>, String
     Ok(out)
 }
 
+/// Accounts with a profile on the machine, from a SOFTWARE hive's `ProfileList` (#52): (SID, name of the profile
+/// folder), sorted. Domain accounts are not in the SAM, but every one that signed in on the machine has a profile;
+/// the folder is the account name (`jdoe`, or `jdoe.CONTOSO` when a local `jdoe` exists). Only account SIDs
+/// (`S-1-5-21-…`): the service profiles (`S-1-5-18` …) are not owners anybody looks for.
+pub fn profile_accounts<R: HiveRead>(r: R) -> Result<Vec<(String, String)>, String> {
+    let mut h = Hive::open(r)?;
+    let Some(list) = h.find("Microsoft\\Windows NT\\CurrentVersion\\ProfileList")? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (sid, off) in h.subkeys(list)? {
+        if !sid.starts_with("S-1-5-21-")
+            || sid.len() > 184
+            || !sid[4..].bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        {
+            continue;
+        }
+        let Some(v) = h.values(off)?.into_iter().find(|v| v.name == "ProfileImagePath") else {
+            continue;
+        };
+        let path = name(&v.data, false);
+        let folder = path
+            .trim_end_matches('\0')
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or_default();
+        if !folder.is_empty() && folder.len() <= 256 && !folder.chars().any(char::is_control) {
+            out.push((sid, folder.to_owned()));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// `S-1-5-21-a-b-c` from the last 24 bytes of the account domain's `V` value.
 fn machine_sid(d: &[u8]) -> Option<String> {
     let s = d.get(d.len().checked_sub(24)?..)?;
@@ -535,6 +569,46 @@ mod tests {
         );
         // a SYSTEM hive (no SAM key): nothing
         assert!(local_accounts(build(&[("Select", vec![])]).as_slice())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn profile_accounts_from_the_software_hive() {
+        let pl = "Microsoft\\Windows NT\\CurrentVersion\\ProfileList";
+        let path = |p: &str| utf16(&format!("{p}\0"));
+        let hive = build(&[
+            (
+                &format!("{pl}\\S-1-5-18"),
+                vec![(
+                    "ProfileImagePath",
+                    2,
+                    path("%systemroot%\\system32\\config\\systemprofile"),
+                )],
+            ),
+            (
+                &format!("{pl}\\S-1-5-21-1-2-3-1104"),
+                vec![("ProfileImagePath", 2, path("C:\\Users\\jdoe"))],
+            ),
+            (
+                &format!("{pl}\\S-1-5-21-1-2-3-1105"),
+                vec![("ProfileImagePath", 2, path("C:\\Users\\admin.CONTOSO"))],
+            ),
+            // a hostile key name and a profile without its path
+            (
+                &format!("{pl}\\S-1-5-21-x;rm"),
+                vec![("ProfileImagePath", 2, path("C:\\Users\\x"))],
+            ),
+            (&format!("{pl}\\S-1-5-21-1-2-3-1106"), vec![]),
+        ]);
+        assert_eq!(
+            profile_accounts(hive.as_slice()).unwrap(),
+            [
+                ("S-1-5-21-1-2-3-1104".to_string(), "jdoe".to_string()),
+                ("S-1-5-21-1-2-3-1105".to_string(), "admin.CONTOSO".to_string()),
+            ]
+        );
+        assert!(profile_accounts(build(&[("Select", vec![])]).as_slice())
             .unwrap()
             .is_empty());
     }

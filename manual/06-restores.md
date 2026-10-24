@@ -541,8 +541,10 @@ The arrow at the start of a row opens its **version timeline**: one line per ver
 **First seen** in which snapshot, **Until** the snapshot that no longer has it, or **current**), with the snapshots
 that hold it. For files on VM disks the timeline also shows the **Owner** by name where the guest itself names it:
 Linux users from the guest's `/etc/passwd`, Windows local accounts from its SAM, and well-known Windows accounts
-such as SYSTEM, Administrators or TrustedInstaller. Domain accounts show their SID (their names are in Active
-Directory, not on the member's disk), unknown Linux ids their `uid:gid`; the id is in the cell's tooltip. Names come
+such as SYSTEM, Administrators or TrustedInstaller. Domain accounts that have signed in on that machine are named
+by their profile folder (`jdoe`, or `jdoe.CONTOSO` when a local `jdoe` exists, from the guest's registry); other
+domain accounts show their SID (their names are in Active Directory, not on the member's disk), unknown Linux ids
+their `uid:gid`; the id is in the cell's tooltip. Names come
 from the snapshot that first held the version, or (for files unchanged since before the appliance read names) from
 the first later snapshot that has them. Pick the snapshot (default: the newest holding that version), then:
 
