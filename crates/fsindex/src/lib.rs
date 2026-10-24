@@ -23,7 +23,8 @@ pub mod exfat;
 pub mod fat;
 pub mod fs_ext;
 pub mod fs_ntfs;
-pub mod ldm;
+/// Windows dynamic disks: crate `ldm` (shared with the restore micro-VM)
+pub use ::ldm;
 pub mod lvm;
 pub mod mapping;
 pub mod parent;

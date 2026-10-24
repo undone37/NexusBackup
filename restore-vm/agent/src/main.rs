@@ -233,6 +233,162 @@ fn leaf_devices() -> Vec<String> {
     v
 }
 
+/// GPT partition types of Windows dynamic disks (lowercase, as blkid prints them).
+const LDM_META: &str = "5808c8aa-7e8f-42e0-85d2-e1e90434cfb3";
+const LDM_DATA: &str = "af9b60a0-1431-4f62-bc68-3311714a69ad";
+
+/// Whole disks read for the LDM parser (`/dev/<name>`, read-only).
+struct BlockDisks(Vec<(String, File, u64)>);
+
+impl ldm::Disks for BlockDisks {
+    fn size(&self, disk: usize) -> u64 {
+        self.0[disk].2
+    }
+    fn read(&mut self, disk: usize, off: u64, buf: &mut [u8]) -> io::Result<()> {
+        std::os::unix::fs::FileExt::read_exact_at(&self.0[disk].1, buf, off)
+    }
+}
+
+/// A dm-linear table (512-byte sectors) of a dynamic volume's extents on `/dev/<disk>`.
+fn dm_table(ext: &[ldm::Extent], disks: &[String]) -> String {
+    ext.iter()
+        .map(|e| {
+            format!(
+                "{} {} linear /dev/{} {}\n",
+                e.start / 512,
+                e.len / 512,
+                disks[e.disk],
+                e.offset / 512
+            )
+        })
+        .collect()
+}
+
+/// A device-mapper name for a dynamic volume: `ldm-` + its name in safe characters (else its index).
+fn dm_volume_name(name: &str, i: usize) -> String {
+    let n: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .take(64)
+        .collect();
+    if n.is_empty() {
+        format!("ldm-{i}")
+    } else {
+        format!("ldm-{n}")
+    }
+}
+
+/// The private header of a GPT dynamic disk: the last sector of its LDM metadata partition (blkid's
+/// PART_ENTRY_OFFSET and PART_ENTRY_SIZE, in sectors).
+fn ldm_privhead(offset: u64, size: u64) -> Option<u64> {
+    offset.checked_add(size)?.checked_sub(1)?.checked_mul(512)
+}
+
+/// Windows dynamic disks with GPT (#53): the kernel reads LDM only from MBR disks, so the group's database is
+/// parsed here (crate `ldm`) and every simple or spanned volume becomes a read-only dm-linear device
+/// `ldm-<name>`, mounted below `/ldm`. Returns the LDM data partitions not to mount on their own (when the
+/// group was mapped) and entries for volumes that cannot be read (striped, RAID-5, a missing disk).
+fn ldm_map() -> (BTreeSet<String>, Vec<Mount>) {
+    let mut members: Vec<(String, u64)> = Vec::new();
+    let mut data_parts = BTreeSet::new();
+    for e in fs::read_dir("/sys/class/block").into_iter().flatten().flatten() {
+        if !e.path().join("partition").exists() {
+            continue;
+        }
+        let part = e.file_name().to_string_lossy().into_owned();
+        let Some(out) = cmd("blkid", &["-p", "-o", "export", &format!("/dev/{part}")]) else {
+            continue;
+        };
+        let get = |k: &str| {
+            out.lines()
+                .find_map(|l| l.strip_prefix(k)?.strip_prefix('=').map(str::to_owned))
+        };
+        let disk = fs::canonicalize(e.path()).ok().and_then(|p| {
+            p.parent()
+                .and_then(|d| d.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+        });
+        match (get("PART_ENTRY_TYPE").as_deref(), disk) {
+            (Some(LDM_META), Some(disk)) => {
+                let num = |k: &str| get(k).and_then(|v| v.parse::<u64>().ok());
+                if let Some(at) = num("PART_ENTRY_OFFSET")
+                    .zip(num("PART_ENTRY_SIZE"))
+                    .and_then(|(o, s)| ldm_privhead(o, s))
+                {
+                    if members.iter().all(|(d, _)| *d != disk) {
+                        members.push((disk, at));
+                    }
+                }
+            }
+            (Some(LDM_DATA), _) => {
+                data_parts.insert(part);
+            }
+            _ => {}
+        }
+    }
+    if members.is_empty() {
+        return (BTreeSet::new(), Vec::new());
+    }
+    let mut disks = BlockDisks(Vec::new());
+    let mut ms = Vec::new();
+    for (d, at) in &members {
+        let size = fs::read_to_string(format!("/sys/class/block/{d}/size"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map_or(0, |s| s * 512);
+        match File::open(format!("/dev/{d}")) {
+            Ok(f) => disks.0.push((d.clone(), f, size)),
+            Err(e) => {
+                log!("ldm: /dev/{d}: {e}");
+                continue;
+            }
+        }
+        ms.push(ldm::Member {
+            disk: disks.0.len() - 1,
+            privhead: *at,
+        });
+    }
+    let names: Vec<String> = disks.0.iter().map(|d| d.0.clone()).collect();
+    let vols = match ldm::volumes(&mut disks, &ms) {
+        Ok(v) => v,
+        Err(e) => {
+            log!("ldm: {e}");
+            return (BTreeSet::new(), Vec::new());
+        }
+    };
+    let (mut failed, mut mapped) = (Vec::new(), 0);
+    for (i, v) in vols.iter().enumerate() {
+        let dm = dm_volume_name(&v.name, i);
+        let err = match &v.map {
+            Ok(ext) => {
+                let table = dm_table(ext, &names);
+                cmd("dmsetup", &["create", &dm, "--readonly", "--table", &table])
+                    .map(|_| ())
+                    .ok_or_else(|| "dmsetup create failed".to_owned())
+            }
+            Err(why) => Err(why.clone()),
+        };
+        if err.is_ok() {
+            mapped += 1;
+        }
+        if let Err(why) = err {
+            failed.push(Mount {
+                device: format!("ldm/{}", v.name),
+                fstype: "ldm".into(),
+                error: Some(why),
+                ..Default::default()
+            });
+        }
+    }
+    log!(
+        "ldm: {mapped} of {} dynamic volume(s) mapped on {} disk(s)",
+        vols.len(),
+        names.len()
+    );
+    // nothing mapped (no dmsetup?): the data partitions are probed as before (a simple volume at their start)
+    (if mapped > 0 { data_parts } else { BTreeSet::new() }, failed)
+}
+
 /// Mount type and data for a blkid TYPE; journals are never replayed.
 fn fs_options(ty: &str) -> Option<(&'static str, &'static str)> {
     Some(match ty {
@@ -273,7 +429,7 @@ fn mount_all() -> Vec<Mount> {
         }
     }
     log!("md + lvm: {:.1?}", t.elapsed());
-    let mut out = Vec::new();
+    let (ldm_data, mut out) = ldm_map();
     // ZFS: blkid reports the pool name as LABEL of each member.
     let mut pools = std::collections::BTreeMap::<String, Vec<String>>::new();
     for dev in leaf_devices() {
@@ -324,6 +480,10 @@ fn mount_all() -> Vec<Mount> {
     }
     log!("zfs: {:.1?}", t.elapsed());
     for dev in leaf_devices() {
+        // a GPT dynamic disk's data partition: its volumes are mounted through their ldm-* devices
+        if ldm_data.contains(&dev) {
+            continue;
+        }
         let path = format!("/dev/{dev}");
         let Some((ty, label, uuid)) = probe(&path) else {
             continue;
@@ -356,7 +516,10 @@ fn mount_all() -> Vec<Mount> {
         let mp = match fs::read_to_string(format!("/sys/class/block/{dev}/dm/name")) {
             Ok(n) => {
                 m.device = format!("/dev/mapper/{}", n.trim());
-                format!("/lvm/{}", n.trim())
+                match n.trim().strip_prefix("ldm-") {
+                    Some(v) => format!("/ldm/{v}"),
+                    None => format!("/lvm/{}", n.trim()),
+                }
             }
             Err(_) => format!("/{dev}"),
         };
@@ -777,6 +940,34 @@ fn serve(mut r: impl BufRead, mut w: impl Write, mounts: &[Mount]) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_volume_tables() {
+        let ext = [
+            ldm::Extent {
+                start: 0,
+                len: 1 << 20,
+                disk: 0,
+                offset: 1 << 20,
+            },
+            ldm::Extent {
+                start: 1 << 20,
+                len: 2 << 20,
+                disk: 1,
+                offset: 17408,
+            },
+        ];
+        assert_eq!(
+            dm_table(&ext, &["vda".into(), "vdb".into()]),
+            "0 2048 linear /dev/vda 2048\n2048 4096 linear /dev/vdb 34\n"
+        );
+        assert_eq!(dm_volume_name("Volume1", 0), "ldm-Volume1");
+        assert_eq!(dm_volume_name("a b/../c", 0), "ldm-abc");
+        assert_eq!(dm_volume_name("///", 3), "ldm-3");
+        // the last sector of the metadata partition
+        assert_eq!(ldm_privhead(34, 2014), Some(2047 * 512));
+        assert_eq!(ldm_privhead(0, 0), None);
+    }
 
     fn mps() -> Vec<String> {
         ["/vda1", "/lvm/vg0-root", "/zfs/tank", "/zfs/tank+data"]

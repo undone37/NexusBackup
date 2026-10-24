@@ -48,7 +48,7 @@ pack() {
 r=$work/root
 skeleton "$r"
 install -m 0755 /out/agent "$r/init"
-copy_bin "$r" modprobe blkid lvm zpool zfs mdadm yara yarac
+copy_bin "$r" modprobe blkid lvm dmsetup zpool zfs mdadm yara yarac
 mkdir -p "$r/etc/lvm" "$r/lib/modules/$KVER"
 touch "$r/etc/lvm/lvm.conf"
 echo "nexus-restore-vm" >"$r/etc/hostname"

@@ -10,9 +10,12 @@
 #   ldm.sh backup    group "ldm-$CLONE" with the clone (index-files on), backup, the file_index result
 #   ldm.sh browse    files_list of / and of the dynamic volume in the restore micro-VM
 #   ldm.sh cleanup   VM $CLONE destroyed
+# SPANNED=1: two 4 GiB disks, both GPT and dynamic; a volume X: spanned over both (2 GiB on each, $FILES files in
+# X:\ldm) and a simple volume Y: on the rest of the first ($FILES files in Y:\ldm2). The restore micro-VM maps
+# both from the LDM database (dm-linear, #53) and mounts them below /ldm.
 #
 # env: as vmware-e2e.sh (LAB, PORT, PVE_HOST, SSH_KEY, NODE pve-test); SRC_VMID (242), CLONE (297),
-#      STORAGE (vmpool), FILES (50), OUT (~/nexus-lab/scratch/ldm)
+#      STORAGE (vmpool), FILES (50), OUT (~/nexus-lab/scratch/ldm), SPANNED (0)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -25,6 +28,8 @@ SRC_VMID=${SRC_VMID:-242}
 CLONE=${CLONE:-297}
 STORAGE=${STORAGE:-vmpool}
 FILES=${FILES:-50}
+SPANNED=${SPANNED:-}
+[ "$SPANNED" != 0 ] || SPANNED=
 OUT=${OUT:-$HOME/nexus-lab/scratch/ldm}
 ROOT=$LAB/appliance/root
 S=$ROOT/run/api
@@ -53,28 +58,49 @@ step_clone() {
 	pve "qm status $CLONE" >/dev/null 2>&1 && die "VM $CLONE exists (step cleanup)"
 	pve "qm status $SRC_VMID | grep -q stopped || qm shutdown $SRC_VMID --timeout 180 --forceStop 1"
 	pve "qm clone $SRC_VMID $CLONE --full 1 --storage $STORAGE --name ldm-$SRC_VMID >/dev/null &&
-		qm set $CLONE --sata1 $STORAGE:4 --net0 \$(qm config $CLONE | sed -n 's/^net0: //p'),link_down=1 >/dev/null && qm start $CLONE"
+		qm set $CLONE --sata1 $STORAGE:4 ${SPANNED:+--sata2 $STORAGE:4} --net0 \$(qm config $CLONE | sed -n 's/^net0: //p'),link_down=1 >/dev/null && qm start $CLONE"
 	wait_ga
 	log "VM $CLONE: clone of $SRC_VMID with a 4 GiB second disk, guest agent up"
 }
 
 step_disk() {
-	local r
+	local r dp
 	# diskpart from a script file: GPT first, then dynamic (a GPT dynamic disk, #53), one simple volume
-	r=$(gexec "\$s = @'
-select disk 1
+	dp="select disk 1
 attributes disk clear readonly
 online disk noerr
 convert gpt
 convert dynamic
 create volume simple
 format fs=ntfs quick label=DYN
+assign letter=X"
+	# SPANNED: both disks dynamic, X: spanned over them, Y: simple on the rest of disk 1
+	[ -z "$SPANNED" ] || dp="select disk 1
+attributes disk clear readonly
+online disk noerr
+convert gpt
+convert dynamic
+select disk 2
+attributes disk clear readonly
+online disk noerr
+convert gpt
+convert dynamic
+create volume simple size=2048 disk=1
+extend size=2048 disk=2
+format fs=ntfs quick label=SPAN
 assign letter=X
+create volume simple disk=1
+format fs=ntfs quick label=DYN2
+assign letter=Y"
+	r=$(gexec "\$s = @'
+$dp
 '@
 Set-Content -Path C:\\ldm-diskpart.txt -Value \$s -Encoding ascii
 diskpart /s C:\\ldm-diskpart.txt | Out-String | Write-Output
 New-Item -ItemType Directory -Force X:\\ldm | Out-Null
 1..$FILES | ForEach-Object { Set-Content -Path ('X:\\ldm\\file-' + \$_ + '.txt') -Value ('dynamic volume file ' + \$_) }
+if (Test-Path Y:\\) { New-Item -ItemType Directory -Force Y:\\ldm2 | Out-Null
+1..$FILES | ForEach-Object { Set-Content -Path ('Y:\\ldm2\\file-' + \$_ + '.txt') -Value ('second volume file ' + \$_) } }
 (Get-ChildItem X:\\ldm).Count")
 	jq -r '."out-data" // ""' <<<"$r" | tr -d '\r' | grep -vE '^\s*$' | tail -8 >&2
 	[ "$(jq -r .exitcode <<<"$r")" = 0 ] || die "diskpart in the guest: $(jq -r '."err-data" // ""' <<<"$r" | tail -5)"
@@ -118,9 +144,30 @@ step_backup() {
 	log "the dynamic volume is indexed"
 }
 
+# SPANNED: /ldm in the micro-VM holds both volumes, each with its folder of $FILES files
+browse_spanned() {
+	local time=$1 j v d n=0
+	j=$(api admin POST /jobs "$(jq -nc --arg s "vm-$CLONE" --argjson t "$time" '{kind:"files_list", tenant:"lab", params:{source:$s, time:$t, path:"/ldm"}}')")
+	j=$(wait_job admin "$(jq -r .id <<<"$j")" 900)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "files_list /ldm: $(jq -r '.log // ""' <<<"$j" | tail -n 15)"
+	log "/ldm: $(jq -r '[.result.entries[].name] | join(" ")' <<<"$j")"
+	for v in $(jq -r '.result.entries[].name' <<<"$j"); do
+		for d in ldm ldm2; do
+			j=$(api admin POST /jobs "$(jq -nc --arg s "vm-$CLONE" --argjson t "$time" --arg p "/ldm/$v/$d" '{kind:"files_list", tenant:"lab", params:{source:$s, time:$t, path:$p}}')")
+			j=$(wait_job admin "$(jq -r .id <<<"$j")" 900)
+			if [ "$(jq -r '.result.entries | length' <<<"$j" 2>/dev/null)" = "$FILES" ]; then
+				log "restore micro-VM: /ldm/$v/$d holds the $FILES files"
+				n=$((n + 1))
+			fi
+		done
+	done
+	[ "$n" = 2 ] || die "$n of 2 dynamic volumes with their files in the micro-VM"
+}
+
 step_browse() {
 	local time j p mnt=
 	time=$(cat "$OUT/time")
+	[ -z "$SPANNED" ] || { browse_spanned "$time"; return; }
 	j=$(api admin POST /jobs "$(jq -nc --arg s "vm-$CLONE" --argjson t "$time" '{kind:"files_list", tenant:"lab", params:{source:$s, time:$t, path:"/"}}')")
 	expect 202 "files_list /"
 	j=$(wait_job admin "$(jq -r .id <<<"$j")" 900)
