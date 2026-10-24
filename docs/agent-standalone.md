@@ -62,7 +62,15 @@ commit point), manifests and the top-level files (clock) replaced every time, fi
 deleted (manifests first, chunks last). On S3 with Object Lock (`lock_days`), chunks are uploaded locked; a locked
 object that local GC removed stays until its date and is deleted by a later copy. `repo fetch <target.json> <dir>`
 downloads a copy into an empty directory; `repo open` with the 24 words then opens it on any machine. The target
-file holds credentials: keep it next to the jobs file (root / Administrators only).
+file holds credentials: keep it next to the jobs file (root / Administrators only). One of:
+
+```json
+{"kind": "sftp", "host": "backup.example.net", "port": 22, "user": "copy", "key_file": "/root/.ssh/nexus-copy",
+ "host_key": "ssh-ed25519 AAAA...", "base_dir": "pc-17"}
+{"kind": "s3", "endpoint": "https://s3.example.net", "region": "eu-central-1", "bucket": "copies", "prefix": "pc-17",
+ "access_key": "...", "secret_key": "...", "lock_days": 30}
+{"kind": "dir", "path": "/mnt/nas/pc-17"}
+```
 
 Mirror, not the appliance's offsite packs: one object per chunk (many small objects on S3; an SFTP box with a
 file-count limit fills faster). ponytail: packs like `crates/offsite` when that matters.
