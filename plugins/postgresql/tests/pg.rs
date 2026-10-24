@@ -292,7 +292,8 @@ fn validate_guests_dump_and_restore() {
     assert!(v.summary.starts_with("restore test passed:"), "{}", v.summary);
     // the group's SQL check (#45): one read-only query, its first value true or not zero
     let sql = |q: &str| h.restore(&cfg, &r.source, r.time, "verify", json!({"sql": q}));
-    let v = sql("SELECT count(*) FROM shop.orders WHERE id > 0;").unwrap();
+    // unqualified: the search path is the server's default again after the restore (lab 2026-10-24)
+    let v = sql("SELECT count(*) FROM events WHERE id > 0;").unwrap();
     assert!(v.summary.contains("the SQL check returned "), "{}", v.summary);
     for (q, want) in [
         ("SELECT count(*) > 1000000 FROM shop.orders", "returned f, not true"),

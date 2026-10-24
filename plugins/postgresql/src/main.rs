@@ -438,6 +438,9 @@ fn sql_check(c: &mut Conn, sql: &str) -> Result<String> {
     if q.trim().is_empty() || q.contains(';') || sql.len() > 4000 {
         bail!("the SQL check must be one query of at most 4000 characters (a `;` only at the end)");
     }
+    // the dump restore and the content check leave `search_path = ''` and canonical output settings:
+    // the server's defaults again, so unqualified names resolve as for the application (lab 2026-10-24)
+    c.exec("RESET ALL")?;
     c.exec("BEGIN READ ONLY")?;
     let rows = c.query(q);
     c.exec("ROLLBACK")?;
