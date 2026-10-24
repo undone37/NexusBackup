@@ -67,11 +67,13 @@ s_patroni() {
 	return $rc
 }
 s_esxi8() {
-	local rc
+	local rc was
+	# VM 251 also runs the lab vCenter (vcenter.sh): left running when it was running before
+	was=$(pve "qm status 251" 2>/dev/null)
 	vms start 251
 	ESXI=8 "$here/esxi.sh" ip up hotadd
 	rc=$?
-	vms shutdown 251
+	[[ $was == *running* ]] || vms shutdown 251
 	return $rc
 }
 

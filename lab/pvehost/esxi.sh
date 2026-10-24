@@ -21,7 +21,8 @@
 #   esxi.sh hotadd      the same CBT test, the data read on a proxy VM (GUEST=nx-proxy esxi.sh guest first)
 #                       that gets the snapshot's base disk hot-added read-only (/folder cannot read the disk
 #                       of a running VM: hostd "Failed to lock file")
-#   esxi.sh proxy       this tree's agent on nx-proxy in the proxy role (proxy = on), a new token in $LAB/proxy.token
+#   esxi.sh proxy       this tree's agent on nx-proxy in the proxy role (proxy = on), a new token (or PROXY_TOKEN) in
+#                       $LAB/proxy.token, its address in $LAB/proxy.ip
 #   esxi.sh up          after a cold start of the ESXi VM: wait for SSH, power on nx-cbt and nx-proxy, wait for both
 #   esxi.sh ssh CMD     a command on the ESXi shell (lab ECDSA key in $LAB: ESXi's FIPS sshd refuses ed25519)
 #   esxi.sh destroy     stop and remove VM $VMID (ours: IDs from 200, AGENTS.md "Labs")
@@ -395,7 +396,8 @@ step_proxy() {
 	local bin tok
 	bin=$(dirname "$0")/../../target/x86_64-unknown-linux-musl/release/nexus-agent
 	[ -x "$bin" ] || die "no $bin (CC_x86_64_unknown_linux_musl=gcc cargo build --release --target x86_64-unknown-linux-musl -p agent-linux)"
-	tok=$(head -c 20 /dev/urandom | base32 | tr -d =)
+	# PROXY_TOKEN: the token of an agent created on the appliance (vmware-e2e.sh proxy), else a new one
+	tok=${PROXY_TOKEN:-$(head -c 20 /dev/urandom | base32 | tr -d =)}
 	(umask 077 && echo "$tok" >"$LAB/proxy.token")
 	GUEST=nx-proxy guest 'systemctl stop nexus-agent 2>/dev/null; cat > /usr/local/bin/nexus-agent.new && chmod 755 /usr/local/bin/nexus-agent.new &&
 		mv /usr/local/bin/nexus-agent.new /usr/local/bin/nexus-agent' <"$bin"
@@ -406,7 +408,8 @@ step_proxy() {
 			'[Service]' 'ExecStart=/usr/local/bin/nexus-agent run' 'Restart=on-failure' '[Install]' 'WantedBy=multi-user.target' \\
 			> /etc/systemd/system/nexus-agent.service
 		systemctl daemon-reload; systemctl enable --now nexus-agent >/dev/null 2>&1; sleep 1; systemctl is-active nexus-agent"
-	log "proxy agent on nx-proxy ($(GUEST=nx-proxy guest_ip):7444), token in $LAB/proxy.token"
+	GUEST=nx-proxy guest_ip >"$LAB/proxy.ip"
+	log "proxy agent on nx-proxy ($(cat "$LAB/proxy.ip"):7444), token in $LAB/proxy.token"
 }
 
 step_destroy() {
