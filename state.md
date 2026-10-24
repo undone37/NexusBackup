@@ -485,7 +485,13 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
 - [ ] (#66) Linux agent update labs: plan.md Phase 39 L6
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7
-- [ ] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8
+- [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
+  a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
+  listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on
+  debian-13 (production key pinned) refuses the TEST-signed release ("does not verify with any pinned release
+  key"); with the image's 0.1.1 test-key .deb installed it updates to 0.1.2 in 7 s (chunked .deb). SELinux
+  enforcing, no denial for nexus_agent_release_t, nexus_agentctl_t or nexus_webapi_t; no denial at all since the
+  0.0.32 boot (the init_t rules of f4262897 still to be seen at the next update and shutdown).
 ## Phase 28 — Commvault Tier 1 (2026-10-14)
 - [x] catalog v43 (`groups.scan_schedule/scan_budget_min/file_hashes`, `snapshots.scan_state`, `hash_lists`,
   `tenant_lockdowns`, `login_devices`, `users.email`; migration test), alert kinds + hints, threat model T62–T63
