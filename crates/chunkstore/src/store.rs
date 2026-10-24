@@ -683,7 +683,19 @@ impl Store {
 
     /// Reads, decrypts and verifies one chunk.
     pub fn read_chunk(&self, id: &ChunkId) -> io::Result<Vec<u8>> {
-        self.keys.open_chunk(id, &fs::read(self.chunk_path(id))?)
+        let sealed = fs::read(self.chunk_path(id)).map_err(|e| {
+            if e.kind() != io::ErrorKind::NotFound {
+                return e;
+            }
+            // a bare "No such file or directory" told a restore nothing (#48 lab)
+            let why = if self.quarantine_path(id).exists() {
+                "failed verification and was moved aside: the snapshot is damaged (Repair, or an older snapshot)"
+            } else {
+                "is missing from the store"
+            };
+            io::Error::new(io::ErrorKind::NotFound, format!("chunk {} {why}", hex(id)))
+        })?;
+        self.keys.open_chunk(id, &sealed)
     }
 
     /// Fixed-size chunking of a block device / image.
