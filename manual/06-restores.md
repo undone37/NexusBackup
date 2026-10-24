@@ -435,8 +435,10 @@ database (and, for PostgreSQL, of the cluster):
   `CREATEDB` for that. Dumps from plugin 1.4.2 on are also compared by content: every table is read back and its
   rows must be the same as in the dump (in any order).
 - **MySQL/MariaDB dumps** are tested the same way (`nexus_verify_<snapshot time>`, dropped afterwards). Dumps the
-  appliance made over the connection carry the row count of every table, which the test compares; dumps made with
-  `mysqldump` over SSH carry none, so their test checks that the whole dump restores without an error.
+  appliance made over the connection carry the row count of every table, which the test compares; from plugin 1.2
+  on they also carry a content digest of every table, and the test reads each table back and compares its rows
+  (in any order). Dumps made with `mysqldump` over SSH carry neither, so their test checks that the whole dump
+  restores without an error.
 - **Cluster snapshots** are restored point-in-time to their end into a throwaway directory below the source's
   **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
   must answer a query once recovery has ended. The server is stopped and the directory removed afterwards. The

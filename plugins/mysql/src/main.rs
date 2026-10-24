@@ -413,6 +413,9 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
                 if let Some(rows) = &st.rows {
                     dump::check_counts(&mut c, rows)?;
                 }
+                if let Some(d) = &st.digests {
+                    dump::check_digests(&mut c, d)?;
+                }
             }
             Ok(st)
         });
@@ -426,6 +429,12 @@ fn restore_dump(ctx: &Ctx, src: &mut Source) -> Result<String> {
     let st = summary.context("the dump stream is missing from the snapshot")?;
     if verify {
         let checked = match &st.rows {
+            Some(r) if st.digests.is_some() => {
+                format!(
+                    "{} tables' rows counted and their contents compared against the dump",
+                    r.len()
+                )
+            }
             Some(r) => format!("{} tables' rows counted against the dump", r.len()),
             // mysqldump over SSH writes no row trailer
             None => "no row counts in this dump (made with mysqldump): restored without errors".into(),

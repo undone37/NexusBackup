@@ -1,7 +1,7 @@
 {
   "id": "mysql",
   "name": "MySQL / MariaDB",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
