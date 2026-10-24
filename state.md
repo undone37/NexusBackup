@@ -769,7 +769,12 @@ Goal (maintainer): every running task explains itself, states visible everywhere
   feature `copy`) instead of a fresh vTPM; TPM VMs are no longer refused for instant recovery
 - [x] Lab 12 on VM 101 (PVE host): full 459 s, incremental 29 s; restore test passed with the imported TPM state
   (`drive-tpmstate0-backup` served once, "backed-up state copied to local storage", guest agent after 146 s)
-- [ ] (#78) Instant recovery with disk move of a TPM VM: plan.md Phase 39 L18
+- [x] (#78) Instant recovery with disk move of a TPM VM: plan.md Phase 39 L18 Done 2026-10-24 (appliance 0.0.31-dev, `lab/pvehost/instant-tpm.sh`):
+  the newest snapshot of VM 101 (Windows Server 2022 with vTPM, 120 GiB; VM 101 itself only read) recovered as
+  VM 296 on vmpool, NICs link_down: the TPM state copied from the backup to vmpool when the VM was created, VM
+  running after 10.3 s, efidisk0 moved in 6 s, scsi0 (120 GiB) in 1729 s; afterwards every disk and the TPM
+  state on vmpool, Windows at its lock screen. VM 101 has no QEMU guest agent service (the check uses a screen
+  capture).
 
 ## Phase 34 — Code quality, documentation and repository workflow (added 2026-10-15)
 Scope: plan.md Phase 34 (clean code, crate docs, AGENTS.md, issue forms, versioned pre-commit hooks, CI path
