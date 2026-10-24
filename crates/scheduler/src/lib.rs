@@ -902,7 +902,6 @@ impl Scheduler {
             self.log_err(|s| s.refresh(now, all));
             if all {
                 self.last_refresh = now;
-                self.log_err(|s| s.check_capacity());
                 self.log_err(|s| s.sample_capacity(now));
                 self.log_err(|s| s.check_quotas());
                 self.log_err(|s| s.publish_ssh_keys());
@@ -922,6 +921,9 @@ impl Scheduler {
         self.log_err(|s| s.check_tenant_approvers(now));
         self.log_err(|s| s.check_disks(now));
         self.log_err(|s| s.check_os_update());
+        // every tick, not with the 15-minute refresh: a store running full during a backup is reported at once
+        // (#48 lab: the backup failed with ENOSPC, the alert would have come up to 15 minutes later)
+        self.log_err(|s| s.check_capacity());
         self.log_err(|s| s.audit_net_ops());
         self.log_err(Scheduler::check_clock);
         self.log_err(|s| s.check_disabled_tenants());
