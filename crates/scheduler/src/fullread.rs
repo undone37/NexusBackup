@@ -91,10 +91,18 @@ impl Scheduler {
                     cfg["full_read"] = json!(true);
                 }
                 d
-            } else if name == "vmware.json" {
-                // ponytail: one flag for the run, so every VM of the job is read in full when one is due (as for
-                // TrueNAS datasets); a per-VM list in the config if that costs too much
-                let d = due(g.vms.iter().map(|u| vmware::names::source_name(u)).collect())?;
+            } else if name.starts_with("vmware") {
+                // `vmware.json` (NFC, the whole run) or `vmware-<n>.json` (hot-add, one VM per file, #80): the
+                // file's VMs. ponytail: one flag per file, so on NFC every VM of the job is read in full when one is
+                // due (as for TrueNAS datasets); a per-VM list in the config if that costs too much
+                let vms: Vec<String> = cfg["vms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(vmware::names::source_name)
+                    .collect();
+                let d = due(vms)?;
                 if !d.is_empty() {
                     cfg["full_read"] = json!(true);
                 }

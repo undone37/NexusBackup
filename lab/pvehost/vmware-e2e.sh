@@ -139,7 +139,9 @@ step_backup() {
 	j=$(wait_job admin "$(jq -r .id <<<"$j")" 10800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup job $(jq -r .id <<<"$j"): $(jq -c '{state, error}' <<<"$j")"
 	jq -r ".log // \"\"" <<<"$j" | grep -E "committed|consistency|NFC|bytes|block-read|prepared|SCSI" | tail -8 >&2 || true
-	api admin GET '/snapshots?tenant=lab' | jq -r --arg s "vmw-$uuid" '[.[] | select(.source == $s)] | max_by(.time) | .time' >"$S/vmware-time"
+	# from the job log: the snapshot list may not show the new snapshot yet
+	jq -r '.log // ""' <<<"$j" | sed -n "s|^committed vmw-$uuid/\([0-9]*\).*|\1|p" | tail -1 >"$S/vmware-time"
+	[ -s "$S/vmware-time" ] || die "no committed line for vmw-$uuid in the job log"
 	log "backup ok in $(($(date +%s) - t0)) s: vmw-$uuid/$(cat "$S/vmware-time")"
 }
 
