@@ -10,6 +10,8 @@
 #   vmware-e2e.sh inventory  inventory job, the VMs with their UUIDs
 #   vmware-e2e.sh group      group "vmware" ("vmware-hot") with the VM named $VM (first match), policy "daily"
 #   vmware-e2e.sh backup     backup of the group, the new vmw-<uuid> snapshot
+#   vmware-e2e.sh files      the newest snapshot's files (#83): listing of / (the mounts) and /<mount>/etc in the
+#                            restore micro-VM, then the file index of the snapshot
 #   vmware-e2e.sh restore    the newest snapshot as VM $TARGET on $NODE ($STORAGE, NICs link_down), started
 #   vmware-e2e.sh check      the VM runs; a screen capture after $BOOT seconds ($OUT/vmware-e2e.png)
 #   vmware-e2e.sh cleanup    stop and destroy VM $TARGET (ours: ID from 200)
@@ -143,6 +145,34 @@ step_backup() {
 	jq -r '.log // ""' <<<"$j" | sed -n "s|^committed vmw-$uuid/\([0-9]*\).*|\1|p" | tail -1 >"$S/vmware-time"
 	[ -s "$S/vmware-time" ] || die "no committed line for vmw-$uuid in the job log"
 	log "backup ok in $(($(date +%s) - t0)) s: vmw-$uuid/$(cat "$S/vmware-time")"
+}
+
+step_files() {
+	local uuid time p j mnt=
+	uuid=$(cat "$S/vmware-uuid")
+	time=$(cat "$S/vmware-time")
+	# the root lists the guest's mounts (vda1, ...); /etc of the first one
+	for p in / /etc; do
+		p=${mnt:+/$mnt}$p
+		j=$(api admin POST /jobs "$(jq -nc --arg s "vmw-$uuid" --argjson t "$time" --arg p "$p" \
+			'{kind:"files_list", tenant:"lab", params:{source:$s, time:$t, path:$p}}')")
+		expect 202 "files_list $p"
+		j=$(wait_job admin "$(jq -r .id <<<"$j")" 900)
+		[ "$(jq -r .state <<<"$j")" = ok ] || die "files_list $p: $(jq -r '.log // ""' <<<"$j" | tail -n 15)"
+		log "files_list $p: $(jq -r '[.result.entries[].name] | length' <<<"$j") entries: $(jq -r '[.result.entries[].name][:12] | join(" ")' <<<"$j")"
+		[ -n "$mnt" ] || mnt=$(jq -r '.result.entries[0].name // empty' <<<"$j")
+	done
+	# the file index (sandboxed parser, no micro-VM): queued after a backup of a group with index-files on
+	local g id
+	g=$(api admin GET /groups | jq -r --arg g "$GROUP" '.[] | select(.name == $g) | .id')
+	api admin PUT "/groups/$g/index-files" '{"enabled":true}' >/dev/null
+	expect 200 "index-files on"
+	step_backup
+	id=$(api admin GET '/jobs?limit=20' | jq -r '[.[] | select(.kind == "file_index")][0].id // empty')
+	[ -n "$id" ] || die "no file_index job after the backup"
+	j=$(wait_job admin "$id" 1800)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "file_index $id: $(jq -r '.log // ""' <<<"$j" | tail -n 15)"
+	log "file_index: $(jq -c '.result // {}' <<<"$j" | cut -c1-200)"
 }
 
 step_restore() {
