@@ -2710,3 +2710,27 @@ fn a_rolled_back_update_raises_one_alert() {
     s.check_os_update().unwrap();
     assert_eq!(alerts(&s).len(), 1);
 }
+
+/// #48 lab: the capacity alert follows the store's file system every tick, not only with the
+/// 15-minute refresh (a store running full during a backup)
+#[test]
+fn capacity_is_checked_every_tick() {
+    let e = env(1);
+    let mut s = sched(&e);
+    std::fs::create_dir_all(&s.cfg.store_base).unwrap();
+    let now = catalog::now();
+    s.tick(now).unwrap();
+    s.wait_idle(Duration::from_secs(20)).unwrap();
+    // the refresh just ran: the next tick is not a refresh tick; any use is above a 0 % threshold
+    s.cfg.capacity_threshold = 0.0;
+    s.tick(now + 30).unwrap();
+    let n: i64 =
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE key = 'capacity' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(n, 1);
+}
