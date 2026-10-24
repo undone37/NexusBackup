@@ -62,6 +62,8 @@ json.dump(st, open(os.path.join(d, "state.json"), "w"))
 '''
 
 LOGGER = '#!/bin/sh\necho "$(basename "$0") $*" >> "$FAKE_DIR/calls"\n'
+# $FAKE_DIR/red-boot: greenboot has not declared this boot healthy (is-active greenboot-success.target fails)
+LOGGER += '[ "$2" = "--quiet" ] && [ "$3" = greenboot-success.target ] && [ -e "$FAKE_DIR/red-boot" ] && exit 3\nexit 0\n'
 
 # Fake skopeo inspect: the version label of what the registry serves (next.json, else the booted image);
 # not logged in calls. $FAKE_DIR/skopeo-fail: the registry cannot be inspected.
@@ -401,6 +403,22 @@ class Agent(unittest.TestCase):
         (self.d / "ctl/request").write_text("apply")
         self.tick(utc(2026, 10, 11, 4, 15))
         self.assertIn("bootc upgrade --from-downloaded --apply", self.calls())
+
+    def test_applying_is_kept_until_greenboot_judged_the_boot(self):
+        # the first tick after the reboot comes before greenboot decided: a red boot that then rolls back
+        # must still be reported (the 10-minute boot delay of the timer used to cover this by chance)
+        self.registry_serves("sha256:bad", "1.1.0")
+        self.tick()
+        self.tick(utc(2026, 10, 11, 3, 30))
+        self.reboot_into("sha256:bad")
+        (self.d / "red-boot").touch()
+        self.tick(utc(2026, 10, 11, 3, 35))
+        self.assertEqual(self.status()["applying"], "sha256:bad")
+        self.reboot_into("sha256:aaa")  # greenboot gave up and booted the old image
+        self.tick(utc(2026, 10, 11, 4, 5))
+        s = self.status()
+        self.assertEqual(s["last_result"]["result"], "rolled back from sha256:bad")
+        self.assertIn("sha256:bad", s["failed_digests"])
 
     def test_successful_update_clears_applying(self):
         self.registry_serves("sha256:bbb", "1.1.0")

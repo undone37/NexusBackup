@@ -217,6 +217,11 @@ def bootc_status():
     return json.loads(run("bootc", "status", "--json").stdout)
 
 
+def boot_healthy():
+    """greenboot declared this boot healthy (greenboot-success.target reached; a red boot never does)."""
+    return run("systemctl", "is-active", "--quiet", "greenboot-success.target", check=False).returncode == 0
+
+
 def entry(e):
     if not e:
         return None
@@ -736,7 +741,11 @@ def tick(c, now=None):
                 log(f"update {st['applying']} did not stick (booted {booted}); not applying it again")
                 st["failed_digests"] = (st["failed_digests"] + [st["applying"]])[-10:]
                 result = f"rolled back from {st['applying']}"
-            st["applying"] = None
+                st["applying"] = None
+            elif boot_healthy():
+                st["applying"] = None
+            # else: running it, but greenboot has not judged this boot yet (a red boot reboots and may roll
+            # back): keep watching, so the first tick can come soon after boot without missing a rollback
         if req == "rollback":
             result = rollback(c)
         elif req == "import":

@@ -965,6 +965,11 @@ their IDs. In progress:
   (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
   min), refused bundles shown as "blocked by checks"
 - [ ] (#29) an online update after an offline one (parts above 2 GiB: not needed, #27)
+- [x] Update status right after a reboot (2026-10-24, found installing 0.0.39-dev on VM 201): the appliance booted the
+  new image, but Settings -> Updates showed the old version for over 10 minutes (the first nexus-update tick came 10
+  minutes after boot) and `offline-update.sh apply` gave up. The delay also hid a gap: a tick during a red boot
+  cleared `applying` and would miss greenboot's rollback. The tick now stops watching an update only once
+  `greenboot-success.target` is reached, and runs 2 minutes after boot.
 - [x] (#28) `nexusctl update upload` and `nexus-setup import-update` (2026-10-24): the CLI signs in as an
   administrator (password + TOTP, stdin without a terminal; API tokens stay below admin), uploads, waits for the
   verification; the console import writes bundle and request as the upload does, audited by `console`. Lab: the

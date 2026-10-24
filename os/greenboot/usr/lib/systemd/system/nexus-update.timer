@@ -4,7 +4,9 @@ Description=NexusBackup OS update agent tick (checks daily, applies in the maint
 [Timer]
 # Every 15 min: cheap unless a check is due (NEXUS_UPDATE_CHECK_HOURS) or the
 # maintenance window is open with an update staged.
-OnBootSec=10min
+# soon after boot: the update status (Settings -> Updates) shows the image that booted; a rollback
+# is still noticed (the tick waits for greenboot's verdict before it stops watching an update)
+OnBootSec=2min
 OnCalendar=*:0/15
 RandomizedDelaySec=60
 
