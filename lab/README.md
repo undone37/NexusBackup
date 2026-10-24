@@ -231,6 +231,13 @@ APPL=1 lab/nas/e2e.sh; ROOT=$LAB/appliance/root PORT=28443 node --experimental-w
 lab/nas/devcp.sh stop; lab/nas/vm.sh stop
 ```
 
+## Second appliance on the PVE lab host (VM 202)
+
+`LAB=~/nexus-lab/pvehost2 VMID=202 ADDR=10.2.34.212/24 PORT=28445 MEM=8192 CPUS=4 lab/pvehost/deploy.sh upload create
+tunnel setup` (disk: `LAB=~/nexus-lab/pvehost2 SIZE=300G lab/appliance/build-disk.sh <lab image>`), next to VM 201
+(10.2.34.211, port 28444). Used by `lab/pvehost/fleet.sh` (nexusctl fleet over both) and for the labs that need two
+appliances (replication secondary, vault mode, configuration restore).
+
 ## Appliance replication lab (`lab/appliance/replication.sh`, docs/replication.md)
 
 Two appliance VMs from the same bootc image, both SELinux enforcing, on separate QEMU user networks:

@@ -782,7 +782,12 @@ Phase 30's), threat model T70–T75.
   `/auth/me` `token`, parallel pull of dashboard / open alerts / failed jobs, text, JSON, static HTML, `--check`);
   tests: unit (config, token file mode, rendering and escaping), `crates/nexusctl/tests/fleet.rs` (two real web-api
   routers, operator token refused, unreachable appliance); manual 09, control-plane, threat model T72
-- [ ] (#75) nexusctl fleet lab: plan.md Phase 39 L15
+- [x] (#75) nexusctl fleet lab: plan.md Phase 39 L15. Done 2026-10-24 (`lab/pvehost/fleet.sh`): a second appliance
+  VM 202 (10.2.34.212, `LAB=~/nexus-lab/pvehost2 VMID=202 ADDR=10.2.34.212/24 PORT=28445 MEM=8192 CPUS=4
+  deploy.sh upload create tunnel setup`, disk from the 0.0.35-dev lab image; its own CA) next to VM 201; read
+  tokens on both: `nexusctl fleet --check` lists lab1 (ATTENTION: the lab's open alerts and failed jobs), lab2 ok
+  and an address without an appliance as UNREACHABLE (exit 2), `--html` writes the report; operator-scoped tokens
+  are refused ("the fleet overview needs a read token").
 - [x] synthetic (clean-file) restore: `synthetic_restore` job (web-api params, gates like restore_files / files_get,
   download + report tokens, `GET /jobs/{id}/synthetic.csv`), scheduler decision (`synthetic.rs`), plan + CSV,
   `chunkstore::synthetic::compose`, `nexus-agentctl synthetic` (tar/zip or `restore_tree` onto an agent); tests:
