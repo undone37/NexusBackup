@@ -344,9 +344,13 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
   against VM 201 (the console API steps without the QEMU lab's m5-api.sh). The firewall step as
   `lab/pvehost/firewall.sh` passed too: web restricted to the client (10.2.34.200, the tunnel) stays reachable, a
   list without it refused (409) and with the typed override locks out, `nexus-setup reset-firewall` on the console
-  brings access back (alert firewall_reset, audit actor console, 13 dropped packets on 8443 listed). Open: disks.sh
-  (needs an appliance with extra disks and an empty store), forwarding.sh, offsite-fetch, config-restore.sh (second
-  appliance), PG 1.2.0 bundle, vault mode, ui-smoke.
+  brings access back (alert firewall_reset, audit actor console, 13 dropped packets on 8443 listed).
+  `lab/e2e/ui-smoke.mjs` against VM 201: first run 226 page views, 6 problems: the security officer got "Page not
+  found" for Agents > Updates (route limited to admins since 19b; fixed in d0c0e6c1, #97), `?offsite=lab` started
+  a listing for a tenant without an offsite target (871da2bc), and the test closed the step-up dialog of the lab's
+  risk-marked sessions (ui-smoke now steps up after sign-in). On 0.0.35-dev: 226 page views, 0 problems.
+  Open: disks.sh (needs an appliance with extra disks and an empty store), forwarding.sh, offsite-fetch, config-restore.sh (second
+  appliance), PG 1.2.0 bundle, vault mode.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check
