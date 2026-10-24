@@ -290,6 +290,18 @@ fn validate_guests_dump_and_restore() {
     // restore test (Phase 44): a throwaway database, row counts against the dump, dropped again
     let v = h.restore(&cfg, &r.source, r.time, "verify", json!({})).unwrap();
     assert!(v.summary.starts_with("restore test passed:"), "{}", v.summary);
+    // the group's SQL check (#45): one read-only query, its first value true or not zero
+    let sql = |q: &str| h.restore(&cfg, &r.source, r.time, "verify", json!({"sql": q}));
+    let v = sql("SELECT count(*) FROM shop.orders WHERE id > 0;").unwrap();
+    assert!(v.summary.contains("the SQL check returned "), "{}", v.summary);
+    for (q, want) in [
+        ("SELECT count(*) > 1000000 FROM shop.orders", "returned f, not true"),
+        ("SELECT 1; DROP TABLE shop.orders", "one query"),
+        ("CREATE TABLE shop.x (a int)", "read-only transaction"),
+    ] {
+        let e = sql(q).unwrap_err();
+        assert!(format!("{e:#}").contains(want), "{q}: {e:#}");
+    }
     assert_eq!(
         b.psql(
             false,
@@ -479,6 +491,11 @@ fn cluster_backup_and_point_in_time_restore() {
         "",
         "removed again"
     );
+    // no user SQL on the superuser test server of a cluster snapshot (#45)
+    let e = h
+        .restore(&vcfg, &inc2.source, inc2.time, "verify", json!({"sql": "SELECT true"}))
+        .unwrap_err();
+    assert!(format!("{e:#}").contains("cluster snapshot"), "{e:#}");
     // without a test directory the cluster test explains what is missing
     let e = h
         .restore(&cfg, &inc2.source, inc2.time, "verify", json!({}))

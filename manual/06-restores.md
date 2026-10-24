@@ -441,13 +441,21 @@ database (and, for PostgreSQL, of the cluster):
   restores without an error.
 - **Cluster snapshots** are restored point-in-time into a throwaway directory below the source's
   **restore test directory** on the point-in-time restore host, started on the test port (default 5499), and
-  must end recovery (a target the backed-up WAL does not reach fails the test) and answer a query. A scheduled test recovers to a random time inside the snapshot's
-  recoverable range (plugin 1.5.0; the job's parameters show it), so every point of the range gets exercised over
-  time, not only the end. The server is stopped and the directory removed afterwards. The
+  must end recovery (a target the backed-up WAL does not reach fails the test) and answer a query. A scheduled
+  test recovers to a random time inside the snapshot's recoverable range (plugin 1.5.0; the job's parameters show
+  it), so every point of the range gets exercised over time, not only the end. The server is stopped and the
+  directory removed afterwards. The
   restore host needs PostgreSQL of the same major version (`pg_ctl`, `psql`), ideally on the same operating system
   release as the source: a different C library changes the collation, PostgreSQL then warns about a "collation
   version mismatch" and text indexes may need a rebuild after a real restore (the test passes, the warning is in
   the restored server's log).
+
+A schedule of a database group can add an **SQL check** (plugin postgresql 1.5.0, mysql 1.3.0): one query that runs
+on the restored database of a dump test after the row and content checks, in a read-only transaction. The test
+passes when the first value of its first row is true or a number other than zero, for example
+`SELECT count(*) > 0 FROM orders WHERE created > now() - interval '2 days'` (yesterday's orders are in the backup).
+Only one statement is allowed (a `;` only at the end, so none inside string literals either). Cluster snapshots
+take no SQL check: their test server runs as the database superuser on the restore host.
 
 The result row shows what was restored and checked; a failure raises the same **restore_test** warning as a VM
 test and names the reason (for example a table with fewer rows than the dump). A single snapshot can be tested by

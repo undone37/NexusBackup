@@ -392,6 +392,7 @@ Reviewed with the implementation (2026-10-10):
 | L-F2 | low | `tenant: null` did not clear a user's tenant scope | a18c526 |
 | L-F3 | low | keyd: no write timeout on the single-threaded socket loop | 8bd8755 |
 | L-F4 | low | Agent: an unreadable package marker (ACL, scanner lock) counted as "no package", so an MSI/.deb/.rpm install could take a binary swap behind its package manager (lab #67) | 868d18a8 |
+| L-F5 | low | Restore tests: a tenant writer's SQL check (#45) must not become a way to write to the database server or to run commands on the restore host. It is one statement (a `;` only at the end; the MySQL client does not enable multiple statements), runs in a read-only transaction over the plugin's own connection on the throwaway database, and is refused on cluster snapshots, whose test server runs as the restore host's PostgreSQL superuser (`COPY ... TO PROGRAM`) | #45 |
 
 ### Open — recommendations
 

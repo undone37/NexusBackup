@@ -275,10 +275,17 @@ impl Scheduler {
                         params![g.tenant, source, time],
                         |r| r.get(0),
                     )?;
-                    let p = match meta.as_deref().and_then(pitr_target) {
+                    let mut p = match meta.as_deref().and_then(pitr_target) {
                         Some(ts) => json!({"target_time": crate::forward::rfc3339(ts)}),
                         None => json!({}),
                     };
+                    // #45: the group's own SQL check on the restored database
+                    if let Some(sql) = serde_json::from_str::<Value>(&checks)
+                        .ok()
+                        .and_then(|c| c["sql"].as_str().map(str::to_owned))
+                    {
+                        p["sql"] = sql.into();
+                    }
                     self.insert_job(
                         "plugin_restore",
                         &g.tenant,

@@ -48,11 +48,30 @@ pub struct Checks {
     expect_exit: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     command_timeout: Option<u64>,
+    /// database groups (#45): one read-only query on the restored database; the test passes when its
+    /// first value is true or not zero
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sql: Option<String>,
+}
+
+/// One statement (a `;` only at the end), at most 4000 characters: the plugin runs it in a
+/// read-only transaction and refuses the same.
+fn check_sql(sql: &str) -> ApiResult<()> {
+    let s = sql.trim().trim_end_matches(';');
+    if s.trim().is_empty() || sql.len() > 4000 || s.contains(';') || sql.contains('\0') {
+        return Err(ApiError::bad(
+            "checks.sql: one query of at most 4000 characters (a `;` only at the end)",
+        ));
+    }
+    Ok(())
 }
 
 impl Checks {
     /// Bounds; containers have no guest agent: only the boot timeout.
     fn check(&self, ct: bool) -> ApiResult<()> {
+        if self.sql.is_some() {
+            return Err(ApiError::bad("checks.sql: for groups of databases only"));
+        }
         if self.boot_timeout.is_some_and(|t| !(30..=3600).contains(&t)) {
             return Err(ApiError::bad("checks.boot_timeout: 30..=3600 seconds"));
         }
@@ -277,7 +296,14 @@ pub async fn put_schedule(
         r.node.clear();
         r.storage.clear();
         r.bridge = None;
-        r.checks = Checks::default();
+        let sql = r.checks.sql.take().filter(|s| !s.trim().is_empty());
+        if let Some(s) = &sql {
+            check_sql(s)?;
+        }
+        r.checks = Checks {
+            sql,
+            ..Checks::default()
+        };
     } else if kind != "pve" {
         return Err(ApiError::bad(
             "restore tests need a group of a Proxmox VE source or of a plugin with restore tests",

@@ -1256,7 +1256,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
 - [x] Table contents in PostgreSQL dump restore tests (plugin 1.4.2): an order-independent SHA-256 sum of the COPY
   rows, read back with the dump's columns under canonical output settings. Lab: 435 rows (timestamptz, inet) of the
   Patroni cluster's `labdb` compared, passed.
-- [ ] (#45, #47) A custom SQL check per group; MySQL contents (counts only).
+- [x] (#45) A custom SQL check per database group (2026-10-24): one read-only query on the restored dump database,
+  first value true or not zero; postgresql 1.5.0, mysql 1.3.0; tests in the plugin testbox suites (CI `testbox`).
 - [x] (#46) A random PITR target in restore tests (2026-10-24, VM 201, plugin build of the PR packed as 1.5.x for the
   lab, Patroni cluster on PostgreSQL 18): the scheduler picks a time after the base backup's end up to the end of
   the snapshot's recoverable range. Lab, `verify` of a cluster snapshot whose range spans 35 h: targets 22 h and

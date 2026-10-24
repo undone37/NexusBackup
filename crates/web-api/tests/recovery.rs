@@ -386,6 +386,43 @@ async fn restore_test_schedules() {
             )
             .unwrap();
     assert_eq!((node.as_str(), checks.as_str()), ("", "{}"));
+
+    // #45: an SQL check on database groups only, one statement
+    let r = t
+        .put(
+            url,
+            &alice,
+            json!({"every_days": 7, "checks": {"sql": "SELECT count(*) > 0 FROM t;"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let checks: String = t.one("SELECT checks FROM restore_test_schedules WHERE group_id = 4");
+    assert_eq!(checks, r#"{"sql":"SELECT count(*) > 0 FROM t;"}"#);
+    for sql in ["SELECT 1; DROP TABLE t", " ", &"x".repeat(4001)] {
+        let r = t
+            .put(url, &alice, json!({"every_days": 7, "checks": {"sql": sql}}))
+            .await;
+        let blank = sql.trim().is_empty();
+        assert_eq!(
+            r.status,
+            if blank { StatusCode::OK } else { StatusCode::BAD_REQUEST },
+            "{sql:.20}: {:?}",
+            r.body
+        );
+    }
+    let r = t
+        .put(
+            "/api/v1/restore-tests/schedules/1",
+            &alice,
+            json!({"every_days": 7, "node": "pve1", "storage": "local-lvm", "checks": {"sql": "SELECT 1"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(
+        r.body["error"].as_str().unwrap().contains("databases only"),
+        "{:?}",
+        r.body
+    );
 }
 
 fn plan(name: &str) -> Value {

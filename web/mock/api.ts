@@ -12424,8 +12424,13 @@ on('PUT', '/restore-tests/schedules/:id', async (c, [id]) => {
     );
   const b = c.body;
   if (!(b.every_days >= 1 && b.every_days <= 365)) throw new HttpError(400, 'every_days: 1..=365');
-  if (plugin) Object.assign(b, { node: '', storage: '', bridge: null, checks: {} });
-  else {
+  if (plugin) {
+    const sql = String(b.checks?.sql ?? '').trim();
+    if (sql.length > 4000 || sql.replace(/;\s*$/, '').includes(';'))
+      throw new HttpError(400, 'checks.sql: one query of at most 4000 characters (a `;` only at the end)');
+    Object.assign(b, { node: '', storage: '', bridge: null, checks: sql ? { sql } : {} });
+  } else {
+    if (b.checks?.sql) throw new HttpError(400, 'checks.sql: for groups of databases only');
     rtName(b.node, 'node');
     rtName(b.storage, 'storage');
     if (b.bridge) rtName(b.bridge, 'bridge');

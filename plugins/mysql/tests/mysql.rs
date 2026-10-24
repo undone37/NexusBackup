@@ -336,6 +336,18 @@ fn validate_guests_dumps_and_restores() {
             "{flavor}: {}",
             v.summary
         );
+        // the group's SQL check (#45): one read-only query, its first value not zero
+        let sql = |q: &str| h.restore(&native, &r.source, r.time, "verify", json!({"sql": q}));
+        let v = sql("SELECT COUNT(*) FROM orders;").unwrap();
+        assert!(v.summary.contains("the SQL check returned "), "{flavor}: {}", v.summary);
+        for (q, want) in [
+            ("SELECT COUNT(*) > 1000000 FROM orders", "returned 0, not true"),
+            ("SELECT 1; DROP TABLE orders", "one query"),
+            ("UPDATE logs SET msg = 'x'", "READ ONLY"),
+        ] {
+            let e = sql(q).unwrap_err();
+            assert!(format!("{e:#}").contains(want), "{flavor}: {q}: {e:#}");
+        }
         assert_eq!(
             b.sql(
                 "information_schema",
