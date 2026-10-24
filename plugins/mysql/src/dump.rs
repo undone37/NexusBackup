@@ -16,7 +16,7 @@
 //! the script into statements (quotes, comments, `DELIMITER`) and runs them one by
 //! one over the connection.
 
-use crate::my::{ident, lit, lit_str, Column, Conn, BINARY_CHARSET};
+use crate::my::{ident, lit, lit_str, Column, Conn, Row, BINARY_CHARSET};
 use anyhow::{bail, Context, Result};
 use std::io::{BufRead, Write};
 
@@ -34,12 +34,55 @@ pub struct Stats {
     pub non_transactional: Vec<String>,
     /// rows per table as dumped: the `-- nexus:rows` trailer, for restore tests
     pub per_table: Vec<(String, u64)>,
+    /// content digest per table as dumped: the `-- nexus:digest` trailer
+    pub digests: Vec<(String, u128)>,
 }
 
 const BATCH: usize = 1 << 20;
 
 /// The trailer line with the rows per table (dumps made over the connection only).
 pub const ROWS_PREFIX: &str = "-- nexus:rows ";
+/// The per-table content digests ([`row_digest`] sums as hex): the `-- nexus:digest` trailer (#47; dumps before it
+/// have row counts only).
+pub const DIGEST_PREFIX: &str = "-- nexus:digest ";
+
+/// One row as the server sends it in the text protocol (a session at `time_zone = '+00:00'`, utf8mb4) as a number;
+/// a table's digest is the wrapping sum, so the order of the rows does not matter. Values are length-prefixed and
+/// NULL has a marker of its own, so neighbouring values cannot shift into each other.
+pub fn row_digest(r: &Row) -> u128 {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for v in r {
+        match v {
+            Some(b) => {
+                h.update([1u8]);
+                h.update((b.len() as u64).to_be_bytes());
+                h.update(b);
+            }
+            None => h.update([0u8]),
+        }
+    }
+    u128::from_be_bytes(h.finalize()[..16].try_into().expect("16 bytes"))
+}
+
+/// The columns a table's rows are dumped (and compared) with: invisible ones included, generated ones left out.
+fn dumped_columns(c: &mut Conn, name: &str) -> Result<Vec<String>> {
+    Ok(strs(
+        c,
+        &format!(
+            "SELECT COLUMN_NAME, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() \
+             AND TABLE_NAME = {} ORDER BY ORDINAL_POSITION",
+            lit_str(name)
+        ),
+    )?
+    .into_iter()
+    .filter(|r| {
+        let e = r[1].to_ascii_uppercase();
+        !(e.contains("VIRTUAL GENERATED") || e.contains("STORED GENERATED") || e.contains("PERSISTENT GENERATED"))
+    })
+    .map(|r| ident(&r[0]))
+    .collect())
+}
 
 /// `-- nexus: {"charset":…,"collation":…}` for the database `db`.
 pub fn header(c: &mut Conn, db: &str) -> Result<String> {
@@ -232,21 +275,7 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
             st.non_transactional.push(format!("{name} ({engine})"));
         }
         // explicit columns: invisible ones included, generated ones left out
-        let cols: Vec<String> = strs(
-            c,
-            &format!(
-                "SELECT COLUMN_NAME, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() \
-                 AND TABLE_NAME = {} ORDER BY ORDINAL_POSITION",
-                lit_str(name)
-            ),
-        )?
-        .into_iter()
-        .filter(|r| {
-            let e = r[1].to_ascii_uppercase();
-            !(e.contains("VIRTUAL GENERATED") || e.contains("STORED GENERATED") || e.contains("PERSISTENT GENERATED"))
-        })
-        .map(|r| ident(&r[0]))
-        .collect();
+        let cols = dumped_columns(c, name)?;
         st.tables += 1;
         if cols.is_empty() {
             continue;
@@ -254,8 +283,9 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
         let list = cols.join(", ");
         let head = format!("INSERT INTO {} ({list}) VALUES ", ident(name));
         let mut buf: Vec<u8> = Vec::new();
-        let mut rows = 0u64;
+        let (mut rows, mut digest) = (0u64, 0u128);
         c.query_each(&format!("SELECT {list} FROM {}", ident(name)), |cols, r| {
+            digest = digest.wrapping_add(row_digest(&r));
             buf.extend_from_slice(if buf.is_empty() { head.as_bytes() } else { b",\n" });
             buf.push(b'(');
             for (i, v) in r.iter().enumerate() {
@@ -279,6 +309,7 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
         }
         st.rows += rows;
         st.per_table.push((name.clone(), rows));
+        st.digests.push((name.clone(), digest));
     }
     for v in &views {
         // columns: View, Create View, character_set_client, collation_connection
@@ -377,10 +408,16 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
     // a comment: `mysql db < x.sql` ignores it; the restore test compares the restored rows with it
     let rows: serde_json::Map<String, serde_json::Value> =
         st.per_table.iter().map(|(t, n)| (t.clone(), (*n).into())).collect();
+    let digests: serde_json::Map<String, serde_json::Value> = st
+        .digests
+        .iter()
+        .map(|(t, d)| (t.clone(), format!("{d:032x}").into()))
+        .collect();
     writeln!(
         w,
-        "{ROWS_PREFIX}{}\n-- NexusBackup dump complete",
-        serde_json::Value::Object(rows)
+        "{ROWS_PREFIX}{}\n{DIGEST_PREFIX}{}\n-- NexusBackup dump complete",
+        serde_json::Value::Object(rows),
+        serde_json::Value::Object(digests)
     )?;
     c.exec("COMMIT")?;
     Ok(st)
@@ -392,6 +429,8 @@ pub fn dump(c: &mut Conn, db: &str, w: &mut impl Write) -> Result<Stats> {
 pub struct Splitter<R> {
     /// the `-- nexus:rows` trailer, when the script had one
     pub rows: Option<String>,
+    /// the `-- nexus:digest` trailer, when the script had one
+    pub digests: Option<String>,
     r: R,
     delim: Vec<u8>,
     line: Vec<u8>,
@@ -402,6 +441,7 @@ impl<R: BufRead> Splitter<R> {
     pub fn new(r: R) -> Self {
         Splitter {
             rows: None,
+            digests: None,
             r,
             delim: b";".to_vec(),
             line: Vec::new(),
@@ -490,6 +530,8 @@ impl<R: BufRead> Splitter<R> {
                     if line_comment {
                         if let Some(j) = rest.strip_prefix(ROWS_PREFIX.as_bytes()) {
                             self.rows = Some(String::from_utf8_lossy(j).trim_end().to_owned());
+                        } else if let Some(j) = rest.strip_prefix(DIGEST_PREFIX.as_bytes()) {
+                            self.digests = Some(String::from_utf8_lossy(j).trim_end().to_owned());
                         }
                         self.at = self.line.len();
                         stmt.push(b'\n');
@@ -525,6 +567,8 @@ pub struct Restored {
     pub statements: u64,
     /// rows per table from the dump's trailer (None: a dump without one, e.g. mysqldump over SSH)
     pub rows: Option<serde_json::Map<String, serde_json::Value>>,
+    /// content digest per table from the dump's trailer (None: a dump without one: older plugin, mysqldump)
+    pub digests: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Restore test: every table of the trailer holds as many rows as the dump had for it.
@@ -542,6 +586,30 @@ pub fn check_counts(c: &mut Conn, rows: &serde_json::Map<String, serde_json::Val
     }
     if !bad.is_empty() {
         bail!("restore test: row counts differ: {}", bad.join("; "));
+    }
+    Ok(())
+}
+
+/// Restore test: every table of the digest trailer holds the same rows as the dump had for it, by content
+/// ([`row_digest`] sum of the rows read back with the dumped column list; the order does not matter).
+pub fn check_digests(c: &mut Conn, digests: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    c.exec("SET SESSION time_zone = '+00:00'")?;
+    let mut bad = Vec::new();
+    for (t, want) in digests {
+        let cols = dumped_columns(c, t)?;
+        let mut digest = 0u128;
+        if !cols.is_empty() {
+            c.query_each(&format!("SELECT {} FROM {}", cols.join(", "), ident(t)), |_, r| {
+                digest = digest.wrapping_add(row_digest(&r));
+                Ok(())
+            })?;
+        }
+        if want.as_str() != Some(format!("{digest:032x}").as_str()) {
+            bad.push(format!("{t}: the content differs from the dump"));
+        }
+    }
+    if !bad.is_empty() {
+        bail!("restore test: tables differ: {}", bad.join("; "));
     }
     Ok(())
 }
@@ -569,6 +637,11 @@ pub fn restore(c: &mut Conn, r: impl BufRead) -> Result<Restored> {
     st.rows = match sp.rows.as_deref().map(serde_json::from_str::<serde_json::Value>) {
         Some(Ok(serde_json::Value::Object(m))) => Some(m),
         Some(_) => bail!("the dump's row trailer is not a JSON object"),
+        None => None,
+    };
+    st.digests = match sp.digests.as_deref().map(serde_json::from_str::<serde_json::Value>) {
+        Some(Ok(serde_json::Value::Object(m))) => Some(m),
+        Some(_) => bail!("the dump's digest trailer is not a JSON object"),
         None => None,
     };
     Ok(st)
@@ -642,6 +715,27 @@ mod tests {
         }
         assert_eq!(n, 2, "the trailer is a comment, not a statement");
         assert_eq!(sp.rows.as_deref(), Some("{\"t\":2,\"u v\":0}"));
+        assert_eq!(sp.digests, None, "a dump before #47: row counts only");
+        let mut sp = Splitter::new(
+            &b"INSERT INTO t VALUES (1);\n-- nexus:rows {\"t\":1}\n-- nexus:digest {\"t\":\"00ff\"}\n-- NexusBackup dump complete\n"[..],
+        );
+        while sp.next_statement().unwrap().is_some() {}
+        assert_eq!(sp.digests.as_deref(), Some("{\"t\":\"00ff\"}"));
+    }
+
+    #[test]
+    fn row_digest_ignores_order_but_not_content() {
+        let row = |v: &[Option<&str>]| -> Row { v.iter().map(|x| x.map(|s| s.as_bytes().to_vec())).collect() };
+        let sum = |rows: &[Row]| rows.iter().fold(0u128, |a, r| a.wrapping_add(row_digest(r)));
+        let (a, b) = (row(&[Some("1"), Some("x")]), row(&[Some("2"), None]));
+        assert_eq!(sum(&[a.clone(), b.clone()]), sum(&[b.clone(), a.clone()]));
+        // NULL, an empty string and values shifted between columns all differ
+        assert_ne!(row_digest(&row(&[None])), row_digest(&row(&[Some("")])));
+        assert_ne!(
+            row_digest(&row(&[Some("ab"), Some("c")])),
+            row_digest(&row(&[Some("a"), Some("bc")]))
+        );
+        assert_ne!(sum(&[a.clone(), b]), sum(&[a.clone(), a]));
     }
 
     #[test]
