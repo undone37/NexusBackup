@@ -336,7 +336,14 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
 - [x] 18a1 M365 warnings (contract v1.7) + coverage, 18a2 M365 apps/chats/cross-tenant (v1.6), 18b PostgreSQL 1.2.0 (v23, contract v1.8)
 ## Urgent hardening (2026-10-12)
 - [x] GRUB password (ADR-013), fleecing guard, compliance clock fix + clock_skew, Splunk HEC + alert categories
-- [ ] (#62) VM labs for 16/17/18/hardening: plan.md Phase 39 L2
+- [ ] (#62) VM labs for 16/17/18/hardening: plan.md Phase 39 L2. 2026-10-24 on the appliance VM 201 (0.0.34-dev):
+  `lab/appliance/grub-lock.sh` passed (state after setup, no AVC; over the serial line GRUB asks user and password
+  for `e` and `c`, refuses a wrong one, the password derived from the recovery key opens the editor, the default
+  entry boots without one); `lab/appliance/console-gate.sh` passed (real gate on tty2 in nexus_consolegate_t, root
+  shells with the API's one-time code and with the recovery key, console_root_shell alerts, no AVC). Both now run
+  against VM 201 (the console API steps without the QEMU lab's m5-api.sh). Open: disks.sh (needs an appliance with
+  extra disks and an empty store), the firewall step, forwarding.sh, offsite-fetch, config-restore.sh (second
+  appliance), PG 1.2.0 bundle, vault mode, ui-smoke.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
 - [x] e2e all (incl. phase13, legal-hold, phase14d2, access, diag), firewall lockout + console reset, console gate, console-check

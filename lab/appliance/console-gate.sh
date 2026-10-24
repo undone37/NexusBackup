@@ -16,6 +16,43 @@ export PORT=${PORT:-28443}
 export ROOT=${ROOT:-$LAB/appliance/root}
 export CONSOLE=${CONSOLE:-$LAB/appliance/console.sock}
 con() { "$here/con.py" "$@"; }
+# the API steps of m5-api.sh (console, console-check): through e2e.sh for the local QEMU lab, directly for the
+# appliance VM on the PVE lab host (ROOT with secrets.env, the tunnel of lab/pvehost/deploy.sh)
+api_step() {
+	if [ ! -f "$ROOT/secrets.env" ]; then
+		"$here/e2e.sh" api "$1"
+		return
+	fi
+	(
+		S=$ROOT/run/api
+		mkdir -p "$S"
+		# shellcheck disable=SC1091
+		. "$ROOT/secrets.env"
+		# shellcheck source=lab/e2e/api-lib.sh
+		. "$here/../e2e/api-lib.sh"
+		login admin "$ADMIN_PW" "$ADMIN_TOTP"
+		if [ "$1" = console ]; then
+			r=$(api admin POST /console/unlock '{"hours":1,"reason":"lab: console gate e2e"}')
+			id=$(jq -r .quorum_id <<<"$r")
+			if [ "$(status)" = 202 ]; then
+				login so "$SO_PW" "$SO_TOTP"
+				api so POST "/quorum/$id/approve" >/dev/null
+				expect 200 "so approves console.unlock"
+				login admin "$ADMIN_PW" "$ADMIN_TOTP"
+			fi
+			api admin POST "/console/unlock/$id/code" | jq -r .code >"$S/console-code"
+			expect 200 "fetch the code"
+			echo "$id" >"$S/console-id"
+		else
+			id=$(cat "$S/console-id")
+			api admin GET /console/unlock | jq -e --argjson id "$id" '.[] | select(.id == $id) | .status == "used"' >/dev/null ||
+				die "console request $id not used"
+			api admin GET "/alerts?state=open" | jq -e '[.[] | select(.kind == "console_root_shell")] | length >= 2' >/dev/null ||
+				die "console_root_shell alerts missing"
+			log "console request $id used, console_root_shell alerts open"
+		fi
+	)
+}
 T0=$(date +%s)
 log() { printf '[%4ss] %s\n' $(($(date +%s) - T0)) "$*" >&2; }
 
@@ -29,7 +66,7 @@ ls -ldZ /var/lib/nexus/console-unlock | grep -E "^drwx------\. .*nexus-webapi ne
 ls -dZ /run/nexus-console-gate | grep nexus_consolegate_var_run_t )'
 
 log "one-time code from the API"
-"$here/e2e.sh" api console
+api_step console
 code=$(cat "$ROOT/run/api/console-code")
 rk=$(con run "journalctl -u nexus-setup -o cat --no-pager | sed -n 's/^RECOVERY KEY (shown once, record it now): //p' | tail -1" | tr -d '\r\n')
 [ -n "$rk" ] || { log "FAIL: recovery key not found in the setup journal"; exit 1; }
@@ -127,5 +164,5 @@ print("OK")
 EOF
 test -z "$(ls -A /var/lib/nexus/console-unlock)"
 ausearch -m avc,user_avc,selinux_err -ts boot 2>&1 | grep -E "consolegate|console_unlock|unconfined_t" && exit 1 || echo "no console AVCs" )'
-"$here/e2e.sh" api console-check
+api_step console-check
 log "console gate: ok"

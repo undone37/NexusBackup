@@ -97,6 +97,8 @@ print("default entry booted without a password")
 PY
 
 log "remove the lab's serial GRUB console again"
+# right after the boot the console still prints the start-up and its shell answers late
+sleep 60
 con run '( set -e
 ro=$(findmnt -no OPTIONS /boot | tr , "\n" | grep -qx ro && echo 1 || true)
 [ -z "$ro" ] || mount -o remount,rw /boot
