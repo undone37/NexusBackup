@@ -94,6 +94,7 @@ mod limits;
 pub mod network;
 mod offsite_ui;
 pub mod orphans;
+mod os_update;
 mod plugins;
 mod priority;
 pub mod progress;
@@ -184,6 +185,8 @@ pub struct Config {
     pub agent_update_dir: PathBuf,
     /// signed agent releases uploaded in the web UI (Phase 27)
     pub agent_release_upload: PathBuf,
+    /// OS update control dir of nexus-update (`status.json`: a rolled-back update raises an alert)
+    pub update_dir: PathBuf,
     /// keys agent release manifests must be signed with (the appliance's release keys)
     pub agent_release_keys: PathBuf,
     /// signed edge proxy binary pushed by the edge links (nexus-edge, .sig, .version; edge.rs)
@@ -299,6 +302,9 @@ impl Default for Config {
             agent_ca_dir: None,
             agent_update_dir: "/usr/share/nexus/agent".into(),
             agent_release_upload: lib.join("agent-releases"),
+            update_dir: std::env::var_os("NEXUS_UPDATE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| "/var/lib/nexus/update".into()),
             agent_release_keys: "/etc/pki/nexus/cosign".into(),
             edge_update_dir: "/usr/share/nexus/edge".into(),
             alerts_config: "/etc/nexus/alerts.json".into(),
@@ -915,6 +921,7 @@ impl Scheduler {
         self.log_err(|s| s.check_psa(now));
         self.log_err(|s| s.check_tenant_approvers(now));
         self.log_err(|s| s.check_disks(now));
+        self.log_err(|s| s.check_os_update());
         self.log_err(|s| s.audit_net_ops());
         self.log_err(Scheduler::check_clock);
         self.log_err(|s| s.check_disabled_tenants());

@@ -2662,3 +2662,51 @@ fn vmware_jobs() {
         ]
     );
 }
+
+/// #29: an appliance update greenboot rolled back raises one `update_rolled_back` alert (os_update.rs)
+#[test]
+fn a_rolled_back_update_raises_one_alert() {
+    let e = env(1);
+    let mut s = sched(&e);
+    let d = tempfile::tempdir().unwrap();
+    s.cfg.update_dir = d.path().to_path_buf();
+    let alerts = |s: &Scheduler| -> Vec<(String, String)> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare("SELECT key, severity FROM alerts WHERE kind = 'update_rolled_back' ORDER BY id")
+            .unwrap();
+        q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    // no status, or a normal result: nothing
+    s.check_os_update().unwrap();
+    std::fs::write(
+        d.path().join("status.json"),
+        r#"{"last_result":{"result":"staged sha256:aa"}}"#,
+    )
+    .unwrap();
+    s.check_os_update().unwrap();
+    assert!(alerts(&s).is_empty());
+    std::fs::write(
+        d.path().join("status.json"),
+        r#"{"booted":{"version":"0.0.35-dev"},"last_result":{"result":"rolled back from sha256:bb","time":1}}"#,
+    )
+    .unwrap();
+    s.check_os_update().unwrap();
+    s.check_os_update().unwrap();
+    assert_eq!(
+        alerts(&s),
+        [("update_rolled_back:sha256:bb".to_owned(), "warning".to_owned())]
+    );
+    // resolved by hand: the same digest does not come back
+    s.db.conn()
+        .execute(
+            "UPDATE alerts SET resolved_at = 1 WHERE kind = 'update_rolled_back'",
+            [],
+        )
+        .unwrap();
+    s.check_os_update().unwrap();
+    assert_eq!(alerts(&s).len(), 1);
+}

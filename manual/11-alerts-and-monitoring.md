@@ -64,7 +64,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | backup | `job_failed`, `sla_missed`, `paused`, `consistency`, `backup_inconsistent`, `orphaned`, `verify`, `snapshot_damaged`, `change_tracking`, `offsite_lag`, `inventory_refresh`, `config`, `vmid_reused`, `restore_priority`, `index_backlog` |
 | replication | every `replication_…` kind |
 | hardware | `disk`, `fleecing_space` |
-| system | `capacity`, `quota`, `forwarding`, `psa`, `report`, `tenant_disabled`, `index_space`, `test` and any kind not listed |
+| system | `capacity`, `quota`, `update_rolled_back`, `forwarding`, `psa`, `report`, `tenant_disabled`, `index_space`, `test` and any kind not listed |
 | audit | not an alert category: forwarded audit log entries carry it |
 
 | Kind | Severity | Raised when | Resolves itself when | What to do |
@@ -108,6 +108,7 @@ webhook and e-mail notifications, forwarded events and the API (`GET /api/v1/ale
 | `incident` | critical | a security officer entered incident mode (holds, paused groups, sessions and API tokens ended) | incident mode is left (approved) | investigate; see [14 Disaster recovery](14-disaster-recovery.md#incident-mode) |
 | `dek_rotation` | info | a tenant's data encryption key is older than the reminder interval (**Settings → Security**; one alert per tenant) | the key is rotated, or the reminder is switched off | rotate at the console; see [14 Disaster recovery](14-disaster-recovery.md#rotating-a-tenants-encryption-key) |
 | `firewall_reset` | warning | every inbound firewall restriction was cleared on the console (`nexus-setup reset-firewall`) | — | confirm with the person who did it, then set correct source lists in **Settings → Firewall**. See [02 Installation](02-installation.md#inbound-firewall) |
+| `update_rolled_back` | warning | greenboot found the updated system unhealthy after about three boots and rolled the appliance back to the previous version (`update_rolled_back:<digest>`; the message names the version running now). The digest is not offered again | — (resolve by hand) | the appliance runs the previous version and works; read `journalctl -b -1 -u greenboot-healthcheck` on the console for the failed check and report it with the version. See [13 Updates](13-updates.md) |
 | `tenant_disabled` | info | a tenant is deactivated (**Tenants**); its other alerts are muted meanwhile (one alert per tenant) | the tenant is reactivated | nothing, if intended; reactivate the tenant when it is needed again. See [09 Users and access](09-users-and-access.md#deactivating-a-tenant) |
 | `vault_disabled` | warning | vault mode was switched off at the console (`nexus-setup vault-disable`) after an approved request | — | confirm with the requester and the approver (audit `vault.disable`), then acknowledge. See [08 Replication](08-replication.md#vault-mode-secondary-only) |
 | `mgmt_allow_reset` | warning | (before Phase 16) the management allow-list was cleared on the console | — | as `firewall_reset` |
