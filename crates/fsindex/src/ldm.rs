@@ -12,8 +12,10 @@ use crate::disk::{Io, Segment, Vol};
 use std::collections::{BTreeMap, HashMap};
 
 const SECTOR: u64 = 512;
-/// The database starts with the TOCBLOCK one sector after `config_start`, the VMDB 17 sectors after.
-const OFF_TOCB: u64 = 1;
+/// The TOCBLOCK copies, in sectors after `config_start` (the kernel's OFF_TOCB1..4): Windows does not always write
+/// the first one (a GPT dynamic disk made by Windows Server 2022 had them at 2 and 2045 only, #53); the VMDB is 17
+/// sectors after `config_start`.
+const OFF_TOCB: [u64; 4] = [1, 2, 2045, 2046];
 const OFF_VMDB: u64 = 17;
 const MAX_VBLKS: u64 = 1 << 16;
 
@@ -252,8 +254,11 @@ fn parse_vblk(b: &[u8]) -> Result<Option<(u64, Rec)>, String> {
 /// The records of one disk's database.
 fn database(v: &Vol, ph: &Privhead) -> Result<(u32, Vec<(u64, Rec)>), String> {
     let base = ph.config_start * SECTOR;
-    let toc = v.read_vec(base + OFF_TOCB * SECTOR, 512).map_err(|e| e.to_string())?;
-    if toc.get(0..8) != Some(b"TOCBLOCK") {
+    let toc = OFF_TOCB.iter().filter(|o| **o < ph.config_size).any(|o| {
+        v.read_vec(base + o * SECTOR, 512)
+            .is_ok_and(|b| b.get(0..8) == Some(b"TOCBLOCK"))
+    });
+    if !toc {
         return Err("LDM: no table of contents".into());
     }
     let vm = v.read_vec(base + OFF_VMDB * SECTOR, 512).map_err(|e| e.to_string())?;
@@ -639,6 +644,13 @@ mod tests {
         let v = volumes(&io(disk.clone()), &m).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].map.as_ref().unwrap()[0].legs, [(0, 63 * 512)]);
+        // the TOCBLOCK only in its second copy (as Windows wrote a GPT dynamic disk, #53), then in none
+        let mut d = disk.clone();
+        d[at + 512..at + 520].fill(0);
+        d[at + 1024..at + 1032].copy_from_slice(b"TOCBLOCK");
+        assert_eq!(volumes(&io(d.clone()), &m).unwrap().len(), 1);
+        d[at + 1024..at + 1032].fill(0);
+        assert_eq!(volumes(&io(d), &m).unwrap_err(), "LDM: no table of contents");
         // every single-byte change of the database: an answer or an error, never a panic
         for i in (at + 17 * 512..at + 17 * 512 + 1200).step_by(3) {
             for x in [0u8, 0xff, 0x08] {
