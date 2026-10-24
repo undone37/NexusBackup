@@ -969,7 +969,10 @@ their IDs. In progress:
   administrator (password + TOTP, stdin without a terminal; API tokens stay below admin), uploads, waits for the
   verification; the console import writes bundle and request as the upload does, audited by `console`. Lab: the
   0.0.37-dev lab bundle (1.4 GB) uploaded to VM 201 with `nexusctl` from the workstation: staged, then installed
-  (booted 0.0.37-dev). The console import is covered by its unit test; on the appliance with the next image.
+  (booted 0.0.37-dev). Console import on 0.0.38-dev: a 1.7 GB ext4 disk (serial NXSTICK) with the bundle attached to
+  VM 201 as the stick, mounted read-only at the console, `nexus-setup import-update`: copied, audited
+  (`update.upload` by `console`), verified and refused with the reason ("0.0.38-dev ... is already running"),
+  exit code 1; 0 AVC denials. 0.0.38-dev itself went in with `nexusctl update upload` as well.
 - [x] (#29) Greenboot rollback after a broken bundle build (2026-10-24, VM 202, 0.0.35-dev): a 0.0.36-broken
   bundle (failing required greenboot check) applied offline; three red boots of about 10 min each, then greenboot
   booted 0.0.35-dev again (about 30 min in all); the nexus-update tick recorded `rolled back from <digest>` and
