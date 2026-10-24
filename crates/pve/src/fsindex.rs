@@ -29,8 +29,10 @@ use std::time::Instant;
 /// reads metadata spread over the disk, often several times: an NTFS walk jumps
 /// between the MFT and the directory indexes). 128 x 4 MiB = 512 MiB per job.
 const CHUNK_CACHE: usize = 128;
-/// Report format version.
-const VERSION: u32 = 1;
+/// Report format version; a report of another version is not reused (every volume is listed again once).
+/// Bumped when the parse extracts more than the reused records carry: 2 = Windows account names also from
+/// the SOFTWARE hive's ProfileList (#52; unchanged volumes kept the old names forever).
+const VERSION: u32 = 2;
 
 /// File systems the micro-VM mounts that the helper does not parse (btrfs: only
 /// multi-device file systems reach this).
