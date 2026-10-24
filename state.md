@@ -1306,7 +1306,7 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   the failure report to the node went over the broken SSH session: nexus-pve now also stops its task through the API
   when that report fails (saves one retry). Confirmed on 0.0.24-dev: the same outage (job 549 failed after 212 s),
   and the first retry (550) succeeded (153 s).
-- [x] (#48) Fault injection, the rest (2026-10-24, VM 201 on 0.0.22-dev, `lab/pvehost/faults.sh dgroup full corrupt
+- [x] (#48) Fault injection, the rest (2026-10-24, VM 201 on 0.0.35-dev, `lab/pvehost/faults.sh dgroup full corrupt
   clock`, agent VM 225 as the guest with new random data):
   - full: /var (store and catalog on one disk) filled to 512 MiB before a backup with 2 GiB of new data: the job
     failed after 16 s with "No space left on device", no snapshot, a retry queued; the API kept answering; space
