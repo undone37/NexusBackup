@@ -15,7 +15,8 @@
 #   agent-release.sh selinux   AVC denials of today on the appliance (root console), none for the release path
 #
 # env: as vmware-e2e.sh (LAB, PORT); SHIPPED (0.1.1), RELEASE_TAR (~/nexus-lab/scratch/nexus-agent-release-0.1.2-
-#      signed.tar), VM (debian-13), VM_IP (from clean-restore.sh), VM_KEY, CONSOLE (the appliance's serial console
+#      signed.tar), VM (debian-13), AGENT_NAME (clean-$VM; the Windows agent of lab/windows/e2e.sh: its host name),
+#      TENANT (lab; windows for that agent), VM_IP (from clean-restore.sh), VM_KEY, CONSOLE (the appliance's serial console
 #      socket, lab image)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -26,6 +27,8 @@ export CONSOLE=${CONSOLE:-$LAB/appliance/console.sock}
 SHIPPED=${SHIPPED:-0.1.1}
 RELEASE_TAR=${RELEASE_TAR:-$HOME/nexus-lab/scratch/nexus-agent-release-0.1.2-signed.tar}
 VM=${VM:-debian-13}
+AGENT_NAME=${AGENT_NAME:-clean-$VM}
+TENANT=${TENANT:-lab}
 ROOT=$LAB/appliance/root
 S=$ROOT/run/api
 mkdir -p "$S"
@@ -45,9 +48,9 @@ vm() { ssh "${SSHO[@]}" "root@$VM_IP" "$@"; }
 
 update_job() { # update_job VERSION: the agent_update job JSON
 	local a r
-	a=$(api admin GET /agents | jq -r --arg n "clean-$VM" '.[] | select(.name == $n) | .id')
-	[ -n "$a" ] || die "no agent clean-$VM (clean-restore.sh vm enrol)"
-	r=$(api admin POST /jobs "$(jq -nc --arg a "$a" --arg v "$1" '{kind:"agent_update", tenant:"lab", params:{agent_id:$a, version:$v}}')")
+	a=$(api admin GET /agents | jq -r --arg n "$AGENT_NAME" '.[] | select(.name == $n) | .id')
+	[ -n "$a" ] || die "no agent $AGENT_NAME (clean-restore.sh vm enrol)"
+	r=$(api admin POST /jobs "$(jq -nc --arg a "$a" --arg v "$1" --arg tn "$TENANT" '{kind:"agent_update", tenant:$tn, params:{agent_id:$a, version:$v}}')")
 	expect 202 "agent_update"
 	wait_job admin "$(jq -r .id <<<"$r")" 900
 }
@@ -93,8 +96,8 @@ step_upload() {
 
 step_bundle() {
 	local a r j tgz
-	a=$(api admin GET /agents | jq -r --arg n "clean-$VM" '.[] | select(.name == $n) | .id')
-	[ -n "$a" ] || die "no agent clean-$VM (clean-restore.sh vm enrol)"
+	a=$(api admin GET /agents | jq -r --arg n "$AGENT_NAME" '.[] | select(.name == $n) | .id')
+	[ -n "$a" ] || die "no agent $AGENT_NAME (clean-restore.sh vm enrol)"
 	tgz=$(ls "$repo"/os/agent-release/"$SHIPPED"/linux-x86_64/nexus-agent-"$SHIPPED"-x86_64.tar.gz)
 	scp -q "${SSHO[@]}" "$tgz" "root@$VM_IP:/tmp/agent.tar.gz"
 	r=$(api admin POST "/agents/$a/token")
@@ -109,19 +112,19 @@ step_bundle() {
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll: $(jq -r '.log // ""' <<<"$j" | tail -n 15)"
 	api admin GET /agents | jq -e --arg id "$a" '.[] | select(.id == $id) | .install == "bundle"' >/dev/null ||
 		die "agent not reported as a bundle install"
-	log "agent clean-$VM: bundle $SHIPPED installed and enrolled"
+	log "agent $AGENT_NAME: bundle $SHIPPED installed and enrolled"
 }
 
 step_update() {
 	local a v j t0=$SECONDS
 	v=$(uploaded)
-	a=$(api admin GET /agents | jq -r --arg n "clean-$VM" '.[] | select(.name == $n) | .id')
+	a=$(api admin GET /agents | jq -r --arg n "$AGENT_NAME" '.[] | select(.name == $n) | .id')
 	j=$(update_job "$v")
 	jq -r '.log // ""' <<<"$j" | grep -E "^update-plan |verified|signature|update" | tail -6 >&2 || true
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "agent_update: $(jq -r '.log // ""' <<<"$j" | tail -n 20)"
 	api admin GET /agents | jq -e --arg id "$a" --arg v "$v" '.[] | select(.id == $id) | .version == $v' >/dev/null ||
 		die "agent version after the update: $(api admin GET /agents | jq -c --arg id "$a" '.[] | select(.id == $id) | {version, update_state, update_error}')"
-	log "agent clean-$VM updated to $v in $((SECONDS - t0)) s"
+	log "agent $AGENT_NAME updated to $v in $((SECONDS - t0)) s"
 }
 
 step_selinux() {

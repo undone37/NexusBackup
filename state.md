@@ -489,7 +489,14 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   releases. Watchdog: a signed binary that cannot start at all (0.1.4, an ELF that exits) was swapped in and
   never reverted (the watchdog runs inside the new binary): #93. Open: desktop package with the GUI running,
   arm64 (needs aarch64 packages), an edge-connected laptop.
-- [ ] (#67) Windows agent update labs: plan.md Phase 39 L7
+- [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
+  of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by
+  hand (`lab/windows/e2e.sh 298 upgrade`: msiexec 0, the service runs 0.1.5 and stays enrolled; the GUI check failed
+  only because the test build bumped the agent crates, not the desktop UI's); in-band update 0.1.5 -> 0.1.6
+  through the appliance in 6 s (`agent-release.sh`, msiexec detached from the service's job object); an approved
+  rollback rollout to 0.1.5 refused by the agent ("Windows Installer refuses downgrades ... install the older MSI by
+  hand"), the rollout paused after the failure. Open: the update with the GUI running in a desktop session, 1603
+  log parsing, watchdog revert of a manual install.
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
   listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on
