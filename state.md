@@ -486,8 +486,9 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
 - [ ] (#66) Linux agent update labs: plan.md Phase 39 L6 Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/agent-release.sh`,
   TEST-signed releases 0.1.1 -> 0.1.2): .deb on debian-13 (7 s), .rpm on alma-10 (5 s), bundle install with
   install.sh and the binary swap on debian-13 (10 s); the packaged production-key agents refuse TEST-signed
-  releases. Open: desktop package with the GUI running, watchdog revert of a broken bundle, arm64 (needs aarch64
-  packages), an edge-connected laptop.
+  releases. Watchdog: a signed binary that cannot start at all (0.1.4, an ELF that exits) was swapped in and
+  never reverted (the watchdog runs inside the new binary): #93. Open: desktop package with the GUI running,
+  arm64 (needs aarch64 packages), an edge-connected laptop.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
