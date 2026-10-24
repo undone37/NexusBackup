@@ -341,8 +341,11 @@ CI: rust job ran out of disk on the runner (PG/Keycloak testbox failures) → fr
   for `e` and `c`, refuses a wrong one, the password derived from the recovery key opens the editor, the default
   entry boots without one); `lab/appliance/console-gate.sh` passed (real gate on tty2 in nexus_consolegate_t, root
   shells with the API's one-time code and with the recovery key, console_root_shell alerts, no AVC). Both now run
-  against VM 201 (the console API steps without the QEMU lab's m5-api.sh). Open: disks.sh (needs an appliance with
-  extra disks and an empty store), the firewall step, forwarding.sh, offsite-fetch, config-restore.sh (second
+  against VM 201 (the console API steps without the QEMU lab's m5-api.sh). The firewall step as
+  `lab/pvehost/firewall.sh` passed too: web restricted to the client (10.2.34.200, the tunnel) stays reachable, a
+  list without it refused (409) and with the typed override locks out, `nexus-setup reset-firewall` on the console
+  brings access back (alert firewall_reset, audit actor console, 13 dropped packets on 8443 listed). Open: disks.sh
+  (needs an appliance with extra disks and an empty store), forwarding.sh, offsite-fetch, config-restore.sh (second
   appliance), PG 1.2.0 bundle, vault mode, ui-smoke.
 
 ## Release candidate lab (2026-10-12/13, worktree at b481b7a)
