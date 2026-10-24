@@ -1054,7 +1054,10 @@ their IDs. In progress:
   denial silenced (dontaudit, like the configuration backup).
 - [x] Phase 39 C4: M365 cases by sender and recipient (plugin protocol v1.10 `ItemMeta`, side file `itemmeta`,
   carried over for unchanged mails; criteria `sender` / `recipient`; Cases page fields). Tested against the Graph
-  mock; the instant search does not use the records yet.
+  mock; 2026-10-25 (#54) also the instant search: the index stores the record per mail version (index format 3:
+  rebuilt once), sender / recipient filters match address words (`contoso.com`); a version first seen without a
+  record gets it from a later snapshot. Open: mails backed up before the records existed have none (they would have
+  to be fetched again from Graph).
 - [x] Plain NTP servers count toward the weakening-burst risk rule; config backup's userdb lookup no longer floods
   the audit log.
 

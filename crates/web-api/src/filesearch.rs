@@ -47,6 +47,9 @@ pub struct SearchQuery {
     entry: Option<String>,
     /// C2: comma-separated SIDs, uid:gid, uids or well-known Windows group names
     owner: Option<String>,
+    /// #54: mails by the words of their sender / a recipient (item metadata)
+    sender: Option<String>,
+    recipient: Option<String>,
     deleted: Option<String>,
     limit: Option<usize>,
     cursor: Option<String>,
@@ -184,6 +187,8 @@ pub async fn search(State(st): State<St>, ctx: Ctx, Q(f): Q<SearchQuery>) -> Api
         mtime_to: f.mtime_to,
         entry: f.entry.clone(),
         owners: list(&f.owner).map(|v| v.into_iter().map(|o| sid_of(&o).map_or(o, str::to_owned)).collect()),
+        sender: f.sender.clone().filter(|s| !s.trim().is_empty()),
+        recipient: f.recipient.clone().filter(|s| !s.trim().is_empty()),
         deleted,
         limit: f.limit.unwrap_or(index_proto::DEFAULT_LIMIT),
         cursor: f.cursor.clone(),

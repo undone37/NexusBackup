@@ -7515,6 +7515,22 @@ on('GET', '/files/search', async (c) => {
     throw new HttpError(400, 'ext: extensions without dots, comma separated');
   const [smin, smax, mfrom, mto] = ['size_min', 'size_max', 'mtime_from', 'mtime_to'].map((k) => intParam(q, k));
   const entry = q.get('entry') ?? '';
+  // #54: mails by sender / recipient words (index-proto address_words)
+  const words = (s: string | null) =>
+    (s ?? '')
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w && w.length <= 40);
+  const mailWords = { sender: words(q.get('sender')), recipient: words(q.get('recipient')) };
+  const mailOk = (m: Json | undefined) => {
+    const has = (addrs: string[], want: string[]) => want.every((w) => addrs.some((a) => words(a).includes(w)));
+    if (!mailWords.sender.length && !mailWords.recipient.length) return true;
+    if (!m) return false;
+    return (
+      has(m.from ? [m.from] : [], mailWords.sender) &&
+      has([...(m.to ?? []), ...(m.cc ?? []), ...(m.bcc ?? [])], mailWords.recipient)
+    );
+  };
   if (entry && !['file', 'dir'].includes(entry)) throw new HttpError(400, 'entry: file or dir');
   const deleted = q.get('deleted') ?? 'any';
   if (!['any', 'only', 'exclude'].includes(deleted)) throw new HttpError(400, 'deleted: any, only or exclude');
@@ -7552,7 +7568,9 @@ on('GET', '/files/search', async (c) => {
     smax !== undefined ||
     mfrom !== undefined ||
     mto !== undefined ||
-    deleted === 'only';
+    deleted === 'only' ||
+    !!mailWords.sender.length ||
+    !!mailWords.recipient.length;
   if (!text && !filtered)
     throw new HttpError(400, 'q: required unless a filter (ext, size, mtime, deleted=only) is set');
   const source = q.get('source');
@@ -7562,6 +7580,7 @@ on('GET', '/files/search', async (c) => {
   const { docs, snaps } = tenantIndex(tenant);
   const verOk = (v: Json) =>
     ownerOk(v.owner, v.owner_name) &&
+    mailOk(v.mail) &&
     (smin === undefined || v.size >= smin) &&
     (smax === undefined || v.size <= smax) &&
     (mfrom === undefined || v.mtime >= mfrom) &&

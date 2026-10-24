@@ -403,3 +403,83 @@ fn owner_names_from_a_later_snapshot() {
     s.rebuild("acme").unwrap();
     assert_eq!(name(&s).as_deref(), Some("ann"), "and after a rebuild");
 }
+
+/// #54: mails found by sender and recipient words from the plugin's item metadata, also when a version
+/// first seen without metadata gets it from a later snapshot (append and rebuild).
+#[test]
+fn mails_by_sender_and_recipient() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        d.path().join("store/acme"),
+        keys(),
+        Options {
+            min_lock_secs: 0,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let src = "plugin-m365-7";
+    let mail = |t: u64, meta: bool| {
+        commit(
+            &store,
+            src,
+            t,
+            vec![
+                e("ann@contoso.com", u64::MAX, 1),
+                e("ann@contoso.com/Inbox", u64::MAX, 1),
+                e("ann@contoso.com/Inbox/Quarterly figures.eml", 4000, 100),
+                e("ann@contoso.com/Inbox/Lunch.eml", 900, 100),
+            ],
+        );
+        if meta {
+            let m = serde_json::json!({
+                "ann@contoso.com/Inbox/Quarterly figures.eml":
+                    {"from": "cfo@contoso.com", "to": ["ann@contoso.com"], "cc": ["board@fabrikam.example"]},
+                "ann@contoso.com/Inbox/Lunch.eml": {"from": "bob@fabrikam.example", "to": ["ann@contoso.com"]},
+            });
+            store
+                .write_snap_file(src, t, "itemmeta", &serde_json::to_vec(&m).unwrap())
+                .unwrap();
+        }
+    };
+    let by = |s: &Service, sender: Option<&str>, recipient: Option<&str>| -> Vec<String> {
+        let mut v: Vec<String> = s
+            .search(&SearchReq {
+                tenant: "acme".into(),
+                sender: sender.map(str::to_owned),
+                recipient: recipient.map(str::to_owned),
+                limit: 50,
+                ..Default::default()
+            })
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|h| h.path.rsplit('/').next().unwrap().to_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    mail(100, false);
+    let s = svc(d.path());
+    s.sync("acme").unwrap();
+    assert!(by(&s, Some("contoso.com"), None).is_empty(), "no metadata yet");
+    // the next snapshot carries it: the unchanged versions get it on append
+    mail(200, true);
+    s.sync("acme").unwrap();
+    for _ in 0..2 {
+        assert_eq!(by(&s, Some("cfo@contoso.com"), None), ["Quarterly figures.eml"]);
+        assert_eq!(by(&s, Some("fabrikam.example"), None), ["Lunch.eml"]);
+        assert_eq!(
+            by(&s, None, Some("board")),
+            ["Quarterly figures.eml"],
+            "Cc counts as a recipient"
+        );
+        assert_eq!(
+            by(&s, None, Some("ann@contoso.com")),
+            ["Lunch.eml", "Quarterly figures.eml"]
+        );
+        assert!(by(&s, Some("ann"), None).is_empty(), "ann is a recipient, not a sender");
+        s.rebuild("acme").unwrap();
+    }
+    assert_eq!(find(&s, "Lunch")[0].versions.len(), 1, "still one version");
+}

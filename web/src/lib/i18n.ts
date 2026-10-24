@@ -1871,6 +1871,10 @@ export const en = {
     ext: 'Extensions',
     extHint: 'Comma separated, without dots, e.g. pdf, docx',
     ownerFilter: 'Owner',
+    sender: 'Sender (mails)',
+    recipient: 'Recipient (mails)',
+    mailHint:
+      'Microsoft 365 mails by an address or a part of it (contoso.com); To, Cc and Bcc count as recipients. Mails backed up before the appliance recorded senders and recipients carry none and are not found this way.',
     ownerHint:
       'An account name as the guest names it (alice), a Linux uid (any group) or uid:gid, a Windows SID, or a built-in group such as Administrators, SYSTEM or Users. Comma separated.',
     sizeMin: 'Size from',
