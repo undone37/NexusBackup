@@ -291,7 +291,11 @@ pub fn verify(ctx: &Ctx, src: &mut Source, ssh: &Ssh) -> Result<String> {
     let t = ctx.params["snapshot"]["time"].as_i64().unwrap_or_default();
     let dir = format!("{}/nexus-verify-{t}-{}", base.trim_end_matches('/'), std::process::id());
     let port = ctx.config["verify_port"].as_u64().unwrap_or(5499);
-    let p = serde_json::json!({"directory": dir, "port": port, "start": true});
+    let mut p = serde_json::json!({"directory": dir, "port": port, "start": true});
+    // #46: the scheduler picks a random point inside the recoverable range (none: the end)
+    if let Some(tt) = ctx.params["params"]["target_time"].as_str() {
+        p["target_time"] = tt.into();
+    }
     let restored = pitr(ctx, &p, src, ssh);
     let check = restored.as_ref().ok().map(|_| ssh.run(&check_cmd(&dir, port)));
     let pg_ctl = ctx.config["ssh_pg_ctl"].as_str().filter(|s| valid_dir(s));
