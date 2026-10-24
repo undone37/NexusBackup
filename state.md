@@ -1126,8 +1126,15 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
 - [x] Proxy throughput (#38): the 10 MB/s were the library lab test; on the appliance the hot-add full read runs
   at about 126 MB/s for the job, the fetch at 97 MB/s on the wire, i.e. about the 1 GbE line rate of the nested
   lab. Not done (no need measured): avoiding the proxy's second read of fetched blocks, pipelined Want batches.
+- [x] (#37, part) A VM moving between hosts under vCenter (2026-10-24, VM 201 on 0.0.39-dev, `vmware-e2e.sh move`,
+  `vc_move.py`): nx-cbt moved from ESXi 7 to ESXi 8 with its disk (cold: the lab hosts have no vMotion network and no
+  shared datastore; about 4 minutes each way), inventory kept its UUID, backups there and after moving back were
+  incremental over NFC from the new host (9 MB, then 0 bytes). A full read afterwards (made due on the console)
+  compared 4096 chunks with the snapshot after the move back: 18 changed, all reported by CBT, 0 unreported: the
+  change tracking survived both moves. Found (lab only): an ISO on a host's local datastore and a host floppy keep
+  vCenter from moving a VM (CannotAccessVmDevice); the helper empties them first, answering the CD-ROM lock question.
 - [ ] (epic #23) rest of M3: the proxy OVA (#35), lab (#37: vSAN/NFS, quiesced Windows snapshots, proxy on another
-  host).
+  host; all need a shared datastore or a Windows guest on ESXi).
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 

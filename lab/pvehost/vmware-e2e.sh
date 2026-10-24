@@ -15,6 +15,9 @@
 #   vmware-e2e.sh restore    the newest snapshot as VM $TARGET on $NODE ($STORAGE, NICs link_down), started
 #   vmware-e2e.sh check      the VM runs; a screen capture after $BOOT seconds ($OUT/vmware-e2e.png)
 #   vmware-e2e.sh cleanup    stop and destroy VM $TARGET (ours: ID from 200)
+#   vmware-e2e.sh move       (#37) $VM moves to the other ESXi host with its disks (vCenter relocation, vc_move.py:
+#                            the lab has no shared datastore), inventory (same UUID) and backup there, then it
+#                            moves back and is backed up again
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444, PVE_HOST, NODE pve-test); VC_LAB (~/nexus-lab/vcenter),
 #      ESXI_LABS (~/nexus-lab/esxi ~/nexus-lab/esxi8), VM (nx-cbt), TARGET (290), STORAGE (vmpool), BOOT (90),
@@ -206,6 +209,27 @@ step_check() {
 step_cleanup() {
 	pve "qm stop $TARGET >/dev/null 2>&1; qm destroy $TARGET --purge >/dev/null 2>&1" || true
 	log "VM $TARGET removed"
+}
+
+step_move() {
+	local py=${PY:-$HOME/nexus-lab/esxi/venv/bin/python} from to h uuid
+	uuid=$(cat "$S/vmware-uuid")
+	# the SSO password on stdin, never on a command line
+	vcm() { (. "$VC_LAB/secrets.env" && printf '%s\n' "$SSO_PW") | VC=$(cat "$VC_LAB/ip") "$py" -I "$here/vc_move.py" "$@"; }
+	from=$(vcm where "$VM" | jq -r .host)
+	for h in $ESXI_LABS; do
+		[ "$(cat "$h/ip")" != "$from" ] && to=$(cat "$h/ip")
+	done
+	[ -n "${to:-}" ] || die "no other ESXi host than $from"
+	for dest in "$to" "$from"; do
+		local r
+		r=$(vcm move "$VM" "$dest") || die "moving $VM to $dest failed"
+		log "moved $VM: $r"
+		step_inventory
+		api admin GET "/sources/$(src_id "$SRC")/inventory" | jq -e --arg u "$uuid" 'any(.guests[]; .guest == $u and .gone == null)' >/dev/null ||
+			die "$VM ($uuid) is not in the inventory after the move"
+		step_backup
+	done
 }
 
 for s in "${@:-source inventory group backup restore check}"; do
