@@ -1,0 +1,11 @@
+# LAB ONLY (#29): a lab image (Containerfile.lab) that follows a lab registry instead of ghcr.io: the registry's CA
+# for containers/image and the registry as the only update egress host. Build the base with
+# --build-arg NEXUS_IMAGE_REPO=<registry>/nexusbackup/appliance (policy.json, registries.d, update.conf follow it).
+#   podman build --build-arg IMAGE=<lab image> --build-arg REGISTRY=10.2.34.99 \
+#     -f lab/appliance/Containerfile.registry ~/nexus-lab/registry      (context: the lab CA as ca.crt)
+ARG IMAGE=localhost/nexus-os:dev-lab
+FROM ${IMAGE}
+ARG REGISTRY
+COPY ca.crt /etc/containers/certs.d/${REGISTRY}/ca.crt
+RUN sed -i "s|^NEXUS_UPDATE_HOSTS=.*|NEXUS_UPDATE_HOSTS=${REGISTRY}|" /etc/nexus/update.conf \
+ && grep -q "^NEXUS_IMAGE_REPO=${REGISTRY}/" /etc/nexus/update.conf

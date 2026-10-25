@@ -1028,7 +1028,14 @@ their IDs. In progress:
   0.0.3-dev, truncated (477 MB), wrong key with consistent checksums. Found and fixed: Install now never shown
   (available is derived from staged), status.json without the web view after the reboot (UI blank for up to 10
   min), refused bundles shown as "blocked by checks"
-- [ ] (#29) an online update after an offline one (parts above 2 GiB: not needed, #27)
+- [x] (#29) an online update after an offline one (parts above 2 GiB: not needed, #27). 2026-10-25: a lab registry
+  (`registry:2` with TLS on VM 280, 10.2.34.99:443, lab CA in ~/nexus-lab/registry), images built with
+  `NEXUS_IMAGE_REPO=10.2.34.99/nexusbackup/appliance` plus `lab/appliance/Containerfile.registry` (the CA, the
+  registry as the only update egress host); VM 201 got 0.0.49 by offline bundle (origin `oci:` of the bundle); 0.0.50
+  pushed as `:stable` and signed with the TEST key in the registry (`release/sign.sh sign`); "Check now"
+  (`offline-update.sh check`): nexus-update switched the origin from the bundle's OCI layout to
+  `10.2.34.99/nexusbackup/appliance:stable` with the signature policy enforced and staged exactly the signed digest;
+  apply: 0.0.50 booted from the registry, 0.0.49 the rollback. VM 201 keeps following the lab registry.
 - [x] Update status right after a reboot (2026-10-24, found installing 0.0.39-dev on VM 201): the appliance booted the
   new image, but Settings -> Updates showed the old version for over 10 minutes (the first nexus-update tick came 10
   minutes after boot) and `offline-update.sh apply` gave up. The delay also hid a gap: a tick during a red boot

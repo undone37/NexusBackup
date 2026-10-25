@@ -9,6 +9,9 @@
 #   offline-update.sh upload BUNDLE       upload through the API, wait for the verification result
 #   offline-update.sh apply               "Install now" (approved by the security officer if approvals are on),
 #                                         then wait until the appliance answers with the new version
+#   offline-update.sh check               "Check now" (online, #29): wait until the channel's image is staged, print its
+#                                         origin and signature (an image that follows a lab registry:
+#                                         lab/appliance/Containerfile.registry); then `apply`
 #   offline-update.sh status              GET /updates
 #
 # env: LAB (~/nexus-lab/pvehost), PVE_HOST, SSH_KEY, VMID (201), PORT (28444), COSIGN_KEY
@@ -106,6 +109,19 @@ step_upload() {
 	updates | jq '{status, staged, offline, last_result}'
 }
 
+step_check() {
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	local r
+	r=$(api admin POST /updates/check '{}')
+	[ "$(status)" = 200 ] || [ "$(status)" = 202 ] || die "check: HTTP $(status) $r"
+	for _ in $(seq 90); do
+		[ "$(updates | jq -r '.staged.version // empty')" != "" ] && break
+		sleep 10
+	done
+	updates | jq -c '{booted: .booted.version, staged: (.staged | {version, image, signature}), last_result}'
+	[ "$(updates | jq -r '.staged.version // empty')" != "" ] || die "nothing staged after the check"
+}
+
 step_apply() {
 	login admin "$ADMIN_PW" "$ADMIN_TOTP"
 	local r q want
@@ -136,6 +152,7 @@ bootstrap) step_bootstrap "$@" ;;
 bundle) step_bundle "$@" ;;
 upload) step_upload "$@" ;;
 apply) step_apply ;;
+check) step_check ;;
 status) login admin "$ADMIN_PW" "$ADMIN_TOTP" && updates | jq . ;;
-*) sed -n '2,13p' "$0" && exit 2 ;;
+*) sed -n '2,16p' "$0" && exit 2 ;;
 esac
