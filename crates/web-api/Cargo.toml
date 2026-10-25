@@ -35,6 +35,7 @@ regex = { version = "1", default-features = false, features = ["std", "perf", "u
 repl_proto = { package = "replication", path = "../replication", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 vmware = { path = "../vmware", default-features = false }
+xcpng = { path = "../xcpng", default-features = false }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "http1", "http2", "service"] }
 rand = "0.8"

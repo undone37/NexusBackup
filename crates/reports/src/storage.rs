@@ -87,6 +87,7 @@ fn in_group(kind: &str, sid: u64, guests: &[Value], source: &str) -> bool {
         "nfs" | "smb" => nas::parse_source_name(source) == Some(sid),
         // guests are VM UUIDs; the snapshot source carries no source id (vmw-<uuid>)
         "vmware" => vmware::names::parse_source_name(source).is_some_and(|u| strs.contains(&u)),
+        "xcpng" => xcpng::names::parse_source_name(source).is_some_and(|u| strs.contains(&u)),
         k if k.starts_with("plugin:") => plugin_proto::parse_source_name(source)
             .is_some_and(|(_, id, g)| id == sid && (strs.is_empty() || g.is_some_and(|g| strs.contains(&g.as_str())))),
         // agent sources: guests are agent ids
@@ -375,5 +376,8 @@ mod tests {
             "vmw-5003c9a6-1b2e-4f7a-9d3c-0123456789cd"
         ));
         assert!(!in_group("vmware", 4, &g(json!([u])), "vm-101"));
+        let x = "16b4fe6c-85dd-9322-2260-a022accb9376";
+        assert!(in_group("xcpng", 4, &g(json!([x])), &format!("xcp-{x}")));
+        assert!(!in_group("xcpng", 4, &g(json!([x])), &format!("vmw-{x}")));
     }
 }

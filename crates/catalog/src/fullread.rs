@@ -10,7 +10,7 @@ pub const MAX_DAYS: i64 = 365;
 
 /// Interval in days when the group sets none (`groups.full_read_days` NULL):
 /// Proxmox VE and VMware VMs 90 (I/O on production storage, fleecing space), agents and
-/// NAS 30; other sources have no change tracking to check (0).
+/// NAS 30; other sources have no change tracking to check (0; XCP-ng: the connector has no full-read check yet).
 pub fn default_days(source_kind: &str) -> i64 {
     match source_kind {
         "pve" | "vmware" => 90,

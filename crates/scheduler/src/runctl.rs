@@ -116,7 +116,7 @@ impl Scheduler {
             }
         }
         for u in &g.vms {
-            if !done.contains(vmware::names::source_name(u).as_str()) {
+            if !done.contains(crate::vm_source_name(&g, u).as_str()) {
                 out.push(json!(u));
             }
         }

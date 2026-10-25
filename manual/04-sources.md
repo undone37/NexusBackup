@@ -1024,12 +1024,59 @@ The appliance updates the proxy's agent like any other agent (**Agents → Updat
 puts the previous version back when a new one does not start). The proxy's operating system is updated by deploying
 the OVA of a newer release and enrolling it again.
 
-A VMware snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-vms-as-proxmox-ve-vms)).
+A VMware snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-and-xcp-ng-vms-as-proxmox-ve-vms)).
 
 Limits: a crash of the ESXi host or a hard power-off can leave CBT "unclean"; the next backup of that VM then reads
 its disks in full (logged). Joining a host to a vCenter (or renewing certificates) changes the certificate the pin
 expects: backups fail with a TLS error until you update the source. Encrypted VMs and vSAN / vVols datastores are
 untested.
+
+## XCP-ng and XenServer
+
+Backs up the VMs of an XCP-ng pool (or XenServer, which has the same API) for moving to (or protecting alongside)
+Proxmox VE. Tested: XCP-ng 8.3. The appliance takes a VM snapshot, reads its disks over **NBD with TLS** directly
+from the pool host that holds them, and keeps only the snapshot's change-tracking metadata on the pool (no data, no
+space on the SR). No proxy VM and no software in the pool are needed. Changed blocks come from XAPI's changed block
+tracking (CBT), which the appliance switches on per disk at the first backup; the next backups read only the blocks
+changed since the previous one.
+
+Snapshots are crash consistent: XCP-ng 8 has no quiesced snapshots. For application consistency inside the guest,
+run the [agent](#linux-and-windows-hosts-agents) there as well.
+
+### 1. Prepare the pool
+
+1. A user for the appliance: `root` (XCP-ng has no role-based access control; on XenServer a user with the
+   *VM Power Admin* role is enough).
+2. **NBD on the management network.** XAPI serves disks over NBD only on networks with the `nbd` purpose; set it
+   once per pool on the network the appliance reaches (`xe network-param-add param-name=purpose
+   param-key=nbd uuid=<network uuid>`). Without it a backup fails with "no NBD export".
+3. The certificate to pin: the one the pool master serves (`/etc/xensource/xapi-ssl.pem` on the host, or
+   `openssl s_client -connect xcp01:443`).
+4. Network: the appliance must reach the pool master on 443 and **every host of the pool on TCP 10809** (NBD). The
+   appliance's firewall allows exactly these addresses from the source settings.
+
+### 2. Create the source
+
+![XCP-ng source form](images/source-xcpng.png)
+
+| Field | Content |
+|---|---|
+| **Pool master**, **HTTPS port** | e.g. `xcp01.acme.example.com`, 443 |
+| **User**, **Password of that user** | see above; the password is write-only, sealed to host, port, certificate and user (changing one of those needs it again) |
+| **Pool master certificate (PEM)** | **pinned**: public CAs are never trusted |
+| **Hosts of the pool** | one per line: all hosts of the pool (NBD on 10809 is allowed to them; the host that holds a disk serves it). Not needed for a single host. |
+
+The source has a guest inventory (**More → Inventory**): its VMs with their names. In a group you tick VMs, or take
+all VMs or VMs with tags ([chapter 5](05-policies-and-groups.md)). Snapshots are named `xcp-<VM UUID>` and are shown
+with the VM's name. Each snapshot holds one disk image per virtual disk (`xvda`, `xvdb`, ...) plus the VM's
+settings (`xcpng.json`); files in it can be browsed, indexed and searched like a Proxmox VE VM's (the group's
+**Index files** switch).
+
+An XCP-ng snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-and-xcp-ng-vms-as-proxmox-ve-vms)).
+
+Limits: when CBT is reset (a disk moved to another SR, CBT switched off by hand, a failed backup that removed its
+base) the next backup reads the disk in full (logged). Scheduled full reads ([chapter 5](05-policies-and-groups.md))
+are not done for XCP-ng groups yet. Restoring into the pool is not offered yet.
 
 ## NFS and SMB shares
 

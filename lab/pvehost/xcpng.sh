@@ -12,6 +12,9 @@
 #                   known data: its UUID and the SHA-256 of that data in $LAB_X/testvm.json (crates/xcpng/tests/lab.rs)
 #   xcpng.sh testwrite  4 MiB of new data at 512 MiB of nexus-m1's disk (the next backup is incremental): their
 #                   SHA-256 added to $LAB_X/testvm.json as changed_sha256
+#   xcpng.sh guest  VM "nexus-deb" (the newest Debian template, BIOS, 1 GiB, 2 vCPUs, a NIC on the management
+#                   network) whose disk is the Debian 13 cloud image, started; its UUID in $LAB_X/guest.json
+#                   (lab/pvehost/xcpng-e2e.sh)
 #   xcpng.sh destroy
 #
 # Secrets in $LAB_X (~/nexus-lab/xcpng): root.pw. env: PVE_HOST, SSH_KEY (also root's key on the XCP-ng host),
@@ -221,6 +224,54 @@ print(sh(\"sh\", \"-c\", \"openssl enc -aes-128-ctr -md sha256 -nosalt -pass pas
 	jq --arg s "$sha" '.changed_sha256 = $s' "$LAB_X/testvm.json" >"$LAB_X/testvm.json.new"
 	mv "$LAB_X/testvm.json.new" "$LAB_X/testvm.json"
 	log "4 MiB written at 512 MiB of nexus-m1: $sha"
+}
+
+step_guest() {
+	xcp 'test -s /var/tmp/deb13.qcow2 || curl -sfL -o /var/tmp/deb13.qcow2 \
+		https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2'
+	xcp "python3 -c '$XAPI_PRE
+for v in x.VM.get_by_name_label(\"nexus-deb\"):
+    if x.VM.get_power_state(v) != \"Halted\":
+        x.VM.hard_shutdown(v)
+    for b in x.VM.get_VBDs(v):
+        d = x.VBD.get_VDI(b)
+        if d != \"OpaqueRef:NULL\":
+            x.VDI.destroy(d)
+    x.VM.destroy(v)
+deb = [t for t in x.VM.get_all() if x.VM.get_is_a_template(t) and x.VM.get_name_label(t).startswith(\"Debian \")
+       and x.VM.get_name_label(t).split()[-1].isdigit()]
+tpl = max(deb, key=lambda t: int(x.VM.get_name_label(t).split()[-1]))
+vm = x.VM.clone(tpl, \"nexus-deb\")
+x.VM.set_is_a_template(vm, False)
+g = str(1 << 30)
+x.VM.set_memory_limits(vm, g, g, g, g)
+x.VM.set_VCPUs_max(vm, \"2\")
+x.VM.set_VCPUs_at_startup(vm, \"2\")
+x.VM.set_HVM_boot_params(vm, {\"order\": \"c\", \"firmware\": \"bios\"})
+sr = [r for r in x.SR.get_all() if x.SR.get_type(r) == \"ext\"][0]
+vdi = x.VDI.create({\"name_label\": \"nexus-deb disk\", \"name_description\": \"\", \"SR\": sr, \"virtual_size\": str(3 << 30),
+                   \"type\": \"user\", \"sharable\": False, \"read_only\": False, \"other_config\": {}, \"xenstore_data\": {},
+                   \"sm_config\": {}, \"tags\": []})
+dom0 = x.host.get_control_domain(x.host.get_all()[0])
+vbd = x.VBD.create({\"VM\": dom0, \"VDI\": vdi, \"userdevice\": \"autodetect\", \"bootable\": False, \"mode\": \"RW\",
+                    \"type\": \"Disk\", \"empty\": False, \"other_config\": {}, \"qos_algorithm_type\": \"\",
+                    \"qos_algorithm_params\": {}})
+x.VBD.plug(vbd)
+try:
+    sh(\"qemu-img\", \"convert\", \"-n\", \"-O\", \"raw\", \"/var/tmp/deb13.qcow2\", \"/dev/\" + x.VBD.get_device(vbd))
+finally:
+    x.VBD.unplug(vbd)
+    x.VBD.destroy(vbd)
+x.VBD.create({\"VM\": vm, \"VDI\": vdi, \"userdevice\": \"0\", \"bootable\": True, \"mode\": \"RW\", \"type\": \"Disk\",
+              \"empty\": False, \"other_config\": {}, \"qos_algorithm_type\": \"\", \"qos_algorithm_params\": {}})
+pif = [p for p in x.PIF.get_all() if x.PIF.get_management(p)][0]
+x.VIF.create({\"device\": \"0\", \"network\": x.PIF.get_network(pif), \"VM\": vm, \"MAC\": \"\", \"MTU\": \"1500\",
+              \"other_config\": {}, \"qos_algorithm_type\": \"\", \"qos_algorithm_params\": {},
+              \"locking_mode\": \"network_default\", \"ipv4_allowed\": [], \"ipv6_allowed\": []})
+x.VM.start(vm, False, False)
+print(json.dumps({\"vm\": x.VM.get_uuid(vm), \"template\": x.VM.get_name_label(tpl)}))
+'" | tail -1 >"$LAB_X/guest.json"
+	log "guest nexus-deb running: $(cat "$LAB_X/guest.json")"
 }
 
 step_destroy() {

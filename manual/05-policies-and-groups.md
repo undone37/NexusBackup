@@ -309,7 +309,7 @@ backup of each guest or source of the group reads everything instead of trusting
 what it would have reported, and compares the result with the previous snapshot. Data that changed although the
 tracker did not report it is **unreported**. Empty = the default (**90 days** for Proxmox VE and VMware groups, **30 days** for
 agents, NFS/SMB shares and TrueNAS), **0** = off. Containers and plugin sources have no full read (containers are
-read in full by every backup anyway).
+read in full by every backup anyway); XCP-ng groups have none yet.
 
 ![Protection group: full read](images/group-full-read.png)
 

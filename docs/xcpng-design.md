@@ -1,7 +1,8 @@
 # XCP-ng / XenServer backups: design (Phase 42, #40)
 
-Status: proposal (2026-10-25), before any code (plan.md Phase 42: a design note first). The XAPI facts the design
-rests on were checked the same day on a nested XCP-ng 8.3 (`lab/pvehost/xcpng.sh xapi`, "Lab results" below).
+Status (2026-10-25): M1 to M3 implemented (`crates/xcpng`, source kind `xcpng`, restore to Proxmox VE) and tested
+on a nested XCP-ng 8.3 ("Lab results" below); M4 (restore to the pool) open. The XAPI facts the design rests on were
+checked before any code (`lab/pvehost/xcpng.sh xapi`).
 
 ## Decisions proposed
 
@@ -61,8 +62,8 @@ metadata-only VDIs stay, so the next run can still be incremental.
   master may change, so every host is listed).
 - Groups list VM UUIDs from the inventory (or all / by tag), as for VMware; the scheduler runs
   `nexus-xcpng <config> backup` per group (exclusive per source) and `inventory`.
-- SELinux: domain `nexus_xcpng_t` (https for XAPI, `nexus_nbd_port_t` = 10809/tcp outbound), no write access to
-  anything but its job dir and the store, like `nexus_vmware_t`.
+- SELinux: domain `nexus_xcpng_t` (https for XAPI, NBD on 10809/tcp, which the base policy labels
+  `unreserved_port_t`: no own port type), no write access to anything but the store, like `nexus_vmware_t`.
 - Firewall: outbound 443 to `host`, 10809 to `nbd_hosts` (nftables sets from the source config, as for VMware NFC).
 
 ## Restore
@@ -96,10 +97,15 @@ metadata-only VDIs stay, so the next run can still be incremental.
 - M2 (CBT): after 4 MiB written at 512 MiB, the incremental read exactly that 4 MiB chunk (7.1 s against 34 s for
   the full 1 GiB); `VDI.data_destroy` after `VM.destroy` of the snapshot, the previous metadata VDI destroyed.
 
+- M3 through the appliance (0.0.52-dev on VM 201, SELinux enforcing, `lab/pvehost/xcpng-e2e.sh`): source,
+  inventory, a group with the running Debian 13 guest (`xcpng.sh guest`): full 3 GiB in 119 s, the next backup
+  incremental (256 KiB read, 7 s); files listed from the snapshot (`/vda1/etc`); restored to pve-test as a new VM
+  (VirtIO SCSI, 2 cores, 1 GiB, `ostype l26` from the "Debian Trixie 13" template) in 48 s, booted to the login
+  prompt. The restore gives the NICs new MACs (PVE `unique`), as for VMware.
+
 ## Open questions
 
-- A snapshot of a running VM with a guest OS (the lab used a VDI written from dom0), and CBT after a live migration
-  within a pool and after an SR migration (expected: CBT reset, full read).
+- CBT after a live migration within a pool and after an SR migration (expected: CBT reset, full read).
 - Throughput with several NBD connections per disk; whether a non-TLS NBD purpose (`insecure_nbd`) should ever be
   offered (proposal: no).
 - RBAC on XCP-ng (no role-based access control in the free edition): document the account the connector needs.

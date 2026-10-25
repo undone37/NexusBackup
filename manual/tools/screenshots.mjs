@@ -711,6 +711,7 @@ async function main() {
       await edit('web01-files', 'source-agent', 1400);
       await edit('nas01', 'source-truenas', 1700);
       await edit('vc01', 'source-vmware', 1300);
+      await edit('xcp-pool1', 'source-xcpng', 1100);
       await edit('filer-projects', 'source-nfs', 1150);
       await edit('fs01-data', 'source-smb', 1250);
       await edit('pg-shop', 'source-postgresql', 2000);

@@ -110,11 +110,12 @@
   // "Validate connection": plugin_validate job on the stored config.
   const ctl = new AbortController();
   onDestroy(() => ctl.abort());
-  // guest inventory (Phase 13c): PVE, TrueNAS, VMware and plugin kinds that list guests
+  // guest inventory (Phase 13c): PVE, TrueNAS, VMware, XCP-ng and plugin kinds that list guests
   const hasInventory = (x: Source) =>
     x.kind === 'pve' ||
     x.kind === 'truenas' ||
     x.kind === 'vmware' ||
+    x.kind === 'xcpng' ||
     (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
   let invOf: Source | null = $state(null);
   let invOpen = $state(false);
@@ -184,7 +185,7 @@
     recursive: false,
     sudo: true,
     zfs_sudo: true,
-    // vmware
+    // vmware, xcpng (user; nfc_hosts holds XCP-ng's nbd_hosts)
     vm_user: '',
     datacenter: 'ha-datacenter',
     nfc_hosts: '',
@@ -240,14 +241,21 @@
     const l = x?.kind === 'linux' ? x.config : undefined;
     const n = x?.kind === 'truenas' ? x.config : undefined;
     const v = x?.kind === 'vmware' ? x.config : undefined;
+    const xc = x?.kind === 'xcpng' ? x.config : undefined;
     const sh = x?.kind === 'nfs' || x?.kind === 'smb' ? x.config : undefined;
     f = {
       kind: x?.kind ?? 'pve',
       tenant: x?.tenant ?? tenants[0]?.name ?? '',
       name: x?.name ?? '',
-      host: c?.host ?? n?.host ?? v?.host ?? sh?.host ?? '',
-      port: c?.port ?? n?.port ?? v?.port ?? sh?.port ?? (x?.kind === 'nfs' ? 2049 : x?.kind === 'smb' ? 445 : 8006),
-      ca_pem: c?.ca_pem ?? n?.ca_pem ?? v?.ca_pem ?? '',
+      host: c?.host ?? n?.host ?? v?.host ?? xc?.host ?? sh?.host ?? '',
+      port:
+        c?.port ??
+        n?.port ??
+        v?.port ??
+        xc?.port ??
+        sh?.port ??
+        (x?.kind === 'nfs' ? 2049 : x?.kind === 'smb' ? 445 : 8006),
+      ca_pem: c?.ca_pem ?? n?.ca_pem ?? v?.ca_pem ?? xc?.ca_pem ?? '',
       token_id: c?.token_id ?? '',
       token_secret: '',
       nodes: JSON.stringify(c?.nodes ?? {}, null, 2),
@@ -277,9 +285,9 @@
       recursive: n?.recursive ?? false,
       sudo: n?.sudo ?? true,
       zfs_sudo: n?.zfs_sudo ?? true,
-      vm_user: v?.user ?? '',
+      vm_user: v?.user ?? xc?.user ?? '',
       datacenter: v?.datacenter ?? 'ha-datacenter',
-      nfc_hosts: (v?.nfc_hosts ?? []).join('\n'),
+      nfc_hosts: (v?.nfc_hosts ?? xc?.nbd_hosts ?? []).join('\n'),
       transport: v?.transport ?? 'nfc',
       proxy_vm: v?.proxy_vm ?? '',
       proxy_agent: v?.proxy_agent ?? '',
@@ -319,6 +327,7 @@
     linux: 8006,
     truenas: 443,
     vmware: 443,
+    xcpng: 443,
     nfs: 2049,
     smb: 445,
   };
@@ -460,6 +469,20 @@
     return config;
   }
 
+  /** Config of an xcpng source; the password is write-only (only sent when entered). */
+  function xcpngConfig(): Record<string, unknown> {
+    const config: Record<string, unknown> = {
+      host: f.host.trim(),
+      port: Number(f.port),
+      ca_pem: f.ca_pem,
+      user: f.vm_user.trim(),
+    };
+    const hosts = lines(f.nfc_hosts);
+    if (hosts.length) config.nbd_hosts = hosts;
+    if (f.password) config.password = f.password;
+    return config;
+  }
+
   /** Phase 22b: adds the caps / read limit; false (after telling the user) when invalid. */
   function withLimits(config: Record<string, unknown>): boolean {
     const l = limitsConfig(f.lim, f.kind === 'pve');
@@ -567,9 +590,11 @@
           ? truenasConfig()
           : f.kind === 'vmware'
             ? vmwareConfig()
-            : f.kind === 'nfs' || f.kind === 'smb'
-              ? shareConfig()
-              : pveConfig();
+            : f.kind === 'xcpng'
+              ? xcpngConfig()
+              : f.kind === 'nfs' || f.kind === 'smb'
+                ? shareConfig()
+                : pveConfig();
     if (!config) return;
     const r = editing
       ? await act(put<Source>(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
@@ -762,6 +787,9 @@
               {:else if x.kind === 'vmware'}
                 <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono wrap">{x.config?.user} · {x.config?.datacenter} · NFC</td>
+              {:else if x.kind === 'xcpng'}
+                <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
+                <td class="mono wrap">{x.config?.user} · NBD</td>
               {:else}
                 <td class="mono wrap">{x.config?.host}:{x.config?.port}</td>
                 <td class="mono wrap">{x.config?.token_id}</td>
@@ -790,6 +818,7 @@
           <option value="linux">{t.sources.kinds.linux}</option>
           <option value="truenas">{t.sources.kinds.truenas}</option>
           <option value="vmware">{t.sources.kinds.vmware}</option>
+          <option value="xcpng">{t.sources.kinds.xcpng}</option>
           <option value="nfs">{t.sources.kinds.nfs}</option>
           <option value="smb">{t.sources.kinds.smb}</option>
           {#if kindsEnabled.length || (editing && isPlugin(editing))}
@@ -1078,6 +1107,43 @@
             </div>
           </div>
         {/if}
+      {:else if f.kind === 'xcpng'}
+        <div class="field">
+          <label for="x-host">{t.sources.xcp.host}</label>
+          <input id="x-host" bind:value={f.host} required spellcheck="false" aria-describedby="x-host-hint" />
+          <div class="hint" id="x-host-hint">{t.sources.xcp.hostHint}</div>
+        </div>
+        <div class="field">
+          <label for="x-port">{t.sources.vm.port}</label>
+          <input id="x-port" type="number" min="1" max="65535" bind:value={f.port} required />
+        </div>
+        <div class="field">
+          <label for="x-user">{t.sources.xcp.user}</label>
+          <input
+            id="x-user"
+            class="mono"
+            bind:value={f.vm_user}
+            required
+            spellcheck="false"
+            autocomplete="off"
+            aria-describedby="x-user-hint"
+          />
+          <div class="hint" id="x-user-hint">{t.sources.xcp.userHint}</div>
+        </div>
+        <div class="field">
+          <label for="x-pw">{t.sources.xcp.password}</label>
+          <input
+            id="x-pw"
+            type="password"
+            bind:value={f.password}
+            autocomplete="new-password"
+            required={!editing}
+            aria-describedby="x-pw-hint"
+          />
+          <div class="hint" id="x-pw-hint">
+            {editing?.kind === 'xcpng' && editing.config?.password_set ? t.writeOnlyKeep : t.writeOnlyHint}
+          </div>
+        </div>
       {:else}
         <div class="field">
           <label for="s-host">{t.sources.host}</label>
@@ -1243,6 +1309,29 @@
           placeholder={'esx1.example.com\nesx2.example.com'}
           aria-describedby="v-nfc-hint"></textarea>
         <div class="hint" id="v-nfc-hint">{t.sources.vm.nfcHostsHint}</div>
+      </div>
+    {:else if f.kind === 'xcpng'}
+      <div class="field">
+        <label for="x-cert">{t.sources.xcp.cert}</label>
+        <textarea
+          id="x-cert"
+          class="mono"
+          bind:value={f.ca_pem}
+          required
+          spellcheck="false"
+          aria-describedby="x-cert-hint"></textarea>
+        <div class="hint" id="x-cert-hint">{t.sources.xcp.certHint}</div>
+      </div>
+      <div class="field">
+        <label for="x-nbd">{t.sources.xcp.nbdHosts}</label>
+        <textarea
+          id="x-nbd"
+          class="mono"
+          bind:value={f.nfc_hosts}
+          spellcheck="false"
+          placeholder={'xcp1.example.com\nxcp2.example.com'}
+          aria-describedby="x-nbd-hint"></textarea>
+        <div class="hint" id="x-nbd-hint">{t.sources.xcp.nbdHostsHint}</div>
       </div>
     {:else if f.kind === 'truenas'}
       <div class="field">

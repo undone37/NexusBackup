@@ -49,7 +49,7 @@ COPY --from=web /src/web/dist web/dist
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -j ${JOBS} \
-      -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p vmware -p nas \
+      -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p vmware -p xcpng -p nas \
       -p plugin-host -p plugin-manager -p webtls -p fsindex -p fileindex \
  # separately: one build with -p web-api would unify features and link the replication
  # daemons (chunk store, keyd client) into nexus-web-api, which only needs the protocol types
@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
        target/release/nexus-web-api target/release/nexus-scheduler target/release/nexus-setup \
        target/release/nexus-console-gate target/release/nexus-config-backup \
        target/release/nexus-nft-sync target/release/nexus-agentctl target/release/nexus-truenas \
-       target/release/nexus-vmware target/release/nexus-nas target/release/nexus-nasmount \
+       target/release/nexus-vmware target/release/nexus-xcpng target/release/nexus-nas target/release/nexus-nasmount \
        target/release/nexus-replicad target/release/nexus-replica \
        target/release/nexus-pluginhost target/release/nexus-plugin-install target/release/nexus-plugin \
        target/release/nexus-tls target/release/nexus-fsindex target/release/nexus-index /out/ \
@@ -154,7 +154,7 @@ RUN systemd-sysusers /usr/lib/sysusers.d/nexus.conf
 # Binaries and the restore micro-VM.
 COPY --from=rust /out/keyd /out/nexus-pve /out/nexus-offsite /out/nexus-web-api \
      /out/nexus-scheduler /out/nexus-setup /out/nexus-console-gate /out/nexus-config-backup /out/nexus-nft-sync /out/nexus-agentctl /out/nexus-truenas \
-     /out/nexus-vmware /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica \
+     /out/nexus-vmware /out/nexus-xcpng /out/nexus-nas /out/nexus-nasmount /out/nexus-replicad /out/nexus-replica \
      /out/nexus-pluginhost /out/nexus-plugin-install /out/nexus-tls /out/nexus-fsindex /out/nexus-index /usr/libexec/nexus/
 # plugin console tool (verify/inspect bundles); the test plugin (nexus-test-plugin) is never shipped
 COPY --from=rust /out/nexus-plugin /usr/bin/nexus-plugin
@@ -186,6 +186,7 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /usr/libexec/nexus/nexus-agentctl | grep -q nexus_agentctl_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-truenas | grep -q nexus_truenas_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-vmware | grep -q nexus_vmware_exec_t \
+ && matchpathcon /usr/libexec/nexus/nexus-xcpng | grep -q nexus_xcpng_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-nas | grep -q nexus_nas_exec_t \
  && matchpathcon /usr/libexec/nexus/nexus-nasmount | grep -q nexus_nasmount_exec_t \
  && matchpathcon /run/nexus-nasmount/mount.sock | grep -q nexus_nasmount_var_run_t \

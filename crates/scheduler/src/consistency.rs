@@ -11,6 +11,7 @@
 //! - `nas-` (TrueNAS): `crash` (ZFS snapshot);
 //! - `vmw-` (VMware): nexus-vmware's `consistency` line: `application` when VMware Tools quiesced the
 //!   snapshot, else `crash`;
+//! - `xcp-` (XCP-ng): nexus-xcpng's `consistency` line, always `crash` (XCP-ng 8 has no quiesced snapshots);
 //! - `plugin-`: `inconsistent …` → inconsistent; else the manifest's
 //!   `backup.consistent` (`application` or else `crash`).
 //!

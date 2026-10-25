@@ -1006,6 +1006,74 @@ impl VmwareConfig {
     }
 }
 
+/// XCP-ng / XenServer source (docs/xcpng-design.md): the pool master. `password` of `user` is write-only and sealed,
+/// bound to host/port/ca_pem/user. `nbd_hosts`: all hosts of the pool (NBD on 10809 is allowed to them in the
+/// firewall; the master is allowed by `host`).
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct XcpngConfig {
+    host: String,
+    #[serde(default = "https_port")]
+    port: u16,
+    /// the pool master's certificate (pinned) and/or the CA that issued it
+    ca_pem: String,
+    user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    nbd_hosts: Vec<String>,
+}
+
+impl XcpngConfig {
+    fn check(&self) -> ApiResult<()> {
+        // the same endpoint rules as a vSphere source
+        VmwareConfig {
+            host: self.host.clone(),
+            port: self.port,
+            ca_pem: self.ca_pem.clone(),
+            user: self.user.clone(),
+            password: self.password.clone(),
+            datacenter: ha_datacenter(),
+            transport: nfc_transport(),
+            nfc_hosts: Vec::new(),
+            proxy_vm: None,
+            proxy_agent: None,
+        }
+        .check()?;
+        if self.nbd_hosts.len() > 64 {
+            return Err(ApiError::bad("nbd_hosts: at most 64 pool hosts"));
+        }
+        for h in &self.nbd_hosts {
+            validate::host(h).map_err(|_| ApiError::bad(format!("nbd_hosts: {h:?} is not a host name or address")))?;
+        }
+        Ok(())
+    }
+}
+
+/// A vSphere or XCP-ng source config, checked; `None` for other kinds.
+fn vm_source_config(kind: &str, config: Value) -> ApiResult<Option<(Value, bool)>> {
+    let (v, has_password) = match kind {
+        "vmware" => {
+            let cfg: VmwareConfig = parse_config(config)?;
+            cfg.check()?;
+            (
+                serde_json::to_value(&cfg).map_err(anyhow::Error::from)?,
+                cfg.password.is_some(),
+            )
+        }
+        "xcpng" => {
+            let cfg: XcpngConfig = parse_config(config)?;
+            cfg.check()?;
+            (
+                serde_json::to_value(&cfg).map_err(anyhow::Error::from)?,
+                cfg.password.is_some(),
+            )
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some((v, has_password)))
+}
+
 /// NFS or SMB share source (docs/nas-connector.md); one share per source. SMB
 /// secrets (`password`, or `keytab` as base64 for `sec: "krb5"`) are write-only
 /// and sealed, bound to `host`/`port`/`user`.
@@ -1384,10 +1452,9 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
-        "vmware" => {
-            let cfg: VmwareConfig = parse_config(r.config)?;
-            cfg.check()?;
-            if cfg.password.is_none() {
+        kind @ ("vmware" | "xcpng") => {
+            let (cfg, has_password) = vm_source_config(kind, r.config)?.ok_or_else(|| ApiError::bad("kind"))?;
+            if !has_password {
                 return Err(ApiError::bad("config.password: required"));
             }
             let pk = st.seal_key()?;
@@ -1398,11 +1465,11 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
                 }
                 let tx = c.transaction()?;
                 tx.execute(
-                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, 'vmware', ?2, '{}')",
-                    params![r.tenant, r.name],
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, ?2, ?3, '{}')",
+                    params![r.tenant, kind, r.name],
                 )?;
                 let id = tx.last_insert_rowid();
-                let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+                let mut v = cfg;
                 pk.seal_all(&source_owner(id), &mut v)?;
                 tx.execute(
                     "UPDATE sources SET config = ?2 WHERE id = ?1",
@@ -1415,7 +1482,7 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
                 ctx.name(),
                 "source.create",
                 &format!("source/{id}"),
-                json!({"tenant": r.tenant, "kind": "vmware", "name": r.name, "config": out["config"]}),
+                json!({"tenant": r.tenant, "kind": kind, "name": r.name, "config": out["config"]}),
             )?;
             return Ok(created(out));
         }
@@ -1583,9 +1650,7 @@ pub async fn update_source(
         )?;
         return Ok(Json(out));
     }
-    if kind == "vmware" {
-        let mut cfg: VmwareConfig = parse_config(r.config)?;
-        cfg.check()?;
+    if let Some((mut new, has_password)) = vm_source_config(&kind, r.config.clone())? {
         let pk = st.seal_key()?;
         let out = {
             let c = st.cat.conn();
@@ -1594,9 +1659,8 @@ pub async fn update_source(
                 .optional()?
                 .ok_or_else(ApiError::not_found)?;
             let old: Value = serde_json::from_str(&old).unwrap_or_default();
-            let new = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
             // keeping the stored password is only allowed for the same endpoint (it is sealed bound to it)
-            if cfg.password.is_none() {
+            if !has_password {
                 if ["host", "port", "ca_pem", "user"]
                     .iter()
                     .any(|k| old.get(*k) != new.get(*k))
@@ -1605,9 +1669,9 @@ pub async fn update_source(
                         "config.password: required when host, port, ca_pem or user change",
                     ));
                 }
-                cfg.password = old["password"].as_str().map(str::to_owned);
+                new["password"] = old["password"].clone();
             }
-            let mut v = serde_json::to_value(&cfg).map_err(anyhow::Error::from)?;
+            let mut v = new;
             pk.seal_all(&source_owner(id), &mut v)?;
             c.execute(
                 "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
@@ -2147,14 +2211,19 @@ fn check_group(
             guests.sort_by_key(|g| g.as_str().unwrap_or_default().to_owned());
             guests.dedup();
         }
-    } else if kind == "vmware" {
-        // guests = VM UUIDs (the inventory's guest ids; the snapshots are vmw-<uuid>)
+    } else if kind == "vmware" || kind == "xcpng" {
+        // guests = VM UUIDs (the inventory's guest ids; the snapshots are vmw-<uuid> / xcp-<uuid>)
+        let valid = if kind == "vmware" {
+            vmware::names::valid_uuid
+        } else {
+            xcpng::names::valid_uuid
+        };
         let mut ids = Vec::with_capacity(guests.len());
         for g in guests.iter() {
             let u = g
                 .as_str()
-                .filter(|u| vmware::names::valid_uuid(u))
-                .ok_or_else(|| ApiError::bad("guests: VM UUIDs for a vmware source (from its inventory)"))?;
+                .filter(|u| valid(u))
+                .ok_or_else(|| ApiError::bad(format!("guests: VM UUIDs for a {kind} source (from its inventory)")))?;
             ids.push(u.to_ascii_lowercase());
         }
         ids.sort_unstable();
@@ -2263,9 +2332,10 @@ pub async fn create_group(State(st): State<St>, ctx: Ctx, J(mut r): J<GroupReq>)
             ],
         )?;
         let id = c.last_insert_rowid();
-        // Phase 31: Proxmox VE (and VMware, #83) groups index their guests' files by default (sandboxed parser)
+        // Phase 31: Proxmox VE (and VMware, #83, XCP-ng, #40) groups index their guests' files by default (sandboxed
+        // parser)
         c.execute(
-            "UPDATE groups SET index_files = 1 WHERE id = ?1 AND source_id IN (SELECT id FROM sources WHERE kind IN ('pve', 'vmware'))",
+            "UPDATE groups SET index_files = 1 WHERE id = ?1 AND source_id IN (SELECT id FROM sources WHERE kind IN ('pve', 'vmware', 'xcpng'))",
             [id],
         )?;
         c.query_row(

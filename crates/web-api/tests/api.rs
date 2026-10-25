@@ -4611,6 +4611,114 @@ fn vmware_cfg(password: Option<&str>) -> Value {
     c
 }
 
+/// XCP-ng sources (#40): like VMware (password write-only, sealed, kept only for the same endpoint), `nbd_hosts`
+/// checked, no vSphere fields; groups list VM UUIDs; an `xcp-` snapshot restores as a new PVE VM.
+#[tokio::test]
+async fn xcpng_sources() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let cfg = |password: Option<&str>| {
+        let mut c = json!({
+            "host": "xcp1.lab", "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+            "user": "root", "nbd_hosts": ["xcp1.lab", "192.0.2.41"]
+        });
+        if let Some(p) = password {
+            c["password"] = json!(p);
+        }
+        c
+    };
+    let src = |cfg: Value| json!({"tenant": "acme", "kind": "xcpng", "name": "pool", "config": cfg});
+    let r = t.post("/api/v1/sources", &admin, src(cfg(None))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "password is required: {:?}", r.body);
+    for (field, val) in [
+        ("nbd_hosts", json!(["bad host"])),
+        ("datacenter", json!("dc1")),
+        ("host", json!("a b")),
+    ] {
+        let mut c = cfg(Some("pw"));
+        c[field] = val;
+        let r = t.post("/api/v1/sources", &admin, src(c)).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {:?}", r.body);
+    }
+    let r = t.post("/api/v1/sources", &admin, src(cfg(Some("V3ry s3cret!")))).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let sid = r.body["id"].as_i64().unwrap();
+    assert_eq!(
+        (r.body["kind"].clone(), r.body["config"]["password_set"].clone()),
+        (json!("xcpng"), json!(true))
+    );
+    assert_eq!(r.body["config"]["port"], 443);
+    let stored = t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {sid}"));
+    assert!(!stored.contains("s3cret"), "{stored}");
+
+    let url = format!("/api/v1/sources/{sid}");
+    let mut c = cfg(None);
+    c["nbd_hosts"] = json!(["xcp1.lab"]);
+    let r = t.put(&url, &admin, json!({"name": "pool", "config": c})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["config"]["password_set"], true);
+    let mut v: Value =
+        serde_json::from_str(&t.scalar::<String>(&format!("SELECT config FROM sources WHERE id = {sid}"))).unwrap();
+    t.sk.open_all(&source_owner(sid), &mut v).unwrap();
+    assert_eq!(v["password"], "V3ry s3cret!");
+    let mut moved = cfg(None);
+    moved["host"] = json!("xcp2.lab");
+    let r = t.put(&url, &admin, json!({"name": "pool", "config": moved})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+
+    let pol = t.post("/api/v1/policies", &admin, policy(7, false)).await.body["id"]
+        .as_i64()
+        .unwrap();
+    let group = |name: &str, guests: Value| json!({"tenant": "acme", "source_id": sid, "policy_id": pol, "name": name, "guests": guests});
+    let u = "16b4fe6c-85dd-9322-2260-a022accb9376";
+    let g = t.post("/api/v1/groups", &admin, group("vms", json!([u, u]))).await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    assert_eq!(
+        (g.body["guests"].clone(), g.body["index_files"].clone()),
+        (json!([u]), json!(true))
+    );
+    for bad in [json!([101]), json!([u.to_uppercase()]), json!(["16b4fe6c"])] {
+        let g = t.post("/api/v1/groups", &admin, group("bad", bad.clone())).await;
+        assert_eq!(g.status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+
+    let pve = {
+        let c = t.st.cat.conn();
+        c.execute(
+            "INSERT INTO snapshots (tenant, source, time, size, local, offsite) VALUES ('acme', ?1, 1000, 1, 1, 0)",
+            [format!("xcp-{u}")],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'pve', 'cl', '{}')",
+            [],
+        )
+        .unwrap();
+        c.last_insert_rowid()
+    };
+    let restore = |kind: &str, extra: Value| {
+        let mut p =
+            json!({"source": format!("xcp-{u}"), "time": 1000, "node": "pve1", "target": 230, "storage": "local-lvm"});
+        for (k, v) in extra.as_object().unwrap() {
+            p[k] = v.clone();
+        }
+        json!({"kind": kind, "tenant": "acme", "params": p})
+    };
+    let r = t
+        .post("/api/v1/jobs", &admin, restore("restore", json!({"source_id": pve})))
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    for bad in [
+        restore("restore", json!({"source_id": sid})),
+        restore("restore", json!({"source_id": pve, "replace": true})),
+        restore("instant_recover", json!({"source_id": pve})),
+    ] {
+        let r = t.post("/api/v1/jobs", &admin, bad.clone()).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
+    t.finish();
+}
+
 /// VMware sources (Phase 41): the password write-only and sealed (bound to the endpoint), kept on updates only
 /// for the same host/port/certificate/user; group guests are VM UUIDs (lower-cased, deduplicated); validation.
 #[tokio::test]

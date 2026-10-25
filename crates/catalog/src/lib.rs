@@ -1037,12 +1037,26 @@ DROP TABLE sources;
 ALTER TABLE sources_v49 RENAME TO sources;
 "#;
 
+/// v50 (Phase 42, XCP-ng): source kind `xcpng` (an XCP-ng / XenServer pool, docs/xcpng-design.md). Rebuilds
+/// `sources` for the wider kind CHECK like v49.
+const SCHEMA_V50: &str = r#"
+CREATE TABLE sources_v50 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas','nfs','smb','vmware','xcpng')
+    OR (kind GLOB 'plugin:[a-z0-9]*' AND kind NOT GLOB 'plugin:*[^a-z0-9-]*' AND length(kind) <= 39)),
+  name TEXT NOT NULL, config TEXT NOT NULL, maintenance_until INTEGER, UNIQUE (tenant, name));
+INSERT INTO sources_v50 (id, tenant, kind, name, config, maintenance_until)
+  SELECT id, tenant, kind, name, config, maintenance_until FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v50 RENAME TO sources;
+"#;
+
 const MIGRATIONS: &[&str] = &[
     SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_V10,
     SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19,
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
-    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48, SCHEMA_V49,
+    SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48, SCHEMA_V49, SCHEMA_V50,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1538,11 +1552,10 @@ mod tests {
     /// the v7 release can still read the file afterwards.
     /// v49 rebuilds `sources` for the `vmware` kind: rows, `maintenance_until`, the inventory (ON DELETE CASCADE)
     /// and the groups referencing a source survive the rebuild.
-    #[test]
-    fn migration_v49_adds_vmware() {
+    /// Migration `n` (0-based) rebuilds `sources` to allow `kind`: the rows, the inventory and groups survive.
+    fn rebuild_adds_kind(n: usize, kind: &str) {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("c.db");
-        let n = MIGRATIONS.len() - 1;
         {
             let c = Connection::open(&p).unwrap();
             c.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -1561,8 +1574,8 @@ mod tests {
             .unwrap();
             assert!(c
                 .execute(
-                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'vmware', 'vc', '{}')",
-                    []
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', ?1, 'vc', '{}')",
+                    [kind]
                 )
                 .is_err());
         }
@@ -1583,8 +1596,8 @@ mod tests {
             .unwrap();
         assert_eq!(groups, 1);
         conn.execute(
-            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', 'vmware', 'vc', '{}')",
-            [],
+            "INSERT INTO sources (tenant, kind, name, config) VALUES ('acme', ?1, 'vc', '{}')",
+            [kind],
         )
         .unwrap();
         assert!(conn
@@ -1595,6 +1608,15 @@ mod tests {
             .is_err());
     }
 
+    #[test]
+    fn migration_v49_adds_vmware() {
+        rebuild_adds_kind(MIGRATIONS.iter().position(|m| *m == SCHEMA_V49).unwrap(), "vmware");
+    }
+
+    #[test]
+    fn migration_v50_adds_xcpng() {
+        rebuild_adds_kind(MIGRATIONS.iter().position(|m| *m == SCHEMA_V50).unwrap(), "xcpng");
+    }
     #[test]
     fn migration_v8_adds_plugins() {
         let d = tempfile::tempdir().unwrap();
@@ -2546,7 +2568,16 @@ mod tests {
         ] {
             let conn = c.conn();
             conn.execute("INSERT INTO tenants (name) VALUES ('t')", []).unwrap();
-            for k in ["pve", "linux", "truenas", "nfs", "smb", "vmware", "plugin:files"] {
+            for k in [
+                "pve",
+                "linux",
+                "truenas",
+                "nfs",
+                "smb",
+                "vmware",
+                "xcpng",
+                "plugin:files",
+            ] {
                 conn.execute(
                     "INSERT INTO sources (tenant, kind, name, config) VALUES ('t', ?1, ?1, '{}')",
                     [k],

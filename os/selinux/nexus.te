@@ -15,6 +15,7 @@ policy_module(nexus, 1.0.0)
 #               │                                          stores, agent CA (only this domain)
 #               ├─ nexus_truenas_exec_t > nexus_truenas_t  TrueNAS API (wss 443) + ssh (in-domain), stores
 #               ├─ nexus_vmware_exec_t > nexus_vmware_t    vSphere API (https 443) + NFC (902), stores
+#               ├─ nexus_xcpng_exec_t > nexus_xcpng_t      XAPI (https 443) + NBD (10809), stores
 #               ├─ nexus_nas_exec_t ──> nexus_nas_t        NFS/SMB shares: reads nfs_t/cifs_t through the
 #               │                                          mount fd from nexus-nasmount, stores
 #               ├─ nexus_replica_exec_t > nexus_replica_t  secondary: pulls from a primary (TLS), stores
@@ -101,6 +102,7 @@ nexus_job(offsite)
 nexus_job(agentctl)
 nexus_job(truenas)
 nexus_job(vmware)
+nexus_job(xcpng)
 nexus_job(nas)
 nexus_daemon(nasmount)
 nexus_job(replica)
@@ -371,6 +373,7 @@ domtrans_pattern(nexus_scheduler_t, nexus_offsite_exec_t, nexus_offsite_t)
 domtrans_pattern(nexus_scheduler_t, nexus_agentctl_exec_t, nexus_agentctl_t)
 domtrans_pattern(nexus_scheduler_t, nexus_truenas_exec_t, nexus_truenas_t)
 domtrans_pattern(nexus_scheduler_t, nexus_vmware_exec_t, nexus_vmware_t)
+domtrans_pattern(nexus_scheduler_t, nexus_xcpng_exec_t, nexus_xcpng_t)
 domtrans_pattern(nexus_scheduler_t, nexus_nas_exec_t, nexus_nas_t)
 # the scheduler runs with NoNewPrivileges, inherited by its jobs
 allow nexus_scheduler_t nexus_job_domain:process2 { nnp_transition nosuid_transition };
@@ -650,6 +653,15 @@ rw_dirs_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_files_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_dirs_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_files_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
+
+########################################
+# nexus-xcpng (crate xcpng, docs/xcpng-design.md): XAPI JSON-RPC over https and the snapshot VDIs over NBD with
+# TLS (certificate pinned from the job dir, password from the job dir), VM snapshots in the tenant store (job
+# domain rules: job dir, store, keyd). No catalog, no exec.
+
+# XAPI on 443 (http_port_t) or another configured port, NBD on 10809 (both unreserved_port_t in the base policy)
+corenet_tcp_connect_http_port(nexus_xcpng_t)
+corenet_tcp_connect_all_unreserved_ports(nexus_xcpng_t)
 
 ########################################
 # NAS shares (crate nas, docs/nas-connector.md). Decision: kernel NFS/CIFS mounts,

@@ -15,6 +15,7 @@ agent-proto = { path = "../agent-proto" }
 nas = { path = "../nas", default-features = false }
 truenas = { path = "../truenas", default-features = false }
 vmware = { path = "../vmware", default-features = false }
+xcpng = { path = "../xcpng", default-features = false }
 chunkstore = { path = "../chunkstore" }
 # the appliance's own SSH keys (ed25519, OpenSSH format; src/sshkeys.rs)
 ed25519-dalek = "3"

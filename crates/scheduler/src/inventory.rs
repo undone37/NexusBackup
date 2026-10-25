@@ -33,6 +33,7 @@ fn valid_guest(kind: &str, id: &str) -> bool {
         "pve" => id.parse::<u32>().is_ok_and(|v| v > 0) && !id.starts_with('0'),
         "truenas" => truenas::valid_dataset(id),
         "vmware" => vmware::names::valid_uuid(id),
+        "xcpng" => xcpng::names::valid_uuid(id),
         k if k.starts_with("plugin:") => plugin_proto::valid_guest_id(id),
         _ => false,
     }
@@ -53,7 +54,7 @@ impl Scheduler {
             .into_iter()
             .filter(|(_, t, _)| !replicated.contains_key(t))
             .filter(|(_, _, kind)| match kind.strip_prefix("plugin:") {
-                None => kind == "pve" || kind == "truenas" || kind == "vmware",
+                None => matches!(kind.as_str(), "pve" | "truenas" | "vmware" | "xcpng"),
                 Some(k) => plugin_manager::current_for_kind(&c, k)
                     .ok()
                     .flatten()
@@ -134,6 +135,18 @@ impl Scheduler {
                 bin: self.cfg.vmware_bin.clone(),
                 args: vec![
                     plan.dir.join("vmware.json").to_string_lossy().into_owned(),
+                    "inventory".into(),
+                ],
+                alert: Some("inventory_refresh"),
+                capture: true,
+            });
+        } else if kind == "xcpng" {
+            // the VMs of the pool, the VM UUID as guest id (the snapshot source is xcp-<uuid>)
+            plan.files = self.xcpng_config(&job.tenant, sid, &plan.dir, &[], job.id)?;
+            plan.steps.push(Step::Cli {
+                bin: self.cfg.xcpng_bin.clone(),
+                args: vec![
+                    plan.dir.join("xcpng.json").to_string_lossy().into_owned(),
                     "inventory".into(),
                 ],
                 alert: Some("inventory_refresh"),

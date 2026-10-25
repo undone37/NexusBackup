@@ -649,10 +649,11 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'restore':
     case 'restore_ct': {
-      if (String(src).startsWith('vmw-')) {
-        const vmName = (db.inventory.get(db.sources.find((s) => s.kind === 'vmware')?.id ?? -1) ?? []).find(
-          (g) => `vmw-${g.guest}` === src,
-        )?.name;
+      if (String(src).startsWith('vmw-') || String(src).startsWith('xcp-')) {
+        const xcp = String(src).startsWith('xcp-');
+        const vmName = (
+          db.inventory.get(db.sources.find((s) => s.kind === (xcp ? 'xcpng' : 'vmware'))?.id ?? -1) ?? []
+        ).find((g) => `${xcp ? 'xcp' : 'vmw'}-${g.guest}` === src)?.name;
         const name = p.name ?? `${p.name_prefix ?? ''}${vmName ?? 'vmware-vm'}${p.name_prefix ? '' : '-restore'}`;
         return [
           `restoring ${src} @ ${p.time} as VM ${p.target} (${name}) on ${p.node}, storage ${p.storage}, bridge ${p.bridge ?? 'vmbr0'}`,
@@ -852,23 +853,25 @@ function tick() {
         const names =
           gsrc?.kind === 'nfs' || gsrc?.kind === 'smb'
             ? [`share-${gsrc.id}`]
-            : gsrc?.kind === 'truenas'
-              ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
-              : (j.params.vmid
-                  ? [j.params.vmid]
-                  : j.params.agent_id
-                    ? [j.params.agent_id]
-                    : g
-                      ? resolveGuests(g)
-                      : []
-                ).map(guestName);
+            : gsrc?.kind === 'vmware' || gsrc?.kind === 'xcpng'
+              ? resolveGuests(g!).map((u) => `${gsrc.kind === 'xcpng' ? 'xcp' : 'vmw'}-${u}`)
+              : gsrc?.kind === 'truenas'
+                ? resolveGuests(g!).map((d) => `nas-${gsrc.id}-${String(d).replaceAll('/', '.')}`)
+                : (j.params.vmid
+                    ? [j.params.vmid]
+                    : j.params.agent_id
+                      ? [j.params.agent_id]
+                      : g
+                        ? resolveGuests(g)
+                        : []
+                  ).map(guestName);
         for (const n of names) db.snapshots.push(snap(j.tenant, n, t, 64 << 30, true, false, null));
         // Phase 23a: "keep until" extends the store lock of the new snapshots
         if (j.params.keep_until)
           for (const x of db.snapshots.filter((y) => y.tenant === j.tenant && y.time === t && names.includes(y.source)))
             x.lock_until = Math.max(x.lock_until, j.params.keep_until);
         // Phase 15g: groups with index_files list the guests' file systems after the backup
-        if (g?.index_files && (gsrc?.kind === 'pve' || gsrc?.kind === 'vmware'))
+        if (g?.index_files && (gsrc?.kind === 'pve' || gsrc?.kind === 'vmware' || gsrc?.kind === 'xcpng'))
           for (const n of names) {
             const x = addJob(
               'file_index',
@@ -1189,7 +1192,7 @@ const guestName = (g: number | string) =>
 /** Phase 15d demo levels: VMs quiesced by the guest agent (vm-101: agent not running), containers and
  * NAS snapshots crash-consistent, agents and plugins application-consistent (hooks / VSS / dumps). */
 const levelOf = (source: string) =>
-  source === 'vm-101' || /^(ct|nas|share)-/.test(source)
+  source === 'vm-101' || /^(ct|nas|share|xcp)-/.test(source)
     ? 'crash'
     : /^(vm|host|plugin)-/.test(source)
       ? 'application'
@@ -1776,6 +1779,25 @@ function seed() {
       nfc_hosts: ['esx01.acme.example.com', 'esx02.acme.example.com'],
     } as Json,
   };
+  // XCP-ng pool (docs/xcpng-design.md): VMs by their UUID, disks read over NBD/TLS
+  const XCP_VMS: [string, string][] = [
+    ['4b885545-0f69-4a05-9f95-f1f0a75cf2cb', 'acme-mail01'],
+    ['9d1c2e7a-5b3f-4c8d-a6e1-2f7b9c0d4e5a', 'acme-print'],
+  ];
+  const sXcp01 = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'xcpng' as const,
+    name: 'xcp-pool1',
+    config: {
+      host: 'xcp1.acme.example.com',
+      port: 443,
+      ca_pem: '-----BEGIN CERTIFICATE-----\n(XCP-ng pool master, demo)\n-----END CERTIFICATE-----\n',
+      user: 'root',
+      password: 'SECRET',
+      nbd_hosts: ['xcp1.acme.example.com', 'xcp2.acme.example.com'],
+    } as Json,
+  };
   // NFS/SMB shares (docs/nas-connector.md): one share per source, groups without guests.
   const sNfs = {
     id: nextId(),
@@ -1845,7 +1867,7 @@ function seed() {
       timeout_secs: 60,
     } as Json,
   };
-  db.sources.push(sWeb01, sFs02, sNas01, sVc01, sNfs, sSmb, sSmbProj);
+  db.sources.push(sWeb01, sFs02, sNas01, sVc01, sXcp01, sNfs, sSmb, sSmbProj);
 
   // Plugins: PostgreSQL 1.0.0 installed, 1.1.0 uploaded and waiting for approval; TrueNAS plugin 1.0.0.
   // (Both carry the current manifest, so the UI shows today's PostgreSQL forms.)
@@ -1992,6 +2014,7 @@ function seed() {
     grp('acme', sFs02.id, silver.id, 'acme-fs02', [fs02.id]),
     grp('acme', sNas01.id, silver.id, 'acme-nas01', [], { mode: 'all' }),
     grp('acme', sVc01.id, silver.id, 'acme-vsphere', [VC_VMS[0][0], VC_VMS[1][0]]),
+    grp('acme', sXcp01.id, silver.id, 'acme-xcp', [XCP_VMS[0][0], XCP_VMS[1][0]]),
     grp('acme', sNfs.id, silver.id, 'acme-filer', []),
     gSmb,
     gDbs,
@@ -2023,6 +2046,10 @@ function seed() {
   inv(
     sVc01.id,
     VC_VMS.map(([u, name]) => [u, name, 'vm', []]),
+  );
+  inv(
+    sXcp01.id,
+    XCP_VMS.map(([u, name]) => [u, name, 'vm', []]),
   );
   inv(sNas01.id, [
     ['tank/projects', 'tank/projects', 'dataset', ['pool:tank']],
@@ -2107,6 +2134,8 @@ function seed() {
   series('acme', `nas-${sNas01.id}-tank.home`, 640, { hh: 22, skip: 1, days: 5 });
   series('acme', `vmw-${VC_VMS[0][0]}`, 60, { hh: 21, skip: 1, days: 5 });
   series('acme', `vmw-${VC_VMS[1][0]}`, 24, { hh: 21, skip: 1, days: 5 });
+  series('acme', `xcp-${XCP_VMS[0][0]}`, 40, { hh: 21, skip: 1, days: 5 });
+  series('acme', `xcp-${XCP_VMS[1][0]}`, 8, { hh: 21, skip: 1, days: 5 });
   // Phase 22b: the periodic TrueNAS snapshot each dataset snapshot was read from
   for (const s of db.snapshots.filter((x) => x.source.startsWith(`nas-${sNas01.id}-`)))
     (s as Json).meta = {
@@ -3353,7 +3382,7 @@ function stripSource(s: (typeof db.sources)[number]) {
       ? { ...s, config }
       : { ...s, config: { ...config, password_set: !!password, keytab_set: !!keytab } };
   }
-  if (s.kind === 'vmware') {
+  if (s.kind === 'vmware' || s.kind === 'xcpng') {
     const { password, ...config } = s.config;
     return { ...s, config: { ...config, password_set: !!password } };
   }
@@ -3381,6 +3410,25 @@ function truenasKeyLine(c: Json): string | undefined {
   const sudo = (b: boolean) => (b ? '/usr/bin/sudo -n' : '');
   const script = `A=\\"${(c.datasets ?? []).join(' ')}\\" R=\\"${c.recursive ? 1 : ''}\\" S=\\"${sudo(c.sudo)}\\" Z=\\"${sudo(c.zfs_sudo)}\\"; case \\"$SSH_ORIGINAL_COMMAND\\" in …`;
   return `restrict${from},command="${script}" ${pk}`;
+}
+/** xcpng source config (docs/xcpng-design.md); the password omitted on PUT keeps the stored one only for the same
+ * host, port, certificate and user (crates/web-api resources.rs). */
+function xcpngConfig(cfg: Json, old?: Json): Json {
+  const c = structuredClone(cfg ?? {});
+  if (!c.host) throw new HttpError(400, 'host: required');
+  if (!String(c.ca_pem ?? '').includes('BEGIN CERTIFICATE'))
+    throw new HttpError(400, 'ca_pem: expected a PEM certificate (at most 64 KiB)');
+  if (!/^[A-Za-z0-9._@\\-]{1,256}$/.test(c.user ?? ''))
+    throw new HttpError(400, 'user: 1..=256 characters of A-Z a-z 0-9 . _ - @ \\');
+  if ((c.nbd_hosts ?? []).length > 64) throw new HttpError(400, 'nbd_hosts: at most 64 hosts');
+  c.port = c.port ?? 443;
+  if (!c.password) {
+    if (!old?.password) throw new HttpError(400, 'config.password: required');
+    if (['host', 'port', 'ca_pem', 'user'].some((k) => c[k] !== old[k]))
+      throw new HttpError(400, 'config.password: required when host, port, ca_pem or user change');
+    c.password = old.password;
+  }
+  return c;
 }
 /** vmware source config (docs/vmware-design.md); the password omitted on PUT keeps the stored one only for the same
  * host, port, certificate and user (crates/web-api resources.rs). */
@@ -4569,8 +4617,14 @@ on('POST', '/sources', async (c) => {
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
     return [201, stripSource(s)];
   }
-  if (!['pve', 'linux', 'truenas', 'vmware', 'nfs', 'smb'].includes(kind))
-    throw new HttpError(400, 'kind: must be pve, linux, truenas, vmware, nfs, smb or plugin:<kind>');
+  if (!['pve', 'linux', 'truenas', 'vmware', 'xcpng', 'nfs', 'smb'].includes(kind))
+    throw new HttpError(400, 'kind: must be pve, linux, truenas, vmware, xcpng, nfs, smb or plugin:<kind>');
+  if (kind === 'xcpng') {
+    const s = { id: nextId(), tenant, kind: 'xcpng' as const, name, config: xcpngConfig(config) };
+    db.sources.push(s);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s)];
+  }
   if (kind === 'vmware') {
     const s = { id: nextId(), tenant, kind: 'vmware' as const, name, config: vmwareConfig(config) };
     db.sources.push(s);
@@ -4629,6 +4683,11 @@ on('PUT', '/sources/:id', async (c, [id]) => {
   }
   if (s.kind === 'vmware') {
     Object.assign(s, { name: c.body.name ?? s.name, config: vmwareConfig(c.body.config, s.config) });
+    await audit(u.name, 'source.update', `source/${s.id}`, {});
+    return [200, stripSource(s)];
+  }
+  if (s.kind === 'xcpng') {
+    Object.assign(s, { name: c.body.name ?? s.name, config: xcpngConfig(c.body.config, s.config) });
     await audit(u.name, 'source.update', `source/${s.id}`, {});
     return [200, stripSource(s)];
   }
@@ -4741,6 +4800,7 @@ function hasInventory(src: (typeof db.sources)[number]): boolean {
     src.kind === 'pve' ||
     src.kind === 'truenas' ||
     src.kind === 'vmware' ||
+    src.kind === 'xcpng' ||
     (src.kind.startsWith('plugin:') && !!pluginKind(src.kind)?.kind.guests?.list)
   );
 }
@@ -4870,9 +4930,9 @@ function checkGuests(src: (typeof db.sources)[number], guests: unknown) {
       throw new HttpError(400, 'guests: datasets of the source required');
   } else if (src.kind === 'nfs' || src.kind === 'smb') {
     if (guests.length) throw new HttpError(400, "guests: a share source's group lists no guests");
-  } else if (src.kind === 'vmware') {
+  } else if (src.kind === 'vmware' || src.kind === 'xcpng') {
     if (guests.some((g) => typeof g !== 'string' || !/^[0-9a-fA-F-]{32,36}$/.test(g)))
-      throw new HttpError(400, 'guests: VM UUIDs for a vmware source (from its inventory)');
+      throw new HttpError(400, `guests: VM UUIDs for a ${src.kind} source (from its inventory)`);
   } else if (guests.some((g) => !Number.isInteger(g) || g < 100))
     throw new HttpError(400, 'guests: VM/CT IDs required');
 }
@@ -4919,7 +4979,7 @@ on('POST', '/groups', async (c) => {
   Object.assign(g, checkMode(src, c.body), groupSelection(src, c.body));
   if (g.mode === 'explicit') checkGuests(src, g.guests);
   // Phase 31b: VM/CT file index on by default for new Proxmox VE groups
-  if (src.kind === 'pve' || src.kind === 'vmware') g.index_files = true;
+  if (src.kind === 'pve' || src.kind === 'vmware' || src.kind === 'xcpng') g.index_files = true;
   db.groups.push(g);
   await audit(u.name, 'group.create', `group/${g.id}`, g);
   return [201, g];
@@ -4952,7 +5012,7 @@ on('PUT', '/groups/:id/index-files', async (c, [id]) => {
   const u = need(c.user, 'admin', 'tenant_admin');
   const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
   const src = db.sources.find((s) => s.id === g.source_id);
-  if (src?.kind !== 'pve' && src?.kind !== 'vmware')
+  if (src?.kind !== 'pve' && src?.kind !== 'vmware' && src?.kind !== 'xcpng')
     throw new HttpError(
       400,
       'index_files applies to Proxmox VE groups (VM/CT disks); other snapshots are always indexed',
@@ -6847,8 +6907,8 @@ const OVERWRITE = ['never', 'if_older', 'always'];
 const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
 /** Phase 15a restore options, as web-api `jobs.rs` checks them. */
 function checkRestore(kind: string, tenant: string, p: Json) {
-  if (String(p.source ?? '').startsWith('vmw-')) {
-    // a VMware VM as a new Proxmox VE VM (#34)
+  if (String(p.source ?? '').startsWith('vmw-') || String(p.source ?? '').startsWith('xcp-')) {
+    // a VMware or XCP-ng VM as a new Proxmox VE VM (#34, #40)
     if (kind !== 'restore' || p.replace || p.rollback)
       throw new HttpError(
         400,
@@ -8220,6 +8280,8 @@ on('GET', '/names', (c) => {
   // VMware VMs: the guest id is the VM UUID (crates/web-api names.rs)
   for (const s of db.sources.filter((x) => x.kind === 'vmware'))
     for (const g of db.inventory.get(s.id) ?? []) if (g.name) add(s.tenant, `vmw-${g.guest}`, g.name);
+  for (const s of db.sources.filter((x) => x.kind === 'xcpng'))
+    for (const g of db.inventory.get(s.id) ?? []) if (g.name) add(s.tenant, `xcp-${g.guest}`, g.name);
   // plugin sources: the source's name, a guest (database) after it
   for (const s of db.sources.filter((x) => x.kind.startsWith('plugin:'))) {
     const id = `plugin-${s.kind.slice(7)}-${s.id}`;

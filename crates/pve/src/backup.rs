@@ -582,15 +582,15 @@ impl Cluster {
         )
     }
 
-    /// Restore of a VMware VM snapshot `vmw-<uuid>/<time>` as PVE VM `target` on `node` (#34,
-    /// crate::fromvmware): the `.vmx` becomes the configuration, the disk indexes PVE drives; a temporary archive
-    /// `nexus-<target>-<time>` in the nodes' index.json carries both while PVE restores. `bridge`: the NICs'
-    /// bridge. No replace or rollback: there is no PVE original.
+    /// Restore of a VMware VM snapshot `vmw-<uuid>/<time>` (#34) or an XCP-ng one `xcp-<uuid>/<time>` (#40) as PVE
+    /// VM `target` on `node` (crate::fromvmware): the `.vmx` (or `xcpng.json`) becomes the configuration, the disk
+    /// indexes PVE drives; a temporary archive `nexus-<target>-<time>` in the nodes' index.json carries both while
+    /// PVE restores. `bridge`: the NICs' bridge. No replace or rollback: there is no PVE original.
     #[allow(clippy::too_many_arguments)]
     pub fn restore_vmware(
         &self,
         store: &Store,
-        uuid: &str,
+        source: &str,
         time: u64,
         node: &str,
         target: u32,
@@ -598,12 +598,23 @@ impl Cluster {
         bridge: &str,
         opts: &crate::restore::RestoreOpts,
     ) -> Result<crate::restore::Restored> {
+        use crate::fromvmware::{vmx_from_xcpng, VMX_FILE, XCPNG_FILE};
         if opts.replace || opts.rollback {
-            bail!("replace / rollback: a VMware snapshot has no Proxmox VE original to replace");
+            bail!("replace / rollback: a VMware or XCP-ng snapshot has no Proxmox VE original to replace");
         }
-        let m = store.load_manifest(&format!("vmw-{uuid}"), time)?;
-        let vmx = read_config(store, &m, crate::fromvmware::VMX_FILE)?
-            .with_context(|| format!("vmw-{uuid}/{time}: no {} in the snapshot", crate::fromvmware::VMX_FILE))?;
+        let m = store.load_manifest(source, time)?;
+        let file = if source.starts_with("xcp-") {
+            XCPNG_FILE
+        } else {
+            VMX_FILE
+        };
+        let cfg =
+            read_config(store, &m, file)?.with_context(|| format!("{source}/{time}: no {file} in the snapshot"))?;
+        let vmx = if file == XCPNG_FILE {
+            vmx_from_xcpng(&serde_json::from_str(&cfg).context(XCPNG_FILE)?)
+        } else {
+            cfg
+        };
         let mut disks = Vec::new();
         for name in m.indexes.iter().filter(|n| *n != "config") {
             if let Index::Fixed { size, .. } = store.load_index(&m, name)? {
@@ -633,7 +644,7 @@ impl Cluster {
             device_sizes: conv.devices.iter().map(|d| (d.0.clone(), d.2)).collect(),
             config: conv.conf.clone(),
             firewall: None,
-            notes: format!("restored from VMware snapshot vmw-{uuid}/{time}"),
+            notes: format!("restored from snapshot {source}/{time}"),
             protected: false,
         };
         index["archives"]
