@@ -785,6 +785,15 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   rollback approved: pre-rollback snapshot, 95 of 4096 chunks written, job 68 s; `qemu-img compare` equal to a
   plain restore of the snapshot; boots without marker and junk. Found (lab): the clone step's address wait ended the
   script when the guest agent did not answer yet (fixed). Left: LVM-thin and RBD (pve-test has neither).
+- [x] (#60) Own kernel for the restore micro-VM (2026-10-25): built in the builder container from linux-source-6.12
+  with `restore-vm/kernel.config` (kernel 254 s, ZFS 64 s on 8 cores); vmlinuz 8.6 MB + initrd 9.9 MB against 12.2 +
+  12.9 MB. restore_vm fixture test (8 file systems incl. ZFS, LVM, md; tar, zip, YARA) on VM 280 (nested KVM): passes,
+  first mounts 10.4 s against 15.6 s with the Debian kernel. Appliance VM 201: the spike bind-mounted over the shipped
+  image (`lab/pvehost/kernel-spike.sh`), `files_list /` of vm-225 (ext4), vm-229 (LVM + XFS), vm-101 (NTFS): same
+  mounts, 5-6 s against 9-11 s; then 0.0.47-dev built by os/Containerfile with it: same mounts, 5-7 s. Two builds
+  from scratch: identical vmlinuz and initrd. Found: the appliance cannot mount ext4 (staging disk as a raw tar), a
+  failing `set -e` ends the console shell (one-line console commands), the image's by-id links name the drive, not
+  the serial.
 - [x] (#72) Instant rollback on LVM-thin (2026-10-25, VM 201 on 0.0.46-dev): a nested PVE node (VM 284, PVE 9.2.2,
   installed unattended by `lab/pvehost/pvenested.sh`, `local-lvm` LVM-thin, the appliance's second PVE source
   "pve-nested"); a full clone of a Debian 13 cloud-image VM on `local-lvm` (`PVE_HOST=10.2.34.216 ... rollback.sh`):

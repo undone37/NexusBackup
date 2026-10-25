@@ -24,8 +24,12 @@ restore-vm/build.sh        # no root, no host packages; needs podman, rustup, ca
   `x86_64-unknown-linux-musl` binary. The script adds the rustup target if it
   is missing.
 - `Containerfile` builds a `debian:trixie` (main + contrib) builder image. It
-  contains `linux-image-amd64` and the ZFS module, which `zfs-dkms` builds for
-  exactly that kernel. It also contains the userland: kmod, util-linux
+  builds the VM's own kernel (#60) from Debian's kernel source
+  (`linux-source-6.12`: the series and patches of `linux-image-amd64`):
+  `x86_64_defconfig` plus `kernel.config`, which removes the network stack and
+  every device the VM does not have (USB, SCSI, ATA, sound, graphics) and builds
+  in virtio, the guest file systems, md and device mapper. The ZFS module is the
+  only module; `zfs-dkms` builds it for exactly that kernel. It also contains the userland: kmod, util-linux
   (blkid), lvm2, mdadm, zfsutils-linux and yara (Phase 21e malware scan). The fixture overlay additionally
   gets busybox, sfdisk, e2fsprogs, xfsprogs, ntfs-3g, btrfs-progs and
   dosfstools. Podman caches the layers.
@@ -38,14 +42,18 @@ Output in `target/restore-vm/`:
 
 | file | size | content |
 |---|---|---|
-| `vmlinuz` | 12 MB | Debian 13 kernel 6.12.111+deb13-amd64 |
-| `initrd.img` | 12 MB | agent as `/init`, modules, lvm/zfs/mdadm/blkid/kmod |
+| `vmlinuz` | 8.6 MB | own kernel 6.12.113 (Debian source, `kernel.config`) |
+| `initrd.img` | 9.9 MB | agent as `/init`, the ZFS module, lvm/zfs/mdadm/blkid/kmod |
 | `fixture-overlay.img` | 8.7 MB | tests only: mkfs tools + `fixture.sh`, appended to `initrd.img` |
 | `manifest.txt` | | kernel, ZFS module version, base image digest, package versions, sha256 of all outputs |
 
-Build time: about 3 minutes cold (base image pull, apt, ZFS DKMS compile) and
-about 16 s with the cached builder layers. With the same builder image the
-outputs are bit-for-bit reproducible (`SOURCE_DATE_EPOCH` = kernel mtime). To
+Build time: about 8 minutes cold on 8 cores (base image pull, apt, the kernel
+about 4 minutes, the ZFS module about 1 minute) and about 16 s with the cached
+builder layers. The outputs are bit-for-bit reproducible: the kernel build takes
+its time, user and host from the source package (`SOURCE_DATE_EPOCH` = the mtime
+of `linux-source-6.12.tar.xz`, `KBUILD_BUILD_*`); two builds from scratch gave
+the same vmlinuz and initrd.img (2026-10-25). A Debian kernel update means a new
+`linux-source-6.12` and the next image build picks it up, as before. To
 pin the base, pass `BASE=docker.io/library/debian:trixie@sha256:…`. The apt
 versions are not pinned (no snapshot.debian.org), but `manifest.txt` records
 them.
@@ -143,8 +151,8 @@ Each request is one JSON line. Each reply is one JSON line:
 - There is no seccomp or Landlock filter beyond `-sandbox on`, no cgroup
   limits (CPU, memory, pids, I/O) on the QEMU process and no session time
   limit. A malicious image can keep the VM busy until a timeout fires.
-- The guest kernel is the stock Debian kernel with many modules. A guest file
-  system exploit owns the VM, and from there only the virtio devices and the
+- The guest kernel is built for the VM (#60): no network stack, no USB, SCSI or
+  ATA drivers, only ZFS as a module. A guest file system exploit owns the VM, and from there only the virtio devices and the
   agent channel are reachable. A QEMU escape is the remaining risk, mitigated
   only by the sandbox above.
 - Not covered: encrypted volumes (LUKS, ZFS native encryption, BitLocker),
@@ -180,7 +188,12 @@ tar (sha256) and as part of a zip (sha256).
 Unit tests: path validation and framing in the agent (`cargo test -p
 restorevm-agent`), and tar→zip in `pve::files`.
 
-Measured on the dev box (KVM, release build):
+Own kernel against Debian's (#60, 2026-10-25): the same test on a lab VM with nested KVM (pve-test VM 280,
+2 cores): time to the first `mounts` 10.4 s against 15.6 s, all checks passing; on the appliance VM, `files_list`
+of `/` of three guests (ext4; LVM + XFS; NTFS) took 5 to 6 s against 9 to 11 s, with the same mounts
+(`lab/pvehost/kernel-spike.sh`).
+
+Measured on the dev box (KVM, release build, Debian kernel):
 
 | step | time / rate |
 |---|---|

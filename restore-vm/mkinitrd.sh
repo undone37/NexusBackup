@@ -10,7 +10,8 @@ KVER=$(basename /boot/vmlinuz-* | sed 's/^vmlinuz-//')
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(stat -c %Y /boot/vmlinuz-"$KVER")}
 work=$(mktemp -d)
 
-# modules (with dependencies) for disks, file systems, device mapper, md, ZFS
+# modules (with dependencies) for disks, file systems, device mapper, md, ZFS; with the own kernel all but
+# ZFS are built in (modprobe answers "builtin", nothing to copy)
 MODS="virtio_blk ext4 xfs btrfs ntfs3 vfat exfat isofs nls_cp437 nls_utf8
 	dm_mod dm_snapshot dm_thin_pool dm_mirror raid1 raid10 raid456 zfs"
 
@@ -77,7 +78,7 @@ pack "$f" /out/fixture-overlay.img
 	modinfo -k "$KVER" -F version zfs | sed 's/^/zfs-module /'
 	echo "modules: $MODS"
 	echo "packages:"
-	dpkg-query -W -f '  ${Package} ${Version}\n' linux-image-"$KVER" zfs-dkms zfsutils-linux lvm2 mdadm \
+	dpkg-query -W -f '  ${Package} ${Version}\n' linux-source-6.12 zfs-dkms zfsutils-linux lvm2 mdadm \
 		util-linux kmod libc6 busybox-static e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools fdisk yara
 	echo "sha256:"
 	(cd /out && sha256sum vmlinuz initrd.img fixture-overlay.img agent | sed 's/^/  /')
