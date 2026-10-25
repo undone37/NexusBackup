@@ -288,6 +288,20 @@ export interface VmwareSourceConfig {
   nfc_hosts?: string[];
 }
 
+/** Config of an `xcpng` source (docs/xcpng-design.md): an XCP-ng / XenServer pool. The password is write-only. */
+export interface XcpngSourceConfig {
+  /** the pool master */
+  host: string;
+  port: number;
+  /** the pool master's certificate (pinned) and/or its CA */
+  ca_pem: string;
+  user: string;
+  password?: string;
+  password_set?: boolean;
+  /** all hosts of the pool (NBD on 10809 is allowed to them) */
+  nbd_hosts?: string[];
+}
+
 /**
  * Config of an `nfs` or `smb` share source (docs/nas-connector.md). Optional
  * fields are omitted when unset; SMB secrets (`password`, `keytab` base64) are
@@ -342,6 +356,7 @@ export type PveSource = SourceBase & { kind: 'pve'; config: SourceConfig };
 export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfig };
 export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourceConfig };
 export type VmwareSource = SourceBase & { kind: 'vmware'; config: VmwareSourceConfig };
+export type XcpngSource = SourceBase & { kind: 'xcpng'; config: XcpngSourceConfig };
 export type NfsSource = SourceBase & { kind: 'nfs'; config: ShareSourceConfig };
 export type SmbSource = SourceBase & { kind: 'smb'; config: ShareSourceConfig };
 export type ShareSource = NfsSource | SmbSource;
@@ -350,7 +365,8 @@ export type ShareSource = NfsSource | SmbSource;
  * `config_schema`; secret fields are write-only (GET returns `<field>_set: boolean` instead).
  */
 export type PluginSource = SourceBase & { kind: `plugin:${string}`; config: Record<string, unknown> };
-export type Source = PveSource | LinuxSource | TrueNasSource | VmwareSource | NfsSource | SmbSource | PluginSource;
+export type Source =
+  PveSource | LinuxSource | TrueNasSource | VmwareSource | XcpngSource | NfsSource | SmbSource | PluginSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */

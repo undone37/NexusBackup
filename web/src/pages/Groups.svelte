@@ -79,10 +79,14 @@
   const policyName = (id: number) => policies.find((p) => p.id === id)?.name ?? `#${id}`;
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   // a PVE guest by its name, the VMID in parentheses (identifiable across clusters and tenants)
-  // VM UUIDs (vmware sources) by their vSphere name, agent ids by the agent name, VMIDs as "100 (name)"
+  // VM UUIDs (vmware, xcpng sources) by their VM name, agent ids by the agent name, VMIDs as "100 (name)"
   const UUID_RE = /^[0-9a-f-]{32,36}$/;
   const guestText = (g: number | string, tenant?: string) =>
-    typeof g === 'string' ? (UUID_RE.test(g) ? (nameOf(tenant, `vmw-${g}`) ?? g) : agentName(g)) : vmidLabel(tenant, g);
+    typeof g === 'string'
+      ? UUID_RE.test(g)
+        ? (nameOf(tenant, `vmw-${g}`) ?? nameOf(tenant, `xcp-${g}`) ?? g)
+        : agentName(g)
+      : vmidLabel(tenant, g);
 
   let open = $state(false);
   let editing: Group | null = $state(null);
@@ -115,10 +119,10 @@
     const s = sources.find((x) => x.id === Number(f.source_id));
     return s?.kind === 'truenas' ? s : null;
   });
-  // A vmware source: guests = VM UUIDs from its inventory (kept in f.datasets, like plugin guest ids).
+  // A vmware or xcpng source: guests = VM UUIDs from its inventory (kept in f.datasets, like plugin guest ids).
   const vmSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
-    return s?.kind === 'vmware' ? s : null;
+    return s?.kind === 'vmware' || s?.kind === 'xcpng' ? s : null;
   });
   // An nfs/smb source is one share: the group has no guests.
   const shareSource = $derived.by(() => {
@@ -135,8 +139,8 @@
   // Phase 15e/f: disk selection (PVE) and parallel guests (PVE, plugins)
   const pveSource = $derived(sources.find((x) => x.id === Number(f.source_id))?.kind === 'pve');
   const parallelSource = $derived(pveSource || !!pluginSource);
-  // VM disks whose files the group may index (#83: VMware too)
-  const diskSource = $derived(pveSource || sources.find((x) => x.id === Number(f.source_id))?.kind === 'vmware');
+  // VM disks whose files the group may index (#83: VMware too, #40: XCP-ng)
+  const diskSource = $derived(pveSource || !!vmSource);
   const DISK_RE = /^[a-z]+[0-9]{1,3}$/;
   const diskList = (v: string) => v.split(/[\s,]+/).filter(Boolean);
   /** `{"*": [...], "<vmid>": [...]}` from the two fields, or null (after telling the user). */
@@ -173,6 +177,7 @@
     return s.kind === 'pve' ||
       s.kind === 'truenas' ||
       s.kind === 'vmware' ||
+      s.kind === 'xcpng' ||
       (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list)
       ? s
       : null;

@@ -644,14 +644,14 @@ pub fn index_roots(
     Ok((out, true))
 }
 
-/// `nexus-pve … files <vmid|vmw-uuid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index [hashes] | index-vm`
-/// (`source`: `vm-<vmid>` or `vmw-<uuid>`)
+/// `nexus-pve … files <vmid|vmw-uuid|xcp-uuid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>… | index [hashes] | index-vm`
+/// (`source`: `vm-<vmid>`, `vmw-<uuid>` or `xcp-<uuid>`)
 /// (`index`: crates/pve/src/fsindex.rs; `index-vm`: the walk in the micro-VM):
 /// all fixed indexes (disks) of the VM snapshot attached. Image directory from
 /// `NEXUS_RESTORE_VM_DIR` (default `/usr/lib/nexus/restore-vm`), QEMU from `NEXUS_QEMU`.
 pub fn cli(store: &Store, source: &str, time: u64, args: &[String]) -> Result<()> {
     let usage =
-        "files <vmid|vmw-uuid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index [hashes] | index-vm";
+        "files <vmid|vmw-uuid|xcp-uuid> <time> mounts | ls <path> | get <out.tar|out.zip> <path>... | index [hashes] | index-vm";
     // Phase 31a: the name index without booting the micro-VM (sandboxed parser); Phase 31c:
     // `hashes` adds the content hashes (groups with `file_hashes`)
     if let [c, rest @ ..] = args {

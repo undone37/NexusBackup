@@ -339,6 +339,7 @@ export const en = {
       agent: 'Agent hosts',
       truenas: 'TrueNAS',
       vmware: 'VMware',
+      xcpng: 'XCP-ng',
       nfs: 'NFS shares',
       smb: 'SMB shares',
       share: 'File shares',
@@ -404,6 +405,10 @@ export const en = {
     fullRestoreHint: 'Restore onto a Proxmox VE node',
     vmwRestore: 'Restore as Proxmox VE VM',
     vmwRestoreHint: 'A new VM on a Proxmox VE cluster, converted from the VMware configuration',
+    xcpRestoreHint: 'A new VM on a Proxmox VE cluster, converted from the XCP-ng VM record',
+    xcpHint:
+      'The XCP-ng VM becomes a new Proxmox VE VM: CPU, memory, firmware, network cards and disks come from its stored VM record. Linux guests get VirtIO; Windows guests get SATA disks and e1000e network cards until the VirtIO drivers are installed (the XCP-ng PV drivers do not work on Proxmox VE; the job log lists what to check).',
+    xcpNoCluster: 'This tenant has no Proxmox VE source: add one under Sources to restore XCP-ng VMs.',
     vmwHint:
       'The VMware VM becomes a new Proxmox VE VM: CPU, memory, firmware, network cards and disks come from its .vmx. Linux guests get VirtIO; Windows guests get SATA disks and e1000e network cards until the VirtIO drivers are installed (the job log lists what to check).',
     vmwCluster: 'Proxmox VE cluster',
@@ -965,6 +970,7 @@ export const en = {
       linux: 'Linux or Windows host (agent)',
       truenas: 'TrueNAS (ZFS datasets)',
       vmware: 'VMware ESXi or vCenter',
+      xcpng: 'XCP-ng / XenServer',
       nfs: 'NFS share',
       smb: 'SMB share',
     } as Record<string, string>,
@@ -1022,6 +1028,19 @@ export const en = {
       proxyAgent: 'Agent on the proxy VM',
       proxyAgentHint: 'The enrolled Linux agent running inside the proxy VM; it reads the hot-added disks.',
       vmsShort: 'VMs',
+    },
+    xcp: {
+      host: 'Pool master',
+      hostHint: 'Host name or address of the pool master (XAPI over HTTPS).',
+      cert: 'Pool master certificate (PEM)',
+      certHint:
+        'Pinned: the certificate the pool master serves (/etc/xensource/xapi-ssl.pem without the key), or the CA that issued it. Public CAs are not trusted.',
+      user: 'User',
+      userHint: 'root, or a pool user allowed to snapshot VMs, read their disks and enable changed block tracking.',
+      password: 'Password of that user',
+      nbdHosts: 'Hosts of the pool (one per line)',
+      nbdHostsHint:
+        'The disks are read over NBD with TLS (TCP 10809) from the host that has the storage; the firewall allows these hosts. The network needs the purpose nbd (xe network-param-add param-name=purpose param-key=nbd).',
     },
     sh: {
       host: 'Server (host name or IP)',
@@ -1718,7 +1737,8 @@ export const en = {
     linuxGuest: (n: string) => `Backs up the host of agent ${n} (the paths configured in the source).`,
     datasets: 'Datasets (none selected = all datasets of the source)',
     vms: 'Virtual machines',
-    vmsHint: 'No VMs in the inventory yet: refresh it to list the VMs of the ESXi host or vCenter.',
+    vmsHint:
+      'No VMs in the inventory yet: refresh it to list the VMs of the source (ESXi host, vCenter or XCP-ng pool).',
     wholeShare: 'Backs up the whole share (the export or share configured in the source).',
     wholeSource: 'Backs up the whole source as configured (this plugin kind has no guest selection).',
     loadGuests: (title: string) => `Load ${title}`,

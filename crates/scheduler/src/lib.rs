@@ -170,6 +170,8 @@ pub struct Config {
     pub truenas_bin: PathBuf,
     /// VMware connector (crate vmware)
     pub vmware_bin: PathBuf,
+    /// XCP-ng connector (crate xcpng)
+    pub xcpng_bin: PathBuf,
     /// NFS/SMB connector (crate nas)
     pub nas_bin: PathBuf,
     /// plugin host (crate plugin-host, docs/plugin-system.md)
@@ -295,6 +297,7 @@ impl Default for Config {
             agentctl_bin: "/usr/libexec/nexus/nexus-agentctl".into(),
             truenas_bin: "/usr/libexec/nexus/nexus-truenas".into(),
             vmware_bin: "/usr/libexec/nexus/nexus-vmware".into(),
+            xcpng_bin: "/usr/libexec/nexus/nexus-xcpng".into(),
             nas_bin: "/usr/libexec/nexus/nexus-nas".into(),
             pluginhost_bin: "/usr/libexec/nexus/nexus-pluginhost".into(),
             plugins_dir: lib.join("plugins"),
@@ -397,10 +400,12 @@ struct GroupRow {
     agents: Vec<String>,
     /// datasets (truenas sources: the group's guests are dataset names)
     datasets: Vec<String>,
-    /// VM UUIDs (vmware sources: the group's guests; snapshots `vmw-<uuid>`)
+    /// VM UUIDs (vmware / xcpng sources: the group's guests; snapshots `vmw-<uuid>` / `xcp-<uuid>`)
     vms: Vec<String>,
     /// the source is a VMware one (dispatch also when `vms` is empty: nothing to back up, not a PVE group)
     vmware: bool,
+    /// the source is an XCP-ng one (as `vmware`)
+    xcpng: bool,
     /// nfs/smb source: the group backs up the share itself (`share-<source>`)
     share: bool,
     /// plugin source: (plugin id, guest ids; empty = the source as a whole, unless `auto`)
@@ -473,14 +478,14 @@ fn valid_agent_id(s: &str) -> bool {
 
 /// Snapshot sources of a group: `vm-/ct-<vmid>` for PVE, `host-<agent>` for Linux agents,
 /// `nas-<source>-<dataset>` for TrueNAS (children of recursive datasets: [`group_prefixes`]),
-/// `share-<source>` for NFS/SMB shares, `vmw-<uuid>` for VMware VMs.
+/// `share-<source>` for NFS/SMB shares, `vmw-<uuid>` for VMware VMs, `xcp-<uuid>` for XCP-ng VMs.
 pub(crate) fn group_sources(g: &GroupRow) -> Vec<String> {
     g.guests
         .iter()
         .flat_map(|v| [format!("vm-{v}"), format!("ct-{v}")])
         .chain(g.agents.iter().map(|a| format!("host-{a}")))
         .chain(g.datasets.iter().map(|d| truenas::source_name(g.source_id as u64, d)))
-        .chain(g.vms.iter().map(|u| vmware::names::source_name(u)))
+        .chain(g.vms.iter().map(|u| vm_source_name(g, u)))
         .chain(g.share.then(|| nas::source_name(g.source_id as u64)))
         .chain(g.plugin.iter().flat_map(|(pid, guests)| {
             let sid = g.source_id as u64;
@@ -553,10 +558,24 @@ fn guest(source: &str) -> Result<(bool, u32)> {
     .with_context(|| format!("invalid source {source:?} (expected vm-<id> or ct-<id>)"))
 }
 
-/// Snapshots of guest disks (PVE VMs and containers, VMware VMs: #83) whose files come from a `file_index` job,
-/// not from the backup itself like the file trees of agents and shares.
+/// The snapshot source of VM `uuid` of a vmware or xcpng group.
+pub(crate) fn vm_source_name(g: &GroupRow, uuid: &str) -> String {
+    if g.xcpng {
+        xcpng::names::source_name(uuid)
+    } else {
+        vmware::names::source_name(uuid)
+    }
+}
+
+/// A VMware or XCP-ng VM snapshot (`vmw-` / `xcp-`): fixed disk images and a config, no PVE original.
+pub(crate) fn foreign_vm(source: &str) -> bool {
+    vmware::names::parse_source_name(source).is_some() || xcpng::names::parse_source_name(source).is_some()
+}
+
+/// Snapshots of guest disks (PVE VMs and containers, VMware VMs: #83, XCP-ng VMs) whose files come from a
+/// `file_index` job, not from the backup itself like the file trees of agents and shares.
 pub(crate) fn guest_disks(source: &str) -> bool {
-    source.starts_with("vm-") || source.starts_with("ct-") || vmware::names::parse_source_name(source).is_some()
+    source.starts_with("vm-") || source.starts_with("ct-") || foreign_vm(source)
 }
 
 fn gfs_of(v: &Value) -> Gfs {
@@ -1003,6 +1022,7 @@ impl Scheduler {
             )?;
             let nas = kind == "truenas";
             let vmw = kind == "vmware";
+            let xcp = kind == "xcpng";
             let share = kind == "nfs" || kind == "smb";
             let plugin = kind.strip_prefix("plugin:").map(|k| {
                 (
@@ -1017,7 +1037,7 @@ impl Scheduler {
                         .collect::<Vec<_>>(),
                 )
             });
-            let other = nas || vmw || share || plugin.is_some();
+            let other = nas || vmw || xcp || share || plugin.is_some();
             Ok(GroupRow {
                 share,
                 plugin,
@@ -1031,10 +1051,16 @@ impl Scheduler {
                     Vec::new()
                 },
                 vmware: vmw,
-                vms: if vmw {
+                xcpng: xcp,
+                vms: if vmw || xcp {
+                    let valid = if vmw {
+                        vmware::names::valid_uuid
+                    } else {
+                        xcpng::names::valid_uuid
+                    };
                     guests
                         .iter()
-                        .filter_map(|g| g.as_str().filter(|u| vmware::names::valid_uuid(u)).map(str::to_owned))
+                        .filter_map(|g| g.as_str().filter(|u| valid(u)).map(str::to_owned))
                         .collect()
                 } else {
                     Vec::new()
@@ -1157,10 +1183,15 @@ impl Scheduler {
         }
         {
             let c = self.db.conn();
-            let mut st = c.prepare("SELECT config FROM sources WHERE kind='vmware'")?;
-            for cfg in st.query_map([], |r| r.get::<_, String>(0))? {
-                if let Ok(v) = serde_json::from_str::<Value>(&cfg?) {
-                    targets.extend(firewall::vmware_targets(&v));
+            let mut st = c.prepare("SELECT kind, config FROM sources WHERE kind IN ('vmware','xcpng')")?;
+            for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (kind, cfg) = row?;
+                if let Ok(v) = serde_json::from_str::<Value>(&cfg) {
+                    targets.extend(if kind == "vmware" {
+                        firewall::vmware_targets(&v)
+                    } else {
+                        firewall::xcpng_targets(&v)
+                    });
                 }
             }
         }
@@ -2411,6 +2442,57 @@ impl Scheduler {
         Ok(plan)
     }
 
+    /// nexus-xcpng config (docs/xcpng-design.md). Source config: `host` (the pool master), `port` (443), `ca_pem`
+    /// (pinned), `user`, `password` (sealed); the password and the certificate go into 0600 files in the job dir.
+    /// `job` names the XCP-ng snapshot (`nexus-backup-<job>`).
+    fn xcpng_config(&self, tenant: &str, source_id: i64, dir: &Path, vms: &[String], job: i64) -> Result<Files> {
+        let src = self.source_of(tenant, source_id, "xcpng")?;
+        let s = |k: &str| -> Result<String> {
+            src[k]
+                .as_str()
+                .map(str::to_owned)
+                .with_context(|| format!("source {source_id}: missing {k}"))
+        };
+        let cfg = json!({
+            "tenant": tenant,
+            "store": self.cfg.store_base.join(tenant),
+            "keyd_socket": self.cfg.keyd_socket,
+            "source_id": source_id,
+            "host": s("host")?,
+            "port": src["port"].as_u64().unwrap_or(443),
+            "ca_file": dir.join("ca.pem"),
+            "user": s("user")?,
+            "password_file": dir.join("password"),
+            "vms": vms,
+            "job": job,
+        });
+        Ok(vec![
+            ("ca.pem".into(), s("ca_pem")?.into_bytes()),
+            ("password".into(), s("password")?.into_bytes()),
+            ("xcpng.json".into(), serde_json::to_vec_pretty(&cfg)?),
+        ])
+    }
+
+    /// Backup of XCP-ng VMs (one nexus-xcpng run; exclusive per source: one XAPI session and the VMs' snapshots
+    /// at a time).
+    fn plan_xcpng_backup(&self, job: &Job, mut plan: Plan, source_id: i64, vms: &[String]) -> Result<Plan> {
+        if vms.is_empty() {
+            bail!("nothing to back up: no VMs");
+        }
+        plan.key = format!("source:{source_id}");
+        plan.files = self.xcpng_config(&plan.tenant, source_id, &plan.dir, vms, job.id)?;
+        plan.steps.push(Step::Cli {
+            bin: self.cfg.xcpng_bin.clone(),
+            args: vec![
+                plan.dir.join("xcpng.json").to_string_lossy().into_owned(),
+                "backup".into(),
+            ],
+            alert: None,
+            capture: false,
+        });
+        Ok(plan)
+    }
+
     /// nexus-nas config (docs/nas-connector.md); the SMB password / keytab go
     /// into 0600 files in the job dir (the connector hands them to the mount
     /// helper, which gives the password to the kernel as one mount parameter).
@@ -2983,6 +3065,9 @@ impl Scheduler {
                         if g.vmware {
                             return self.plan_vmware_backup(job, plan, g.source_id, &g.vms);
                         }
+                        if g.xcpng {
+                            return self.plan_xcpng_backup(job, plan, g.source_id, &g.vms);
+                        }
                         if g.share {
                             return self.plan_share_backup(plan, g.source_id, &g.file_filters);
                         }
@@ -3089,20 +3174,21 @@ impl Scheduler {
                 return self.plan_plugin(job, plan);
             }
             "retention"
-                if p["source"]
-                    .as_str()
-                    .is_some_and(|s| s.starts_with(vmware::names::SOURCE_PREFIX)) =>
+                if p["source"].as_str().is_some_and(|s| {
+                    s.starts_with(vmware::names::SOURCE_PREFIX) || s.starts_with(xcpng::names::SOURCE_PREFIX)
+                }) =>
             {
                 let source = ident(p, "source")?;
-                let uuid =
-                    vmware::names::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                if !foreign_vm(source) {
+                    bail!("invalid source {source:?}");
+                }
                 let g = self
                     .groups()?
                     .into_iter()
-                    .find(|g| g.tenant == tenant && g.vms.iter().any(|u| u == uuid));
+                    .find(|g| g.tenant == tenant && g.vms.iter().any(|u| vm_source_name(g, u) == source));
                 plan.key = match &g {
                     Some(g) => format!("source:{}", g.source_id),
-                    None => format!("vmware:{uuid}"),
+                    None => format!("vm:{source}"),
                 };
                 plan.steps.push(Step::Retention {
                     sources: vec![source.to_owned()],
@@ -3129,7 +3215,13 @@ impl Scheduler {
                 let (_source_id, vmids, gfs) = match p["group_id"].as_i64() {
                     Some(g) => {
                         let g = group(g)?;
-                        if !g.agents.is_empty() || !g.datasets.is_empty() || g.share || g.vmware || g.plugin.is_some() {
+                        if !g.agents.is_empty()
+                            || !g.datasets.is_empty()
+                            || g.share
+                            || g.vmware
+                            || g.xcpng
+                            || g.plugin.is_some()
+                        {
                             plan.key = format!("source:{}", g.source_id);
                             plan.steps.push(Step::Retention {
                                 sources: group_sources(&g),
@@ -3223,20 +3315,27 @@ impl Scheduler {
                     }
                 }
             }
-            // a VMware VM snapshot restored as a Proxmox VE VM (#34): `source_id` is the target PVE cluster
+            // a VMware (#34) or XCP-ng (#40) VM snapshot restored as a Proxmox VE VM: `source_id` is the target PVE
+            // cluster
             "restore"
-                if p["source"]
-                    .as_str()
-                    .is_some_and(|s| s.starts_with(vmware::names::SOURCE_PREFIX)) =>
+                if p["source"].as_str().is_some_and(|s| {
+                    s.starts_with(vmware::names::SOURCE_PREFIX) || s.starts_with(xcpng::names::SOURCE_PREFIX)
+                }) =>
             {
                 let source = ident(p, "source")?;
-                let uuid =
-                    vmware::names::parse_source_name(source).with_context(|| format!("invalid source {source:?}"))?;
+                let (cmd, uuid) = match (
+                    vmware::names::parse_source_name(source),
+                    xcpng::names::parse_source_name(source),
+                ) {
+                    (Some(u), _) => ("restore-vmware", u),
+                    (_, Some(u)) => ("restore-xcpng", u),
+                    _ => bail!("invalid source {source:?}"),
+                };
                 let sid = p["source_id"]
                     .as_i64()
-                    .context("restore of a VMware VM: source_id (the target Proxmox VE cluster) is required")?;
+                    .context("restore of a VM snapshot: source_id (the target Proxmox VE cluster) is required")?;
                 self.source_of(tenant, sid, "pve")
-                    .context("restore of a VMware VM: source_id must be a Proxmox VE source of the tenant")?;
+                    .context("restore of a VM snapshot: source_id must be a Proxmox VE source of the tenant")?;
                 plan.key = format!("guest:{tenant}/{source}");
                 plan.files = self.pve_config(tenant, sid, &dir, &[])?;
                 let bridge = p["bridge"].as_str().unwrap_or("vmbr0");
@@ -3248,7 +3347,7 @@ impl Scheduler {
                     bail!("invalid bridge {bridge:?}");
                 }
                 let mut args = vec![
-                    "restore-vmware".to_owned(),
+                    cmd.to_owned(),
                     uuid.to_owned(),
                     num(p, "time")?.to_string(),
                     ident(p, "node")?.to_owned(),
@@ -3437,12 +3536,12 @@ impl Scheduler {
             }
             "files_list" | "files_get" => {
                 let source = ident(p, "source")?;
-                // VMware VM snapshots (#83): fixed disk images like a PVE VM's, read from the store only
-                let vmw = vmware::names::parse_source_name(source).is_some();
+                // VMware (#83) and XCP-ng VM snapshots: fixed disk images like a PVE VM's, read from the store only
+                let vmw = foreign_vm(source);
                 let (ct, vmid) = if vmw { (false, 0) } else { guest(source)? };
                 plan.key = format!("guest:{tenant}/{source}");
                 let resolved = if vmw {
-                    Err(anyhow::anyhow!("VMware snapshot: no PVE source"))
+                    Err(anyhow::anyhow!("VMware / XCP-ng snapshot: no PVE source"))
                 } else {
                     self.resolve_source(job, Some(vmid))
                 };

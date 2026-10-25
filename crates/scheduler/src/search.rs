@@ -419,7 +419,7 @@ impl Scheduler {
         };
         // the disks of one VM/CT snapshot (or a VMware VM's, #83): nexus-pve reads the store only
         ident(p, "source")?;
-        let vmw = vmware::names::parse_source_name(source).is_some();
+        let vmw = crate::foreign_vm(source);
         let (ct, vmid) = if vmw { (false, 0) } else { crate::guest(source)? };
         let time = num(p, "time")?;
         plan.key = format!("guest:{}/{source}", job.tenant);

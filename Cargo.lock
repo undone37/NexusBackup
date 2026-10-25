@@ -5509,6 +5509,7 @@ dependencies = [
  "serde_json",
  "truenas",
  "vmware",
+ "xcpng",
 ]
 
 [[package]]
@@ -5897,6 +5898,7 @@ dependencies = [
  "truenas",
  "vmware",
  "webpki-roots",
+ "xcpng",
  "zeroize",
 ]
 
@@ -7726,6 +7728,7 @@ dependencies = [
  "truenas",
  "vmware",
  "webtls",
+ "xcpng",
 ]
 
 [[package]]

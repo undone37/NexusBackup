@@ -108,9 +108,9 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                 }
             }
             "nfs" | "smb" => add.push((vec![nas::source_name(sid as u64)], sname.clone())),
-            "vmware" => {
+            k @ ("vmware" | "xcpng") => {
                 for u in strs() {
-                    // the VM by its vSphere name from the inventory, the UUID when not listed yet
+                    // the VM by its name from the inventory, the UUID when not listed yet
                     let name: Option<String> = c
                         .query_row(
                             "SELECT name FROM inventory WHERE source_id = ?1 AND guest = ?2 AND name != ''",
@@ -118,10 +118,12 @@ pub fn objects(c: &Connection, scope: Option<&str>, now: i64) -> rusqlite::Resul
                             |r| r.get(0),
                         )
                         .optional()?;
-                    add.push((
-                        vec![vmware::names::source_name(&u)],
-                        format!("{sname} {}", name.unwrap_or_else(|| u.clone())),
-                    ));
+                    let src = if k == "vmware" {
+                        vmware::names::source_name(&u)
+                    } else {
+                        xcpng::names::source_name(&u)
+                    };
+                    add.push((vec![src], format!("{sname} {}", name.unwrap_or_else(|| u.clone()))));
                 }
             }
             k => {

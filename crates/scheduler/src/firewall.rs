@@ -59,6 +59,8 @@ pub fn truenas_targets(src: &Value) -> Vec<(String, u16)> {
 
 /// NFC (VADP network mode) port of an ESXi host.
 pub const NFC_PORT: u16 = 902;
+/// xapi-nbd on an XCP-ng host
+pub const NBD_PORT: u16 = 10809;
 
 /// (host, port) pairs of a VMware source: the vSphere API (`host:port`, default 443), NFC on the same host (a
 /// standalone ESXi), and NFC on `nfc_hosts` (the ESXi hosts behind a vCenter, whose tickets point there).
@@ -78,6 +80,27 @@ pub fn vmware_targets(src: &Value) -> Vec<(String, u16)> {
         .filter_map(Value::as_str)
     {
         out.push((h.trim_matches(['[', ']']).to_owned(), NFC_PORT));
+    }
+    out
+}
+
+/// (host, port) pairs of an XCP-ng source (docs/xcpng-design.md): XAPI on the pool master, NBD (10809) to it and to
+/// every host in `nbd_hosts` (the host with the VDI's SR serves its export).
+pub fn xcpng_targets(src: &Value) -> Vec<(String, u16)> {
+    let mut out = Vec::new();
+    if let Some(h) = src["host"].as_str() {
+        let h = h.trim_matches(['[', ']']).to_owned();
+        let port = src["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(443);
+        out.push((h.clone(), port));
+        out.push((h, NBD_PORT));
+    }
+    for h in src["nbd_hosts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        out.push((h.trim_matches(['[', ']']).to_owned(), NBD_PORT));
     }
     out
 }

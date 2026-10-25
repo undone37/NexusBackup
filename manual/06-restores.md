@@ -37,6 +37,7 @@ The snapshot name tells you what was backed up. The menu follows from it:
 | `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `vmw-<VM UUID>` | VMware VM (ESXi / vCenter) | **Restore as Proxmox VE VM** | **Browse files** |
+| `xcp-<VM UUID>` | XCP-ng / XenServer VM | **Restore as Proxmox VE VM** | **Browse files** |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
@@ -312,32 +313,34 @@ example a whole protection group after losing a cluster.
 Replacing originals is not offered here. Request it per guest, so that each replacement gets its own
 approval.
 
-## VMware VMs as Proxmox VE VMs
+## VMware and XCP-ng VMs as Proxmox VE VMs
 
-A VMware snapshot (`vmw-<VM UUID>`, [chapter 4](04-sources.md#vmware-esxi-and-vcenter)) is restored as a **new
-VM on a Proxmox VE cluster** of the same tenant: **Restore → Restore as Proxmox VE VM**.
+A VMware snapshot (`vmw-<VM UUID>`, [chapter 4](04-sources.md#vmware-esxi-and-vcenter)) or an XCP-ng snapshot
+(`xcp-<VM UUID>`, [chapter 4](04-sources.md#xcp-ng-and-xenserver)) is restored as a **new VM on a Proxmox VE
+cluster** of the same tenant: **Restore → Restore as Proxmox VE VM**.
 
 ![Restore a VMware VM as a Proxmox VE VM](images/restore-vmware.png)
 
 Choose the **Proxmox VE cluster**, its **Node**, the new **VMID**, the target **Storage** and the **Network bridge**
 for the VM's network cards; name, pool, start and disconnected NICs work as for a full restore. The VM's settings
-come from its VMware configuration (`.vmx`):
+come from its VMware configuration (`.vmx`) or its XCP-ng record (`xcpng.json`):
 
-| VMware | Proxmox VE |
+| VMware / XCP-ng | Proxmox VE |
 |---|---|
 | name, memory, vCPUs and cores per socket | name (DNS characters), memory, sockets × cores |
-| guest OS | `ostype` (Linux, Windows 10/11 or Server, other) |
+| guest OS (XCP-ng: the template the VM was created from) | `ostype` (Linux, Windows 10/11 or Server, other) |
 | firmware EFI | OVMF (UEFI) on q35, without an EFI disk: the firmware starts with default variables. Add an EFI disk under *Hardware* if the guest needs persistent boot entries. Secure Boot is off. |
-| disks (SCSI, SATA, NVMe, IDE, in that order) | Linux guests: VirtIO SCSI disks; Windows and other guests: SATA disks (at most 6) |
-| network cards (MAC kept) | Linux guests: VirtIO; Windows and other guests: e1000e, on the chosen bridge |
+| disks (VMware: SCSI, SATA, NVMe, IDE, in that order; XCP-ng: `xvda`, `xvdb`, ...) | Linux guests: VirtIO SCSI disks; Windows and other guests: SATA disks (at most 6) |
+| network cards | Linux guests: VirtIO; Windows and other guests: e1000e, on the chosen bridge, with new MAC addresses (the original VM may still run) |
 
+XCP-ng's guest tools and PV drivers have no use on Proxmox VE; uninstall them after the move.
 Windows has no built-in VirtIO drivers. The restored Windows VM therefore boots from SATA with e1000e network cards;
 install the VirtIO drivers (virtio-win ISO), then switch disks and network cards to VirtIO for speed. The job log
 lists these notes. Linux guests may name their network card differently after the move (e.g. `ens192` → `ens18`):
 check the network configuration on the first boot.
 
-Replace, roll back and instant recovery are not offered for VMware snapshots: there is no Proxmox VE original.
-**Browse files**, the file index and file search work on VMware snapshots as on Proxmox VE VM snapshots (below).
+Replace, roll back and instant recovery are not offered for VMware and XCP-ng snapshots: there is no Proxmox VE
+original. **Browse files**, the file index and file search work on them as on Proxmox VE VM snapshots (below).
 
 ## Instant recovery (VMs)
 
@@ -506,7 +509,7 @@ works as in the original. Full restores, instant recovery and rollbacks restore 
 
 **Browse files** opens a file browser for the snapshot. The appliance reads the file system from the backup:
 
-- **VM images** (Proxmox VE and VMware VMs): the disks are attached read-only to an isolated restore micro-VM on the appliance. Its kernel
+- **VM images** (Proxmox VE, VMware and XCP-ng VMs): the disks are attached read-only to an isolated restore micro-VM on the appliance. Its kernel
   mounts the guest file systems read-only: ext4, XFS, btrfs, NTFS, vfat, exFAT, ISO 9660, LVM, md and ZFS.
   The appliance's own kernel never mounts guest file systems. The first listing takes a few seconds.
   Not supported: encrypted volumes (LUKS, ZFS native encryption, BitLocker), Windows dynamic disks and

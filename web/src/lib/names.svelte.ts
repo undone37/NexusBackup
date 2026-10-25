@@ -22,7 +22,7 @@ function load() {
 }
 
 /** Only these have names: PVE guests, agents, plugin sources and VMware VMs. */
-const named = (source: string) => /^(vm|ct|host|plugin|vmw)-/.test(source);
+const named = (source: string) => /^(vm|ct|host|plugin|vmw|xcp)-/.test(source);
 
 /** The display name of `source` in `tenant` (without a tenant: the name if every tenant agrees). */
 export function nameOf(tenant: string | null | undefined, source: string): string | undefined {

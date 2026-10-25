@@ -2,6 +2,7 @@
 //! block tracking against the previous run's metadata-only snapshot VDIs (`VDI.data_destroy`,
 //! `VDI.list_changed_blocks`).
 
+pub use crate::names::{source_name, valid_uuid};
 use crate::nbdtls::{self, NbdInfo};
 use crate::xapi::Xapi;
 use anyhow::{bail, Context, Result};
@@ -12,23 +13,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const CONFIG: &str = "xcpng.json";
 /// CBT granularity of `VDI.list_changed_blocks`
 const CBT_BLOCK: u64 = 64 << 10;
-
-/// Snapshot source of a VM: `xcp-<vm uuid>`.
-pub fn source_name(uuid: &str) -> String {
-    format!("xcp-{uuid}")
-}
-
-/// A VM UUID as XAPI prints them (lowercase, 8-4-4-4-12).
-pub fn valid_uuid(s: &str) -> bool {
-    s.len() == 36
-        && s.char_indices().all(|(i, c)| {
-            if [8, 13, 18, 23].contains(&i) {
-                c == '-'
-            } else {
-                c.is_ascii_hexdigit()
-            }
-        })
-}
 
 /// XAPI sends 64-bit integers as strings over JSON-RPC.
 fn int(v: &Value) -> Option<u64> {
@@ -337,7 +321,13 @@ fn read_snapshot(
         map.push(json!({"name": d.name, "userdevice": d.userdevice, "size": d.size, "cbt_vdi": cbt_vdi}));
         indexes.push((d.name, idx));
     }
-    let config = json!({"format": 1, "vm": {
+    // NICs by device number with their MACs (a restore keeps them when asked to)
+    let mut vifs = Vec::new();
+    for vif in x.call("VM.get_VIFs", &[json!(snap)])?.as_array().context("VIFs")? {
+        let r = x.call("VIF.get_record", std::slice::from_ref(vif))?;
+        vifs.push(json!({"device": r["device"], "MAC": r["MAC"]}));
+    }
+    let config = json!({"format": 1, "vifs": vifs, "vm": {
         "uuid": uuid, "name_label": rec["name_label"], "name_description": rec["name_description"],
         "VCPUs_max": rec["VCPUs_max"], "memory_static_max": rec["memory_static_max"], "platform": rec["platform"],
         "HVM_boot_params": rec["HVM_boot_params"], "HVM_boot_policy": rec["HVM_boot_policy"],
@@ -362,13 +352,10 @@ mod tests {
             (disk_name("0"), disk_name("1"), disk_name("x")),
             ("xvda".into(), "xvdb".into(), "diskx".into())
         );
-        assert!(valid_uuid("4b885545-0f69-4a05-9f95-f1f0a75cf2cb"));
-        assert!(!valid_uuid("4b885545-0f69-4a05-9f95-f1f0a75cf2c") && !valid_uuid("../../etc/passwd/x/x/x/x/x/x/x/x/"));
         assert_eq!(
             (int(&json!("1073741824")), int(&json!(5)), int(&json!("x"))),
             (Some(1 << 30), Some(5), None)
         );
-        assert_eq!(source_name("a"), "xcp-a");
     }
 
     #[test]

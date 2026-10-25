@@ -1,17 +1,64 @@
 //! Restore of a VMware VM snapshot (`vmw-<uuid>`, crates/vmware) as a Proxmox VE VM (plan.md Phase 41, #34): the
 //! snapshot's `.vmx` becomes a `qemu-server.conf`, its disk indexes (`scsi0-0`, `sata0-1`, ...) become PVE drives.
 //! The restore then runs like a PVE one (a temporary archive in the nodes' index.json, `restore-serve` per drive).
+//! XCP-ng VM snapshots (`xcp-<uuid>`, crates/xcpng, #40) go the same way: their `xcpng.json` is turned into the
+//! `.vmx` keys [`convert`] reads ([`vmx_from_xcpng`]).
 //!
 //! Drivers: Linux guests get VirtIO (SCSI and network), their kernels carry the drivers. Windows and other guests
 //! get SATA disks and e1000e NICs, which Windows drives with its built-in drivers; the restore log says to install
 //! the VirtIO drivers and switch over afterwards.
 
 use anyhow::{bail, Result};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Config index entries of a VMware snapshot (crates/vmware backup.rs).
 pub const VMX_FILE: &str = "vm.vmx";
 pub const STATE_FILE: &str = "vmware.json";
+/// Config index entry of an XCP-ng snapshot (crates/xcpng backup.rs).
+pub const XCPNG_FILE: &str = "xcpng.json";
+
+/// The `.vmx` keys [`convert`] reads, from an XCP-ng snapshot's `xcpng.json`: name, the template the VM was made
+/// from as the guest OS ("Debian Bookworm 12", "Windows Server 2022 (64-bit)"), memory, vCPUs, firmware, the NICs
+/// with their MACs. ponytail: one converter for both hypervisors through the `.vmx` keys; a neutral VM spec type
+/// when a third source needs more than these.
+pub fn vmx_from_xcpng(cfg: &Value) -> String {
+    // XAPI numbers come as strings; a value never spans lines or carries quotes (the name is free text)
+    let s = |v: &Value| -> String {
+        v.as_str()
+            .map(str::to_owned)
+            .or_else(|| v.as_u64().map(|n| n.to_string()))
+            .unwrap_or_default()
+            .replace(|c: char| c.is_control() || c == '"', " ")
+    };
+    let vm = &cfg["vm"];
+    let mut keys = vec![
+        ("displayName".to_owned(), s(&vm["name_label"])),
+        ("guestOS".to_owned(), s(&vm["other_config"]["base_template_name"])),
+        ("numvcpus".to_owned(), s(&vm["VCPUs_max"])),
+        (
+            "cpuid.coresPerSocket".to_owned(),
+            s(&vm["platform"]["cores-per-socket"]),
+        ),
+    ];
+    if let Ok(bytes) = s(&vm["memory_static_max"]).parse::<u64>() {
+        keys.push(("memSize".into(), (bytes >> 20).to_string()));
+    }
+    if vm["HVM_boot_params"]["firmware"] == "uefi" {
+        keys.push(("firmware".into(), "efi".into()));
+    }
+    if vm["platform"]["secureboot"] == "true" {
+        keys.push(("uefi.secureBoot.enabled".into(), "TRUE".into()));
+    }
+    for vif in cfg["vifs"].as_array().into_iter().flatten() {
+        let Ok(n) = s(&vif["device"]).parse::<u32>() else {
+            continue;
+        };
+        keys.push((format!("ethernet{n}.present"), "TRUE".into()));
+        keys.push((format!("ethernet{n}.address"), s(&vif["MAC"])));
+    }
+    keys.iter().map(|(k, v)| format!("{k} = \"{v}\"\n")).collect()
+}
 
 /// One disk of the snapshot: its index name and size in bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,7 +263,7 @@ pub fn convert(vmx: &str, disks: &[VmDisk], target: u32, storage: &str, bridge: 
                 .into(),
         );
         if get("uefi.secureboot.enabled").is_some_and(|s| s.eq_ignore_ascii_case("true")) {
-            notes.push("Secure Boot was on in VMware; it is off in the restored VM".into());
+            notes.push("Secure Boot was on in the source VM; it is off in the restored VM".into());
         }
     }
     if fam == Family::Linux {
@@ -393,5 +440,46 @@ ctkEnabled = "TRUE"
         assert_eq!(size_str(3 << 20), "3M");
         assert_eq!(size_str(1 << 40), "1T");
         assert_eq!(parse_vmx("A.B = \"x\"\n# c = \"d\"\n")["a.b"], "x");
+    }
+
+    #[test]
+    fn from_xcpng() {
+        let cfg = serde_json::json!({"format": 1, "vifs": [{"device": "1", "MAC": "aa:bb:cc:dd:ee:02"},
+                                                        {"device": "0", "MAC": "aa:bb:cc:dd:ee:01"}],
+            "vm": {"name_label": "web 1\nmemSize = \"9\"", "VCPUs_max": "4", "memory_static_max": "4294967296",
+                   "platform": {"cores-per-socket": "2", "secureboot": "true"},
+                   "HVM_boot_params": {"firmware": "uefi"},
+                   "other_config": {"base_template_name": "Debian Bookworm 12"}},
+            "disks": []});
+        let vmx = vmx_from_xcpng(&cfg);
+        let disks = [
+            VmDisk {
+                index: "xvdb".into(),
+                size: 1 << 30,
+            },
+            VmDisk {
+                index: "xvda".into(),
+                size: 8 << 30,
+            },
+        ];
+        let c = convert(&vmx, &disks, 230, "local-lvm", "vmbr0").unwrap();
+        assert_eq!(c.name, "web-1-memsize-9");
+        for l in [
+            "memory: 4096\n",
+            "cores: 2\nsockets: 2\nostype: l26\n",
+            "bios: ovmf\n",
+            "scsi0: local-lvm:vm-230-disk-0,size=8G\n",
+            "scsi1: local-lvm:vm-230-disk-1,size=1G\n",
+            "net0: virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0\nnet1: virtio=AA:BB:CC:DD:EE:02,bridge=vmbr0\n",
+        ] {
+            assert!(c.conf.contains(l), "{l}: {}", c.conf);
+        }
+        assert_eq!(c.devices[0].1, "xvda");
+        assert!(c.notes.iter().any(|n| n.contains("Secure Boot")));
+        // a Windows template: SATA and e1000e
+        let mut w = cfg.clone();
+        w["vm"]["other_config"]["base_template_name"] = "Windows Server 2022 (64-bit)".into();
+        let c = convert(&vmx_from_xcpng(&w), &disks, 231, "local-lvm", "vmbr0").unwrap();
+        assert!(c.conf.contains("ostype: win11\n") && c.conf.contains("sata0: ") && c.conf.contains("net0: e1000e="));
     }
 }

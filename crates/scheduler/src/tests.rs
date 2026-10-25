@@ -2444,6 +2444,96 @@ fn keep_until_locks_new_snapshots() {
     assert_eq!(n, 1);
 }
 
+/// XCP-ng sources (#40): a group backup runs one nexus-xcpng with the VM UUIDs (secrets in 0600 files, the job id
+/// naming the snapshot), retention on `xcp-<uuid>`, inventory, files and restore to PVE through nexus-pve, the
+/// firewall allows XAPI and NBD.
+#[test]
+fn xcpng_jobs() {
+    let e = env(4);
+    let (u1, u2) = (
+        "16b4fe6c-85dd-9322-2260-a022accb9376",
+        "4b885545-0f69-4a05-9f95-f1f0a75cf2cb",
+    );
+    let src = json!({"host": "xcp1.lab", "ca_pem": "CERT", "user": "root", "password": "s3cret",
+                     "nbd_hosts": ["xcp2.lab"]});
+    e.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (6,'t1','xcpng','pool','{src}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (2,'q','daily 22:00','{{\"daily\":8}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (6,'t1',6,2,'vms','[\"{u1}\",\"{u2}\",\"5003C9A6-1B2E-4F7A-9D3C-0123456789AB\"]');
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (7,'t1',6,2,'none','[]');"
+        ))
+        .unwrap();
+    let s = sched(&e);
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(30, "backup", json!({"group_id": 6}))).unwrap();
+    assert_eq!(p.key, "source:6");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["ca.pem", "password", "xcpng.json"]);
+    let file = |n: &str| p.files.iter().find(|f| f.0 == n).unwrap().1.clone();
+    assert_eq!(file("password"), b"s3cret");
+    let cfg: Value = serde_json::from_slice(&file("xcpng.json")).unwrap();
+    assert!(!cfg.to_string().contains("s3cret"));
+    assert_eq!(cfg["vms"], json!([u1, u2]), "invalid guest ids are dropped");
+    assert_eq!((cfg["port"].clone(), cfg["job"].clone()), (json!(443), json!(30)));
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => assert!(bin == &e.cfg.xcpng_bin && args[1] == "backup"),
+        st => panic!("{st:?}"),
+    }
+    let err = s.plan(&job(32, "backup", json!({"group_id": 7}))).unwrap_err();
+    assert!(format!("{err:#}").contains("no VMs"), "{err:#}");
+    let p = s.plan(&job(33, "retention", json!({"group_id": 6}))).unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Retention { sources, .. }] if sources == &[format!("xcp-{u1}"), format!("xcp-{u2}")])
+    );
+    let p = s
+        .plan(&job(34, "retention", json!({"source": format!("xcp-{u1}")})))
+        .unwrap();
+    assert_eq!(p.key, "source:6");
+    assert!(s.plan(&job(35, "retention", json!({"source": "xcp-nope"}))).is_err());
+    let p = s.plan(&job(36, "inventory", json!({"source_id": 6}))).unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { bin, args, capture: true, .. }] if bin == &e.cfg.xcpng_bin && args[1] == "inventory")
+    );
+    let p = s
+        .plan(&job(
+            39,
+            "files_list",
+            json!({"source": format!("xcp-{u1}"), "time": 1000, "path": "/etc"}),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { bin, args, .. }] if bin == &e.cfg.pve_bin && args[1..4] == ["files", &format!("xcp-{u1}"), "1000"])
+    );
+    let p = s
+        .plan(&job(
+            37,
+            "restore",
+            json!({"source": format!("xcp-{u1}"), "time": 1000, "source_id": 1, "node": "pve1", "target": 230,
+                   "storage": "local-lvm", "bridge": "vmbr1"}),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { args, .. }] if args[1..8] == ["restore-xcpng", u1, "1000", "pve1", "230", "local-lvm", "vmbr1"]),
+        "{:?}",
+        p.steps
+    );
+    let t = crate::firewall::xcpng_targets(&src);
+    assert_eq!(
+        t,
+        [
+            ("xcp1.lab".to_owned(), 443),
+            ("xcp1.lab".to_owned(), 10809),
+            ("xcp2.lab".to_owned(), 10809)
+        ]
+    );
+}
+
 /// VMware sources (Phase 41): a group backup runs one nexus-vmware with the VM UUIDs, the password and the
 /// certificate in 0600 files (sealed in the catalog), group and per-source retention on `vmw-<uuid>`, an
 /// inventory step, the firewall allows vSphere and NFC, and an empty group never falls through to PVE.

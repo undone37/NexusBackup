@@ -1379,7 +1379,8 @@ Sources listed as planned in the README, beyond Phases 37, 38 and 41. Each one s
   point-in-time restore; licensing of the lab instance (Oracle Database Free) to check first.
 - **Log backups** as their own schedule for every database source (SQL Server transaction logs, Oracle archive logs,
   as PostgreSQL WAL and MySQL binlogs already have), with the recoverable range shown per snapshot.
-Not started. Epic #24.
+XCP-ng (#40, docs/xcpng-design.md): backups with CBT incrementals, source, jobs and restore to Proxmox VE done and
+lab-tested (2026-10-25); restore to the pool open. The others not started. Epic #24.
 
 Timelines assume a small dedicated team (2–4 engineers); adjust to actual staffing.
 

@@ -17,10 +17,10 @@ use std::collections::{BTreeSet, HashMap};
 /// Selector tags per group.
 const MAX_SELECTOR: usize = 50;
 
-/// Whether sources of `kind` have an inventory (PVE, TrueNAS, VMware, plugin kinds that list guests).
+/// Whether sources of `kind` have an inventory (PVE, TrueNAS, VMware, XCP-ng, plugin kinds that list guests).
 pub fn has_inventory(c: &Connection, kind: &str) -> bool {
     match kind.strip_prefix("plugin:") {
-        None => kind == "pve" || kind == "truenas" || kind == "vmware",
+        None => matches!(kind, "pve" | "truenas" | "vmware" | "xcpng"),
         Some(k) => plugin_manager::current_for_kind(c, k)
             .ok()
             .flatten()
@@ -36,6 +36,7 @@ fn valid_guest(kind: &str, id: &str) -> bool {
             .is_ok_and(|v| validate::vmid(v).is_ok() && v.to_string() == id),
         "truenas" => truenas::valid_dataset(id),
         "vmware" => vmware::names::valid_uuid(id),
+        "xcpng" => xcpng::names::valid_uuid(id),
         _ => plugin_proto::valid_guest_id(id),
     }
 }

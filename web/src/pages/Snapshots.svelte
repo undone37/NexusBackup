@@ -294,7 +294,8 @@
   let rKeepLinks = $state(false);
   // Phase 30: replace by rolling the VM back in place (changed chunks only)
   let rRollback = $state(false);
-  // VMware snapshots (vmw-<uuid>, #34): restored as a new VM on a Proxmox VE cluster of the tenant
+  // VMware and XCP-ng snapshots (vmw-<uuid>, #34; xcp-<uuid>, #40): restored as a new VM on a Proxmox VE cluster
+  // of the tenant
   let rCluster = $state('');
   let rBridge = $state('vmbr0');
   let rScan: ScanFirstOpt | '' = $state('');
@@ -317,7 +318,10 @@
         .flatMap((s) => Object.keys(s.config?.nodes ?? {})),
     ),
   ];
-  const isVmw = $derived(!!(sel as Snapshot | null)?.source.startsWith('vmw-'));
+  // a foreign VM (VMware, XCP-ng) restored as a new Proxmox VE VM
+  const foreignVm = (source: string) => source.startsWith('vmw-') || source.startsWith('xcp-');
+  const isVmw = $derived(foreignVm((sel as Snapshot | null)?.source ?? ''));
+  const isXcp = $derived(!!(sel as Snapshot | null)?.source.startsWith('xcp-'));
   const tenantClusters = $derived(pveSources.filter((s) => s.tenant === (sel as Snapshot | null)?.tenant));
   const nodeNames = $derived(
     nodesOf((sel as Snapshot | null)?.tenant, isVmw && rCluster ? Number(rCluster) : undefined),
@@ -376,7 +380,7 @@
     else if (rPrefix.trim()) params.name_prefix = rPrefix.trim();
     if (rPool.trim()) params.pool = rPool.trim();
     if (rScan) params.scan_first = rScan;
-    if (sel.source.startsWith('vmw-')) {
+    if (foreignVm(sel.source)) {
       params.source_id = Number(rCluster);
       params.bridge = rBridge.trim() || 'vmbr0';
     }
@@ -524,12 +528,12 @@
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
     if (s.source.startsWith('nas-') || s.source.startsWith('share-'))
       return s.local ? [toHost, synthetic(s)] : [toHost];
-    // VMware VMs: restored as a new Proxmox VE VM (#34)
-    if (s.source.startsWith('vmw-'))
+    // VMware and XCP-ng VMs: restored as a new Proxmox VE VM (#34, #40)
+    if (foreignVm(s.source))
       return [
         {
           label: t.snap.vmwRestore,
-          hint: t.snap.vmwRestoreHint,
+          hint: s.source.startsWith('xcp-') ? t.snap.xcpRestoreHint : t.snap.vmwRestoreHint,
           icon: IconRestore,
           onselect: () => openRestore(s, 'restore'),
         },
@@ -946,7 +950,7 @@
       />
       {#if mode === 'instant'}<p class="banner info">{t.snap.instantHint}</p>{/if}
       {#if isVmw}
-        <p class="banner info">{t.snap.vmwHint}</p>
+        <p class="banner info">{isXcp ? t.snap.xcpHint : t.snap.vmwHint}</p>
         {#if tenantClusters.length}
           <div class="field">
             <label for="r-cluster">{t.snap.vmwCluster}</label>
@@ -955,7 +959,7 @@
             </select>
           </div>
         {:else}
-          <p class="banner warn">{t.snap.vmwNoCluster}</p>
+          <p class="banner warn">{isXcp ? t.snap.xcpNoCluster : t.snap.vmwNoCluster}</p>
         {/if}
       {/if}
       <div class="field">

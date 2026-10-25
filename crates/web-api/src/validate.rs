@@ -124,12 +124,17 @@ pub fn host_path(s: &str, what: &str) -> ApiResult<()> {
 }
 
 /// `vm-<vmid>`, `ct-<vmid>`, `host-<agent_id>`, `nas-<source-id>-<dataset>` (TrueNAS), `share-<source-id>` (NFS/SMB)
-/// or `vmw-<uuid>` (VMware).
+/// `vmw-<uuid>` (VMware) or `xcp-<uuid>` (XCP-ng).
 pub fn source_ref(s: &str) -> ApiResult<()> {
     if s.starts_with(vmware::names::SOURCE_PREFIX) {
         return vmware::names::parse_source_name(s)
             .map(|_| ())
             .ok_or_else(|| ApiError::bad("source: expected vmw-<VM UUID>"));
+    }
+    if s.starts_with(xcpng::names::SOURCE_PREFIX) {
+        return xcpng::names::parse_source_name(s)
+            .map(|_| ())
+            .ok_or_else(|| ApiError::bad("source: expected xcp-<VM UUID>"));
     }
     if s.starts_with("plugin-") {
         return plugin_proto::parse_source_name(s)
@@ -267,6 +272,8 @@ mod tests {
         assert!(source_ref("host-0123456789abcdef").is_ok() && source_ref("host-0123456789ABCDEF").is_err());
         assert!(source_ref("vmw-5003c9a6-1b2e-4f7a-9d3c-0123456789ab").is_ok());
         assert!(source_ref("vmw-5003c9a6").is_err() && source_ref("vmw-../x").is_err());
+        assert!(source_ref("xcp-4b885545-0f69-4a05-9f95-f1f0a75cf2cb").is_ok());
+        assert!(source_ref("xcp-4b885545").is_err() && source_ref("xcp-../x").is_err());
         assert!(
             host_path("/srv/x", "t").is_ok()
                 && host_path("C:\\Users\\a", "t").is_ok()
