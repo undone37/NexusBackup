@@ -51,7 +51,7 @@ impl Env {
     fn new() -> Env {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().to_owned();
-        // update-result per agent: fail-<id> fails, busy-<id> answers busy once
+        // update-result per agent: fail-<id> fails, busy-<id> answers busy once, away-<id> is not reached once
         script(
             &p.join("nexus-agentctl"),
             &format!(
@@ -63,6 +63,11 @@ echo "$1 $id" >> $D/calls
 v=$(sed -n 's/.*"version": "\([0-9.]*\)".*/\1/p' "$cfg" | head -1)
 case "$1" in
   update)
+    if [ -e $D/away-$id ]; then rm $D/away-$id
+      echo 'Error: direct: connect 192.0.2.10:7444 (no answer): connection timed out; via edge 192.0.2.20:7445'
+      echo ''
+      echo 'Caused by:'
+      echo '    edge error 404: "agent is not connected to this edge"'; exit 1; fi
     echo 'agent-info {{"agent_id":"'$id'","version":"0.1.0","os":"Debian GNU/Linux 13","caps":["update2","arch=x86_64","install=deb"]}}'
     if [ -e $D/busy-$id ]; then rm $D/busy-$id
       echo 'update-result {{"agent_id":"'$id'","state":"busy","version":"0.1.0","error":"agent error 409: jobs are running"}}'; exit 1; fi
@@ -337,6 +342,43 @@ fn rollout_waves_busy_retry_and_holds() {
         q::<i64>(&e.db, "SELECT COUNT(*) FROM agents WHERE update_state = 'ok'"),
         4
     );
+}
+
+/// #66: an agent that is away when its update starts (stopped, a laptop between networks) is not reached at all:
+/// the item waits for it (no failure, no alert, the rollout keeps running) and the agent counts as unreachable
+/// until the poller sees it again; then it is updated.
+#[test]
+fn an_agent_away_when_its_update_starts_is_retried() {
+    let mut e = Env::new();
+    let [a1, ..] = AGENTS;
+    fs::write(e.p.join(format!("away-{a1}")), "").unwrap();
+    let id = e.rollout(json!({"version": "0.2.0", "scope": {"agents": [a1]}, "canary": 1, "soak_minutes": 0}));
+    e.round();
+    assert_eq!(e.calls().lines().collect::<Vec<_>>(), [format!("update {a1}")]);
+    assert_eq!(e.items(id)[0].2, "waiting", "not reached: waits for the agent");
+    assert_eq!(e.state(id), "running", "no failure, no pause");
+    assert_eq!(
+        q::<i64>(&e.db, &format!("SELECT reachable FROM agents WHERE id = '{a1}'")),
+        0,
+        "unreachable until the poller sees it again"
+    );
+    assert_eq!(
+        q::<i64>(&e.db, "SELECT COUNT(*) FROM alerts WHERE kind = 'agent_update_failed'"),
+        0
+    );
+    assert_eq!(
+        q::<Option<String>>(&e.db, &format!("SELECT update_state FROM agents WHERE id = '{a1}'")),
+        None
+    );
+    e.round();
+    assert_eq!(e.calls().lines().count(), 1, "held while unreachable");
+    // the poller (endpoint) saw it again, e.g. at its edge
+    e.db.conn()
+        .execute(&format!("UPDATE agents SET reachable = 1 WHERE id = '{a1}'"), [])
+        .unwrap();
+    e.round();
+    assert_eq!(e.items(id)[0].2, "ok");
+    assert_eq!(e.state(id), "done");
 }
 
 #[test]

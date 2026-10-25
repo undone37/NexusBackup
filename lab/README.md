@@ -255,6 +255,16 @@ PVE_HOST=10.2.34.216 NODE=pve-nested CLONE=210 SRC_VMID=205 STORAGE=local-lvm FO
 Addresses: 10.2.34.211 and .212 are the appliances (VMs 201, 202), .215 the VMware proxy, .216/.217 the nested node
 and its guest.
 
+## Edge proxy and lab registry on the PVE lab host
+
+- `lab/pvehost/edge.sh`: the edge image (`os/edge/build.sh --test-key`, `lab/edge/Containerfile.lab`, a disk from
+  `lab/appliance/build-disk.sh`) as VM 286 (DHCP), enrolled with VM 201 as "pve-edge"; agents assigned to it reach the
+  appliance through it (rendezvous). Its serial console is tunnelled to `~/nexus-lab/edge-pve/console.sock`.
+- Lab registry: `registry:2` with TLS on VM 280 (10.2.34.99:443, CA in `~/nexus-lab/registry`). Images built with
+  `NEXUS_IMAGE_REPO=10.2.34.99/nexusbackup/appliance` plus `lab/appliance/Containerfile.registry` follow it; push as
+  `:stable`, sign with `release/sign.sh sign` (TEST key, `NEXUS_ALLOW_HTTP=1` for the lab CA), then
+  `offline-update.sh check apply`. VM 201 follows it since 2026-10-25.
+
 ## Appliance replication lab (`lab/appliance/replication.sh`, docs/replication.md)
 
 Two appliance VMs from the same bootc image, both SELinux enforcing, on separate QEMU user networks:

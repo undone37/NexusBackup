@@ -543,7 +543,14 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   0.1.5, no `.prev`. arm64 2026-10-25 (`lab/pvehost/agent-arm64.sh`, TEST-key releases 0.1.20 and 0.1.21 from
   release/packages.sh, 12 artifacts each): the emulated Debian 13 aarch64 VM 200 got the 0.1.20 arm64 .deb and was
   enrolled (agent arch aarch64); the appliance's update plan chose `linux-aarch64/nexus-agent_0.1.21-1_arm64.deb`
-  (install deb), apt-get in band: 0.1.21 in 83 s (TCG). Open: desktop package with the GUI running,
+  (install deb), apt-get in band: 0.1.21 in 83 s (TCG). Edge-connected laptop 2026-10-25 (`lab/pvehost/edge.sh`:
+  the edge image as VM 286 next to VM 201, enrolled; VM 225's agent assigned to it, 7444 dropped in VM 225): the agent
+  stopped, a rollout to 0.1.21 for it, the agent started again. First run: the rollout queued the update before
+  the poller noticed the agent was gone, the attempt failed (direct timed out, the edge did not know the agent),
+  the item failed and the canary paused the rollout: fixed, an attempt that never reached the agent puts the item
+  back to waiting and marks it unreachable. Second run (0.0.51-dev, online from the lab registry): the item waited
+  while the agent was away, 506 s after it came back the update went through the edge (0.1.5 -> 0.1.21, via edge).
+  Open: desktop package with the GUI running,
   arm64 (needs aarch64 packages), an edge-connected laptop.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
   of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by

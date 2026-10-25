@@ -227,7 +227,9 @@ Every tick: rollouts in `running` queue `agent_update` jobs for `waiting` items 
 canary, wave 1 = the rest after all canaries finished plus the soak time), at most `concurrency` at a time, only
 inside one of the rollout's windows (if any), never for agents that are busy (a queued or running job for the
 agent), unreachable (picked up when they are back) or inside an active blackout window of one of their groups'
-policies. A busy answer from the agent puts the item back to `waiting`. The failure threshold (`max_failures` or
+policies. A busy answer from the agent puts the item back to `waiting`; so does an attempt that never reached
+the agent (no `agent-info` line: it went away after the last poll, e.g. a laptop between networks), which also
+marks it unreachable until the poller sees it again (#66): no failure, no alert, no pause. The failure threshold (`max_failures` or
 `max_failure_pct` of the finished items) or a failed canary pauses the rollout (`rollout_paused`, warning). A
 failed item raises `agent_update_failed:<agent>` (warning), resolved by a later successful update. A rollback
 rollout starts only when its quorum request (`agent.rollback`) is executed; rejected or expired: `rejected`.
