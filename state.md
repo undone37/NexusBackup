@@ -1305,6 +1305,12 @@ restores, UI/CLI, import into an appliance). All in this repository.
   a second copy uploaded nothing (5 small top-level files replaced); one more backup: 4 new files; fetch into an
   empty directory, open with the 24 words, restore: identical to /etc. Found: the copy target's tag is `kind`, the
   user doc had no example (added). S3 still open: needs an S3 test box on a lab VM.
+- [x] (#30) S3 copy from an agent (2026-10-25, `lab/pvehost/agent-copy.sh s3`): MinIO with Object Lock
+  (crates/offsite/testbox-s3 in rootless podman, installed on VM 225 itself; lock_days 1) at https://127.0.0.1:9443,
+  trusted through the new target field `ca_file`: copy 1 547 files (0.6 MB), copy 2 nothing new (5 small files
+  replaced), copy 3 4 files, 551 objects in the bucket; fetch, open with the 24 words, restore identical to /etc.
+  Found: the agent's S3 target could not trust a private CA (added `ca_file`); a registry pull failure did not stop
+  the script (fixed: pull with retries, the start checked). The SFTP step passes unchanged after the refactor.
 - [x] (#31) Standalone jobs on lock, log-off and wake (2026-10-24): `"on"` in standalone.json; the service's
   minute pass compares with the previous one (gap > 3 min = wake; a session that became locked / is gone); at most
   once an hour, with the usual waits. Sessions: logind's local `user` sessions (SSH logins are `Remote=yes` and do not
