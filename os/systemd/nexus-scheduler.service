@@ -36,7 +36,8 @@ ReadWritePaths=-/var/lib/nexus/config-backup
 # generated job configs with secrets: private, wiped at start
 RuntimeDirectory=nexus-scheduler
 RuntimeDirectoryMode=0700
-UMask=0077
+# 027: stores group-readable for nexus-index (#51); private state has 0700 parents or explicit modes
+UMask=0027
 LimitMEMLOCK=64M
 LimitCORE=0
 

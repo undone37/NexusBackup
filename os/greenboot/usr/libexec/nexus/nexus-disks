@@ -664,10 +664,10 @@ def op_create_array(req, status):
     must("mdadm", "--create", md, "--run", "--name=nexus-data", "--metadata=1.2", f"--level={level}",
          f"--raid-devices={len(paths)}", "--bitmap=internal", *paths, timeout=600)
     dev = wait_for(md)
-    # the store's root directory: owner and mode as tmpfiles.d sets them (0700 nexus-chunkstore)
+    # the store's root directory: owner and mode as tmpfiles.d sets them (0750 nexus-chunkstore: the index reads through the group, #51)
     proto = os.path.join(cfg("DIR"), ".mkfs-proto")
     with open(proto, "w") as f:
-        f.write(f"nexus-store\n0 0\nd--700 {user.pw_uid} {user.pw_gid}\n$\n")
+        f.write(f"nexus-store\n0 0\nd--750 {user.pw_uid} {user.pw_gid}\n$\n")
     try:
         must("mkfs.xfs", "-q", "-L", "nexus-data", "-p", proto, dev, timeout=1800)
     finally:

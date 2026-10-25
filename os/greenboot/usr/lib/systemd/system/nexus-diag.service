@@ -25,7 +25,7 @@ IOSchedulingClass=idle
 ProtectSystem=strict
 ReadWritePaths=/var/lib/nexus/diag
 # key material, credentials and job configs are not even visible (the chunk store stays:
-# the disk check needs statfs on it; DAC 0700 nexus-chunkstore keeps its contents closed)
+# the disk check needs statfs on it; DAC 0750 nexus-chunkstore keeps its contents closed)
 InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite
 InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus/ssh
 InaccessiblePaths=-/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging

@@ -917,8 +917,8 @@ Deviations from the proposal (docs/netbackup-comparison.md "Tier 2") and decisio
     (`/home/…`, `C:/Users/…`, label or `vol<N>`).
   - `index_files` is on by default for **new** Proxmox VE groups; existing groups keep their setting (no lab
     measurement of the per-snapshot cost on the PVE lab host yet: decision 4 asks for one first).
-  - nexus-index runs as `nexus-chunkstore` (keyd hands keyrings to one uid) with its own SELinux domain and group
-    `nexus-index` for the socket; one-uid split of keyd stays an open item (threat model; Phase 39 S4).
+  - nexus-index runs as its own uid `nexus-index` (since #51; it reads the stores through the group
+    `nexus-chunkstore`, keyd gives that uid keyring fetches only) with its own SELinux domain.
   - Snapshot deletion does not cancel a running `file_index` job (the job fails on the missing snapshot; the next
     sync drops the versions). The nightly compare is the periodic sync (every 10 min) comparing the index payload with
     the stores; rebuild per source on any difference other than appended snapshots.
@@ -1201,10 +1201,10 @@ sub-issues of the backlog epic #21; close the issue with the PR or commit that f
   (Phase 29).
 - S3 **Done 2026-10-20:** flagged snapshots: BMR/P2V refused (409, scheduler re-check; no approval route, the flag is
   cleared first); downloads administrators only (security officers start no jobs) (Phase 29).
-- S4 (#51) Split keyd's single key uid so nexus-index does not run as `nexus-chunkstore` (Phase 31, threat model).
-  2026-10-21 first part: keyd gives the index (its primary group `nexus-index`) read-only access, keyring fetches
-  only. Open: a uid of its own needs group-readable stores (chunk files are 0600 `nexus-chunkstore` on every
-  existing appliance), together with H-3.
+- S4 **Done 2026-10-25 (#51):** nexus-index runs as its own uid `nexus-index` (Phase 31, threat model): keyd gives
+  that uid keyring fetches only (2026-10-21 by primary group, now by uid); the scheduler writes the stores with umask
+  027 (0750/0640) and the index reads them through the group `nexus-chunkstore`. No migration: there is no installed
+  base with 0600 stores.
 - S5 **Done 2026-10-21:** post-quantum TLS: X25519MLKEM768 preferred on the web UI/API, replication, agents, edge
   and rescue check-in (crate `tls-pq`, pure Rust on ring; OpenSSL 3.5 interop tested); keyd wrapping was done before
   (Phase 30, ADR-014).
