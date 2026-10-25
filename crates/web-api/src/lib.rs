@@ -616,6 +616,7 @@ pub fn router(st: St) -> Router {
         .route("/agents", get(list_agents).post(create_agent))
         .route("/agents/{id}", axum::routing::delete(delete_agent))
         .route("/agents/{id}/token", post(new_agent_token))
+        .route("/agents/{id}/address", put(agents::set_agent_address))
         .route("/agents/{id}/enroll", post(enroll_agent))
         // Phase 19a: bare-metal recovery / P2V (rescue.rs)
         .route("/agents/{id}/rescue", post(crate::rescue::create))

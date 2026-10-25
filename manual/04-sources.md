@@ -472,6 +472,9 @@ Statuses: **Token pending** (waiting for enrollment), **Token expired** (issue a
 - **Re-enroll (new token)** replaces **New token** on an enrolled agent (see [Re-enrolling](#re-enrolling-an-agent)).
 - **Renew certificate** renews the agent's certificate now (see [Certificate renewal](#certificate-renewal)).
 - **Limits** sets a bandwidth and CPU limit for the agent's backups (see [Limits](#bandwidth-and-cpu-limits)).
+- **Change address**: where the appliance reaches the agent, for example after the computer got a new IP address
+  (DHCP). The enrollment stays (the appliance trusts the agent's certificate, not its address); a token not used
+  yet stops working, so issue a **New token** afterwards for a pending agent.
 - **Delete** needs approval when approvals are enabled. It is refused while a source uses the agent.
 
 Five failed enrollment proofs lock the agent. Running `nexus-agent init --token …` again clears the lock.

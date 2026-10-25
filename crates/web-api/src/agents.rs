@@ -155,6 +155,47 @@ pub async fn create_agent(State(st): State<St>, ctx: Ctx, J(r): J<AgentReq>) -> 
     Ok((StatusCode::CREATED, Json(body)).into_response())
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddressReq {
+    host: String,
+    port: u16,
+}
+
+/// `PUT /agents/{id}/address {host, port}` (#127): where the appliance reaches the agent, e.g. after a new DHCP
+/// lease. The enrolment stays (the connection pins the agent's certificate, not its address); a pending one-time
+/// token is sealed to the old address and becomes void: issue a new one. The firewall allow-list follows with the
+/// scheduler's next sync. Audited `agent.address`.
+pub async fn set_agent_address(
+    State(st): State<St>,
+    ctx: Ctx,
+    Path(id): Path<String>,
+    J(r): J<AddressReq>,
+) -> ApiResult<Json<Value>> {
+    ctx.require(TENANT_WRITERS)?;
+    let a = agent_value(&st.cat.conn(), &id)?.ok_or_else(ApiError::not_found)?;
+    ctx.owns(a["tenant"].as_str().unwrap_or_default())?;
+    validate::host(&r.host)?;
+    if r.port == 0 {
+        return Err(ApiError::bad("port: must be 1..=65535"));
+    }
+    let out = {
+        let c = st.cat.conn();
+        c.execute(
+            "UPDATE agents SET host = ?2, port = ?3, token_hash = NULL, token_expires = NULL WHERE id = ?1",
+            params![id, r.host, r.port],
+        )?;
+        agent_value(&c, &id)?.ok_or_else(ApiError::not_found)?
+    };
+    st.audit(
+        ctx.name(),
+        "agent.address",
+        &format!("agent/{id}"),
+        json!({"old": {"host": a["host"], "port": a["port"]}, "host": r.host, "port": r.port}),
+    )?;
+    Ok(Json(out))
+}
+
 /// A fresh one-time token (re-install / re-enrollment); the old one is void.
 /// Re-enrollment of an enrolled agent (it lost its key, the host was reinstalled)
 /// keeps the agent id: sources, groups and `host-<id>` snapshots stay attached,
