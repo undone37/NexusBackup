@@ -1280,6 +1280,13 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   with only `ADDLOCAL=ToolsCore,VSS`), so Tools never run long enough for a quiesced snapshot. Windows with VMware
   Tools under ESXi nested in KVM is not usable here; quiesced Windows snapshots need a physical ESXi host
   (maintainer). VM removed.
+- [ ] (#39) Hyper-V: design note (docs/hyperv-design.md) and its WMI facts (2026-10-25, `lab/windows/hyperv.sh`):
+  VM 296 = full clone of VM 242 with the Hyper-V role (nested on KVM works), test VM nx-rct (Gen 2, 1 GiB VHDX, Alpine
+  live ISO). Recovery checkpoint by WMI (type 32768; application consistency fails without integration services,
+  crash consistency works), the base VHDX read read-only while the VM runs (byte-identical), reference points with
+  RCT identifiers and `.rct`/`.mrt` files; host writes to the VHDX are not tracked. Not yet: a working
+  `GetVirtualDiskChanges` (no ranges between two reference points, "identifier not valid" during a checkpoint, for
+  4 MiB written in the guest): first item of the note's lab plan.
 - [ ] (#40) XCP-ng: design note (docs/xcpng-design.md) and its XAPI facts checked (2026-10-25): XCP-ng 8.3 nested
   on pve-test as VM 287 (10.2.34.218), installed unattended by `lab/pvehost/xcpng.sh` (ISO repacked with xorriso: an
   answer file and a post-install script from VM 280; 770 s). `xcpng.sh xapi`: CBT, snapshot, `data_destroy`
