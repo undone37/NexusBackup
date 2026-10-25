@@ -584,8 +584,8 @@ that hold it. For files on VM disks the timeline also shows the **Owner** by nam
 Linux users from the guest's `/etc/passwd`, Windows local accounts from its SAM, and well-known Windows accounts
 such as SYSTEM, Administrators or TrustedInstaller. Domain accounts that have signed in on that machine are named
 by their profile folder (`jdoe`, or `jdoe.CONTOSO` when a local `jdoe` exists, from the guest's registry); other
-domain accounts show their SID (their names are in Active Directory, not on the member's disk), unknown Linux ids
-their `uid:gid`; the id is in the cell's tooltip. Names come
+domain accounts are named from the tenant's **directory** when one is set up ([below](#naming-domain-accounts-from-the-directory)),
+else they show their SID; unknown Linux ids show their `uid:gid`; the id is in the cell's tooltip. Names come
 from the snapshot that first held the version, or (for files unchanged since before the appliance read names) from
 the first later snapshot that has them. Pick the snapshot (default: the newest holding that version), then:
 
@@ -641,6 +641,25 @@ and the alert `index_space` is raised; searching keeps working with what is inde
 
 > **Status:** The search index and the sandboxed parser are covered by unit tests with real disk images and by fuzz
 > tests. The VM lab run of indexing after real Proxmox VE backups is still open.
+
+
+### Naming domain accounts from the directory
+
+A member server's disk only names the domain accounts that signed in on it. For the others, set up the tenant's
+directory: **Configuration → Tenants → (row menu) Directory (LDAP)** (administrators).
+
+| Field | Content |
+|---|---|
+| **Domain controller**, **LDAPS port** | e.g. `dc1.contoso.example`, 636 (LDAPS only; plain LDAP would send the password unencrypted) |
+| **Certificate (PEM)** | the domain controller's certificate or the CA that issued it, **pinned** |
+| **Bind account**, **Password** | an account that can read users and groups, e.g. `nexus-ldap@contoso.example`; the password is write-only, sealed, and kept on changes only for the same server, certificate and account |
+| **Base DN** | where users and groups are read, e.g. `DC=contoso,DC=example` |
+
+The appliance reads each user's and group's SID and account name (`sAMAccountName`, read-only, paged) once a day
+with the maintenance jobs and after every change (**Sync now** runs it at once; the job shows how many accounts it
+read). File search then names files of those owners in all Windows VM snapshots of the tenant; the names the
+guest itself has (local accounts, profile folders) still come first. Removing the directory removes its names
+from the index again. The firewall allows the domain controller's LDAPS port by itself.
 
 ## Restore files to a host (agents)
 

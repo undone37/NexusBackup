@@ -1117,6 +1117,16 @@ their IDs. In progress:
   domain administrator, and Windows gives files created by administrators to the Administrators group (no file on
   the disk is owned by a domain account's SID); writing test files there is not ours to do. Needs a member with a
   non-admin domain user's files (a lab VM of our own joined to the domain).
+  2026-10-25 (#52, branch `52-directory-names`): the tenant directory. `GET/PUT /tenants/{name}/directory` and
+  `/directory/sync` (admins; catalog v51 `tenants.directory`, bind password sealed), a daily `directory_sync` job
+  (scheduler `ldap.rs`: LDAPS with the certificate pinned, simple bind, paged search of users and groups for
+  `objectSid` / `sAMAccountName`), the names to nexus-index (`Request::Directory`, sealed `nexus-directory.json`,
+  VM sources re-ingested when they change; the guest's own names win), firewall target, SELinux
+  `corenet_tcp_connect_ldap_port` for the scheduler, web dialog on Tenants. Lab: Samba AD DC as CT 289
+  (`lab/pvehost/samba-ad.sh`, 10.2.34.219, NXLAB.TEST), `crates/scheduler/tests/ldap_lab.rs` on VM 280: 46 accounts
+  in 0.21 s with every expected SID, after 600 more users 646 accounts over two pages in 0.34 s, a wrong password
+  refused (result 49). Open: through the appliance image, and a member joined to that domain with a domain user's
+  files to see the name in file search.
 - [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
   before).
 - [x] Phase 39 O1: the configuration backup also goes to the second offsite target.

@@ -84,6 +84,18 @@ pub fn vmware_targets(src: &Value) -> Vec<(String, u16)> {
     out
 }
 
+/// (host, port) of a tenant directory (#52): its LDAPS server, port 636 unless set.
+pub fn directory_targets(d: &Value) -> Vec<(String, u16)> {
+    d["host"]
+        .as_str()
+        .map(|h| {
+            let port = d["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(636);
+            (h.trim_matches(['[', ']']).to_owned(), port)
+        })
+        .into_iter()
+        .collect()
+}
+
 /// (host, port) pairs of an XCP-ng source (docs/xcpng-design.md): XAPI on the pool master, NBD (10809) to it and to
 /// every host in `nbd_hosts` (the host with the VDI's SR serves its export).
 pub fn xcpng_targets(src: &Value) -> Vec<(String, u16)> {

@@ -404,6 +404,77 @@ fn owner_names_from_a_later_snapshot() {
     assert_eq!(name(&s).as_deref(), Some("ann"), "and after a rebuild");
 }
 
+/// #52: SIDs the guest does not name (domain accounts) get their names from the tenant directory; the guest's own
+/// names win; the names survive a restart and a rebuild; the same directory again changes nothing.
+#[test]
+fn domain_owner_names_from_the_directory() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open(
+        d.path().join("store/acme"),
+        keys(),
+        Options {
+            min_lock_secs: 0,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    let (local, domain) = ("S-1-5-21-1-2-3-500", "S-1-5-21-7-8-9-1104");
+    let disk = store.store_image(&[0u8; 512][..], 4096).unwrap();
+    store.commit_snapshot("vm-100", 100, &[("drive-scsi0", disk)]).unwrap();
+    let mut n = NameIndex::default();
+    for (p, k) in [("vda1", 1), ("vda1/admin.txt", 0), ("vda1/report.docx", 0)] {
+        n.push(p, 11, 50, k);
+    }
+    n.set_owners(vec![local.into(), domain.into()], vec![0, 1, 2]); // 0: none, else 1-based
+    store.write_names("vm-100", 100, &n).unwrap();
+    let mut vol = fsindex::Volume {
+        browse: "vda1".into(),
+        state: "indexed".into(),
+        mount: Some("C:".into()),
+        ..Default::default()
+    };
+    vol.accounts = vec![(local.into(), "Administrator".into())];
+    let rep = fsindex::Report {
+        version: 1,
+        volumes: vec![fsindex::VolumeRec {
+            volume: vol,
+            reads: Vec::new(),
+        }],
+    };
+    store
+        .write_snap_file("vm-100", 100, fsindex::REPORT_FILE, &serde_json::to_vec(&rep).unwrap())
+        .unwrap();
+    let name = |s: &Service, q: &str| find(s, q)[0].versions[0].owner_name.clone();
+    let s = svc(d.path());
+    s.sync("acme").unwrap();
+    assert_eq!(name(&s, "report"), None, "a domain SID without a directory");
+    let dir: BTreeMap<String, String> = [
+        (domain.to_owned(), "jdoe".to_owned()),
+        (local.to_owned(), "not-this".to_owned()),
+    ]
+    .into();
+    assert!(s.directory("acme", dir.clone()).unwrap());
+    s.sync("acme").unwrap();
+    assert_eq!(name(&s, "report").as_deref(), Some("jdoe"));
+    assert_eq!(
+        name(&s, "admin").as_deref(),
+        Some("Administrator"),
+        "the guest's name wins"
+    );
+    assert!(!s.directory("acme", dir).unwrap(), "unchanged");
+    assert!(s
+        .directory("acme", [(String::from("bad"), String::from("x"))].into())
+        .is_err());
+    drop(s);
+    let s = svc(d.path());
+    s.rebuild("acme").unwrap();
+    assert_eq!(
+        name(&s, "report").as_deref(),
+        Some("jdoe"),
+        "kept across a restart and a rebuild"
+    );
+}
+
 /// #54: mails found by sender and recipient words from the plugin's item metadata, also when a version
 /// first seen without metadata gets it from a later snapshot (append and rebuild).
 #[test]

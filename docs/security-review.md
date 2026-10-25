@@ -427,6 +427,13 @@ Reviewed with the implementation (2026-10-10):
 
 - **Source / offsite credentials** (`token_secret`, `key_pem` anywhere in `sources.config` / `tenants.offsite`) are sealed to the scheduler: libsodium `crypto_box_seal` (X25519 + XSalsa20-Poly1305, crate `crypto_box`), stored as `sealed:v1:<base64>`. The scheduler owns the private key (`/var/lib/nexus/scheduler/secrets.key`, 0600, created on first start, audit `secret.key_create`) and publishes the public key (`/var/lib/nexus/catalog/secrets.pub`, 0640, group `nexus-catalog`). The web-api seals on write and refuses secret writes with 503 while the public key is missing. It cannot decrypt.
 - **Binding:** the sealed plaintext is `location NUL secret`, and the location is checked on open. The location is `source/<id>` or `tenant/<name>/offsite`, plus the JSON pointer of the field, plus a digest of the endpoint fields next to it (`host`, `port`, `connect_addr`, `ca_pem`, `token_id`, `user`, `host_key`). A blob copied to another source or field does not open. Neither does a token whose source was pointed at another host or CA directly in the catalog.
+- **Tenant directory** (#52, 2026-10-25): the LDAP bind password in `tenants.directory` is sealed the same way
+  (location `tenant/<name>/directory/password`, kept on updates only for the same host, port, certificate and bind
+  DN). The scheduler reads the directory over LDAPS only, with the certificate pinned (no plain LDAP or StartTLS
+  downgrade, no unauthenticated bind: an empty password is refused before connecting); its BER reader bounds every
+  length by the message and caps a message at 16 MiB and a directory at 500 000 accounts (tests
+  `hostile_lengths_are_refused`, `errors`, API test `tenant_directory`). The names go to nexus-index only, sealed in
+  the tenant's index directory. No new finding.
 - The scheduler opens secrets only in memory while generating the 0600 job config. Legacy plaintext values are sealed at scheduler startup (audit `secret.migrate`, per row, field pointers only).
 - **TOTP seeds** use XChaCha20-Poly1305 with a web-api-only key (`/var/lib/nexus/webapi/totp.key`, 0600 `nexus-webapi`, created by nexus-setup). The AAD is the user name. Seeds are stored as `enc:v1:<base64>`, including the `totp_secret` of pending `user.update` quorum params. Legacy plaintext seeds keep working and are encrypted at web-api startup (audit `secret.migrate`). The web-api creates a missing key itself only while no encrypted seed exists.
 - **Residual risk:**

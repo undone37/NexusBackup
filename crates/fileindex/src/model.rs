@@ -108,6 +108,24 @@ pub struct State {
     /// the last rules the scheduler sent (kept across restarts)
     #[serde(default)]
     pub config: BTreeMap<String, SourceRules>,
+    /// hash of the tenant directory's account names (#52, [`DIRECTORY_FILE`]; 0 = none): VM sources indexed with
+    /// other names are ingested again
+    #[serde(default)]
+    pub directory: u64,
+}
+
+/// The tenant directory's account names by SID (#52, sent by the scheduler), sealed next to the index.
+pub const DIRECTORY_FILE: &str = "nexus-directory.json";
+
+/// Account names by owner id.
+pub type Names = HashMap<String, String>;
+
+/// Hash of a directory (0 for none).
+pub fn directory_hash(d: &BTreeMap<String, String>) -> u64 {
+    if d.is_empty() {
+        return 0;
+    }
+    hash(&[serde_json::to_string(d).unwrap_or_default().as_bytes()])
 }
 
 /// FNV-1a over length-prefixed parts (stable across builds, unlike `Hash`).
@@ -149,21 +167,27 @@ const ITEM_META_FILE: &str = "itemmeta";
 
 /// Turns name-index paths of one snapshot into guest paths.
 pub enum Guest {
-    /// VM snapshot with a volume report (crate fsindex mapping), and the guest's account names by owner
-    /// id (uid, SID) from that report
-    Vm(fsindex::mapping::Mapper, HashMap<String, String>),
+    /// VM snapshot with a volume report (crate fsindex mapping), the guest's account names by owner id (uid, SID)
+    /// from that report, and the tenant directory's names for SIDs the guest does not name (#52)
+    Vm(fsindex::mapping::Mapper, Names, std::sync::Arc<Names>),
     /// `/` + path; a Windows agent's `C/Users/…` becomes `C:/Users/…`
     Plain { windows: bool },
 }
 
 impl Guest {
-    pub fn for_snapshot(r: &MetaReader, source: &str, time: u64, names: &NameIndex) -> Guest {
+    pub fn for_snapshot(
+        r: &MetaReader,
+        source: &str,
+        time: u64,
+        names: &NameIndex,
+        directory: &std::sync::Arc<Names>,
+    ) -> Guest {
         if source_kind(source) == "vm" {
             if let Ok(Some(b)) = r.read_snap_file(source, time, fsindex::REPORT_FILE) {
                 if let Ok(rep) = serde_json::from_slice::<fsindex::Report>(&b) {
                     let vols: Vec<fsindex::Volume> = rep.volumes.into_iter().map(|v| v.volume).collect();
                     let names = vols.iter().flat_map(|v| v.accounts.iter().cloned()).collect();
-                    return Guest::Vm(fsindex::mapping::Mapper::new(&vols), names);
+                    return Guest::Vm(fsindex::mapping::Mapper::new(&vols), names, directory.clone());
                 }
             }
         }
@@ -178,20 +202,21 @@ impl Guest {
         Guest::Plain { windows }
     }
 
-    /// The guest's name for an owner (`S-1-5-21-…-1001`, or `uid:gid` by its uid), if it has one.
+    /// The guest's name for an owner (`S-1-5-21-…-1001`, or `uid:gid` by its uid), if it has one; a SID the guest
+    /// does not name, by the tenant directory.
     pub fn owner_name(&self, owner: &str) -> Option<&str> {
-        let Guest::Vm(_, names) = self else { return None };
-        let id = if owner.starts_with("S-") {
-            owner
-        } else {
-            owner.split(':').next()?
+        let Guest::Vm(_, names, directory) = self else {
+            return None;
         };
-        names.get(id).map(String::as_str)
+        if owner.starts_with("S-") {
+            return names.get(owner).or_else(|| directory.get(owner)).map(String::as_str);
+        }
+        names.get(owner.split(':').next()?).map(String::as_str)
     }
 
     pub fn path(&self, browse: &str) -> String {
         match self {
-            Guest::Vm(m, _) => {
+            Guest::Vm(m, ..) => {
                 let g = m.guest(browse);
                 if g == browse {
                     format!("/{browse}")
@@ -228,6 +253,8 @@ pub struct TenantIndex {
     pub reader: IndexReader,
     pub f: Fields,
     pub dir: crate::sealdir::SealedDir,
+    /// the tenant directory's names ([`DIRECTORY_FILE`])
+    directory: std::sync::RwLock<std::sync::Arc<Names>>,
 }
 
 fn ext_of(name: &str) -> Option<String> {
@@ -256,7 +283,32 @@ impl TenantIndex {
             }
         };
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
-        Ok(TenantIndex { index, reader, f, dir })
+        use tantivy::Directory;
+        let names: Names = dir
+            .atomic_read(std::path::Path::new(DIRECTORY_FILE))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        Ok(TenantIndex {
+            index,
+            reader,
+            f,
+            dir,
+            directory: std::sync::RwLock::new(std::sync::Arc::new(names)),
+        })
+    }
+
+    /// Stores the tenant directory's names (sealed); the caller records [`directory_hash`] in the state.
+    pub fn set_directory(&self, d: &BTreeMap<String, String>) -> anyhow::Result<()> {
+        use tantivy::Directory;
+        self.dir
+            .atomic_write(std::path::Path::new(DIRECTORY_FILE), &serde_json::to_vec(d)?)?;
+        *self.directory.write().unwrap() = std::sync::Arc::new(d.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        Ok(())
+    }
+
+    fn directory(&self) -> std::sync::Arc<Names> {
+        self.directory.read().unwrap().clone()
     }
 
     pub fn state(&self) -> State {
@@ -273,6 +325,7 @@ impl TenantIndex {
             State {
                 version: VERSION,
                 config: s.config,
+                directory: s.directory,
                 ..Default::default()
             }
         }
@@ -345,11 +398,17 @@ impl TenantIndex {
     }
 
     /// The entries of one snapshot the rules let in, by version key.
-    fn entries(r: &MetaReader, source: &str, time: u64, rules: &Rules) -> anyhow::Result<Option<HashMap<u64, Open>>> {
+    fn entries(
+        &self,
+        r: &MetaReader,
+        source: &str,
+        time: u64,
+        rules: &Rules,
+    ) -> anyhow::Result<Option<HashMap<u64, Open>>> {
         let Some(names) = r.load_names(source, time)? else {
             return Ok(None);
         };
-        let g = Guest::for_snapshot(r, source, time, &names);
+        let g = Guest::for_snapshot(r, source, time, &names, &self.directory());
         // plugin items' metadata by their path (#54: a mail's sender and recipients), sealed with the snapshot
         let meta: BTreeMap<String, serde_json::Value> = if source_kind(source) == "plugin" {
             r.read_snap_file(source, time, ITEM_META_FILE)
@@ -402,7 +461,11 @@ impl TenantIndex {
         times: &[u64],
         rules: &SourceRules,
     ) -> anyhow::Result<bool> {
-        let rh = rules_hash(rules);
+        let mut rh = rules_hash(rules);
+        if source_kind(source) == "vm" && st.directory != 0 {
+            // other directory names: the VM sources' documents are made again
+            rh = hash(&[&rh.to_le_bytes(), &st.directory.to_le_bytes()]);
+        }
         let cur = st.sources.get(source).cloned().unwrap_or_default();
         if cur.ingested == times && cur.rules == rh {
             return Ok(false);
@@ -461,7 +524,7 @@ impl TenantIndex {
         }
         let mut open: HashMap<u64, Open> = HashMap::new();
         for &t in times {
-            let Some(mut cur) = Self::entries(r, source, t, rules)? else {
+            let Some(mut cur) = self.entries(r, source, t, rules)? else {
                 continue;
             };
             // closed: in the open set, not in this snapshot
@@ -507,10 +570,10 @@ impl TenantIndex {
         if !rules.enabled() {
             return Ok(());
         }
-        let Some(cur) = Self::entries(r, source, t, rules)? else {
+        let Some(cur) = self.entries(r, source, t, rules)? else {
             return Ok(());
         };
-        let old = Self::entries(r, source, prev, rules)?.unwrap_or_default();
+        let old = self.entries(r, source, prev, rules)?.unwrap_or_default();
         let searcher = self.reader.searcher();
         for (k, _) in old.iter().filter(|(k, _)| !cur.contains_key(k)) {
             let term = Term::from_field_u64(self.f.okey, *k);
