@@ -10,6 +10,8 @@
 #                   written at 512 MiB, snapshot S2, list_changed_blocks(S1, S2) = exactly that range
 #   xcpng.sh testvm VM "nexus-m1" (template "Other install media", halted) whose 1 GiB disk starts with 64 MiB of
 #                   known data: its UUID and the SHA-256 of that data in $LAB_X/testvm.json (crates/xcpng/tests/lab.rs)
+#   xcpng.sh testwrite  4 MiB of new data at 512 MiB of nexus-m1's disk (the next backup is incremental): their
+#                   SHA-256 added to $LAB_X/testvm.json as changed_sha256
 #   xcpng.sh destroy
 #
 # Secrets in $LAB_X (~/nexus-lab/xcpng): root.pw. env: PVE_HOST, SSH_KEY (also root's key on the XCP-ng host),
@@ -206,6 +208,19 @@ sha = sh(\"sh\", \"-c\", \"openssl enc -aes-128-ctr -md sha256 -nosalt -pass pas
 print(json.dumps({\"vm\": x.VM.get_uuid(vm), \"sha256\": sha}))
 '" | tail -1 >"$LAB_X/testvm.json"
 	log "test VM nexus-m1: $(cat "$LAB_X/testvm.json")"
+}
+
+step_testwrite() {
+	local seed=$RANDOM sha
+	sha=$(xcp "python3 -c '$XAPI_PRE
+vm = x.VM.get_by_name_label(\"nexus-m1\")[0]
+vdi = [x.VBD.get_VDI(b) for b in x.VM.get_VBDs(vm) if x.VBD.get_userdevice(b) == \"0\"][0]
+write(vdi, 512, 4, \"$seed\")
+print(sh(\"sh\", \"-c\", \"openssl enc -aes-128-ctr -md sha256 -nosalt -pass pass:$seed < /dev/zero 2>/dev/null | head -c 4M | sha256sum\").split()[0])
+'" | tail -1)
+	jq --arg s "$sha" '.changed_sha256 = $s' "$LAB_X/testvm.json" >"$LAB_X/testvm.json.new"
+	mv "$LAB_X/testvm.json.new" "$LAB_X/testvm.json"
+	log "4 MiB written at 512 MiB of nexus-m1: $sha"
 }
 
 step_destroy() {

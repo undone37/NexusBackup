@@ -1,5 +1,6 @@
-//! Inventory and backups of XCP-ng VMs (docs/xcpng-design.md). M1: full reads; changed block tracking with
-//! metadata-only snapshots (`VDI.data_destroy`, `VDI.list_changed_blocks`) is M2.
+//! Inventory and backups of XCP-ng VMs (docs/xcpng-design.md): a snapshot read over NBD, incremental with changed
+//! block tracking against the previous run's metadata-only snapshot VDIs (`VDI.data_destroy`,
+//! `VDI.list_changed_blocks`).
 
 use crate::nbdtls::{self, NbdInfo};
 use crate::xapi::Xapi;
@@ -7,6 +8,10 @@ use anyhow::{bail, Context, Result};
 use chunkstore::{FileEntry, Index, Manifest, Store};
 use serde_json::{json, Value};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const CONFIG: &str = "xcpng.json";
+/// CBT granularity of `VDI.list_changed_blocks`
+const CBT_BLOCK: u64 = 64 << 10;
 
 /// Snapshot source of a VM: `xcp-<vm uuid>`.
 pub fn source_name(uuid: &str) -> String {
@@ -108,19 +113,105 @@ fn destroy_snapshot(x: &Xapi, snap: &str) -> Result<()> {
     let vdis: Vec<String> = disks(x, snap)?.into_iter().map(|d| d.vdi).collect();
     x.call("VM.destroy", &[json!(snap)])?;
     for vdi in vdis {
-        let mut tries = 0;
-        loop {
-            match x.call("VDI.destroy", &[json!(vdi)]) {
-                Ok(_) => break,
-                Err(_) if tries < 30 => {
-                    tries += 1;
-                    std::thread::sleep(Duration::from_secs(2));
-                }
-                Err(e) => return Err(e),
+        retry(x, "VDI.destroy", &vdi)?;
+    }
+    Ok(())
+}
+
+/// `method(vdi)`, retried for 60 s while the VDI is still in use.
+fn retry(x: &Xapi, method: &str, vdi: &str) -> Result<()> {
+    let mut tries = 0;
+    loop {
+        match x.call(method, &[json!(vdi)]) {
+            Ok(_) => return Ok(()),
+            Err(_) if tries < 30 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_secs(2));
             }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// After a commit: the snapshot VM destroyed, its VDIs with CBT reduced to CBT metadata (the next run's base, no data
+/// on the SR), the others destroyed; then the previous run's metadata VDIs (`prev`: their UUIDs) destroyed.
+fn keep_metadata(x: &Xapi, snap: &str, prev: &[String]) -> Result<()> {
+    let vdis = disks(x, snap)?;
+    x.call("VM.destroy", &[json!(snap)])?;
+    for d in vdis {
+        let cbt = x.call("VDI.get_cbt_enabled", &[json!(d.vdi)])?.as_bool() == Some(true);
+        retry(x, if cbt { "VDI.data_destroy" } else { "VDI.destroy" }, &d.vdi)?;
+    }
+    for uuid in prev {
+        // gone already (or never ours: only snapshot VDIs are destroyed)
+        let Ok(r) = x.call("VDI.get_by_uuid", &[json!(uuid)]) else {
+            continue;
+        };
+        if x.call("VDI.get_is_a_snapshot", std::slice::from_ref(&r))?.as_bool() == Some(true) {
+            x.call("VDI.destroy", &[r])?;
         }
     }
     Ok(())
+}
+
+/// `(offset, length)` byte extents of the blocks set in a `VDI.list_changed_blocks` bitmap (64 KiB blocks, most
+/// significant bit first), clipped to `size`, adjacent blocks merged.
+fn bitmap_extents(bits: &[u8], size: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (i, byte) in bits.iter().enumerate().filter(|(_, b)| **b != 0) {
+        for j in 0..8 {
+            let off = (i as u64 * 8 + j) * CBT_BLOCK;
+            if byte & (0x80 >> j) == 0 || off >= size {
+                continue;
+            }
+            let len = CBT_BLOCK.min(size - off);
+            match out.last_mut() {
+                Some((o, l)) if *o + *l == off => *l += len,
+                _ => out.push((off, len)),
+            }
+        }
+    }
+    out
+}
+
+/// The blocks changed between the metadata VDI `from` (UUID) and the snapshot VDI `to` (ref).
+fn changed_extents(x: &Xapi, from: &str, to: &str, size: u64) -> Result<Vec<(u64, u64)>> {
+    use base64::Engine;
+    let from = x.call("VDI.get_by_uuid", &[json!(from)])?;
+    let b = x.call("VDI.list_changed_blocks", &[from, json!(to)])?;
+    let bits = base64::engine::general_purpose::STANDARD
+        .decode(b.as_str().context("VDI.list_changed_blocks")?)
+        .context("CBT bitmap")?;
+    Ok(bitmap_extents(&bits, size))
+}
+
+/// The previous snapshot of `source` and its `xcpng.json`, if it has one.
+fn previous(store: &Store, source: &str) -> Result<Option<(Manifest, Value)>> {
+    let Some(m) = store
+        .list_snapshots()?
+        .into_iter()
+        .filter(|m| m.source == source)
+        .max_by_key(|m| m.time)
+    else {
+        return Ok(None);
+    };
+    let Index::Dynamic { entries } = store.load_index(&m, "config")? else {
+        bail!("{source}/{}: config index is not dynamic", m.time);
+    };
+    let e = entries.iter().find(|e| e.path == CONFIG).context(CONFIG)?;
+    let mut b = Vec::new();
+    store.write_chunks(&e.chunks, &mut b)?;
+    Ok(Some((m, serde_json::from_slice(&b).context(CONFIG)?)))
+}
+
+/// The metadata VDI UUIDs a config lists (`disks[].cbt_vdi`).
+fn cbt_vdis(cfg: &Value) -> Vec<String> {
+    cfg["disks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| Some(d["cbt_vdi"].as_str()?.to_owned()))
+        .collect()
 }
 
 /// Snapshots an earlier run left behind (`nexus-backup-*` of this VM: an aborted job) are removed first.
@@ -145,10 +236,13 @@ pub struct Done {
     pub manifest: Manifest,
     pub name: String,
     pub bytes_read: u64,
+    /// disks read incrementally (the others in full)
+    pub incremental: usize,
 }
 
-/// A full backup of VM `uuid`: snapshot, every disk of the snapshot read over NBD/TLS into a fixed index, the VM
-/// record and the disk map as `xcpng.json`, the snapshot destroyed (also after an error).
+/// A backup of VM `uuid`: CBT enabled on its disks, snapshot, every disk of the snapshot read over NBD/TLS into a
+/// fixed index (only the changed blocks when the previous run left a metadata VDI), the VM record and the disk map as
+/// `xcpng.json`; then the snapshot reduced to CBT metadata, or destroyed after an error.
 pub fn backup_vm(x: &Xapi, store: &Store, uuid: &str, job: u64, timeout: Duration) -> Result<Done> {
     if !valid_uuid(uuid) {
         bail!("invalid VM UUID {uuid:?}");
@@ -157,17 +251,31 @@ pub fn backup_vm(x: &Xapi, store: &Store, uuid: &str, job: u64, timeout: Duratio
     let rec = x.call("VM.get_record", std::slice::from_ref(&vm))?;
     let name = rec["name_label"].as_str().unwrap_or(uuid).to_owned();
     remove_leftovers(x, &vm, &name)?;
+    for d in disks(x, vm.as_str().context("VM ref")?)? {
+        if x.call("VDI.get_cbt_enabled", &[json!(d.vdi)])?.as_bool() != Some(true) {
+            // a VDI that refuses CBT (a raw VDI, an SR without it) is read in full every time
+            if let Err(e) = x.call("VDI.enable_cbt", &[json!(d.vdi)]) {
+                eprintln!("{name}: {}: no changed block tracking: {e:#}", d.name);
+            }
+        }
+    }
+    let prev = previous(store, &source_name(uuid))?;
     let snap = x.call("VM.snapshot", &[vm, json!(format!("nexus-backup-{job}"))])?;
     let snap = snap.as_str().context("VM.snapshot")?.to_owned();
-    let res = read_snapshot(x, store, uuid, &rec, &snap, timeout);
-    if let Err(e) = destroy_snapshot(x, &snap) {
-        eprintln!("{name}: snapshot nexus-backup-{job} not removed: {e:#}");
+    let res = read_snapshot(x, store, uuid, &rec, &snap, prev.as_ref(), timeout);
+    let cleanup = match &res {
+        Ok(_) => keep_metadata(x, &snap, &prev.as_ref().map(|(_, c)| cbt_vdis(c)).unwrap_or_default()),
+        Err(_) => destroy_snapshot(x, &snap),
+    };
+    if let Err(e) = cleanup {
+        eprintln!("{name}: snapshot nexus-backup-{job} not cleaned up: {e:#}");
     }
-    let (manifest, bytes_read) = res?;
+    let (manifest, bytes_read, incremental) = res?;
     Ok(Done {
         manifest,
         name,
         bytes_read,
+        incremental,
     })
 }
 
@@ -177,13 +285,33 @@ fn read_snapshot(
     uuid: &str,
     rec: &Value,
     snap: &str,
+    prev: Option<&(Manifest, Value)>,
     timeout: Duration,
-) -> Result<(Manifest, u64)> {
+) -> Result<(Manifest, u64, usize)> {
     let chunk = agent_proto::BLOCK_SIZE as usize;
     let mut indexes = Vec::new();
     let mut map = Vec::new();
-    let mut read = 0u64;
+    let (mut read, mut incremental) = (0u64, 0);
     for d in disks(x, snap)? {
+        // incremental: the previous index of this disk and CBT's extents since its metadata VDI; else a full read
+        let base = prev.and_then(|(m, cfg)| {
+            let e = cfg["disks"].as_array()?.iter().find(|e| e["name"] == d.name.as_str())?;
+            Some((m, e["cbt_vdi"].as_str()?))
+        });
+        let changed = match base {
+            Some((m, from)) => match changed_extents(x, from, &d.vdi, d.size) {
+                Ok(ext) => Some((store.load_index(m, &d.name)?, ext)),
+                Err(e) => {
+                    eprintln!("{}: full read, no changed blocks: {e:#}", d.name);
+                    None
+                }
+            },
+            None => None,
+        };
+        let (prev_idx, dirty) = match &changed {
+            Some((i, ext)) => (Some(i), ext.clone()),
+            None => (None, vec![(0, d.size)]),
+        };
         let info: Vec<NbdInfo> =
             serde_json::from_value(x.call("VDI.get_nbd_info", &[json!(d.vdi)])?).context("VDI.get_nbd_info")?;
         let info = info.first().with_context(|| {
@@ -196,10 +324,17 @@ fn read_snapshot(
         if c.size() != d.size {
             bail!("{}: the NBD export has {} bytes, the VDI {}", d.name, c.size(), d.size);
         }
-        let idx = store.store_image_extents(None, chunk, d.size, &[(0, d.size)], |off, buf| c.read_at(off, buf))?;
+        read += Store::image_extents_bytes(prev_idx, chunk, d.size, &dirty);
+        incremental += usize::from(changed.is_some());
+        let idx = store.store_image_extents(prev_idx, chunk, d.size, &dirty, |off, buf| c.read_at(off, buf))?;
         let _ = c.disconnect();
-        read += d.size;
-        map.push(json!({"name": d.name, "userdevice": d.userdevice, "size": d.size}));
+        let cbt = x.call("VDI.get_cbt_enabled", &[json!(d.vdi)])?.as_bool() == Some(true);
+        let cbt_vdi = if cbt {
+            x.call("VDI.get_uuid", &[json!(d.vdi)])?
+        } else {
+            Value::Null
+        };
+        map.push(json!({"name": d.name, "userdevice": d.userdevice, "size": d.size, "cbt_vdi": cbt_vdi}));
         indexes.push((d.name, idx));
     }
     let config = json!({"format": 1, "vm": {
@@ -208,13 +343,13 @@ fn read_snapshot(
         "HVM_boot_params": rec["HVM_boot_params"], "HVM_boot_policy": rec["HVM_boot_policy"],
         "other_config": rec["other_config"], "tags": rec["tags"]}, "disks": map});
     let cfg = Index::Dynamic {
-        entries: vec![config_entry(store, "xcpng.json", &serde_json::to_vec_pretty(&config)?)?],
+        entries: vec![config_entry(store, CONFIG, &serde_json::to_vec_pretty(&config)?)?],
     };
     let mut refs: Vec<(&str, Index)> = indexes.iter().map(|(n, i)| (n.as_str(), i.clone())).collect();
     refs.push(("config", cfg));
     let time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
     let m = store.commit_snapshot(&source_name(uuid), time, &refs)?;
-    Ok((m, read))
+    Ok((m, read, incremental))
 }
 
 #[cfg(test)]
@@ -234,5 +369,21 @@ mod tests {
             (Some(1 << 30), Some(5), None)
         );
         assert_eq!(source_name("a"), "xcp-a");
+    }
+
+    #[test]
+    fn changed_block_bitmap() {
+        const K: u64 = 64 << 10;
+        // blocks 0, 1 and 23; block 24 lies beyond the disk's end; the last block clipped
+        assert_eq!(
+            bitmap_extents(&[0b1100_0000, 0, 0b0000_0001, 0b1000_0000], 24 * K - 100),
+            vec![(0, 2 * K), (23 * K, K - 100)]
+        );
+        assert_eq!(bitmap_extents(&[0xff], 8 * K), vec![(0, 8 * K)]);
+        assert!(bitmap_extents(&[], K).is_empty());
+        assert_eq!(
+            cbt_vdis(&json!({"disks": [{"cbt_vdi": "a"}, {"cbt_vdi": null}]})),
+            vec!["a".to_owned()]
+        );
     }
 }

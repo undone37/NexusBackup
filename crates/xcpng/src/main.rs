@@ -102,7 +102,10 @@ fn main() -> Result<()> {
                             d.name
                         );
                         println!("consistency {}/{}: crash", m.source, m.time);
-                        eprintln!("{}: {} bytes read over NBD", d.name, d.bytes_read);
+                        eprintln!(
+                            "{}: {} bytes read over NBD, {} disk(s) incremental",
+                            d.name, d.bytes_read, d.incremental
+                        );
                         ok.push(json!({"source": m.source, "time": m.time}));
                     }
                     Err(e) => {

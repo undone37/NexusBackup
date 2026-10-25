@@ -93,6 +93,8 @@ metadata-only VDIs stay, so the next run can still be incremental.
   connection).
 - M1 connector (`crates/xcpng`): a full backup of a 1 GiB VM in 31 to 37 s. The snapshot VM must be destroyed
   before its VDIs (`VDI.destroy` fails while a VBD of the snapshot still holds the VDI).
+- M2 (CBT): after 4 MiB written at 512 MiB, the incremental read exactly that 4 MiB chunk (7.1 s against 34 s for
+  the full 1 GiB); `VDI.data_destroy` after `VM.destroy` of the snapshot, the previous metadata VDI destroyed.
 
 ## Open questions
 
