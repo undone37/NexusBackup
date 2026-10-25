@@ -6,6 +6,7 @@
   import { t } from '../lib/i18n';
   import { fmtBytes, fmtTime } from '../lib/format';
   import type {
+    TenantDirectory,
     LockdownInfo,
     LoginResponse,
     OffsiteGfs,
@@ -66,6 +67,68 @@
     loadRequests();
     loadTenancy();
     loadLockdowns();
+  }
+
+  // #52: the tenant directory (LDAPS) that names domain owners of files in VM snapshots
+  let dirOf: string | null = $state(null);
+  let dirOpen = $state(false);
+  let dirCur: TenantDirectory | null = $state(null);
+  let dirBusy = $state(false);
+  let dirF = $state({ host: '', port: 636, ca_pem: '', bind_dn: '', password: '', base_dn: '' });
+  const dirJob = (d: { job?: unknown }) =>
+    typeof d.job === 'number' ? { path: `/jobs/${d.job}`, label: t.jobs.openN(d.job) } : null;
+  async function openDirectory(x: Tenant) {
+    dirOf = x.name;
+    dirCur = null;
+    dirF = { host: '', port: 636, ca_pem: '', bind_dn: '', password: '', base_dn: '' };
+    try {
+      const r = await get<{ directory: TenantDirectory | null }>(`/tenants/${encodeURIComponent(x.name)}/directory`);
+      dirCur = r.directory;
+      if (r.directory) dirF = { ...r.directory, password: '' };
+    } catch (e) {
+      error = errText(e);
+      return;
+    }
+    dirOpen = true;
+  }
+  async function saveDirectory(e: SubmitEvent) {
+    e.preventDefault();
+    if (!dirOf) return;
+    const d: Record<string, unknown> = {
+      host: dirF.host.trim(),
+      port: Number(dirF.port),
+      ca_pem: dirF.ca_pem,
+      bind_dn: dirF.bind_dn.trim(),
+      base_dn: dirF.base_dn.trim(),
+    };
+    if (dirF.password) d.password = dirF.password;
+    dirBusy = true;
+    const r = await act(
+      put<{ directory: TenantDirectory | null; job: number }>(`/tenants/${encodeURIComponent(dirOf)}/directory`, {
+        directory: d,
+      }),
+      (x) => t.tdir.saved(x.job),
+      dirJob,
+    );
+    dirBusy = false;
+    if (r) dirOpen = false;
+  }
+  async function syncDirectory() {
+    if (!dirOf) return;
+    dirBusy = true;
+    await act(
+      post<{ job: number }>(`/tenants/${encodeURIComponent(dirOf)}/directory/sync`, {}),
+      (x) => t.tdir.synced(x.job),
+      dirJob,
+    );
+    dirBusy = false;
+  }
+  async function removeDirectory() {
+    if (!dirOf || !(await askConfirm(t.tdir.removeConfirm(dirOf)))) return;
+    dirBusy = true;
+    const r = await act(put(`/tenants/${encodeURIComponent(dirOf)}/directory`, { directory: null }), t.tdir.removed);
+    dirBusy = false;
+    if (r) dirOpen = false;
   }
 
   // Phase 28: tenant lockdown (incident mode for one tenant); lifting needs approval
@@ -531,6 +594,8 @@
       if (l && ldParts(l).length && !l.freeze_lift_quorum)
         out.push({ label: t.p29.freeze.lift, title: t.p29.freeze.liftLabel(x.name), onselect: () => liftFreeze(x) });
     }
+    if (can.configure(session.user))
+      out.push({ label: t.tdir.button, title: t.tdir.label(x.name), onselect: () => openDirectory(x) });
     out.push({
       label: t.tappr.button,
       title: t.tappr.label(x.name),
@@ -1109,6 +1174,94 @@
 
 <Modal bind:open={apprOpen} wide title={apprOf ? t.tappr.label(apprOf) : ''}>
   {#if apprOf}<TenantApprovers tenant={apprOf} />{/if}
+</Modal>
+
+<Modal bind:open={dirOpen} wide title={dirOf ? t.tdir.label(dirOf) : ''}>
+  <form onsubmit={saveDirectory}>
+    <p>{t.tdir.intro}</p>
+    {#if !dirCur}<p class="banner info">{t.tdir.notSet}</p>{/if}
+    <div class="form-grid">
+      <div class="field">
+        <label for="dir-host">{t.tdir.host}</label>
+        <input id="dir-host" bind:value={dirF.host} required spellcheck="false" aria-describedby="dir-host-hint" />
+        <p class="hint" id="dir-host-hint">{t.tdir.hostHint}</p>
+      </div>
+      <div class="field">
+        <label for="dir-port">{t.tdir.port}</label>
+        <input
+          id="dir-port"
+          type="number"
+          min="1"
+          max="65535"
+          bind:value={dirF.port}
+          required
+          aria-describedby="dir-port-hint"
+        />
+        <p class="hint" id="dir-port-hint">{t.tdir.portHint}</p>
+      </div>
+      <div class="field">
+        <label for="dir-bind">{t.tdir.bindDn}</label>
+        <input
+          id="dir-bind"
+          class="mono"
+          bind:value={dirF.bind_dn}
+          required
+          maxlength="256"
+          spellcheck="false"
+          autocomplete="off"
+          aria-describedby="dir-bind-hint"
+        />
+        <p class="hint" id="dir-bind-hint">{t.tdir.bindDnHint}</p>
+      </div>
+      <div class="field">
+        <label for="dir-pw">{t.tdir.password}</label>
+        <input
+          id="dir-pw"
+          type="password"
+          autocomplete="new-password"
+          maxlength="256"
+          bind:value={dirF.password}
+          required={!dirCur?.password_set}
+          aria-describedby={dirCur?.password_set ? 'dir-pw-hint' : undefined}
+        />
+        {#if dirCur?.password_set}<p class="hint" id="dir-pw-hint">{t.tdir.passwordKeep}</p>{/if}
+      </div>
+      <div class="field">
+        <label for="dir-base">{t.tdir.baseDn}</label>
+        <input
+          id="dir-base"
+          class="mono"
+          bind:value={dirF.base_dn}
+          required
+          maxlength="512"
+          pattern=".*=.*"
+          spellcheck="false"
+          aria-describedby="dir-base-hint"
+        />
+        <p class="hint" id="dir-base-hint">{t.tdir.baseDnHint}</p>
+      </div>
+    </div>
+    <div class="field">
+      <label for="dir-ca">{t.tdir.ca}</label>
+      <textarea
+        id="dir-ca"
+        class="mono"
+        rows="5"
+        bind:value={dirF.ca_pem}
+        required
+        spellcheck="false"
+        aria-describedby="dir-ca-hint"></textarea>
+      <p class="hint" id="dir-ca-hint">{t.tdir.caHint}</p>
+    </div>
+    <div class="form-actions">
+      {#if dirCur}
+        <button type="button" class="danger" disabled={dirBusy} onclick={removeDirectory}>{t.tdir.remove}</button>
+        <button type="button" disabled={dirBusy} onclick={syncDirectory}>{t.tdir.sync}</button>
+      {/if}
+      <button type="button" onclick={() => (dirOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary" disabled={dirBusy}>{t.tdir.save}</button>
+    </div>
+  </form>
 </Modal>
 
 <Modal bind:open={ldOpen} title={ldOf ? t.lockdown.title(ldOf.name) : ''}>

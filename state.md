@@ -1124,6 +1124,21 @@ their IDs. In progress:
   domain administrator, and Windows gives files created by administrators to the Administrators group (no file on
   the disk is owned by a domain account's SID); writing test files there is not ours to do. Needs a member with a
   non-admin domain user's files (a lab VM of our own joined to the domain).
+  2026-10-25 (#52, branch `52-directory-names`): the tenant directory. `GET/PUT /tenants/{name}/directory` and
+  `/directory/sync` (admins; catalog v51 `tenants.directory`, bind password sealed), a daily `directory_sync` job
+  (scheduler `ldap.rs`: LDAPS with the certificate pinned, simple bind, paged search of users and groups for
+  `objectSid` / `sAMAccountName`), the names to nexus-index (`Request::Directory`, sealed `nexus-directory.json`,
+  VM sources re-ingested when they change; the guest's own names win), firewall target, SELinux
+  `corenet_tcp_connect_ldap_port` for the scheduler, web dialog on Tenants. Lab: Samba AD DC as CT 289
+  (`lab/pvehost/samba-ad.sh`, 10.2.34.219, NXLAB.TEST), `crates/scheduler/tests/ldap_lab.rs` on VM 280: 46 accounts
+  in 0.21 s with every expected SID, after 600 more users 646 accounts over two pages in 0.34 s, a wrong password
+  refused (result 49). Through the appliance (0.0.54-dev on VM 201, `lab/pvehost/directory-e2e.sh`): directory
+  set, `directory_sync` read 646 accounts; VM 291 (a 64 MiB NTFS disk made with ntfs-3g's user mapping, so
+  `Finance/budget-2027.xlsx` belongs to jdoe's SID; no Windows needed) backed up and indexed: file search shows owner
+  `jdoe` and finds the file with `owner=jdoe`; after removing the directory the name was gone within the next index
+  sync (about 30 s). Same image: the XCP-ng pool restore (#40) now reports the new VM's UUID as job result (the fix
+  of the e2e run on 0.0.53-dev), restored VM ran, removed. Against the maintainer's AD (dc1dev) not run: no
+  credentials, and an account there would be a write to VM 100.
 - [x] Phase 39 C7: live progress for NAS share backups, plugin jobs and agent release pushes (their lines were dropped
   before).
 - [x] Phase 39 O1: the configuration backup also goes to the second offsite target.

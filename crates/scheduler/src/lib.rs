@@ -89,6 +89,7 @@ mod fullread;
 mod holds;
 mod inventory;
 mod keep;
+pub mod ldap;
 mod lifecycle;
 mod limits;
 pub mod network;
@@ -1183,6 +1184,13 @@ impl Scheduler {
         }
         {
             let c = self.db.conn();
+            // the tenant directories (#52, LDAPS)
+            let mut st = c.prepare("SELECT directory FROM tenants WHERE directory IS NOT NULL")?;
+            for d in st.query_map([], |r| r.get::<_, String>(0))? {
+                if let Ok(v) = serde_json::from_str::<Value>(&d?) {
+                    targets.extend(firewall::directory_targets(&v));
+                }
+            }
             let mut st = c.prepare("SELECT kind, config FROM sources WHERE kind IN ('vmware','xcpng')")?;
             for row in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
                 let (kind, cfg) = row?;
@@ -1295,7 +1303,17 @@ impl Scheduler {
             if !valid_name(&tenant) || !self.cfg.store_base.join(&tenant).join("keycheck").exists() {
                 continue; // no backups yet
             }
-            for kind in ["gc", "verify", "file_index"] {
+            let directory: bool = self.db.conn().query_row(
+                "SELECT directory IS NOT NULL FROM tenants WHERE name = ?1",
+                [&tenant],
+                |r| r.get(0),
+            )?;
+            let kinds: &[&str] = if directory {
+                &["gc", "verify", "file_index", "directory_sync"]
+            } else {
+                &["gc", "verify", "file_index"]
+            };
+            for &kind in kinds {
                 let last = self.last_run(
                     &format!("{kind}/{tenant}"),
                     "SELECT MAX(created) FROM jobs WHERE kind=?1 AND tenant=?2 AND requested_by='scheduler'",
@@ -1854,9 +1872,8 @@ impl Scheduler {
                 Some(r)
             }
             "alert_test" | "forward_test" | "report_send" | "ssh_key_rotate" | "ssh_key_retire" | "file_search"
-            | "file_index" | "file_changes" | "snapshot_diff" | "config_backup" | "snapshot_scan" | "hash_hunt" => {
-                serde_json::from_str(stdout.unwrap_or_default()).ok()
-            }
+            | "directory_sync" | "file_index" | "file_changes" | "snapshot_diff" | "config_backup"
+            | "snapshot_scan" | "hash_hunt" => serde_json::from_str(stdout.unwrap_or_default()).ok(),
             "offsite_list" => match serde_json::from_str::<Value>(stdout.unwrap_or_default().trim()) {
                 Ok(s @ Value::Array(_)) => Some(json!({ "snapshots": s })),
                 _ => {
@@ -2610,6 +2627,54 @@ impl Scheduler {
             .open_all(&tenant_owner(tenant), &mut v)
             .with_context(|| format!("offsite config of tenant {tenant}"))?;
         Ok(offsite_target(&v, n))
+    }
+
+    /// `directory_sync` (#52): the tenant directory's users and groups over LDAPS, their names by SID to
+    /// nexus-index (owners of files in VM snapshots). Without a directory the index gets an empty list (the names
+    /// it had are dropped). Result: `{"accounts": n, "changed": bool}`.
+    fn plan_directory_sync(&self, job: &Job, mut plan: Plan) -> Result<Plan> {
+        let tenant = job.tenant.clone();
+        let d: Option<String> = self
+            .db
+            .conn()
+            .query_row("SELECT directory FROM tenants WHERE name=?1", [&tenant], |r| r.get(0))
+            .optional()?
+            .with_context(|| format!("no tenant {tenant}"))?;
+        let mut v: Value = d.map(|s| serde_json::from_str(&s)).transpose()?.unwrap_or(Value::Null);
+        self.secrets
+            .open_all(&tenant_owner(&tenant), &mut v)
+            .with_context(|| format!("directory of tenant {tenant}"))?;
+        let socket = self.cfg.index_socket.clone();
+        plan.key = format!("directory:{tenant}");
+        plan.steps.push(Step::Func(run::InProc(Box::new(move || {
+            let accounts = if v.is_object() {
+                let s = |k: &str| v[k].as_str().unwrap_or_default();
+                let d = ldap::Directory {
+                    host: s("host"),
+                    port: v["port"].as_u64().and_then(|p| u16::try_from(p).ok()).unwrap_or(636),
+                    ca_pem: s("ca_pem"),
+                    bind_dn: s("bind_dn"),
+                    password: s("password"),
+                    base_dn: s("base_dn"),
+                };
+                ldap::accounts(&d, Duration::from_secs(60))
+                    .map_err(|e| format!("directory {}:{}: {e:#}", d.host, d.port))?
+            } else {
+                BTreeMap::new()
+            };
+            let n = accounts.len();
+            let r = index_proto::call(
+                &socket,
+                &index_proto::Request::Directory {
+                    tenant: tenant.clone(),
+                    accounts,
+                },
+                Duration::from_secs(120),
+            )
+            .map_err(|e| format!("nexus-index: {e:#}"))?;
+            Ok(json!({"accounts": n, "changed": r["changed"]}).to_string())
+        }))));
+        Ok(plan)
     }
 
     /// The configured offsite targets of a tenant (1, and 2 when there is a second).
@@ -3599,6 +3664,7 @@ impl Scheduler {
             }
             "replica_enroll" | "replica_sync" => return self.plan_replica(job, plan),
             "inventory" => return self.plan_inventory(job, plan),
+            "directory_sync" => return self.plan_directory_sync(job, plan),
             k => bail!("unknown job kind {k:?}"),
         }
         Ok(plan)

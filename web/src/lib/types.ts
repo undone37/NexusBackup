@@ -132,6 +132,17 @@ export interface TenantOffsite {
   base_dir?: string;
 }
 
+/** A tenant's directory (#52, `GET /tenants/{name}/directory`): LDAPS server for domain account names. */
+export interface TenantDirectory {
+  host: string;
+  port: number;
+  ca_pem: string;
+  bind_dn: string;
+  base_dn: string;
+  /** the bind password is stored (write-only) */
+  password_set: boolean;
+}
+
 export interface Tenant {
   name: string;
   offsite: TenantOffsite;
@@ -954,6 +965,7 @@ export type JobKind =
   | 'inventory'
   | 'file_search'
   | 'file_index'
+  | 'directory_sync'
   | 'file_changes'
   | 'snapshot_diff'
   | 'offsite_list'

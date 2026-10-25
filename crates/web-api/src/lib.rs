@@ -34,6 +34,7 @@ pub mod console;
 pub mod dashboard;
 pub mod devices;
 pub mod diag;
+pub mod directory;
 pub mod edges;
 pub mod elevation;
 pub mod endpoint;
@@ -580,6 +581,11 @@ pub fn router(st: St) -> Router {
         .route("/tenants/attach/{id}/run", post(offsite::run_attach))
         .route("/tenants/{name}", put(update_tenant).delete(delete_tenant))
         .route("/tenants/{name}/offsite2", put(offsite2::put_second))
+        .route(
+            "/tenants/{name}/directory",
+            get(directory::get_directory).put(directory::put_directory),
+        )
+        .route("/tenants/{name}/directory/sync", post(directory::sync))
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/{id}", put(update_source).delete(delete_source))
         .route("/sources/{id}/inventory", get(inventory::list))

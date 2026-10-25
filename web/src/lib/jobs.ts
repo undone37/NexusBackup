@@ -31,6 +31,7 @@ export const JOB_KINDS: JobKind[] = [
   'inventory',
   'file_search',
   'file_index',
+  'directory_sync',
   'file_changes',
   'snapshot_diff',
   'offsite_list',

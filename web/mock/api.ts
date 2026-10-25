@@ -984,6 +984,9 @@ function pluginResult(j: Job, t: number) {
       restore: p.restore,
       summary: `restored ${p.source} @ ${new Date(p.time * 1000).toISOString()} (${p.restore}): 3 streams, 1.4 GiB`,
     };
+  } else if (j.kind === 'directory_sync') {
+    const d = directories.get(j.tenant);
+    j.result = { accounts: d ? 1_284 : 0, changed: true };
   } else if (j.kind === 'plugin_mount') {
     const until = new Date((t + p.minutes * 60) * 1000).toISOString();
     j.result = {
@@ -4211,6 +4214,64 @@ on('PUT', '/tenants/:name/offsite2', async (c, [name]) => {
   t.offsite = next;
   await audit(u.name, 'tenant.offsite2', `tenant/${t.name}`, { second: second ? publicOffsite(second) : null });
   return [200, { name: t.name, offsite: publicOffsite(t.offsite) }];
+});
+// #52: the tenant directory (web-api directory.rs): LDAPS, the bind password write-only and kept only for the
+// same server and account; saving queues a directory_sync job
+const directories = new Map<string, Json>();
+const dirPublic = (d: Json | undefined) => {
+  if (!d) return null;
+  const { password, ...rest } = d;
+  return { ...rest, password_set: typeof password === 'string' };
+};
+on('GET', '/tenants/:name/directory', (c, [name]) => {
+  need(c.user, 'admin');
+  const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  return [200, { name: t.name, directory: dirPublic(directories.get(t.name)) }];
+});
+on('PUT', '/tenants/:name/directory', async (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  for (const k of Object.keys(c.body ?? {})) if (k !== 'directory') throw new HttpError(400, `unknown field ${k}`);
+  const d = c.body?.directory;
+  const old = directories.get(t.name);
+  if (d == null) directories.delete(t.name);
+  else {
+    const allowed = ['host', 'port', 'ca_pem', 'bind_dn', 'password', 'base_dn'];
+    for (const k of Object.keys(d)) if (!allowed.includes(k)) throw new HttpError(400, `directory: unknown field ${k}`);
+    const line = (v: unknown, what: string, max: number) => {
+      if (typeof v !== 'string' || !v || v.length > max || /[\u0000-\u001f\u007f]/.test(v))
+        throw new HttpError(400, `${what}: 1..=${max} characters, no control characters`);
+    };
+    if (typeof d.host !== 'string' || !/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(d.host) || d.host.startsWith('-'))
+      throw new HttpError(400, 'host: invalid host name or address');
+    const port = d.port ?? 636;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port: 1..=65535');
+    if (typeof d.ca_pem !== 'string' || !d.ca_pem.includes('-----BEGIN CERTIFICATE-----'))
+      throw new HttpError(400, 'ca_pem: expected a PEM certificate (at most 64 KiB)');
+    line(d.bind_dn, 'bind_dn', 256);
+    line(d.base_dn, 'base_dn', 512);
+    if (!d.base_dn.includes('=')) throw new HttpError(400, 'base_dn: a DN such as DC=contoso,DC=example');
+    const next: Json = { host: d.host, port, ca_pem: d.ca_pem, bind_dn: d.bind_dn, base_dn: d.base_dn };
+    if (d.password != null) {
+      line(d.password, 'password', 256);
+      next.password = d.password;
+    } else {
+      const same = old && ['host', 'port', 'ca_pem', 'bind_dn'].every((k) => old[k] === next[k]);
+      if (!same || typeof old?.password !== 'string')
+        throw new HttpError(400, 'directory.password: required when host, port, ca_pem or bind_dn change');
+      next.password = old.password;
+    }
+    directories.set(t.name, next);
+  }
+  const j = addJob('directory_sync', t.name, {}, u.name, { duration: 4 });
+  await audit(u.name, 'tenant.directory', `tenant/${t.name}`, { directory: dirPublic(directories.get(t.name)) });
+  return [200, { name: t.name, directory: dirPublic(directories.get(t.name)), job: j.id }];
+});
+on('POST', '/tenants/:name/directory/sync', (c, [name]) => {
+  const u = need(c.user, 'admin');
+  const t = find(db.tenants, (x) => x.name === decodeURIComponent(name), 'tenant');
+  if (!directories.has(t.name)) throw new HttpError(400, 'the tenant has no directory');
+  return [202, { job: addJob('directory_sync', t.name, {}, u.name, { duration: 4 }).id }];
 });
 on('DELETE', '/tenants/:name', (c, [name]) =>
   quorum(need(c.user, 'admin'), 'tenant.delete', { name: decodeURIComponent(name) }),

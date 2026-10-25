@@ -2444,6 +2444,41 @@ fn keep_until_locks_new_snapshots() {
     assert_eq!(n, 1);
 }
 
+/// The tenant directory (#52): a daily `directory_sync` only for tenants with one, its plan an in-process step
+/// that reports the server it could not reach, and the firewall's target for that server's LDAPS port.
+#[test]
+fn directory_sync() {
+    let e = env(4);
+    // a closed local port: the step must fail and name the server
+    let d = json!({"host": "127.0.0.1", "port": 1, "ca_pem": "CERT", "bind_dn": "nexus@lab", "password": "pw",
+                   "base_dn": "DC=lab"});
+    e.db.conn()
+        .execute("UPDATE tenants SET directory = ?1 WHERE name = 't1'", [d.to_string()])
+        .unwrap();
+    let s = sched(&e);
+    let job = Job {
+        id: 50,
+        kind: "directory_sync".into(),
+        tenant: "t1".into(),
+        params: json!({}),
+    };
+    let p = s.plan(&job).unwrap();
+    assert_eq!(p.key, "directory:t1");
+    match &p.steps[..] {
+        [Step::Func(crate::run::InProc(f))] => {
+            let err = f().unwrap_err();
+            assert!(err.contains("127.0.0.1:1"), "{err}");
+        }
+        st => panic!("{st:?}"),
+    }
+    assert_eq!(crate::firewall::directory_targets(&d), [("127.0.0.1".to_owned(), 1)]);
+    assert_eq!(
+        crate::firewall::directory_targets(&json!({"host": "dc1.lab"})),
+        [("dc1.lab".to_owned(), 636)]
+    );
+    assert!(crate::firewall::directory_targets(&Value::Null).is_empty());
+}
+
 /// XCP-ng sources (#40): a group backup runs one nexus-xcpng with the VM UUIDs (secrets in 0600 files, the job id
 /// naming the snapshot), retention on `xcp-<uuid>`, inventory, files and restore to PVE through nexus-pve, the
 /// firewall allows XAPI and NBD.

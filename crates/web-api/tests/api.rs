@@ -4142,6 +4142,10 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/users/{id}/risk/clear", "/api/v1/users/1/risk/clear".into(), e(), 'N'),
         // Phase 30: the second offsite target is the provider's (like the first)
         ("PUT", "/tenants/{name}/offsite2", "/api/v1/tenants/acme/offsite2".into(), Some(json!({"target": null})), 'N'),
+        // #52: the tenant directory (bind credentials) is the provider's
+        ("GET", "/tenants/{name}/directory", "/api/v1/tenants/acme/directory".into(), none(), 'N'),
+        ("PUT", "/tenants/{name}/directory", "/api/v1/tenants/acme/directory".into(), Some(json!({"directory": null})), 'N'),
+        ("POST", "/tenants/{name}/directory/sync", "/api/v1/tenants/acme/directory/sync".into(), e(), 'N'),
         // Phase 30: role elevation is for appliance-wide accounts (a tenant admin is never eligible)
         ("POST", "/auth/elevate", "/api/v1/auth/elevate".into(), Some(json!({"role": "admin", "minutes": 30, "reason": "x"})), 'N'),
         ("POST", "/auth/elevate/end", "/api/v1/auth/elevate/end".into(), e(), 'Y'),
@@ -4609,6 +4613,89 @@ fn vmware_cfg(password: Option<&str>) -> Value {
         c["password"] = json!(p);
     }
     c
+}
+
+/// The tenant directory (#52): admins only, LDAPS config checked, the bind password write-only and sealed (kept
+/// only for the same server and account), saving and "sync" queue a `directory_sync` job, `null` removes it.
+#[tokio::test]
+async fn tenant_directory() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let url = "/api/v1/tenants/acme/directory";
+    let cfg = |pw: Option<&str>| {
+        let mut c = json!({"host": "dc1.contoso.example",
+            "ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+            "bind_dn": "nexus@contoso.example", "base_dn": "DC=contoso,DC=example"});
+        if let Some(p) = pw {
+            c["password"] = json!(p);
+        }
+        c
+    };
+    let r = t.get(url, &admin).await;
+    assert_eq!((r.status, r.body["directory"].clone()), (StatusCode::OK, Value::Null));
+    let r = t.put(url, &admin, json!({"directory": cfg(None)})).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "password required: {:?}", r.body);
+    for (k, v) in [
+        ("base_dn", json!("contoso")),
+        ("ca_pem", json!("x")),
+        ("bind_dn", json!("a\nb")),
+        ("tls", json!(false)),
+    ] {
+        let mut c = cfg(Some("pw"));
+        c[k] = v;
+        let r = t.put(url, &admin, json!({"directory": c})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{k}: {:?}", r.body);
+    }
+    let r = t.put(url, &admin, json!({"directory": cfg(Some("S3cret dir"))})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (
+            r.body["directory"]["password_set"].clone(),
+            r.body["directory"]["port"].clone()
+        ),
+        (json!(true), json!(636))
+    );
+    assert!(r.body["directory"].get("password").is_none());
+    let job = r.body["job"].as_i64().unwrap();
+    assert_eq!(
+        t.scalar::<String>(&format!("SELECT kind FROM jobs WHERE id = {job}")),
+        "directory_sync"
+    );
+    let raw = t.scalar::<String>("SELECT directory FROM tenants WHERE name = 'acme'");
+    assert!(!raw.contains("S3cret") && raw.contains("sealed:v1:"), "{raw}");
+    // kept for the same server, refused when the server moves
+    let mut c = cfg(None);
+    c["base_dn"] = json!("OU=Staff,DC=contoso,DC=example");
+    assert_eq!(t.put(url, &admin, json!({"directory": c})).await.status, StatusCode::OK);
+    let mut v: Value =
+        serde_json::from_str(&t.scalar::<String>("SELECT directory FROM tenants WHERE name = 'acme'")).unwrap();
+    t.sk.open_all(&catalog::secret::tenant_owner("acme"), &mut v).unwrap();
+    assert_eq!(v["password"], "S3cret dir");
+    let mut c = cfg(None);
+    c["host"] = json!("evil.example");
+    assert_eq!(
+        t.put(url, &admin, json!({"directory": c})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = t.post(&format!("{url}/sync"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // operators and tenant users neither see nor change it
+    for u in ["otto", "tina"] {
+        let tok = t.login(u).await;
+        assert_eq!(t.get(url, &tok).await.status, StatusCode::FORBIDDEN, "{u}");
+        assert_eq!(
+            t.put(url, &tok, json!({"directory": null})).await.status,
+            StatusCode::FORBIDDEN,
+            "{u}"
+        );
+    }
+    let r = t.put(url, &admin, json!({"directory": null})).await;
+    assert_eq!((r.status, r.body["directory"].clone()), (StatusCode::OK, Value::Null));
+    assert_eq!(
+        t.post(&format!("{url}/sync"), &admin, json!({})).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    t.finish();
 }
 
 /// XCP-ng sources (#40): like VMware (password write-only, sealed, kept only for the same endpoint), `nbd_hosts`

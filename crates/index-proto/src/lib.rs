@@ -50,6 +50,15 @@ pub enum Request {
         #[serde(default)]
         tenant: Option<String>,
     },
+    /// The tenant directory's account names by SID (#52, scheduler `directory_sync`): owners of files in VM
+    /// snapshots that the guest itself does not name (domain accounts); answer: `{"changed": bool}`, changed names
+    /// re-ingest the VM sources. Empty: no directory.
+    Directory {
+        /// tenant the names belong to
+        tenant: String,
+        /// SID (`S-1-5-21-…`) -> account name
+        accounts: BTreeMap<String, String>,
+    },
     /// Drop the tenant's index and build it again from the name indexes (web-api, admin
     /// only); answer: `{"rebuilt": tenant}`.
     Rebuild {

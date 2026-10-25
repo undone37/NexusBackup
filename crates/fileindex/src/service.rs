@@ -297,6 +297,34 @@ impl Service {
         Ok(true)
     }
 
+    /// The tenant directory's names (#52): stored sealed; a change re-ingests the VM sources (their state hash
+    /// includes the names' hash).
+    pub fn directory(&self, tenant: &str, accounts: BTreeMap<String, String>) -> Result<bool> {
+        if accounts.len() > 1_000_000
+            || accounts
+                .iter()
+                .any(|(k, v)| !k.starts_with("S-1-") || k.len() > 200 || v.is_empty() || v.len() > 256)
+        {
+            bail!("accounts: SID -> name, at most 1000000");
+        }
+        let t = self.tenant(tenant)?;
+        {
+            let _w = t.write.lock().unwrap();
+            let mut st = t.idx.state();
+            let h = crate::model::directory_hash(&accounts);
+            if st.directory == h {
+                return Ok(false);
+            }
+            t.idx.set_directory(&accounts)?;
+            st.directory = h;
+            let mut w = t.idx.writer()?;
+            t.idx.commit(&mut w, &st)?;
+            w.wait_merging_threads()?;
+        }
+        self.nudge(tenant);
+        Ok(true)
+    }
+
     pub fn rebuild(&self, tenant: &str) -> Result<()> {
         let t = self.tenant(tenant)?;
         {
@@ -354,6 +382,9 @@ impl Service {
                 serde_json::json!({"queued": tenant})
             }
             Request::Config { tenant, sources } => serde_json::json!({"changed": self.configure(&tenant, sources)?}),
+            Request::Directory { tenant, accounts } => {
+                serde_json::json!({"changed": self.directory(&tenant, accounts)?})
+            }
             Request::Status { tenant } => serde_json::to_value(self.status(tenant.as_deref())?)?,
             Request::Rebuild { tenant } => {
                 self.rebuild(&tenant)?;
