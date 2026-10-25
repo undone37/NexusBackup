@@ -79,6 +79,8 @@ mod tests {
         let aces = allow_aces(PIPE_SDDL);
         assert_eq!(aces.len(), 3);
         assert_eq!(aces[2], ("IU".to_string(), 0x12008b));
+        // what the desktop UI asks for when it opens the pipe is all granted to interactive users (#67)
+        assert_eq!(agent_ui_proto::PIPE_CLIENT_ACCESS & !aces[2].1, 0);
         // FILE_GENERIC_WRITE for users would include FILE_CREATE_PIPE_INSTANCE
         assert!(!pipe_sddl_ok("D:P(A;;GA;;;SY)(A;;0x120116;;;IU)"));
         assert!(!pipe_sddl_ok("D:P(A;;GA;;;SY)(A;;GA;;;WD)"));

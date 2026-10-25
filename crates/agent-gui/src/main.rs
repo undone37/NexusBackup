@@ -76,17 +76,44 @@ fn single_instance(wake: mpsc::Sender<()>) -> bool {
     }
 }
 
-/// Windows: one instance per logon session (named mutex); the tray icon of the running
-/// instance opens the window.
+/// Windows: one instance per logon session (named mutex). A second start (the Start menu entry) sets the
+/// session's named event and exits; the running instance opens its window (#67: before, the second start did
+/// nothing while the tray icon ran).
 #[cfg(windows)]
-fn single_instance(_wake: mpsc::Sender<()>) -> bool {
+fn single_instance(wake: mpsc::Sender<()>) -> bool {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = "Local\\NexusAgentGui\0".encode_utf16().collect();
+    use windows_sys::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, INFINITE,
+    };
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() };
+    let (mutex, event) = (wide("Local\\NexusAgentGui"), wide("Local\\NexusAgentGuiOpen"));
     // SAFETY: valid NUL-terminated name; the handle lives until the process exits
-    let h = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    let h = unsafe { CreateMutexW(std::ptr::null(), 0, mutex.as_ptr()) };
     // SAFETY: GetLastError has no preconditions; it reads the calling thread's last error, set by CreateMutexW above.
-    h.is_null() || unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
+    let first = h.is_null() || unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
+    if first {
+        // auto-reset, not signalled; anyone in this logon session can set it: all it does is open this window
+        // SAFETY: valid NUL-terminated name, default security; the handle lives until the process exits
+        let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, event.as_ptr()) };
+        if !ev.is_null() {
+            let ev = ev as usize; // a HANDLE is not Send; the thread only waits on it
+            std::thread::spawn(move || loop {
+                // SAFETY: a valid event handle that is never closed
+                unsafe { WaitForSingleObject(ev as _, INFINITE) };
+                if wake.send(()).is_err() {
+                    break;
+                }
+            });
+        }
+    } else {
+        // SAFETY: valid NUL-terminated name; a null handle (no running instance yet) is not used
+        let ev = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, event.as_ptr()) };
+        if !ev.is_null() {
+            // SAFETY: a valid event handle with EVENT_MODIFY_STATE; the process exits right after
+            unsafe { SetEvent(ev) };
+        }
+    }
+    first
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]

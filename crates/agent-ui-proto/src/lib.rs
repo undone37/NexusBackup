@@ -22,6 +22,10 @@ pub const SOCKET_PATH: &str = "/run/nexus-agent/ui.sock";
 pub const SOCKET_GROUP: &str = "nexus-agent-ui";
 /// Windows: named pipe served by the agent service.
 pub const PIPE_NAME: &str = r"\\.\pipe\nexus-agent-ui";
+/// What a client opens the pipe with: FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, within
+/// what the pipe grants interactive users (agent-windows `PIPE_SDDL`). `GENERIC_READ | GENERIC_WRITE` would also ask
+/// for write attributes, append and EA, which the pipe refuses non-admins (#67: "Access is denied").
+pub const PIPE_CLIENT_ACCESS: u32 = 0x0010_0083;
 /// The agent keeps at most this many session summaries.
 pub const MAX_SESSIONS: usize = 100;
 /// `session` returns at most this many log lines.
@@ -398,7 +402,13 @@ impl Client {
         const ERROR_PIPE_BUSY: i32 = 231;
         let mut tries = 0;
         let f = loop {
-            match std::fs::OpenOptions::new().read(true).write(true).open(path.as_ref()) {
+            use std::os::windows::fs::OpenOptionsExt;
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .access_mode(PIPE_CLIENT_ACCESS)
+                .open(path.as_ref())
+            {
                 Ok(f) => break f,
                 Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 20 => {
                     tries += 1;

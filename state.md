@@ -572,6 +572,17 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   the same file, and the service was gone afterwards (#96); the MSI installed by hand brought the agent back
   enrolled (backup ok). Open: the update with the GUI running in a desktop session, a 1603 whose rollback works,
   watchdog revert of a manual install.
+  2026-10-25 (GUI in a desktop session, `lab/windows/gui-update.sh`, VM 298 = clone of VM 242, appliance
+  0.0.54-dev): local non-admin user `desk` logged on automatically, the tray program started by the Run key. In-band
+  MSI updates 0.1.8 -> 0.1.22 (11 s) and 0.1.22 -> 0.1.23 with it running: msiexec succeeded, the running process
+  kept going (its file renamed aside, the new one installed, no pending reboot), the service ran the new version.
+  Found and fixed on branch `67-gui-open-windows`: (1) a second start (Start menu) did nothing while the tray
+  program ran: now a per-session named event makes the running instance open its window (lab: window opened,
+  still one process); (2) the non-admin user's window showed "Cannot reach the agent service: Access is denied":
+  the client opened the pipe with GENERIC_READ | GENERIC_WRITE, more than the pipe grants interactive users; now
+  `PIPE_CLIENT_ACCESS` (0x100083, a test ties it to the pipe's ACL): lab with the fixed exe: status, backups and
+  sessions shown. The Windows agent reports no `gui_version` on purpose (the MSI carries the UI; Linux reports it
+  to pick the desktop package). Still open here: a real 1603 whose rollback works.
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
   listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on

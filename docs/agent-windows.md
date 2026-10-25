@@ -136,12 +136,15 @@ interactive users; nothing on the pipe changes configuration or reads backup dat
   in the tray at every user logon (decision: the MSI is per machine and GPO/Intune deploy it in device context; a
   per-user HKCU entry would need every user to run an installer). Users switch it off in Task Manager > Startup;
   administrators remove the value by GPO. One instance per logon session (named mutex).
-- Updates: the GUI is replaced by the next MSI (major upgrade); a running GUI keeps the file in use, so Windows
-  Installer asks to close it (interactive) or replaces it at the next restart (`/qn`).
+- Updates: the GUI is replaced by the next MSI (major upgrade). Lab 2026-10-25 (#67, in-band `/qn` update with the
+  tray program running in a user session): Windows Installer renames the in-use file aside and installs the new
+  one at once (no reboot pending); the running program stays the old one until the next logon.
 - Desktop notifications on failed / warning backups are off by default; the setting is per user
   (`%APPDATA%\NexusBackup\agent-gui.json`).
-- **Untested on Windows** like the agent itself (no Windows VMs): the tray, pipe access for non-admin users and the
-  Run key belong to the manual test plan below.
+- Lab 2026-10-25 (#67, Windows Server 2022, local non-admin user with autologon): the Run key starts the tray
+  program at logon; a non-admin user reaches the pipe (the client opens it with `PIPE_CLIENT_ACCESS`, within the
+  interactive users' grant; with `GENERIC_READ | GENERIC_WRITE` it was "Access is denied"); a second start opens
+  the running instance's window (named event `Local\NexusAgentGuiOpen`).
 
 ## Manual install (without the MSI)
 
