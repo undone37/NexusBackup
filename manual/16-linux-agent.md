@@ -488,7 +488,8 @@ root needed); the desktop window lists them under **Backups on this computer** w
 `nexus-agent repo copy /mnt/usb/nexus /etc/nexus-agent/offsite.json` uploads what is new (all of it encrypted) and
 removes what pruning removed; in a job, `"copy": "/etc/nexus-agent/offsite.json"` does it after every backup. With
 `lock_days` and a bucket with Object Lock, uploaded data cannot be deleted for that many days, not even with the
-bucket's keys. After a loss: `nexus-agent repo fetch /etc/nexus-agent/offsite.json /srv/nexus`, then `repo open
+bucket's keys. An S3 server with its own certificate authority (MinIO, Ceph in your network) is trusted with
+`"ca_file": "/etc/nexus-agent/s3-ca.pem"` (PEM; `"path_style": true` for servers addressed by IP). After a loss: `nexus-agent repo fetch /etc/nexus-agent/offsite.json /srv/nexus`, then `repo open
 /srv/nexus` with the 24 words. Only one backup or prune runs at a time
 (the other one stops with "another backup or prune is running"). Pruning works like the appliance's retention: a
 snapshot kept as a daily, weekly or monthly one stays locked for its class's period. Backups use snapshots where the file

@@ -1128,7 +1128,7 @@ fn unqueue(name: &str) {
 
 /// Where a repository is copied to (a JSON file next to the jobs file: it holds credentials, keep it
 /// root/Administrators only). `{"kind": "s3", "endpoint": "https://…", "region": "…", "bucket": "…",
-/// "prefix": "…", "access_key": "…", "secret_key": "…", "lock_days": 30}`, `{"kind": "sftp", "host": "…",
+/// "prefix": "…", "access_key": "…", "secret_key": "…", "lock_days": 30, "ca_file": "…"}`, `{"kind": "sftp", "host": "…",
 /// "port": 23, "user": "…", "key_file": "…", "host_key": "ssh-ed25519 AAAA…", "base_dir": "…"}` or
 /// `{"kind": "dir", "path": "…"}`.
 #[derive(serde::Deserialize, Debug)]
@@ -1160,6 +1160,9 @@ pub enum Target {
         /// the bucket has Object Lock: chunks stay undeletable this many days after their upload
         #[serde(default)]
         lock_days: u32,
+        /// PEM certificates to trust instead of the web PKI (an S3 server with a private CA)
+        #[serde(default)]
+        ca_file: Option<PathBuf>,
     },
 }
 
@@ -1200,11 +1203,15 @@ impl Target {
                 secret_key,
                 path_style,
                 lock_days,
+                ca_file,
             } => {
                 let mut c = remote::s3::S3Config::new(endpoint, region, bucket, access_key, secret_key);
                 c.prefix = prefix.trim_matches('/').to_owned();
                 c.path_style = *path_style;
                 c.lock = *lock_days > 0;
+                if let Some(f) = ca_file {
+                    c.ca_pem = Some(fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?);
+                }
                 (Box::new(remote::s3::S3Remote::new(c).map_err(err)?), *lock_days)
             }
         })
@@ -1346,4 +1353,23 @@ pub fn fetch_from(r: &dyn remote::Remote, dir: &Path) -> Result<u64, String> {
         n += 1;
     }
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_target_reads_its_ca_file() {
+        let d = tempfile::tempdir().unwrap();
+        let t = d.path().join("target.json");
+        let json = |ca: &Path| {
+            serde_json::json!({"kind": "s3", "endpoint": "https://10.0.0.5:9443", "region": "us-east-1",
+                               "bucket": "nexus", "access_key": "ak", "secret_key": "sk", "ca_file": ca})
+            .to_string()
+        };
+        fs::write(&t, json(&d.path().join("missing.pem"))).unwrap();
+        let e = Target::load(&t).unwrap().open().err().unwrap();
+        assert!(e.contains("missing.pem"), "{e}");
+    }
 }

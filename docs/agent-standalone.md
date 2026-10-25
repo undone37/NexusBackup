@@ -73,9 +73,10 @@ file holds credentials: keep it next to the jobs file (root / Administrators onl
 {"kind": "sftp", "host": "backup.example.net", "port": 22, "user": "copy", "key_file": "/root/.ssh/nexus-copy",
  "host_key": "ssh-ed25519 AAAA...", "base_dir": "pc-17"}
 {"kind": "s3", "endpoint": "https://s3.example.net", "region": "eu-central-1", "bucket": "copies", "prefix": "pc-17",
- "access_key": "...", "secret_key": "...", "lock_days": 30}
+ "access_key": "...", "secret_key": "...", "lock_days": 30, "path_style": false, "ca_file": "/etc/nexus-agent/s3-ca.pem"}
 {"kind": "dir", "path": "/mnt/nas/pc-17"}
 ```
+`ca_file` (optional): PEM certificates trusted instead of the web PKI, for an S3 server with a private CA (#30).
 
 Mirror, not the appliance's offsite packs: one object per chunk (many small objects on S3; an SFTP box with a
 file-count limit fills faster). ponytail: packs like `crates/offsite` when that matters.
