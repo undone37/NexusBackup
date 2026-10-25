@@ -367,13 +367,17 @@ reported as errors per entry and fail the job; the other files are written.
 MSI installs (Phase 27, protocol v1.8, docs/agent-update-plan.md "Implementation"): the
 binary is never swapped under the MSI (the single-frame `Update` of older appliances is
 refused). The appliance sends the signed MSI of the release in chunks; after the manifest and
-signature checks the agent starts `%SystemRoot%\System32\msiexec.exe /i <state>\update\<msi> /qn
-/norestart /l*v <state>\update-msi.log` detached (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
-CREATE_BREAKAWAY_FROM_JOB`, without breakaway if the job refuses it), so msiexec can stop and replace
-the service; the major upgrade keeps `%ProgramData%\NexusAgent` (enrollment). The new version
+signature checks the agent copies itself to `<state>\update\nexus-agent-msi-run.exe` and starts that copy
+detached (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB`, without breakaway if the
+job refuses it) as `msi-run`: it runs `%SystemRoot%\System32\msiexec.exe /i <state>\update\<msi> /qn
+/norestart /l*v <state>\update-msi.log`, waits, and starts the service if it does not run. The major upgrade
+removes the old version right after `InstallInitialize`, inside the install transaction: a failed upgrade rolls
+back to the old version, whose service `msi-run` starts again so it reports the failure (#96, lab 2026-10-25:
+before, the removal committed on its own and a 1603 left the host without an agent; then the rolled-back
+service stayed stopped). The major upgrade keeps `%ProgramData%\NexusAgent` (enrollment). The new version
 clears `update-pending.json` when it listens; the old one reads the log
-(`MainEngineThread is returning <code>`, UTF-16) and records `failed` with the code and the lines
-around the first `Return value 3`. The MSI carries the desktop UI, so it is updated too. An MSI
+(`MainEngineThread is returning <code>`, UTF-16) and records `failed` with the code, the failed action (a
+deferred custom action by its 1720-1723 error note, else the first `Return value 3`) and the lines around it. The MSI carries the desktop UI, so it is updated too. An MSI
 cannot be rolled back in-band (Windows Installer refuses downgrades). `self_update = off` refuses
 every update; unset (`auto`) allows MSI updates for MSI installs and binary swaps for manual
 installs.

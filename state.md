@@ -559,7 +559,7 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   showed agent 0.1.22 (screen captures before/after); after a new login the 0.1.22 tray program ran. Manual chapter
   16 says so. Found: an agent's address cannot be changed (no API for it): VM 225 got a new DHCP lease after the
   reset, the lab gave it the old address as a second one; issue opened.
-- [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
+- [x] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
   of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by
   hand (`lab/windows/e2e.sh 298 upgrade`: msiexec 0, the service runs 0.1.5 and stays enrolled; the GUI check failed
   only because the test build bumped the agent crates, not the desktop UI's); in-band update 0.1.5 -> 0.1.6
@@ -582,7 +582,16 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   the client opened the pipe with GENERIC_READ | GENERIC_WRITE, more than the pipe grants interactive users; now
   `PIPE_CLIENT_ACCESS` (0x100083, a test ties it to the pipe's ACL): lab with the fixed exe: status, backups and
   sessions shown. The Windows agent reports no `gui_version` on purpose (the MSI carries the UI; Linux reports it
-  to pick the desktop package). Still open here: a real 1603 whose rollback works.
+  to pick the desktop package).
+  2026-10-25 (#96, a real 1603: lab-only MSIs with a deferred custom action that fails after the files, never
+  committed): 0.1.23 -> 0.1.24 ended with 1603 and the host without agent (service and Program Files gone):
+  RemoveExistingProducts ran before InstallInitialize, so the old version's removal committed on its own. Fixed
+  (branch `96-msi-upgrade-rollback`): RemoveExistingProducts right after InstallInitialize (packages.sh,
+  test-packages.sh). Lab: 0.1.23 -> 0.1.25 normal upgrade in 7 s; 0.1.25 -> 0.1.26 (failing) rolled back to 0.1.25,
+  but its service stayed stopped and the appliance only saw "did not come back". Fixed: the agent runs msiexec
+  through a copy of itself (`msi-run`) that starts the service afterwards. Lab: 0.1.25 -> 0.1.27 normal (8 s); 0.1.27
+  -> 0.1.28 (failing): 1603 reported to the appliance in seconds, 0.1.27 running and enrolled; the failed action
+  then named InstallFinalize, now the custom action (from the 1722 note). #67 complete.
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
   listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on

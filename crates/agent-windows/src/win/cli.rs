@@ -28,6 +28,7 @@ usage:
   nexus-agent.exe uninstall                          stop and remove the service (keeps config/state)
   nexus-agent.exe service-setup                      MSI: secure %ProgramData%\\NexusAgent, failure actions of the service
   nexus-agent.exe purge-data --yes                   MSI uninstall with PURGE=1: delete config and state (enrollment)
+  nexus-agent.exe msi-run MSI LOG STAGING            in-band update: msiexec, then the service started if it is not
   nexus-agent.exe status
   nexus-agent.exe run                                run in the foreground (debugging)
   nexus-agent.exe version
@@ -112,6 +113,7 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
         ["install"] => install(&paths).map(|_| ExitCode::SUCCESS),
         ["uninstall"] => uninstall().map(|_| ExitCode::SUCCESS),
         ["service-setup"] => service_setup(&paths).map(|_| ExitCode::SUCCESS),
+        ["msi-run", msi, log, staging] => msi_run(msi, log, staging).map(|_| ExitCode::SUCCESS),
         ["purge-data"] if yes => {
             let base = base_of(&paths);
             match std::fs::remove_dir_all(&base) {
@@ -271,6 +273,49 @@ fn service_setup(paths: &Paths) -> Result<(), String> {
         base_of(paths).display()
     );
     Ok(())
+}
+
+/// In-band MSI update (started detached by the service from a copy of this exe in the staging directory, so the
+/// MSI can replace the installed one): msiexec with the fixed arguments of [`crate::update::msiexec_args`], then
+/// the service started if it does not run. After a failed upgrade Windows Installer rolls back to the old version
+/// but leaves its service stopped (#96: nothing then reported the failure); after a successful one the MSI has
+/// started it already.
+fn msi_run(msi: &str, log: &str, staging: &str) -> Result<(), String> {
+    let args = crate::update::msiexec_args(msi.as_ref(), log.as_ref(), staging.as_ref())?;
+    let exe = crate::update::msiexec(std::env::var_os("SystemRoot"));
+    let st = std::process::Command::new(&exe)
+        .args(&args)
+        .status()
+        .map_err(|e| format!("{}: {e}", exe.display()))?;
+    println!("msiexec: {st}");
+    // the service may be in the middle of starting or being recreated: a few tries
+    let mut last = String::new();
+    for _ in 0..30 {
+        match start_service() {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    Err(format!("service {SERVICE_NAME} not started after the update: {last}"))
+}
+
+/// Starts the service unless it runs or is starting.
+fn start_service() -> Result<(), String> {
+    let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| format!("service manager: {}", werr(&e)))?;
+    let s = m
+        .open_service(SERVICE_NAME, ServiceAccess::START | ServiceAccess::QUERY_STATUS)
+        .map_err(|e| format!("open service: {}", werr(&e)))?;
+    let state = s
+        .query_status()
+        .map_err(|e| format!("query service: {}", werr(&e)))?
+        .current_state;
+    if matches!(state, ServiceState::Running | ServiceState::StartPending) {
+        return Ok(());
+    }
+    s.start(&[] as &[&std::ffi::OsStr])
+        .map_err(|e| format!("start service: {}", werr(&e)))
 }
 
 fn uninstall() -> Result<(), String> {

@@ -181,12 +181,24 @@ pub fn parse_msi_log(b: Option<&[u8]>) -> InstallResult {
                 1925 | 1625 => "not allowed by policy",
                 _ => "installation failed",
             };
+            // a deferred custom action that failed (#96): `Note: 1: 1722 2: <action> 3: …` (errors 1720-1723 are the
+            // custom action errors); the `Return value 3` line then only names InstallFinalize, which ran the script
+            let custom = lines.iter().find_map(|l| {
+                let n = l.split("Note: 1: ").nth(1)?;
+                let rest = ["1720 2: ", "1721 2: ", "1722 2: ", "1723 2: "]
+                    .iter()
+                    .find_map(|p| n.strip_prefix(p))?;
+                let a = rest.split_whitespace().next()?;
+                (a.len() <= 64 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(a)
+            });
             // `Action ended 12:00:05: StartServices. Return value 3.`: the action that failed, in the message itself
-            let action = lines.get(at).and_then(|l| {
-                let a = l.split("Action ended ").nth(1)?.split_once(": ")?.1;
-                let a = a.split(". Return value").next()?.trim();
-                (!a.is_empty() && a.len() <= 64 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-                    .then_some(a)
+            let action = custom.or_else(|| {
+                lines.get(at).and_then(|l| {
+                    let a = l.split("Action ended ").nth(1)?.split_once(": ")?.1;
+                    let a = a.split(". Return value").next()?.trim();
+                    (!a.is_empty() && a.len() <= 64 && a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                        .then_some(a)
+                })
             });
             let at_action = action.map(|a| format!(" (failed action: {a})")).unwrap_or_default();
             InstallResult::Failed(format!("msiexec exit code {c}: {why}{at_action}"), tail)
@@ -282,6 +294,14 @@ mod update2_tests {
                 );
                 assert!(tail.iter().any(|l| l.contains("StartServices")), "{tail:?}");
             }
+            r => panic!("{r:?}"),
+        }
+        // a deferred custom action: its name from the 1722 note, not InstallFinalize that ran the script (#96)
+        let custom = format!(
+            "{running}MSI (s) (80:4C) [13:23:37:182]: Note: 1: 1722 2: LabFail 3: C:\\Program Files\\NexusBackup Agent\\nexus-agent.exe 4: x \r\nAction ended 13:23:37: InstallFinalize. Return value 3.\r\nMainEngineThread is returning 1603\r\n"
+        );
+        match parse_msi_log(Some(&utf16(&custom))) {
+            InstallResult::Failed(e, _) => assert!(e.ends_with("(failed action: LabFail)"), "{e}"),
             r => panic!("{r:?}"),
         }
         let down = "MainEngineThread is returning 1638\r\n";
