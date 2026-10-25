@@ -1232,6 +1232,14 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   proxy source inventory group backup`) hot-added and read the disk of the VM on the other host: incremental
   (19 ranges, 61 s); a full read through the same path (made due on the console) compared 4096 chunks, 9 changed,
   0 unreported. nx-cbt moved back to datastore1 afterwards (the nightly run's state).
+- [ ] (#37, part) Quiesced Windows snapshots (2026-10-25): Windows Server 2022 moved from PVE (a clone of VM 242,
+  SATA disk as a monolithicSparse VMDK, `vmkfstools -i` thin) to ESXi 8 as nx-win299 (BIOS, SATA, e1000; e1000e
+  needs PCIe bridges in the VMX: "No PCIe slot available"), VMware Tools 13.1.5 installed at first boot by a startup
+  task. A backup over NFC through vCenter ran (40 GiB in 476 s, `vmware-e2e.sh` with `GROUP=vmware-win`), but crash
+  consistent: after the Tools install Windows bugchecks early in every boot (0x7E, c0000094 divide by zero; also
+  with only `ADDLOCAL=ToolsCore,VSS`), so Tools never run long enough for a quiesced snapshot. Windows with VMware
+  Tools under ESXi nested in KVM is not usable here; quiesced Windows snapshots need a physical ESXi host
+  (maintainer). VM removed.
 - [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
   the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
   token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).

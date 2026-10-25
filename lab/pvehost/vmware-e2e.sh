@@ -22,7 +22,7 @@
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444, PVE_HOST, NODE pve-test); VC_LAB (~/nexus-lab/vcenter),
 #      ESXI_LABS (~/nexus-lab/esxi ~/nexus-lab/esxi8), VM (nx-cbt), TARGET (290), STORAGE (vmpool), BOOT (90),
 #      OUT (~/nexus-lab/scratch), TRANSPORT (nfc, hotadd), ESXI_PROXY_LAB (~/nexus-lab/esxi: the ESXi 7 host of nx-cbt),
-#      PROXY (nx-proxy: the proxy agent's name), PROXY_VM (nx-proxy: the proxy VM in vCenter's inventory)
+#      PROXY (nx-proxy: the proxy agent's name), PROXY_VM (nx-proxy: the proxy VM in vCenter's inventory), GROUP (vmware / vmware-hot)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -46,8 +46,8 @@ PROXY=${PROXY:-nx-proxy}
 PROXY_VM=${PROXY_VM:-nx-proxy}
 sfx=; [ "$PROXY" = nx-proxy ] || sfx=-$PROXY
 case $TRANSPORT in
-nfc) SRC=vc GROUP=vmware ;;
-hotadd) SRC=vc-hot$sfx GROUP=vmware-hot$sfx ;;
+nfc) SRC=vc GROUP=${GROUP:-vmware} ;;
+hotadd) SRC=vc-hot$sfx GROUP=${GROUP:-vmware-hot$sfx} ;;
 *) echo "TRANSPORT: nfc or hotadd" >&2 && exit 2 ;;
 esac
 ROOT=$LAB/appliance/root
