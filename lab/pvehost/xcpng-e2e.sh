@@ -12,6 +12,8 @@
 #   xcpng-e2e.sh restore    the newest snapshot as VM $TARGET on $NODE ($STORAGE, NICs link_down), started
 #   xcpng-e2e.sh check      the VM runs; a screen capture after $BOOT seconds ($OUT/xcpng-e2e.png)
 #   xcpng-e2e.sh cleanup    stop and destroy VM $TARGET (ours: ID from 200)
+#   xcpng-e2e.sh pool       the newest snapshot back into the pool as "$VM (e2e)", started there for $BOOT seconds
+#                           (it must stay running), then removed with its disks
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444, PVE_HOST, NODE pve-test); LAB_X (~/nexus-lab/xcpng:
 #      root.pw), XCP (10.2.34.218), VM (nexus-deb), TARGET (292), STORAGE (vmpool), BOOT (60), OUT (~/nexus-lab/scratch)
@@ -140,6 +142,27 @@ step_check() {
 	pve "rm -f /tmp/xcpng-e2e.ppm; echo 'screendump /tmp/xcpng-e2e.ppm' | qm monitor $TARGET >/dev/null && cat /tmp/xcpng-e2e.ppm && rm -f /tmp/xcpng-e2e.ppm" >"$OUT/xcpng-e2e.ppm"
 	python3 -c "from PIL import Image; Image.open('$OUT/xcpng-e2e.ppm').save('$OUT/xcpng-e2e.png')" &&
 		log "screen: $OUT/xcpng-e2e.png"
+}
+
+xcp() { ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+	-o LogLevel=ERROR "root@$XCP" "$@"; }
+
+step_pool() {
+	local j uuid time vm t0=$(date +%s)
+	uuid=$(cat "$S/xcpng-uuid")
+	time=$(cat "$S/xcpng-time")
+	j=$(api admin POST /jobs "$(jq -nc --arg s "xcp-$uuid" --argjson t "$time" --argjson p "$(src_id "$SRC")" \
+		--arg n "$VM (e2e)" '{kind:"restore", tenant:"lab", params:{source:$s, time:$t, source_id:$p, name:$n}}')")
+	expect 202 "restore into the pool"
+	j=$(wait_job admin "$(jq -r .id <<<"$j")" 3600)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "pool restore $(jq -r .id <<<"$j"): $(jq -c '{state, error, log}' <<<"$j" | cut -c1-800)"
+	vm=$(jq -r .result.vm <<<"$j")
+	log "restored into the pool in $(($(date +%s) - t0)) s: $vm"
+	xcp "xe vm-param-list uuid=$vm | grep -E ' (name-label|memory-static-max|VCPUs-max|power-state) '; xe vm-start uuid=$vm" >&2
+	sleep "$BOOT"
+	xcp "xe vm-param-get uuid=$vm param-name=power-state" | grep -q running || die "the restored VM does not run"
+	log "the restored VM runs after ${BOOT}s"
+	xcp "xe vm-shutdown uuid=$vm force=true && xe vm-uninstall uuid=$vm force=true >/dev/null" && log "removed $vm"
 }
 
 step_cleanup() {

@@ -1,8 +1,9 @@
-//! `nexus-xcpng <config.json> inventory | backup` (docs/xcpng-design.md, #40)
+//! `nexus-xcpng <config.json> inventory | backup | restore` (docs/xcpng-design.md, #40)
 //!
 //! Spawned with a generated 0600 config like `nexus-vmware`. Machine lines on stdout: `committed xcp-<uuid>/<time>
 //! in <n>s: <name>` and `consistency xcp-<uuid>/<time>: crash` per VM, `result {json}` at the end of a backup (exit
-//! status 1 if any VM failed); `inventory` prints `{"guests":[{id, title, kind, tags}]}`.
+//! status 1 if any VM failed); `inventory` prints `{"guests":[{id, title, kind, tags}]}`; `restore` (the config's
+//! `restore`: a snapshot as a new VM in the pool) prints `restored {"vm": <uuid>, "name": ...}`.
 
 use anyhow::{bail, Context, Result};
 use chunkstore::{Options, Store};
@@ -40,6 +41,23 @@ struct Config {
     job: Option<u64>,
     #[serde(default = "timeout")]
     timeout_secs: u64,
+    #[serde(default)]
+    restore: Option<RestoreCfg>,
+}
+
+/// `restore`: snapshot `source`/`time` as a new VM `name` (empty: `<stored name> (restored)`) on SR `sr` with its
+/// NICs on `network` (UUIDs; empty: the pool's default SR, the management network).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreCfg {
+    source: String,
+    time: u64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    sr: Option<String>,
+    #[serde(default)]
+    network: Option<String>,
 }
 
 fn https() -> u16 {
@@ -121,6 +139,25 @@ fn main() -> Result<()> {
             if !failed.is_empty() {
                 std::process::exit(1);
             }
+        }
+        "restore" => {
+            let r = cfg.restore.as_ref().context("config: restore missing")?;
+            let t = xcpng::restore::Target {
+                name: &r.name,
+                sr: r.sr.as_deref(),
+                network: r.network.as_deref(),
+            };
+            let t0 = Instant::now();
+            let vm = xcpng::restore::restore_vm(
+                &x,
+                &cfg.store()?,
+                &r.source,
+                r.time,
+                &t,
+                Duration::from_secs(cfg.timeout_secs),
+            )?;
+            eprintln!("{}/{} restored in {}s", r.source, r.time, t0.elapsed().as_secs());
+            println!("restored {}", json!({"vm": vm, "name": r.name}));
         }
         _ => bail!("unknown command {cmd}"),
     }

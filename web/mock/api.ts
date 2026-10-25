@@ -649,6 +649,15 @@ function planFor(kind: string, p: Json): string[] {
       ];
     case 'restore':
     case 'restore_ct': {
+      if (isPoolRestore(p)) {
+        const pool = db.sources.find((s) => s.id === p.source_id)?.name;
+        return [
+          `restoring ${src} @ ${p.time} into the XCP-ng pool ${pool} as a new VM${p.name ? ` (${p.name})` : ''}`,
+          `SR ${p.sr ?? 'default'}, network ${p.network ?? 'management'}: new MAC addresses`,
+          'xvda: 34359738368 bytes uploaded (import_raw_vdi)',
+          `${src}/${p.time} restored in 212s`,
+        ];
+      }
       if (String(src).startsWith('vmw-') || String(src).startsWith('xcp-')) {
         const xcp = String(src).startsWith('xcp-');
         const vmName = (
@@ -820,6 +829,8 @@ function tick() {
         });
       if (j.kind === 'restore_files' && ag) ag.last_seen = t;
       if (j.kind === 'synthetic_restore') syntheticDone(j, t);
+      if (j.kind === 'restore' && isPoolRestore(j.params))
+        j.result = { vm: '7c1e0a52-9d3b-4f6e-a8c2-3b5d9e1f4a60', name: j.params.name ?? '' };
       if (j.kind === 'files_get') {
         j.result = {
           download_token: j.params.download_token,
@@ -6905,8 +6916,29 @@ function pluginSnapshotKind(tenant: string, name: string) {
 }
 const OVERWRITE = ['never', 'if_older', 'always'];
 const PVE_NAME = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,62}$/;
+/** An XCP-ng snapshot into an XCP-ng pool (#40): `source_id` is an xcpng source. */
+function isPoolRestore(p: Json): boolean {
+  return (
+    String(p.source ?? '').startsWith('xcp-') && db.sources.some((s) => s.id === p.source_id && s.kind === 'xcpng')
+  );
+}
+const XAPI_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Phase 15a restore options, as web-api `jobs.rs` checks them. */
 function checkRestore(kind: string, tenant: string, p: Json) {
+  if (kind === 'restore' && isPoolRestore(p)) {
+    if (!db.sources.some((s) => s.id === p.source_id && s.tenant === tenant))
+      throw new HttpError(400, 'source_id: no XCP-ng source of this tenant');
+    const extra = Object.keys(p).filter((k) => !['source', 'time', 'source_id', 'name', 'sr', 'network'].includes(k));
+    if (extra.length) throw new HttpError(400, `unknown field \`${extra[0]}\``);
+    if (
+      p.name !== undefined &&
+      (!String(p.name).length || String(p.name).length > 80 || /\p{Cc}/u.test(String(p.name)))
+    )
+      throw new HttpError(400, 'name: 1..=80 characters, no control characters');
+    for (const k of ['sr', 'network'])
+      if (p[k] !== undefined && !XAPI_UUID.test(String(p[k]))) throw new HttpError(400, `${k}: a UUID from the pool`);
+    return;
+  }
   if (String(p.source ?? '').startsWith('vmw-') || String(p.source ?? '').startsWith('xcp-')) {
     // a VMware or XCP-ng VM as a new Proxmox VE VM (#34, #40)
     if (kind !== 'restore' || p.replace || p.rollback)

@@ -8,4 +8,6 @@ pub mod names;
 #[cfg(feature = "connector")]
 pub mod nbdtls;
 #[cfg(feature = "connector")]
+pub mod restore;
+#[cfg(feature = "connector")]
 pub mod xapi;

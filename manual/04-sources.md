@@ -1072,11 +1072,12 @@ with the VM's name. Each snapshot holds one disk image per virtual disk (`xvda`,
 settings (`xcpng.json`); files in it can be browsed, indexed and searched like a Proxmox VE VM's (the group's
 **Index files** switch).
 
-An XCP-ng snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-and-xcp-ng-vms-as-proxmox-ve-vms)).
+An XCP-ng snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-and-xcp-ng-vms-as-proxmox-ve-vms))
+or as a **new VM in the pool** ([chapter 6](06-restores.md#xcp-ng-vms-back-into-the-pool)).
 
 Limits: when CBT is reset (a disk moved to another SR, CBT switched off by hand, a failed backup that removed its
 base) the next backup reads the disk in full (logged). Scheduled full reads ([chapter 5](05-policies-and-groups.md))
-are not done for XCP-ng groups yet. Restoring into the pool is not offered yet.
+are not done for XCP-ng groups yet.
 
 ## NFS and SMB shares
 

@@ -2523,6 +2523,24 @@ fn xcpng_jobs() {
         "{:?}",
         p.steps
     );
+    // into the pool (M4): source_id is the xcpng source, nexus-xcpng restore with the target in its config
+    let sr = "0d7fa1b8-3c5e-4f0a-8b1e-6f1c2d3e4f50";
+    let p = s
+        .plan(&job(
+            43,
+            "restore",
+            json!({"source": format!("xcp-{u1}"), "time": 1000, "source_id": 6, "name": "web (copy)", "sr": sr}),
+        ))
+        .unwrap();
+    assert_eq!(p.key, format!("guest:t1/xcp-{u1}"));
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { bin, args, capture: false, .. }] if bin == &e.cfg.xcpng_bin && args[1] == "restore")
+    );
+    let cfg: Value = serde_json::from_slice(&p.files.iter().find(|f| f.0 == "xcpng.json").unwrap().1).unwrap();
+    assert_eq!(
+        cfg["restore"],
+        json!({"source": format!("xcp-{u1}"), "time": 1000, "name": "web (copy)", "sr": sr, "network": null})
+    );
     let t = crate::firewall::xcpng_targets(&src);
     assert_eq!(
         t,

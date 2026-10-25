@@ -3334,6 +3334,25 @@ impl Scheduler {
                 let sid = p["source_id"]
                     .as_i64()
                     .context("restore of a VM snapshot: source_id (the target Proxmox VE cluster) is required")?;
+                // an XCP-ng snapshot into an XCP-ng pool of the tenant (#40): a new VM, nexus-xcpng restore
+                if cmd == "restore-xcpng" && self.source_of(tenant, sid, "xcpng").is_ok() {
+                    plan.key = format!("guest:{tenant}/{source}");
+                    plan.files = self.xcpng_config(tenant, sid, &dir, &[], job.id)?;
+                    let (_, cfg) = plan.files.last_mut().context("xcpng.json")?;
+                    let mut v: Value = serde_json::from_slice(cfg)?;
+                    let opt = |k: &str| p[k].as_str().map(str::to_owned);
+                    v["restore"] = json!({"source": source, "time": num(p, "time")?,
+                                          "name": opt("name").unwrap_or_default(), "sr": opt("sr"),
+                                          "network": opt("network")});
+                    *cfg = serde_json::to_vec_pretty(&v)?;
+                    plan.steps.push(Step::Cli {
+                        bin: self.cfg.xcpng_bin.clone(),
+                        args: vec![dir.join("xcpng.json").to_string_lossy().into_owned(), "restore".into()],
+                        alert: None,
+                        capture: false, // the `restored {json}` line goes to the log, the result is taken from there
+                    });
+                    return Ok(plan);
+                }
                 self.source_of(tenant, sid, "pve")
                     .context("restore of a VM snapshot: source_id must be a Proxmox VE source of the tenant")?;
                 plan.key = format!("guest:{tenant}/{source}");
