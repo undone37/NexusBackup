@@ -1284,9 +1284,10 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   VM 296 = full clone of VM 242 with the Hyper-V role (nested on KVM works), test VM nx-rct (Gen 2, 1 GiB VHDX, Alpine
   live ISO). Recovery checkpoint by WMI (type 32768; application consistency fails without integration services,
   crash consistency works), the base VHDX read read-only while the VM runs (byte-identical), reference points with
-  RCT identifiers and `.rct`/`.mrt` files; host writes to the VHDX are not tracked. Not yet: a working
-  `GetVirtualDiskChanges` (no ranges between two reference points, "identifier not valid" during a checkpoint, for
-  4 MiB written in the guest): first item of the note's lab plan.
+  RCT identifiers and `.rct`/`.mrt` files; host writes to the VHDX are not tracked. The change query: WMI
+  `GetVirtualDiskChanges` refused the identifiers, the Win32 `QueryChangesVirtualDisk` on the frozen parent (opened
+  read-only during the recovery checkpoint) returned exactly the guest's write (4 MiB at 128 MiB) over 1 GiB. Design
+  complete; implementation (M1-M4) open.
 - [ ] (#40) XCP-ng: design note (docs/xcpng-design.md) and its XAPI facts checked (2026-10-25): XCP-ng 8.3 nested
   on pve-test as VM 287 (10.2.34.218), installed unattended by `lab/pvehost/xcpng.sh` (ISO repacked with xorriso: an
   answer file and a post-install script from VM 280; 770 s). `xcpng.sh xapi`: CBT, snapshot, `data_destroy`

@@ -1,4 +1,4 @@
-param([string]$path, [string]$rctId)
+param([string]$path, [string]$rctId, [int]$readOnly = 0)
 Add-Type -TypeDefinition @"
 using System; using System.Runtime.InteropServices;
 public static class Vd {
@@ -11,12 +11,13 @@ public static class Vd {
 }
 "@
 $t = New-Object Vd+VST; $t.DeviceId = 3; $t.VendorId = [Guid]"EC984AEC-A0F9-47e9-901F-71415A66345B"  # VHDX, Microsoft
-$p = New-Object Vd+OpenV2; $p.Version = 2; $p.GetInfoOnly = 1
+$p = New-Object Vd+OpenV2; $p.Version = 2; if ($readOnly) { $p.ReadOnly = 1 } else { $p.GetInfoOnly = 1 }
 $h = [IntPtr]::Zero
 $rc = [Vd]::OpenVirtualDisk([ref]$t, $path, 0, 0, [ref]$p, [ref]$h)   # VIRTUAL_DISK_ACCESS_NONE with v2 params
 "OpenVirtualDisk $path -> $rc"
 if ($rc -ne 0) { return }
 $ranges = New-Object Vd+Range[] 1024; $n = [uint32]1024; $done = [uint64]0
 $rc = [Vd]::QueryChangesVirtualDisk($h, $rctId, 0, 1GB, 0, $ranges, [ref]$n, [ref]$done)
+if ($rc -ne 0) { $n = 0 }
 "QueryChangesVirtualDisk since $rctId -> $rc, $n ranges, processed ${done}: " + (($ranges[0..([Math]::Max([int]$n, 1) - 1)] | Where-Object { $n } | ForEach-Object { "$($_.ByteOffset)+$($_.ByteLength)" }) -join ' ')
 [void][Vd]::CloseHandle($h)
