@@ -1254,9 +1254,14 @@ sub-issues of the backlog epic #21; close the issue with the PR or commit that f
   config option per subsystem from Debian's 6.12.111 config; the VM has no NIC; the initrd's 36-module closure holds
   none of ksmbd, sctp, rdma_rxe, mlx5, qla2xxx, netfs). **Still blocking a final release:** the podman/skopeo Go
   findings (grpc, x/net, Go stdlib; AlmaLinux 10 has no newer build) (Release 0.1.0-alpha).
-- R6 (#60) Spike: our own minimal kernel for the restore micro-VM (no networking, only the needed drivers and file systems,
-  a current LTS series so grype sees the fixes): CI build time, ZFS against the LTS, rebuild cadence per stable
-  release; then decide whether to replace Debian's kernel (maintainer question 2026-10-20).
+- R6 **Done 2026-10-25 (#60):** the restore micro-VM runs its own kernel, built in the builder container from
+  Debian's kernel source (`linux-source-6.12`: Debian's LTS series, patches and security updates, so the rebuild
+  cadence stays Debian's) with `restore-vm/kernel.config` (no network, the VM's drivers and file systems built in,
+  ZFS the only module, `zfs-dkms` against that tree). Measured: image build +5 minutes on 8 cores (kernel 254 s, ZFS
+  64 s), vmlinuz + initrd 18.5 MB instead of 25.1 MB, first mounts 10.4 s instead of 15.6 s (nested KVM), file
+  listings on the appliance 5 to 6 s instead of 9 to 11 s; reproducible. Decision: replace Debian's kernel (smaller
+  attack surface for hostile guest disks, faster, no new upstream to track); the rescue ISO keeps Debian's kernel
+  (real hardware, network).
 - R3 **Done 2026-10-20:** perlcritic severity 4 ("stern") over the plugin, helper and rollback, in CI (`plugin`) and
   the pre-push hook; `.perlcriticrc` excludes octal modes and `use constant`, inline exceptions name their reason
   (PVE storage API `return undef`, process-wide `%SIG`/`%ENV`, streamed tar pipes) (Phase 34a).

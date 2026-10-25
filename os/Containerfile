@@ -69,23 +69,42 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
        target/release/nexus-tls target/release/nexus-fsindex target/release/nexus-index /out/ \
  && cp target/x86_64-unknown-linux-musl/release/nexus-restore-agent /out/agent
 
-# ---- Stage 3: restore micro-VM (Debian 13 kernel + ZFS initramfs, restore-vm/).
+# ---- Stage 3: restore micro-VM (own kernel from the Debian 13 source + ZFS initramfs, restore-vm/).
 # The RUN lines are those of restore-vm/Containerfile (keep in sync), so both
 # share podman's layer cache.
 FROM ${DEBIAN} AS restorevm
 ENV DEBIAN_FRONTEND=noninteractive
 RUN sed -i 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
- && apt-get install -y --no-install-recommends linux-image-amd64 linux-headers-amd64 \
+ && apt-get install -y --no-install-recommends linux-source-6.12 bc bison flex libelf-dev libssl-dev \
       build-essential dkms kmod cpio zstd xz-utils ca-certificates
-RUN apt-get install -y --no-install-recommends zfs-dkms zfsutils-linux \
- && KVER=$(basename /boot/vmlinuz-* | sed 's/^vmlinuz-//') \
- && dkms autoinstall -k "$KVER" \
- && modinfo -k "$KVER" zfs | grep -E '^(filename|version|vermagic)'
+RUN apt-get install -y --no-install-recommends zfs-dkms zfsutils-linux
 RUN apt-get install -y --no-install-recommends lvm2 mdadm util-linux fdisk busybox-static \
       e2fsprogs xfsprogs ntfs-3g btrfs-progs dosfstools
 # YARA scanner for the opt-in malware scan (Phase 21e): runs only inside the VM (keep in step with restore-vm/Containerfile)
 RUN apt-get install -y --no-install-recommends yara
+COPY restore-vm/kernel.config /usr/src/kernel.config
+# the micro-VM's own kernel (#60): the Debian LTS source (same series and patches as linux-image-amd64),
+# x86_64_defconfig + kernel.config (no network, the VM's drivers and file systems built in), ZFS by zfs-dkms
+# for exactly that tree
+# reproducible: build time, user and host from the source package (its tarball's mtime), as Debian's own
+RUN cd /usr/src && tar xf linux-source-6.12.tar.xz && cd linux-source-6.12 \
+ && export SOURCE_DATE_EPOCH=$(stat -c %Y /usr/src/linux-source-6.12.tar.xz) KBUILD_BUILD_USER=nexus KBUILD_BUILD_HOST=restore-vm \
+ && export KBUILD_BUILD_TIMESTAMP="$(date -u -d "@$SOURCE_DATE_EPOCH")" \
+ && make -s x86_64_defconfig \
+ && scripts/kconfig/merge_config.sh -m .config /usr/src/kernel.config >/dev/null \
+ && make -s olddefconfig \
+ && ! grep -q '^CONFIG_NET=y' .config \
+ && t0=$(date +%s) && make -s -j"$(nproc)" bzImage modules && echo "kernel: $(($(date +%s) - t0)) s" \
+ && make -s modules_install INSTALL_MOD_STRIP=1 \
+ && KVER=$(make -s kernelrelease) && cp arch/x86/boot/bzImage /boot/vmlinuz-"$KVER" \
+ && touch -d "@$SOURCE_DATE_EPOCH" /boot/vmlinuz-"$KVER" \
+ && ZV=$(ls /usr/src | sed -n 's/^zfs-//p' | head -1) \
+ && t0=$(date +%s) && dkms build -m zfs -v "$ZV" -k "$KVER" --kernelsourcedir "$PWD" >/dev/null \
+ && dkms install -m zfs -v "$ZV" -k "$KVER" --kernelsourcedir "$PWD" --force >/dev/null \
+ && echo "zfs: $(($(date +%s) - t0)) s" \
+ && modinfo -k "$KVER" zfs | grep -E '^(filename|version|vermagic)' \
+ && cd /usr/src && rm -rf linux-source-6.12
 ARG DEBIAN
 COPY restore-vm/ /src/
 COPY --from=rust /out/agent /out/agent
