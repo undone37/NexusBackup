@@ -4711,6 +4711,9 @@ export const en = {
     },
     rollback: {
       label: 'Roll back in place (changed blocks only)',
+      labelCt: 'Roll back in place (changed files only)',
+      hintCt: (vmid: string) =>
+        `Instead of restoring a new container, container ${vmid} is shut down and only the files that differ from this snapshot are written back; files the snapshot does not have are deleted. Its configuration stays as it is now. Its current state is not backed up first (containers have no change tracking): back it up before if you need it. If that is not possible (the container is privileged, another guest uses the ID, or its backed-up mount points changed) the full replace below runs instead.`,
       hint: (vmid: string) =>
         `Instead of restoring a new VM, guest ${vmid} is paused, its current state is backed up, then it is stopped and only the blocks that differ from this snapshot are written back onto its disks. Minutes instead of hours when little changed. Its configuration stays as it is now. If that is not possible (the VM is stopped, another VM uses the VMID, disks were added, removed or resized, or Proxmox VE lost the change tracking) the full replace below runs instead.`,
     },

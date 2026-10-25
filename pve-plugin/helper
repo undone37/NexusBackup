@@ -41,6 +41,9 @@
 #                               the node) and pipe that NBD connection <-> stdio; the
 #                               service refuses unless the VM is stopped, tagged
 #                               nexus-rollback by the appliance and locked by rollback-begin
+#   rollback-ct-begin <vmid>    the same for a container (#55): lock / unlock it, and
+#   rollback-ct-end <vmid>      rollback-ct: its listing out, the delete list and the
+#   rollback-ct <vmid>          tar stream in (pve-plugin/rollback `ct`), piped <-> stdio
 # Anything else: exit 2 and log to syslog.
 #
 # Exit codes: 0 ok, 1 runtime failure, 2 invalid command or arguments.
@@ -495,7 +498,7 @@ sub cmd_ir_serve {
 }
 
 # In-place rollback (Phase 30): one request to the root service, its answer line;
-# `nbd` then pipes the connection. The service does every check (VM stopped,
+# `nbd` and `ct` then pipe the connection. The service does every check (VM stopped,
 # tagged, locked) itself: this side only forwards validated arguments.
 sub cmd_rollback {
     my ($what, @args) = @_;
@@ -516,7 +519,7 @@ sub cmd_rollback {
     }
     fail(1, "$label: " . ($line =~ s/^error //r)) if $line !~ m/^ok\b/;
     slog('info', "$label: $line");
-    if ($what ne 'nbd') {
+    if ($what ne 'nbd' && $what ne 'ct') {
         print STDOUT "$line\n";
         exit(0);
     }
@@ -633,9 +636,10 @@ if ($cmd eq 'job' || $cmd eq 'nbd') {
 } elsif ($cmd eq 'ct-restore-serve') {
     usage_error($printable) if @args != 1 || $args[0] !~ $ARCHIVE_RE;
     cmd_ct_restore_serve($args[0]);
-} elsif ($cmd eq 'rollback-begin' || $cmd eq 'rollback-end') {
+} elsif ($cmd =~ m/^rollback-((?:ct-)?(?:begin|end)|ct)\z/) {
+    my $what = $1;
     usage_error($printable) if @args != 1 || $args[0] !~ $VMID_RE;
-    cmd_rollback($cmd =~ s/^rollback-//r, @args);
+    cmd_rollback($what, @args);
 } elsif ($cmd eq 'rollback-nbd') {
     usage_error($printable)
         if @args != 2 || $args[0] !~ $VMID_RE || $args[1] !~ m/^drive-(?:(?:ide|sata|scsi|virtio)\d{1,2}|efidisk0)\z/;

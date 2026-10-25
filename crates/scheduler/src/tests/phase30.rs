@@ -199,7 +199,7 @@ fn rollback_restore_flags_and_result() {
         (r["rolled_back"].clone(), r["pre_snapshot"].clone()),
         (json!(true), json!(9))
     );
-    // a container restore never rolls back in place
+    // a container restore rolls back in place too (#55)
     let mut ct = p.clone();
     ct["source"] = json!("ct-100");
     let job = Job {
@@ -214,7 +214,7 @@ fn rollback_restore_flags_and_result() {
         },
     };
     let flags = crate::restore::restore_flags(&job).unwrap();
-    assert!(flags.contains(&"--replace".to_owned()) && !flags.contains(&"--rollback".to_owned()));
+    assert!(flags.contains(&"--replace".to_owned()) && flags.contains(&"--rollback".to_owned()));
 }
 
 /// Second offsite target: its own job config (`offsite2.json`, own state dir,

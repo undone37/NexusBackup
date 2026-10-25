@@ -214,6 +214,31 @@ fn main() -> Result<()> {
         }
         ("restore-ct", [vmid, time, node, target, storage, opts @ ..]) => {
             let opts = pve::restore::RestoreOpts::parse(opts)?;
+            // #55: replace original by rolling the container back in place; the full replace is the fallback
+            if opts.rollback {
+                if !opts.replace {
+                    bail!("--rollback needs --replace (the full replace is its fallback)");
+                }
+                let vmid: u32 = vmid.parse()?;
+                // no backup of this container meanwhile
+                let _held = pve::parallel::lock_wait(
+                    &[lock_dir()?.join(format!("guest-{cluster_key}-{vmid}"))],
+                    "the rollback",
+                );
+                let ro = pve::rollback::RollbackOpts {
+                    start: opts.start,
+                    link_down: opts.link_down,
+                };
+                match pve::ctrollback::rollback(&cluster, &store, vmid, time.parse()?, &ro)? {
+                    pve::ctrollback::Outcome::RolledBack(r) => {
+                        println!("rolled-back {}", serde_json::to_string(&r)?);
+                        return Ok(());
+                    }
+                    pve::ctrollback::Outcome::Fallback(why) => {
+                        println!("rollback in place impossible: {why}; restoring in full with replace original");
+                    }
+                }
+            }
             let r = cluster.restore_ct(
                 &store,
                 vmid.parse()?,

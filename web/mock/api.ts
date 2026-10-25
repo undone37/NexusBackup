@@ -678,6 +678,15 @@ function planFor(kind: string, p: Json): string[] {
           `rolled-back {"vmid":${vmid},"snapshot":${p.time},"pre_snapshot":${pre},"resumed":false,"disks":[{"device":"drive-scsi0","chunks":8192,"changed":412,"bytes_written":1728053248}],"untouched":[],"started":${!!p.start},"link_down":${!!p.link_down}}`,
         ];
       }
+      // #55: a container in place (changed files only)
+      if (p.rollback && ct) {
+        return [
+          `node ${p.node}: ok locked`,
+          '214 files differ (48233472 bytes), 41877 unchanged, 12 paths to delete',
+          `node ${p.node}: ok unlocked`,
+          `rolled-back {"vmid":${vmid},"snapshot":${p.time},"resumed":false,"files_written":214,"bytes_written":48233472,"deleted":12,"unchanged":41877,"started":${!!p.start},"link_down":${!!p.link_down}}`,
+        ];
+      }
       const name = p.name ?? `${p.name_prefix ?? ''}${ct ? 'ct' : 'vm'}${vmid}${p.name_prefix ? '' : '-restore'}`;
       return [
         `restoring ${src} @ ${p.time} as ${ct ? 'CT' : 'VM'} ${p.target} (${name}) on ${p.node}, storage ${p.storage}${p.pool ? `, pool ${p.pool}` : ''}`,
@@ -6865,8 +6874,8 @@ function checkRestore(kind: string, tenant: string, p: Json) {
     throw new HttpError(400, 'target: replace restores to a new VMID');
   if (!p.replace && p.keep_original_links !== undefined)
     throw new HttpError(400, 'keep_original_links: only with replace');
-  if (p.rollback && (!p.replace || kind !== 'restore'))
-    throw new HttpError(400, 'rollback: only a VM restore that replaces the original');
+  if (p.rollback && (!p.replace || (kind !== 'restore' && kind !== 'restore_ct')))
+    throw new HttpError(400, 'rollback: only a VM or container restore that replaces the original');
   if (!db.snapshots.some((s) => s.tenant === tenant && s.source === p.source && s.time === p.time))
     throw new HttpError(404, 'no such snapshot');
 }

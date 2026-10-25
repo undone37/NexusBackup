@@ -19,6 +19,21 @@
 #                           and pipes the NBD connection <-> stdin/stdout
 #   end <vmid>              removes the lock `rollback`
 #
+# Containers (#55, file level; unprivileged only, ids mapped like PVE's restore):
+#   ct-begin <vmid>, ct-end <vmid>   as begin / end for a container
+#   ct <vmid>               the container must be stopped, locked `rollback` and
+#                           tagged; mounts its root file system and the mount
+#                           points with backup=1, then
+#                           -> `ok listing`, one record per file of the current
+#                              state: `<type> <mode> <uid> <gid> <mtime> <size>
+#                              <sha256|-> <path>` + NUL (tar's type flags, octal
+#                              mode, ids inside the container, path relative to
+#                              the root without `./`), an empty record, `ok`
+#                           <- u64 BE length + NUL-separated paths to delete,
+#                              then a tar stream until EOF (entries to write)
+#                           -> `ok applied` once both ran inside the container's
+#                              user namespace (rm, GNU tar), then unmounts
+#
 # Answer: one line, `ok …` or `error <message>`; after `ok` of `nbd` the NBD
 # stream follows. Every request is logged to syslog.
 #
@@ -30,7 +45,8 @@
 use strict;
 use warnings;
 
-use Fcntl qw(:flock O_RDWR O_CREAT);
+use Digest::SHA ();
+use Fcntl qw(:flock :mode O_RDWR O_CREAT);
 use IO::Handle;
 use IO::Socket::UNIX;
 use POSIX ();
@@ -38,6 +54,8 @@ use Time::HiRes ();
 use Socket qw(SOCK_STREAM SHUT_WR);
 use Sys::Syslog ();
 
+use PVE::LXC;
+use PVE::LXC::Config;
 use PVE::QemuConfig;
 use PVE::QemuServer;
 use PVE::QemuServer::Drive;
@@ -103,51 +121,59 @@ sub running {
     return PVE::QemuServer::check_running($vmid);
 }
 
-# The checks every request shares; dies with the reason.
+# The checks every request shares; dies with the reason. $ct: a container.
 sub checked_conf {
-    my ($vmid, $want_lock) = @_;
-    my $conf = PVE::QemuConfig->load_config($vmid);
-    die "VM $vmid is running: stop it first\n" if running($vmid);
-    die "VM $vmid is not marked for a rollback (tag $TAG)\n" if !tagged($conf);
+    my ($vmid, $want_lock, $ct) = @_;
+    my $what = $ct ? 'CT' : 'VM';
+    my $conf = $ct ? PVE::LXC::Config->load_config($vmid) : PVE::QemuConfig->load_config($vmid);
+    die "$what $vmid is running: stop it first\n" if $ct ? PVE::LXC::check_running($vmid) : running($vmid);
+    die "$what $vmid is not marked for a rollback (tag $TAG)\n" if !tagged($conf);
     my $lock = $conf->{lock} // '';
     if (defined($want_lock)) {
-        die "VM $vmid is not locked for a rollback\n" if $lock ne $want_lock;
+        die "$what $vmid is not locked for a rollback\n" if $lock ne $want_lock;
     } elsif ($lock ne '' && $lock ne 'rollback') {
-        die "VM $vmid is locked ($lock)\n";
+        die "$what $vmid is locked ($lock)\n";
     }
+    # writes run as the container's mapped root; a privileged one would get real root
+    die "CT $vmid is privileged: only unprivileged containers are rolled back in place\n"
+        if $ct && !$conf->{unprivileged};
     return $conf;
 }
 
 sub cmd_begin {
-    my ($vmid) = @_;
+    my ($vmid, $ct) = @_;
+    my $cls = $ct ? 'PVE::LXC::Config' : 'PVE::QemuConfig';
     my $resumed = 0;
     eval {
-        PVE::QemuConfig->lock_config($vmid, sub {
-            my $conf = checked_conf($vmid, undef);
+        $cls->lock_config($vmid, sub {
+            my $conf = checked_conf($vmid, undef, $ct);
             $resumed = ($conf->{lock} // '') eq 'rollback';
             $conf->{lock} = 'rollback';
-            PVE::QemuConfig->write_config($vmid, $conf);
+            $cls->write_config($vmid, $conf);
         });
     };
-    answer_error("begin $vmid: $@") if $@;
-    slog('info', "begin $vmid" . ($resumed ? ' (resumed)' : ''));
+    my $label = ($ct ? 'ct-begin' : 'begin') . " $vmid";
+    answer_error("$label: $@") if $@;
+    slog('info', $label . ($resumed ? ' (resumed)' : ''));
     print STDOUT ($resumed ? "ok resumed\n" : "ok locked\n");
     exit(0);
 }
 
 sub cmd_end {
-    my ($vmid) = @_;
+    my ($vmid, $ct) = @_;
+    my $cls = $ct ? 'PVE::LXC::Config' : 'PVE::QemuConfig';
     eval {
-        PVE::QemuConfig->lock_config($vmid, sub {
-            my $conf = PVE::QemuConfig->load_config($vmid);
+        $cls->lock_config($vmid, sub {
+            my $conf = $cls->load_config($vmid);
             if (($conf->{lock} // '') eq 'rollback') {
                 delete $conf->{lock};
-                PVE::QemuConfig->write_config($vmid, $conf);
+                $cls->write_config($vmid, $conf);
             }
         });
     };
-    answer_error("end $vmid: $@") if $@;
-    slog('info', "end $vmid");
+    my $label = ($ct ? 'ct-end' : 'end') . " $vmid";
+    answer_error("$label: $@") if $@;
+    slog('info', $label);
     print STDOUT "ok unlocked\n";
     exit(0);
 }
@@ -263,6 +289,162 @@ sub cmd_nbd {
     exit($ok ? 0 : 1);
 }
 
+# Exactly $n bytes from STDIN (dies on EOF).
+sub read_exact {
+    my ($n) = @_;
+    my $buf = '';
+    while (length($buf) < $n) {
+        my $r = sysread(STDIN, $buf, $n - length($buf), length($buf));
+        next if !defined($r) && $!{EINTR};
+        die "short read: " . ($r // $!) . "\n" if !$r;
+    }
+    return $buf;
+}
+
+# Host uid/gid -> the id inside the container (PVE::LXC::parse_id_maps entries:
+# [type, container id, host id, count]); unmapped ids are nobody inside, no map: the same.
+sub ct_id {
+    my ($map, $type, $id) = @_;
+    return $id if !@$map;
+    for my $m (@$map) {
+        my ($t, $ct, $host, $n) = @$m;
+        return $ct + $id - $host if $t eq $type && $id >= $host && $id < $host + $n;
+    }
+    return 65534;
+}
+
+sub file_sha256 {
+    my ($path) = @_;
+    sysopen(my $fh, $path, Fcntl::O_RDONLY() | Fcntl::O_NOFOLLOW()) or die "open $path: $!\n";
+    binmode($fh);
+    my $hex = Digest::SHA->new(256)->addfile($fh)->hexdigest;
+    close($fh);
+    return $hex;
+}
+
+# One record per file under $rel (relative to $root; `.` the root itself), not
+# descending into other file systems (tar --one-file-system: the mount point
+# itself is listed), without lost+found (excluded from container backups) and
+# sockets (tar skips them).
+sub ct_walk {
+    my ($root, $rel, $map, $emit) = @_;
+    my $dev = (lstat($rel eq '.' ? $root : "$root/$rel"))[0] // die "lstat $rel: $!\n";
+    my @todo = ($rel);
+    while (defined(my $p = pop(@todo))) {
+        my $full = $p eq '.' ? $root : "$root/$p";
+        my @s = lstat($full) or die "lstat $p: $!\n";
+        my ($type, $size, $hash) = ('', 0, '-');
+        if (S_ISREG($s[2])) {
+            ($type, $size, $hash) = ('0', $s[7], file_sha256($full));
+        } elsif (S_ISDIR($s[2])) {
+            $type = '5';
+        } elsif (S_ISLNK($s[2])) {
+            my $t = readlink($full) // die "readlink $p: $!\n";
+            ($type, $hash) = ('2', Digest::SHA::sha256_hex($t));
+        } elsif (S_ISCHR($s[2]) || S_ISBLK($s[2]) || S_ISFIFO($s[2])) {
+            $type = S_ISCHR($s[2]) ? '3' : S_ISBLK($s[2]) ? '4' : '6';
+        } else {
+            next;
+        }
+        $emit->(sprintf('%s %o %d %d %d %d %s %s', $type, $s[2] & 07777, ct_id($map, 'u', $s[4]),
+            ct_id($map, 'g', $s[5]), $s[9], $size, $hash, $p));
+        next if $type ne '5' || $s[0] != $dev;
+        opendir(my $dh, $full) or die "opendir $p: $!\n";
+        my @names = grep { $_ ne '.' && $_ ne '..' && $_ ne 'lost+found' } readdir($dh);
+        closedir($dh);
+        push(@todo, map { $p eq '.' ? $_ : "$p/$_" } sort @names);
+    }
+    return;
+}
+
+# Runs @cmd inside the container's user namespace in $dir, stdin from $in (a handle
+# or undef: ours), stdout to stderr (the journal); dies unless it exits 0.
+sub run_userns {
+    my ($userns, $dir, $in, @cmd) = @_;
+    my $pid = fork() // die "fork: $!\n";
+    if ($pid == 0) {
+        open(STDIN, '<&', $in) or POSIX::_exit(127) if $in;
+        open(STDOUT, '>&', \*STDERR) or POSIX::_exit(127);
+        chdir($dir) or POSIX::_exit(127);
+        exec(@$userns, @cmd) or POSIX::_exit(127);
+    }
+    waitpid($pid, 0);
+    die "$cmd[0] failed (exit " . ($? >> 8) . ")\n" if $?;
+    return;
+}
+
+sub cmd_ct {
+    my ($vmid) = @_;
+    my $conf;
+    eval { PVE::LXC::Config->lock_config($vmid, sub { $conf = checked_conf($vmid, 'rollback', 1) }) };
+    answer_error("ct $vmid: $@") if $@;
+    my @roots = ('.');
+    PVE::LXC::Config->foreach_volume($conf, sub {
+        my ($ms, $mp) = @_;
+        return if $ms eq 'rootfs' || !PVE::LXC::Config->mountpoint_backup_enabled($ms, $mp);
+        my $p = ($mp->{mp} // '') =~ s!^/+!!r =~ s!/+\z!!r;
+        answer_error("ct $vmid: mount point $ms: bad path") if $p eq '' || $p =~ m!(?:^|/)\.\.?(?:/|\z)!;
+        push(@roots, $p);
+    });
+
+    mkdir($RUNDIR, 0700) if !-d $RUNDIR;
+    sysopen(my $lockfh, "$RUNDIR/$vmid.ct.lock", O_RDWR | O_CREAT, 0600) or answer_error("ct $vmid: lock file: $!");
+    flock($lockfh, LOCK_EX | LOCK_NB) or answer_error("ct $vmid: another rollback writes this container");
+    my ($map) = PVE::LXC::parse_id_maps($conf);
+    my $userns = PVE::LXC::userns_command($map);
+    my $storecfg = PVE::Storage::config();
+    my $rootdir = eval { PVE::LXC::mount_all($vmid, $storecfg, $conf) };
+    answer_error("ct $vmid: mount: " . ($@ || 'no root directory')) if !$rootdir;
+
+    my $listing = 0;
+    my $deleted = 0;
+    my $ok = eval {
+        print STDOUT "ok listing\n";
+        $listing = 1;
+        ct_walk($rootdir, $_, $map, sub { print STDOUT $_[0], "\0" }) for @roots;
+        $listing = 0;
+        print STDOUT "\0ok\n";
+
+        my $len = unpack('Q>', read_exact(8));
+        die "delete list too long\n" if $len > (1 << 30);
+        my @del = grep { length } split(/\0/, read_exact($len));
+        for (@del) {
+            die "bad path in the delete list\n" if m!^/! || m!(?:^|/)\.\.?(?:/|\z)!;
+        }
+        if (@del) {
+            pipe(my $r, my $w) or die "pipe: $!\n";
+            my $writer = fork() // die "fork: $!\n";
+            if ($writer == 0) {
+                close($r);
+                print {$w} map { "$_\0" } @del;
+                close($w);
+                POSIX::_exit(0);
+            }
+            close($w);
+            run_userns($userns, $rootdir, $r, 'xargs', '-0', '-r', 'rm', '-rf', '--one-file-system', '--');
+            close($r);
+            waitpid($writer, 0);
+            $deleted = @del;
+        }
+        # as PVE's own container restore (PVE::LXC::Create): ids inside the container, the
+        # xattrs an unprivileged container may set, never /dev
+        run_userns($userns, $rootdir, undef, 'tar', '--extract', '--file=-', '--numeric-owner',
+            '--preserve-permissions', '--sparse', '--acls', '--xattrs', '--xattrs-include=user.*',
+            '--xattrs-include=security.capability', '--warning=no-xattr-write', '--warning=no-file-ignored',
+            '--anchored', '--exclude=./dev/*', '--exclude=dev/*');
+        1;
+    };
+    my $err = $@;
+    eval { PVE::LXC::umount_all($vmid, $storecfg, $conf, 1) };
+    if (!$ok) {
+        print STDOUT "\0" if $listing;    # ends the listing; the status line follows
+        answer_error("ct $vmid: $err");
+    }
+    slog('info', "ct $vmid: rolled back ($deleted deleted)");
+    print STDOUT "ok applied $deleted\n";
+    exit(0);
+}
+
 my $line = request_line();
 my @a = split(/ /, $line);
 my $cmd = shift(@a) // '';
@@ -270,6 +452,12 @@ if ($cmd eq 'begin' && @a == 1 && $a[0] =~ $VMID_RE) {
     cmd_begin($a[0]);
 } elsif ($cmd eq 'end' && @a == 1 && $a[0] =~ $VMID_RE) {
     cmd_end($a[0]);
+} elsif ($cmd eq 'ct-begin' && @a == 1 && $a[0] =~ $VMID_RE) {
+    cmd_begin($a[0], 1);
+} elsif ($cmd eq 'ct-end' && @a == 1 && $a[0] =~ $VMID_RE) {
+    cmd_end($a[0], 1);
+} elsif ($cmd eq 'ct' && @a == 1 && $a[0] =~ $VMID_RE) {
+    cmd_ct($a[0]);
 } elsif ($cmd eq 'nbd' && @a == 2 && $a[0] =~ $VMID_RE && $a[1] =~ $DEVICE_RE) {
     cmd_nbd(@a);
 } else {

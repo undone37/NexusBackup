@@ -271,6 +271,26 @@ from the state backed up in step 1.
 > When requesting it through the API, `target` is still a new, unused VMID: the job restores there only if it has
 > to fall back to the full replace.
 
+### Roll back in place (containers, changed files only)
+
+For a container the same option is called **Roll back in place (changed files only)**. It works on files instead
+of blocks:
+
+1. The container is **shut down**, tagged `nexus-rollback` and locked (`rollback`).
+2. The node mounts it and lists its files with a checksum of each. The appliance compares that list with the
+   snapshot you chose and sends only the files that differ, plus the list of files to delete: files the
+   snapshot does not have, including files the backup excluded (as a full restore would not have them either).
+   The node writes them inside the container's user namespace, as Proxmox VE's own restore does.
+3. The lock and the tag go away; with **Power on after the restore** ticked the container starts.
+
+Unlike a VM, the container's **current state is not backed up first**: containers have no change tracking, so
+that backup would read everything. Back the container up before the rollback if you may need its current state.
+The configuration stays as it is now; mount points without **Backup** ticked are not touched.
+
+The full replace runs instead when the container is privileged (only unprivileged containers are rolled back in
+place), its ID belongs to a VM now, or its backed-up mount points changed since the snapshot. An interrupted
+rollback leaves the container shut down and locked; run it again to finish it.
+
 ### Restore several guests at once
 
 **Restore several** (top right on the Snapshots page) restores many guests of one tenant in one step, for

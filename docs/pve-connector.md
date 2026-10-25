@@ -191,6 +191,8 @@ Plugin uses it for `list_volumes`, `archive_get_guest_config`, `archive_get_fire
 | `ir-serve <vmid> <archive> <device>` | instant recovery: listen on `/run/nexusbackup/ir/<vmid>.<archive>.<device>.sock` (tmp name + `0660` + rename over any older socket), print `listening`, wait for one connection without timeout (ends with exit 0 on stdin EOF, exit 1 if the appliance sends data first), close the listener, print `accepted`, pipe the connection ⇄ stdio. Removes the path only while it is still its own socket |
 | `rollback-begin <vmid>` / `rollback-end <vmid>` | in-place rollback (Phase 30): one request line to the root service on `/run/nexusbackup/rollback.sock`; prints its `ok …` answer (exit 0) or its error on stderr (exit 1) |
 | `rollback-nbd <vmid> <device>` | asks the root service to serve the device's volume writable (qemu-nbd on the node) and, after its `ok <format>` line, pipes that NBD connection ⇄ stdio; device `drive-(ide|sata|scsi|virtio)N`, `drive-efidisk0` or `drive-tpmstate0` |
+| `rollback-ct-begin <vmid>` / `rollback-ct-end <vmid>` | the same for a container (#55) |
+| `rollback-ct <vmid>` | container rollback in place: after the service's `ok listing` line pipes its file listing out and the delete list and tar stream in (protocol under "Instant rollback of a container") |
 | anything else | exit 2, log to syslog |
 Arguments are validated: vmid `^\d{1,9}$`, storeid `^[a-z][a-z0-9\-_.]{1,99}$`, archive `^nexus-\d{1,9}-\d{1,12}$`, device `^[a-z0-9\-]{1,64}$`.
 
@@ -410,6 +412,36 @@ Token privileges in addition to replace: `VM.PowerMgmt` (suspend, resume, stop, 
 Not lab-verified yet (lab steps in state.md, Phase 30): vzdump of a paused VM in snapshot mode with bitmap reuse,
 the stub-free PVE module calls (`lock_config`, `parse_drive`, `parse_volname`, `path`, `activate_volumes`), qemu-nbd
 on LVM-thin, ZFS, directory (qcow2) and Ceph RBD volumes, the socket unit.
+
+## Instant rollback of a container (#55, `crates/pve/src/ctrollback.rs`, `pve-plugin/rollback`)
+"Replace original" with `--rollback` on a container (`nexus-pve <cfg> restore-ct … --replace --rollback`) writes
+only the files that differ from the snapshot back into it:
+1. Checks against the live config, else the full replace: the container exists, is unprivileged (the node writes
+   as its mapped root; PVE also refuses privileged restores from a provider), and its backed-up mount points
+   (`mpN` with `backup=1`) have the snapshot's paths.
+2. `POST …/status/shutdown` (timeout 180, forceStop) if it runs, `PUT …/config tags=<tags>;nexus-rollback`,
+   `rollback-ct-begin <vmid>` (sets `lock: rollback` under `PVE::LXC::Config->lock_config`).
+3. `rollback-ct <vmid>`: the service mounts it (`PVE::LXC::mount_all`) and sends one record per file of the
+   current state, NUL-terminated: `<type> <mode> <uid> <gid> <mtime> <size> <sha256|-> <path>` (tar type flags
+   `0 2 3 4 5 6`, octal mode, ids inside the container through the id map, integer mtime, size of regular files,
+   SHA-256 of the content or of a symlink's target, path relative to the root without `./`, the root as `.`),
+   walking the root file system and each backed-up mount point without crossing into other file systems,
+   without `lost+found` and sockets; then an empty record and `ok`. The appliance reads the snapshot's tar twice
+   from the store: first it computes the same record for every entry (sparse files as regular ones) and
+   compares, then it writes a tar with the entries that differ, every directory (modes, mtimes) and every hard
+   link, with their pax extensions (xattrs, ACLs). It sends a u64 big-endian length and the NUL-separated paths
+   to delete (in the listing but not in the snapshot, or of another type where tar cannot replace in place: a
+   directory and a non-directory), then the tar until EOF. The service checks every path (relative, no `.` or
+   `..` components), runs `xargs -0 rm -rf --one-file-system` and then `tar --extract` (the options of PVE's own
+   container restore, `./dev/*` excluded) inside the container's user namespace (`PVE::LXC::userns_command`),
+   unmounts and answers `ok applied <n>`.
+4. `rollback-ct-end <vmid>`, tag removed (with `link_down` every `netN` `link_down=1`), start if asked. Result line
+   `rolled-back {"vmid","snapshot","resumed","files_written","bytes_written","deleted","unchanged","started","link_down"}`.
+No pre-rollback backup (a container has no dirty bitmap: a backup of its current state reads all of it). Files
+the backup excluded (vzdump exclude paths and its standard excludes) are not in the snapshot and are deleted, as a
+full restore would not have them either; mount points without `backup=1` are not touched. A failure after step 2
+leaves the container stopped, tagged and locked; a new run resumes with a fresh listing. A stolen appliance SSH
+key alone writes nothing: the service needs a container that an API token holder shut down and tagged.
 
 ## Restore tests (Phase 25, `restoretest.rs`)
 `nexus-pve <cfg> restore-test <spec.json>` boots VMs with the IR flow above, but never moves a disk: the VM
