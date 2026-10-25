@@ -569,8 +569,10 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             } else if r.keep_original_links.is_some() {
                 return Err(ApiError::bad("keep_original_links: only with replace"));
             }
-            if r.rollback == Some(true) && (!r.replace || kind != "restore") {
-                return Err(ApiError::bad("rollback: only a VM restore that replaces the original"));
+            if r.rollback == Some(true) && (!r.replace || !matches!(kind, "restore" | "restore_ct")) {
+                return Err(ApiError::bad(
+                    "rollback: only a VM or container restore that replaces the original",
+                ));
             }
             snapshot_exists(st, tenant, &r.source, r.time)?;
             let mut v = json!(r);

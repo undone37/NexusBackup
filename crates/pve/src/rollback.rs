@@ -318,7 +318,7 @@ pub fn changed_chunks(target: &Index, current: &Index) -> Result<Vec<usize>> {
         .collect())
 }
 
-fn tags_with(tags: Option<&String>, add: bool) -> Option<String> {
+pub(crate) fn tags_with(tags: Option<&String>, add: bool) -> Option<String> {
     let mut v: Vec<&str> = tags
         .map(|t| {
             t.split([';', ',', ' '])

@@ -49,8 +49,8 @@ pub(crate) fn restore_flags(job: &Job) -> Result<Vec<String>> {
         if p["keep_original_links"].as_bool() == Some(true) {
             out.push("--keep-original-links".into());
         }
-        // Phase 30: in place first (changed chunks only), the full replace as the fallback
-        if p["rollback"].as_bool() == Some(true) && job.kind == "restore" {
+        // Phase 30, #55: in place first (changed chunks or files only), the full replace as the fallback
+        if p["rollback"].as_bool() == Some(true) && matches!(job.kind.as_str(), "restore" | "restore_ct") {
             out.push("--rollback".into());
         }
     }

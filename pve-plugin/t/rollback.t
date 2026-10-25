@@ -11,6 +11,7 @@ use warnings;
 use File::Basename qw(dirname);
 use File::Temp qw(tempdir);
 use IO::Socket::UNIX;
+use Digest::SHA ();
 use IPC::Open3 qw(open3);
 use JSON;
 use POSIX ();
@@ -135,6 +136,90 @@ conf(100, { %$base, lock => 'backup' });
 ($rc, $o) = request("end 100\n");
 is(load(100)->{lock}, 'backup', 'end leaves a foreign lock alone');
 
+# --- containers (#55) ------------------------------------------------------------------
+sub ct_session {
+    my ($vmid, $send) = @_;
+    my $err = gensym;
+    my $pid = open3(my $in, my $out, $err, $^X, $rollback);
+    binmode($in);
+    binmode($out);
+    syswrite($in, "ct $vmid\n");
+    my $first = <$out> // '';
+    my (%files, $status);
+    if ($first eq "ok listing\n") {
+        local $/ = "\0";
+        while (defined(my $rec = <$out>)) {
+            chop($rec);
+            last if $rec eq '';
+            my @f = split(/ /, $rec, 8);
+            $files{$f[7]} = [@f[0 .. 6]];
+        }
+        local $/ = "\n";
+        $status = <$out>;
+        syswrite($in, $send) if defined($send);
+    }
+    close($in);
+    my $rest = do { local $/; <$out> } // '';
+    waitpid($pid, 0);
+    return ($first, \%files, $status, $rest, $? >> 8);
+}
+
+my $ctroot = "$pve/ct-300-root";
+for my $d ($ctroot, "$ctroot/sub", "$ctroot/lost+found", "$ctroot/mnt", "$ctroot/mnt/data") {
+    mkdir($d) or die;
+}
+for (['a.txt', 'old'], ['keep.txt', 'same'], ['gone.txt', 'x'], ['sub/x', 'y'], ['lost+found/f', 'z'], ['mnt/data/d', 'm']) {
+    open(my $f, '>', "$ctroot/$_->[0]") or die;
+    print {$f} $_->[1];
+    close($f);
+}
+symlink('a.txt', "$ctroot/link") or die;
+my $ct = { hostname => 'ct', unprivileged => 1, rootfs => 'local:subvol-300-disk-0,size=8G',
+    mp0 => 'local:subvol-300-disk-1,mp=/mnt/data,backup=1', tags => 'nexus-rollback' };
+conf(300, { %$ct, unprivileged => 0 });
+($rc, $o) = request("ct-begin 300\n");
+like($o, qr/CT 300 is privileged/, 'ct-begin: refuses a privileged container');
+conf(300, $ct);
+($rc, $o) = request("ct 300\n");
+like($o, qr/CT 300 is not locked for a rollback/, 'ct: refused before ct-begin');
+($rc, $o) = request("ct-begin 300\n");
+is($o, "ok locked\n", 'ct-begin locks the container');
+is(load(300)->{lock}, 'rollback', 'lock rollback set');
+
+my ($first, $files, $status, $rest) = ct_session(300, pack('Q>', 0) . ("\0" x 1024));
+is($first, "ok listing\n", 'ct: listing follows');
+is($status, "ok\n", 'ct: listing complete');
+is($files->{'a.txt'}[0], '0', 'a regular file');
+is($files->{'a.txt'}[6], Digest::SHA::sha256_hex('old'), 'with the sha256 of its content');
+is($files->{'a.txt'}[5], 3, 'and its size');
+is($files->{'a.txt'}[2], $<, 'ids unchanged without an id map');
+is($files->{link}[0], '2', 'a symlink');
+is($files->{link}[6], Digest::SHA::sha256_hex('a.txt'), 'hashed by its target');
+is($files->{sub}[0], '5', 'a directory');
+is($files->{'.'}[0], '5', 'the root directory itself');
+ok($files->{'mnt/data/d'}, 'a backed-up mount point');
+ok(!grep({ m/lost\+found/ } keys %$files), 'no lost+found');
+is($rest, "ok applied 0\n", 'nothing to delete, an empty archive: ok');
+
+my $stage = "$tmp/stage";
+mkdir($stage) or die;
+open(my $nf, '>', "$stage/a.txt") or die;
+print {$nf} 'new';
+close($nf);
+my $tar = `tar -C $stage -cf - ./a.txt`;
+($first, $files, $status, $rest) = ct_session(300, pack('Q>', 13) . "gone.txt\0sub\0" . $tar);
+is($rest, "ok applied 2\n", 'ct: applied, two paths deleted');
+is(do { open(my $f, '<', "$ctroot/a.txt") or die; local $/; <$f> }, 'new', 'the changed file is written');
+ok(!-e "$ctroot/gone.txt" && !-e "$ctroot/sub", 'deleted paths are gone (directories with their content)');
+ok(-e "$ctroot/keep.txt" && -l "$ctroot/link", 'the rest stays');
+like(do { open(my $f, '<', "$pve/unmounted") or die; local $/; <$f> }, qr/^300$/m, 'unmounted afterwards');
+($first, $files, $status, $rest) = ct_session(300, pack('Q>', 7) . "../etc\0");
+like($rest, qr/^error ct 300: bad path in the delete list/, 'ct: refuses a path out of the root');
+ok(-e "$ctroot/keep.txt", 'and deletes nothing');
+($rc, $o) = request("ct-end 300\n");
+is($o, "ok unlocked\n", 'ct-end unlocks');
+ok(!exists load(300)->{lock}, 'lock removed');
+
 # --- helper -> service ---------------------------------------------------------------
 my $sock = "$tmp/rollback.sock";
 my $listen = IO::Socket::UNIX->new(Type => SOCK_STREAM, Local => $sock, Listen => 4) or die "listen: $!";
@@ -167,7 +252,7 @@ sub helper {
     return ($? >> 8, $o, $e);
 }
 
-for my $bad ('rollback-begin', 'rollback-begin x', 'rollback-begin 100 101', 'rollback-nbd 100',
+for my $bad ('rollback-begin', 'rollback-begin x', 'rollback-ct', 'rollback-ct-begin 1 2', 'rollback-ct-stop 100', 'rollback-begin 100 101', 'rollback-nbd 100',
     'rollback-nbd 100 scsi0', 'rollback-nbd 100 drive-tpmstate0', 'rollback-end 1a', 'rollback-nbd 100 drive-scsi0;id') {
     is((helper($bad))[0], 2, "helper rejects '$bad'");
 }
@@ -180,6 +265,13 @@ is($hc, 1, 'helper rollback-nbd: exit 1 on a refusal');
 like($he, qr/CD-ROM/, 'with the reason on stderr');
 ($hc, $ho) = helper('rollback-end 100');
 is($ho, "ok unlocked\n", 'helper rollback-end');
+conf(300, $ct);
+($hc, $ho) = helper('rollback-ct-begin 300');
+is($ho, "ok locked\n", 'helper rollback-ct-begin');
+($hc, $ho, $he) = helper('rollback-ct 300');
+like($ho, qr/ a\.txt\0.*\0\0ok\n/s, 'helper rollback-ct pipes the listing (after the ok line)');
+($hc, $ho) = helper('rollback-ct-end 300');
+is($ho, "ok unlocked\n", 'helper rollback-ct-end');
 conf(100, { %$base, tags => '' });
 ($hc, $ho, $he) = helper('rollback-begin 100');
 is($hc, 1, 'helper rollback-begin: refused without the tag');

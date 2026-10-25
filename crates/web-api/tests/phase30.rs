@@ -545,9 +545,18 @@ async fn rollback_is_a_replace_option() {
     let params: Value = serde_json::from_str(&params).unwrap();
     assert_eq!(action, "restore.replace");
     assert_eq!(params["params"]["rollback"], true);
+    // #55: containers too
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &alice,
+            job("ct-120", json!({"replace": true, "rollback": true})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     for bad in [
         job("vm-100", json!({"rollback": true})),
-        job("ct-120", json!({"replace": true, "rollback": true})),
+        job("ct-120", json!({"rollback": true})),
     ] {
         let r = t.post("/api/v1/jobs", &alice, bad).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);

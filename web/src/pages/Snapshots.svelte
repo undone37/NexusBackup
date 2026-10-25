@@ -383,7 +383,7 @@
     if (rReplace && mode === 'restore') {
       params.replace = true;
       if (rKeepLinks) params.keep_original_links = true;
-      if (rRollback && kind === 'restore') params.rollback = true;
+      if (rRollback && kind !== 'instant_recover') params.rollback = true;
     }
     const r = await act(
       post<{ id?: number }>('/jobs', { kind, tenant: sel.tenant, params }),
@@ -1046,12 +1046,18 @@
             >
           </div>
           {#if rReplace}
-            {#if sel?.source.startsWith('vm-')}
+            {#if sel?.source.startsWith('vm-') || sel?.source.startsWith('ct-')}
               <div class="field">
                 <label class="inline-check"
-                  ><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{t.p30.rollback.label}</label
+                  ><input id="r-rollback" type="checkbox" bind:checked={rRollback} />{sel.source.startsWith('ct-')
+                    ? t.p30.rollback.labelCt
+                    : t.p30.rollback.label}</label
                 >
-                <div class="hint">{t.p30.rollback.hint(origVmid(sel))}</div>
+                <div class="hint">
+                  {sel.source.startsWith('ct-')
+                    ? t.p30.rollback.hintCt(origVmid(sel))
+                    : t.p30.rollback.hint(origVmid(sel))}
+                </div>
               </div>
             {/if}
             <p class="banner warn">{t.ropts.replaceHint(origVmid(sel))}</p>

@@ -4,6 +4,7 @@ pub mod api;
 pub mod backup;
 pub mod consistency;
 pub mod ct;
+pub mod ctrollback;
 pub mod exclude;
 pub mod files;
 pub mod fleecing;
