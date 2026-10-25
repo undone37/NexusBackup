@@ -51,12 +51,11 @@ fn tree(root: &Path) -> BTreeMap<String, String> {
         } else if m.file_type().is_symlink() {
             format!("link {}", fs::read_link(&p).unwrap().display())
         } else {
-            format!(
-                "file {:o} {} {}",
-                m.mode() & 0o7777,
-                m.mtime(),
-                fs::read_to_string(&p).unwrap()
-            )
+            let data = fs::read(&p).unwrap();
+            let digest = data
+                .iter()
+                .fold(0u64, |h, &b| h.wrapping_mul(31).wrapping_add(b as u64));
+            format!("file {:o} {} {} {digest:x}", m.mode() & 0o7777, m.mtime(), data.len())
         };
         out.insert(rel, v);
     }
@@ -181,19 +180,37 @@ fn writes_only_the_differing_files_through_helper_and_service() {
     write(&snap.join("etc/mode"), "mode\n", 1_700_000_500);
     fs::set_permissions(snap.join("etc/mode"), fs::Permissions::from_mode(0o600)).unwrap();
     symlink("hostname", snap.join("etc/link")).unwrap();
+    // sparse files: with --xattrs / --acls GNU tar writes POSIX archives, sparse files in the PAX 1.0
+    // format (header name GNUSparseFile.<pid>/..., the map in the data)
+    for (name, mtime) in [
+        ("var/lib/sparse.img", 1_700_000_600),
+        ("var/lib/sparse2.img", 1_700_000_700),
+    ] {
+        let f = fs::File::create(snap.join(name)).unwrap();
+        f.set_len(8 << 20).unwrap();
+        std::os::unix::fs::FileExt::write_at(&f, b"data in the middle", 4 << 20).unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs(mtime)).unwrap();
+    }
+    // the plugin's flags (pve-plugin/PVE/BackupProvider/Plugin/NexusBackup.pm ct_tar_command)
     let tar = Command::new("tar")
         .args([
             "--create",
             "--file=-",
             "--numeric-owner",
-            "--sparse",
-            "--one-file-system",
+            "--xattrs",
+            "--xattrs-include=*",
+            "--acls",
         ])
+        .args(["--sparse", "--one-file-system", "--preserve-permissions"])
         .arg(format!("--directory={}", snap.display()))
         .arg(".")
         .output()
         .unwrap();
     assert!(tar.status.success());
+    assert!(
+        tar.stdout.windows(14).any(|w| w == b"GNUSparseFile."),
+        "a PAX sparse entry in the archive"
+    );
     let (chunks, size) = s.store_file(&tar.stdout[..]).unwrap();
     let conf = "hostname: web\nunprivileged: 1\nrootfs: local:subvol-300-disk-0,size=8G\n";
     let (cchunks, csize) = s.store_file(conf.as_bytes()).unwrap();
@@ -246,6 +263,14 @@ fn writes_only_the_differing_files_through_helper_and_service() {
     write(&root.join("x/inside"), "now a directory\n", 1_800_000_600);
     fs::remove_file(root.join("etc/link")).unwrap();
     symlink("new", root.join("etc/link")).unwrap();
+    {
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("var/lib/sparse2.img"))
+            .unwrap();
+        std::os::unix::fs::FileExt::write_at(&f, b"changed", 6 << 20).unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs(1_700_000_700)).unwrap();
+    }
     assert_ne!(tree(&root), tree(&snap));
 
     let live = json!({"hostname": "web", "unprivileged": 1, "rootfs": "local:subvol-300-disk-0,size=8G",
@@ -273,8 +298,8 @@ fn writes_only_the_differing_files_through_helper_and_service() {
     }
     assert_eq!(got, want, "the container is the snapshot again");
     assert!(!root.join("var/cache").exists() && root.join("var/lib").is_dir());
-    // hostname, mtime, db, mode, x (a file again), link
-    assert_eq!((r.files_written, r.unchanged > 0), (6, true), "{r:?}");
+    // hostname, mtime, db, mode, x (a file again), link, sparse2.img (same size and mtime, other content)
+    assert_eq!((r.files_written, r.unchanged), (7, 2), "{r:?}");
     // new, var/cache, var/cache/junk, var/cache/junk/a, x/inside, and x (a directory before)
     assert_eq!(r.deleted, 6, "{r:?}");
     assert!(r.started && n.running.get());

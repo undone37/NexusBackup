@@ -169,6 +169,75 @@ pub struct Plan {
     pub unchanged: u64,
 }
 
+/// An entry's pax extensions (xattrs, ACLs, GNU sparse keys, ...).
+fn pax_map<R: Read>(e: &mut tar::Entry<R>) -> Result<Vec<(String, Vec<u8>)>> {
+    Ok(match e.pax_extensions()? {
+        Some(x) => x
+            .filter_map(Result::ok)
+            .filter_map(|x| Some((x.key().ok()?.to_owned(), x.value_bytes().to_vec())))
+            .collect(),
+        None => Vec::new(),
+    })
+}
+
+fn pax_get<'a>(pax: &'a [(String, Vec<u8>)], key: &str) -> Option<&'a [u8]> {
+    pax.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_slice())
+}
+
+/// The file's own path and, for a GNU tar PAX sparse file (format 1.0: what `--sparse` writes in POSIX
+/// archives, which `--xattrs` / `--acls` select; ZFS compression makes many files look sparse), its real
+/// size: the header names it `…/GNUSparseFile.<pid>/<name>` and its data starts with the sparse map.
+fn real_path(raw: &[u8], pax: &[(String, Vec<u8>)]) -> Result<(Vec<u8>, Option<u64>)> {
+    if !pax.iter().any(|(k, _)| k.starts_with("GNU.sparse.")) {
+        return Ok((norm(raw), None));
+    }
+    let name = String::from_utf8_lossy(raw);
+    if pax_get(pax, "GNU.sparse.major") != Some(b"1") || pax_get(pax, "GNU.sparse.minor") != Some(b"0") {
+        bail!("{name}: a GNU sparse format other than PAX 1.0 is not supported");
+    }
+    let real = pax_get(pax, "GNU.sparse.name").with_context(|| format!("{name}: sparse without its name"))?;
+    let size = pax_get(pax, "GNU.sparse.realsize")
+        .and_then(|v| std::str::from_utf8(v).ok()?.parse().ok())
+        .with_context(|| format!("{name}: sparse without its size"))?;
+    Ok((norm(real), Some(size)))
+}
+
+/// SHA-256 of a PAX 1.0 sparse file's content, holes as zeros: the data holds the map (decimal lines:
+/// the count, then offset and length of each segment; padded to 512 bytes), then the segments.
+fn sparse_sha256(r: impl Read, size: u64) -> io::Result<String> {
+    let mut r = BufReader::new(r);
+    let mut used = 0u64;
+    let mut num = || -> io::Result<u64> {
+        let mut line = Vec::new();
+        used += r.by_ref().take(32).read_until(b'\n', &mut line)? as u64;
+        std::str::from_utf8(line.trim_ascii())
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "bad sparse map"))
+    };
+    let n = num()?;
+    let mut map = Vec::new();
+    for _ in 0..n {
+        map.push((num()?, num()?));
+    }
+    io::copy(&mut r.by_ref().take((512 - used % 512) % 512), &mut io::sink())?;
+    let mut sha = Sha256::new();
+    let mut pos = 0;
+    let zeros = |sha: &mut Sha256, n: u64| io::copy(&mut io::repeat(0).take(n), sha);
+    for (off, len) in map {
+        if off < pos || off + len > size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad sparse map"));
+        }
+        zeros(&mut sha, off - pos)?;
+        if io::copy(&mut r.by_ref().take(len), &mut sha)? != len {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        pos = off + len;
+    }
+    zeros(&mut sha, size - pos)?;
+    Ok(hex(&sha.finalize()))
+}
+
 /// Compares the snapshot's tar with the listing of the current state.
 pub fn plan(target: impl Read, current: &HashMap<Vec<u8>, String>) -> Result<Plan> {
     let mut p = Plan::default();
@@ -179,16 +248,18 @@ pub fn plan(target: impl Read, current: &HashMap<Vec<u8>, String>) -> Result<Pla
         let Some(t) = type_char(e.header().entry_type()) else {
             continue;
         };
-        let path = norm(&e.path_bytes());
+        let pax = pax_map(&mut e)?;
+        let (path, sparse) = real_path(&e.path_bytes(), &pax)?;
         let h = e.header();
         let (mode, uid, gid, mtime) = (h.mode()? & 0o7777, h.uid()?, h.gid()?, h.mtime()?);
-        let (size, hash) = match t {
-            '0' => {
+        let (size, hash) = match (t, sparse) {
+            ('0', Some(size)) => (size, sparse_sha256(&mut e, size).context("snapshot tar sparse data")?),
+            ('0', None) => {
                 let mut sha = Sha256::new();
                 let n = io::copy(&mut e, &mut sha).context("snapshot tar data")?;
                 (n, hex(&sha.finalize()))
             }
-            '1' | '2' => (0, hex(&Sha256::digest(e.link_name_bytes().unwrap_or_default()))),
+            ('1' | '2', _) => (0, hex(&Sha256::digest(e.link_name_bytes().unwrap_or_default()))),
             _ => (0, "-".into()),
         };
         let key = format!("{t} {mode:o} {uid} {gid} {mtime} {size} {hash}");
@@ -226,25 +297,23 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// Re-reads the snapshot's tar and writes the entries of `plan.send` (headers, pax
-/// extensions such as xattrs and ACLs, data; sparse files as regular ones).
+/// Re-reads the snapshot's tar and writes the entries of `plan.send` as they are (headers, pax
+/// extensions such as xattrs, ACLs and the PAX sparse keys, data; old GNU sparse files as regular ones).
 pub fn write_tar(target: impl Read, plan: &Plan, out: impl Write) -> Result<()> {
     let mut b = tar::Builder::new(out);
     let mut ar = tar::Archive::new(target);
     for e in ar.entries().context("snapshot tar")? {
         let mut e = e.context("snapshot tar entry")?;
-        let path = e.path_bytes().into_owned();
-        if type_char(e.header().entry_type()).is_none() || !plan.send.contains(&norm(&path)) {
+        if type_char(e.header().entry_type()).is_none() {
             continue;
         }
-        let pax: Vec<(String, Vec<u8>)> = match e.pax_extensions()? {
-            Some(x) => x
-                .filter_map(Result::ok)
-                .filter_map(|x| Some((x.key().ok()?.to_owned(), x.value_bytes().to_vec())))
-                .filter(|(k, _)| !matches!(k.as_str(), "path" | "linkpath" | "size") && !k.starts_with("GNU.sparse"))
-                .collect(),
-            None => Vec::new(),
-        };
+        let path = e.path_bytes().into_owned();
+        let mut pax = pax_map(&mut e)?;
+        if !plan.send.contains(&real_path(&path, &pax)?.0) {
+            continue;
+        }
+        // the builder writes the path and the link target itself
+        pax.retain(|(k, _)| !matches!(k.as_str(), "path" | "linkpath"));
         if !pax.is_empty() {
             b.append_pax_extensions(pax.iter().map(|(k, v)| (k.as_str(), v.as_slice())))?;
         }
@@ -417,6 +486,31 @@ mod tests {
         assert!(precheck(snap, &live(&[("mp2", "local:vol-3,mp=/srv,backup=1")]))
             .unwrap()
             .contains("mount points"));
+    }
+
+    #[test]
+    fn pax_sparse_files() {
+        let map = b"2\n0\n3\n10\n2\n";
+        let mut data = map.to_vec();
+        data.resize(512, 0);
+        data.extend_from_slice(b"abcxy");
+        assert_eq!(
+            sparse_sha256(&data[..], 16).unwrap(),
+            hex(&Sha256::digest(b"abc\0\0\0\0\0\0\0xy\0\0\0\0"))
+        );
+        assert!(sparse_sha256(&data[..], 11).is_err(), "a segment beyond the size");
+        let pax = |major: &str| {
+            vec![
+                ("GNU.sparse.major".to_owned(), major.as_bytes().to_vec()),
+                ("GNU.sparse.minor".to_owned(), b"0".to_vec()),
+                ("GNU.sparse.name".to_owned(), b"./etc/big".to_vec()),
+                ("GNU.sparse.realsize".to_owned(), b"16".to_vec()),
+            ]
+        };
+        let raw = b"./etc/GNUSparseFile.77/big";
+        assert_eq!(real_path(raw, &pax("1")).unwrap(), (b"etc/big".to_vec(), Some(16)));
+        assert!(real_path(raw, &pax("0")).is_err(), "other sparse formats are refused");
+        assert_eq!(real_path(b"./etc/a", &[]).unwrap(), (b"etc/a".to_vec(), None));
     }
 
     #[test]

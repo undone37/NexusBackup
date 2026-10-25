@@ -431,7 +431,7 @@ sub cmd_ct {
         run_userns($userns, $rootdir, undef, 'tar', '--extract', '--file=-', '--numeric-owner',
             '--preserve-permissions', '--sparse', '--acls', '--xattrs', '--xattrs-include=user.*',
             '--xattrs-include=security.capability', '--warning=no-xattr-write', '--warning=no-file-ignored',
-            '--anchored', '--exclude=./dev/*');
+            '--anchored', '--exclude=./dev/*', '--exclude=dev/*');
         1;
     };
     my $err = $@;
