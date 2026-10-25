@@ -1247,6 +1247,12 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   with only `ADDLOCAL=ToolsCore,VSS`), so Tools never run long enough for a quiesced snapshot. Windows with VMware
   Tools under ESXi nested in KVM is not usable here; quiesced Windows snapshots need a physical ESXi host
   (maintainer). VM removed.
+- [ ] (#40) XCP-ng: design note (docs/xcpng-design.md) and its XAPI facts checked (2026-10-25): XCP-ng 8.3 nested
+  on pve-test as VM 287 (10.2.34.218), installed unattended by `lab/pvehost/xcpng.sh` (ISO repacked with xorriso: an
+  answer file and a post-install script from VM 280; 770 s). `xcpng.sh xapi`: CBT, snapshot, `data_destroy`
+  (`cbt_metadata`), `list_changed_blocks` exact (64 blocks for 4 MiB); NBD over TLS of the snapshot byte-identical
+  (1 GiB in 44 s) with libnbd; qemu's client fails on xapi-nbd (LIST denied); the export needs an HTTPS session.
+  Next: the connector (M1 inventory + full backup).
 - [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
   the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
   token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).

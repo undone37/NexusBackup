@@ -1,8 +1,7 @@
 # XCP-ng / XenServer backups: design (Phase 42, #40)
 
-Status: proposal (2026-10-25), before any code (plan.md Phase 42: a design note first). Lab plan at the end; the
-facts about XAPI below are from its documentation and the behaviour of other backup products, to be confirmed in the
-lab before the connector is written.
+Status: proposal (2026-10-25), before any code (plan.md Phase 42: a design note first). The XAPI facts the design
+rests on were checked the same day on a nested XCP-ng 8.3 (`lab/pvehost/xcpng.sh xapi`, "Lab results" below).
 
 ## Decisions proposed
 
@@ -77,15 +76,28 @@ metadata-only VDIs stay, so the next run can still be incremental.
   approval rules of PVE replaces).
 - **Files**: the micro-VM as for every VM snapshot.
 
-## Open questions for the lab
+## Lab results (2026-10-25, XCP-ng 8.3 nested on pve-test, `lab/pvehost/xcpng.sh`)
 
-- NBD on XCP-ng 8.3: the `nbd` network purpose, TLS certificate per host, and whether `get_nbd_info` answers for a
-  snapshot VDI of a running VM (expected yes; XenServer's own backup reads snapshots this way).
-- `list_changed_blocks` between a metadata-only VDI and a new snapshot after `data_destroy` (expected: works; this is
-  the documented incremental pattern), and its behaviour after a live migration within the pool and after an SR
-  migration (expected: CBT reset, full read).
-- Throughput of NBD over TLS from a nested host; whether a non-TLS NBD purpose (`insecure_nbd`) should ever be offered
-  (proposal: no).
+- CBT: `VDI.enable_cbt`, `VDI.snapshot`, `VDI.data_destroy` (the snapshot becomes `cbt_metadata`) and
+  `VDI.list_changed_blocks(S1, S2)` work as designed: 4 MiB written at 512 MiB gave exactly 64 blocks of 64 KiB at
+  524288..528384 KiB; the bitmap is most significant bit first.
+- NBD: `VDI.get_nbd_info` answers for a snapshot VDI once the management network has the `nbd` purpose (host, port
+  10809, the host's certificate and its subject). The export name carries the XAPI session (`/<vdi>?session_id=...`):
+  the connector keeps its session open while it reads. A root session from the local socket is refused by xapi-nbd;
+  a session from `login_with_password` over HTTPS (as the connector's) is accepted.
+- xapi-nbd speaks fixed-newstyle NBD with STARTTLS and `NBD_OPT_EXPORT_NAME`; it denies `NBD_OPT_LIST`. qemu's
+  client fails on that (it checks the export with LIST before falling back from GO), libnbd's `nbdcopy` reads it. The
+  connector's NBD client needs: STARTTLS with the pinned certificate and the subject as host name, then
+  EXPORT_NAME (no LIST); `crates/nbd` gets that mode.
+- Read: the snapshot's data over NBD/TLS byte-identical to what was written; 1 GiB in 44 s (nested, TLS, one
+  connection).
+
+## Open questions
+
+- A snapshot of a running VM with a guest OS (the lab used a VDI written from dom0), and CBT after a live migration
+  within a pool and after an SR migration (expected: CBT reset, full read).
+- Throughput with several NBD connections per disk; whether a non-TLS NBD purpose (`insecure_nbd`) should ever be
+  offered (proposal: no).
 - RBAC on XCP-ng (no role-based access control in the free edition): document the account the connector needs.
 
 ## Lab plan
