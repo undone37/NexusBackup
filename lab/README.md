@@ -253,7 +253,10 @@ PVE_HOST=10.2.34.216 NODE=pve-nested CLONE=210 SRC_VMID=205 STORAGE=local-lvm FO
 ```
 
 Addresses: 10.2.34.211 and .212 are the appliances (VMs 201, 202), .215 the VMware proxy, .216/.217 the nested node
-and its guest.
+and its guest. Added 2026-10-25: .218 the nested XCP-ng (VM 287, `xcpng.sh`), .219 the Samba AD DC (CT 289,
+`samba-ad.sh`, domain NXLAB.TEST); VM 291 is a stopped VM with an NTFS disk whose file belongs to a domain user
+(`directory-e2e.sh`), VM 296 the nested Hyper-V host (`lab/windows/hyperv.sh`), VM 298 a Windows Server with an
+autologon user for the desktop UI tests (`lab/windows/gui-update.sh`).
 
 ## Edge proxy and lab registry on the PVE lab host
 
