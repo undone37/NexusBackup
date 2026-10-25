@@ -641,13 +641,21 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   entries in 150-290 s per snapshot (vTPM and EFI disks skipped as "no known file system"); Debian VM 200 ext4 `/`
   + vfat `/boot/efi` (26k entries, 1 s). Instant search over 6 snapshots: 50-70 ms, guest paths
   (`C:/Users/Admin/Desktop/desktop.ini`), the default scope keeps 6916 of about 1.4 M entries (system folders out)
-- [ ] (#71) File index labs: plan.md Phase 39 L11 (per-directory reuse was done in 31c) Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/fileindex.sh`,
+- [x] (#71) File index labs: plan.md Phase 39 L11 (per-directory reuse was done in 31c) Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/fileindex.sh`,
   PVE VM backups with index-files on, sandboxed parser, no micro-VM): alma-10 XFS on LVM 29,760 entries in
   0.98 s; leap-16 btrfs 59,951 in 1.19 s; debian-13 ext4 39,635 in 1.10 s; the instant search finds
   /etc/os-release in each snapshot. Windows (jobs of the lab groups): VM 101 (Server 2022, 120 GiB) 391,887
   entries in 31.8 s with 74,109 directories taken over from the previous index; VM 242 unchanged NTFS volume
   reused, 125,456 entries in 0.99 s; the VMware snapshot of nx-cbt (ext4) 38,258 in 1.4 s. Open: LVM thin and
-  LDM guests, several groups at once on a second PVE node.
+  LDM guests, several groups at once on a second PVE node. LDM: #53 (ldm.sh). Done 2026-10-25 (nested PVE node,
+  `pvenested.sh`): thin LVs in a guest (`lab/pvehost/thin-guest.sh`: Debian clone with a thin pool, ext4 and XFS thin
+  LVs, 50 files each): the file index read both (51 / 50 entries, whole VM 26,130 in 0.57 s), the instant search
+  finds their files; the restore micro-VM did not mount them (the kernel refuses a thin pool in a read-only table):
+  fixed, thin pools on a copy-on-write overlay in RAM, fixture v2 with a thin LV (restore_vm tests on VM 280 pass,
+  index and micro-VM listing equal), on 0.0.48-dev both LVs browse with their 50 files. Several groups at once
+  (`lab/pvehost/index-parallel.sh`): index-debian-13 (pve-test), thin-220 (nested node) and windows (VM 101) started
+  together: backups 0-10 s, 0-10 s and 0-483 s in parallel, file_index 44,456 entries in 1.6 s, 26,130 in 0.6 s,
+  391,887 in 2.4 s (reused), each searchable.
 - [x] File index jobs report a percentage (entries of an estimated total per volume, 2026-10-14); lab: member
   server C: rose from 5.6 % to 98.1 % against an estimate of 390,899 entries (previous snapshot's count)
 - [x] 31c per-directory reuse (NTFS): records of what each directory's listing read (side file `fsindex-dirs`),
