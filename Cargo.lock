@@ -8295,6 +8295,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "xcpng"
+version = "0.1.0"
+dependencies = [
+ "agent-proto",
+ "anyhow",
+ "base64 0.22.1",
+ "chunkstore",
+ "keyd",
+ "nbd",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "truenas",
+]
+
+[[package]]
 name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

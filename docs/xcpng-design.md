@@ -91,6 +91,8 @@ metadata-only VDIs stay, so the next run can still be incremental.
   EXPORT_NAME (no LIST); `crates/nbd` gets that mode.
 - Read: the snapshot's data over NBD/TLS byte-identical to what was written; 1 GiB in 44 s (nested, TLS, one
   connection).
+- M1 connector (`crates/xcpng`): a full backup of a 1 GiB VM in 31 to 37 s. The snapshot VM must be destroyed
+  before its VDIs (`VDI.destroy` fails while a VBD of the snapshot still holds the VDI).
 
 ## Open questions
 

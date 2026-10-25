@@ -1253,6 +1253,13 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   (`cbt_metadata`), `list_changed_blocks` exact (64 blocks for 4 MiB); NBD over TLS of the snapshot byte-identical
   (1 GiB in 44 s) with libnbd; qemu's client fails on xapi-nbd (LIST denied); the export needs an HTTPS session.
   Next: the connector (M1 inventory + full backup).
+  M1 (2026-10-25, branch `40-xcpng-m1`): `crates/xcpng` (`nexus-xcpng inventory|backup`: XAPI JSON-RPC with the
+  host certificate pinned, `VM.snapshot`, each snapshot VDI read over NBD/TLS into a fixed index, `xcpng.json`, the
+  snapshot destroyed); `crates/nbd` got STARTTLS and the `NBD_OPT_EXPORT_NAME` fallback (no GO, no LIST, no
+  NO_ZEROES on xapi-nbd). Lab (`xcpng.sh testvm`, `crates/xcpng/tests/lab.rs` run on VM 280): inventory, full
+  backup of the 1 GiB test VM in 30.7 to 36.8 s, the first 64 MiB as written, no snapshot left. Found on the way:
+  `VDI.destroy` of a snapshot VDI fails while the snapshot VM still has its VBD, so the VM goes first; snapshots of
+  an aborted run are removed at the next run. Next: M2 (CBT incrementals).
 - [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
   the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
   token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).
