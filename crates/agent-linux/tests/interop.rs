@@ -585,26 +585,26 @@ fn chunked_update_from_the_release_store() {
     let arch = nexus_agent::update::arch();
     let name = format!("linux-{arch}/nexus-agent");
     // larger than one protocol frame: the chunked path has no 8 MiB ceiling
-    let new = fake_elf("0.2.0", agent_proto::MAX_FRAME + 1_000_000);
+    let new = fake_elf("9.2.0", agent_proto::MAX_FRAME + 1_000_000);
     let store = d.path().join("store");
-    signer.write_release(&store, "0.2.0", &[(&name, "binary", "linux", arch, &new)]);
-    Signer::new().write_release(&store, "0.3.0", &[(&name, "binary", "linux", arch, &new)]);
-    let deb_name = format!("linux-{arch}/nexus-agent_0.2.0.deb");
+    signer.write_release(&store, "9.2.0", &[(&name, "binary", "linux", arch, &new)]);
+    Signer::new().write_release(&store, "9.3.0", &[(&name, "binary", "linux", arch, &new)]);
+    let deb_name = format!("linux-{arch}/nexus-agent_9.2.0.deb");
     signer.write_release(
         &d.path().join("store2"),
-        "0.2.0",
+        "9.2.0",
         &[(&deb_name, "deb", "linux", arch, b"!<arch>")],
     );
     let rels = releases::scan(&[(store.clone(), "upload")], &signer.keys());
-    let rel = releases::find(&rels, "0.2.0").unwrap();
+    let rel = releases::find(&rels, "9.2.0").unwrap();
     assert!(rel.usable(), "{:?}", rel.error);
-    assert!(!releases::find(&rels, "0.3.0").unwrap().usable(), "foreign key");
+    assert!(!releases::find(&rels, "9.3.0").unwrap().usable(), "foreign key");
 
     let (mut s, info) = connect();
     assert_eq!(info.protocol, "1.8");
     assert_eq!((info.arch.as_str(), info.install.as_str()), (arch, "bundle"));
     // a deb never goes to a bundle install: the agent refuses before any data
-    let deb_rel = releases::load(&d.path().join("store2/0.2.0"), "upload", &signer.keys(), true);
+    let deb_rel = releases::load(&d.path().join("store2/9.2.0"), "upload", &signer.keys(), true);
     assert!(update::plan(&deb_rel, &info.facts(), &info.caps).is_err());
     let forced = update::Plan::Chunked(deb_rel.manifest.clone().unwrap().artifacts);
     let err = update::push_release(&mut s, &deb_rel, &forced, false, &mut |_, _| {}).unwrap_err();
@@ -638,9 +638,9 @@ fn chunked_update_from_the_release_store() {
     s.close();
     assert_eq!(st["state"], "installing");
     assert_eq!(st["from"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(st["to"], "0.2.0");
+    assert_eq!(st["to"], "9.2.0");
     // what the restarted new version does once it listens
-    agent_core::update::mark_listening(&paths, "0.2.0");
+    agent_core::update::mark_listening(&paths, "9.2.0");
     let (mut s, _) = connect();
     assert_eq!(update::status(&mut s).unwrap()["state"], "ok");
     s.close();

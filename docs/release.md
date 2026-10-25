@@ -81,6 +81,12 @@ Prerequisites: `release/keys/*.pub` holds the real public key(s) (release/keygen
 podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
 `podman login ghcr.io` (the auth file is mounted read-only into the tool containers).
 
+0. **Agent versions:** the packages, the MSI and in-band updates take their version from `crates/agent-linux`,
+   `crates/agent-windows` and `crates/agent-gui` (`Cargo.toml` and `Cargo.lock`). Bump them to the release's
+   version in a commit before the tag whenever agent code changed since the previous release: an agent release
+   with the version of an earlier one is never offered to agents that report it, and Windows Installer does not
+   upgrade an MSI to the same version (found with 0.3.0-alpha, whose first build still shipped agents 0.1.0 like
+   0.1.0-alpha and 0.2.0-alpha.3).
 1. `git tag -s vX.Y.Z && git push origin vX.Y.Z`. Then `release.yml`:
    - runs the update-agent/health-check unit tests,
    - `release/inject-keys.sh` replaces the TEST key with `release/keys/*.pub` and runs

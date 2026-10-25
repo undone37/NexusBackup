@@ -1,6 +1,6 @@
 [package]
 name = "agent-gui"
-version = "0.1.0"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 # tray-icon 0.26 needs 1.90
