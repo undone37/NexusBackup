@@ -1062,6 +1062,14 @@ their IDs. In progress:
   stays open (group-readable stores needed). Lab 2026-10-21 (VM 201, 0.0.18-dev offline bundle): keyd runs with
   the read-only group, file search answers (index fetched the keyring), `verify.sh exact` byte-identical (371 s); getgrnam's userdb read
   denial silenced (dontaudit, like the configuration backup).
+- [x] Phase 39 S4 (#51): nexus-index under its own uid `nexus-index` (keyd: read-only by uid; stores 0750/0640 for
+  the group `nexus-chunkstore`, scheduler umask 027). Lab 2026-10-25, VM 201 offline bundles from 0.0.42-dev:
+  0.0.43-dev booted with the scheduler, web-api and replicad failing (EACCES on their own state): adding the user
+  renumbered nexus-chunkstore/webapi/plugins in the image's /etc/passwd, which bootc installs as is. Rolled back
+  (`bootc rollback`; tmpfiles restored the owners), ids fixed in sysusers.d at their installed values
+  (test_sysusers.py), 0.0.44-dev: all units up, nexus-index as uid 977 with groups nexus-chunkstore and nexus-keyd,
+  index rebuilt from the stores, file search answers (tenant lab: 50 hits); no AVC denials. Lab migration by hand
+  (no installed base): `chmod g+rx` / `g+r` on the 49 GB of stores, index cache cleared.
 - [x] Phase 39 C4: M365 cases by sender and recipient (plugin protocol v1.10 `ItemMeta`, side file `itemmeta`,
   carried over for unchanged mails; criteria `sender` / `recipient`; Cases page fields). Tested against the Graph
   mock; 2026-10-25 (#54) also the instant search: the index stores the record per mail version (index format 3:

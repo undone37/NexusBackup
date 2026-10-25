@@ -1510,8 +1510,8 @@ neverallow nexus_fsindex_t { nexus_store_t nexus_keyd_var_run_t nexus_catalog_t 
 neverallow { nexus_domain -nexus_pve_t } nexus_fsindex_t:process transition;
 
 # --- nexus-index: reads the tenant stores (sealed name indexes, fsindex reports),
-# never writes them; tenant keyrings from keyd (same Unix user as the scheduler,
-# keyd checks the peer uid); writes only its sealed index dir and its socket.
+# never writes them; tenant keyrings from keyd (its own uid nexus-index, keyd gives
+# it keyring fetches only); writes only its sealed index dir and its socket.
 list_dirs_pattern(nexus_index_t, nexus_store_t, nexus_store_t)
 read_files_pattern(nexus_index_t, nexus_store_t, nexus_store_t)
 manage_dirs_pattern(nexus_index_t, nexus_index_var_lib_t, nexus_index_var_lib_t)

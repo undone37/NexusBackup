@@ -32,8 +32,8 @@ pub struct Config {
     pub sync_secs: u64,
     /// readers of tenants idle this long are closed
     pub idle_secs: u64,
-    /// users allowed on the socket besides the service's own (the scheduler runs
-    /// as the same user); resolved at start
+    /// users allowed on the socket besides the service's own (the web-api searches,
+    /// the scheduler nudges); resolved at start
     pub allowed_users: Vec<String>,
 }
 
@@ -48,7 +48,7 @@ impl Default for Config {
             floor_mb: 2048,
             sync_secs: 600,
             idle_secs: 900,
-            allowed_users: vec!["nexus-webapi".into()],
+            allowed_users: vec!["nexus-webapi".into(), "nexus-chunkstore".into()],
         }
     }
 }

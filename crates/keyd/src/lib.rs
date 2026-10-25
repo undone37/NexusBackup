@@ -608,8 +608,8 @@ pub fn harden_process() {
     }
 }
 
-/// uid and primary gid of the connected process.
-fn peer_cred(s: &UnixStream) -> io::Result<(u32, u32)> {
+/// uid of the connected process.
+fn peer_uid(s: &UnixStream) -> io::Result<u32> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: `cred` and `len` are valid, exclusive locals and `len` is the exact size of `cred` (ucred),
@@ -626,20 +626,17 @@ fn peer_cred(s: &UnixStream) -> io::Result<(u32, u32)> {
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((cred.uid, cred.gid))
+    Ok(cred.uid)
 }
 
-/// Who may talk to keyd: the scheduler's uid; a process of that uid whose primary group is
-/// `read_only_gid` (nexus-index, Phase 39 S4) only fetches keyrings, nothing that creates, exports,
-/// imports or changes keys. A process cannot change its primary group without CAP_SETGID.
-// ponytail: the index still shares the scheduler's uid (stores are 0700 nexus-chunkstore); a uid of its
-// own needs group-readable stores on every existing appliance.
+/// Who may talk to keyd: the scheduler's uid; the uid `read_only_uid` (nexus-index, Phase 39 S4, #51) only
+/// fetches keyrings, nothing that creates, exports, imports or changes keys.
 #[derive(Clone, Copy, Debug)]
 pub struct Peers {
-    /// The only uid keyd answers (nexus-chunkstore).
+    /// Full access (nexus-chunkstore).
     pub uid: u32,
-    /// Primary gid of that uid's read-only processes (nexus-index).
-    pub read_only_gid: Option<u32>,
+    /// Keyring fetches only (nexus-index).
+    pub read_only_uid: Option<u32>,
 }
 
 impl Peers {
@@ -647,7 +644,7 @@ impl Peers {
     pub fn only(uid: u32) -> Peers {
         Peers {
             uid,
-            read_only_gid: None,
+            read_only_uid: None,
         }
     }
 }
@@ -682,14 +679,14 @@ pub fn serve(listener: UnixListener, dir: &Path, peers: Peers) -> io::Result<()>
 }
 
 fn handle(mut s: UnixStream, dir: &Path, peers: Peers) -> io::Result<()> {
-    let (uid, gid) = peer_cred(&s)?;
-    if uid != peers.uid {
+    let uid = peer_uid(&s)?;
+    let read_only = peers.read_only_uid == Some(uid);
+    if uid != peers.uid && !read_only {
         return Err(err(
             io::ErrorKind::PermissionDenied,
             format!("peer uid {uid} not allowed"),
         ));
     }
-    let read_only = peers.read_only_gid == Some(gid);
     s.set_read_timeout(Some(Duration::from_secs(5)))?;
     s.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut r = BufReader::new(&s);
@@ -699,7 +696,7 @@ fn handle(mut s: UnixStream, dir: &Path, peers: Peers) -> io::Result<()> {
     if read_only && (line.trim_end_matches('\n').contains(' ') || line.starts_with("replica-pubkey")) {
         return Err(err(
             io::ErrorKind::PermissionDenied,
-            format!("peer gid {gid} may only fetch keyrings"),
+            format!("peer uid {uid} may only fetch keyrings"),
         ));
     }
     // zeroized: an `attach-escrow` body carries the recovery key
@@ -1405,16 +1402,17 @@ mod tests {
     }
 
     #[test]
-    fn read_only_group_only_fetches_keyrings() {
+    fn read_only_uid_only_fetches_keyrings() {
         let d = tempfile::tempdir().unwrap();
         init(d.path()).unwrap();
         create_tenant(d.path(), "acme").unwrap();
         let sock = d.path().join("keyd.sock");
-        // SAFETY: getuid and getgid have no preconditions and cannot fail.
-        let (me, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        // SAFETY: getuid has no preconditions and cannot fail.
+        let me = unsafe { libc::getuid() };
+        // this process is the read-only peer, another uid has full access (#51: the index's own uid)
         let peers = Peers {
-            uid: me,
-            read_only_gid: Some(gid),
+            uid: me + 1,
+            read_only_uid: Some(me),
         };
         for (req, ok) in [
             ("acme", true),

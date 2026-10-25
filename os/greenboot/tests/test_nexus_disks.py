@@ -345,7 +345,7 @@ class Host(unittest.TestCase):
         create = next(c for c in calls if c.startswith("mdadm --create"))
         self.assertEqual(create, f"mdadm --create {self.dev}/md/nexus-data --run --name=nexus-data --metadata=1.2 --level=raid6 "
                                  "--raid-devices=4 --bitmap=internal /dev/sdc /dev/sdd /dev/sde /dev/sdf")
-        self.assertIn("PROTO nexus-store|0 0|d--700 0 0|$|", calls)
+        self.assertIn("PROTO nexus-store|0 0|d--750 0 0|$|", calls)
         self.assertTrue(any(c.startswith("mkfs.xfs -q -L nexus-data -p ") for c in calls))
         order = [c for c in calls if c.startswith("systemctl") and "is-active --quiet nexus" not in c]
         self.assertEqual(order, ["systemctl --no-ask-password stop nexus-scheduler.service",
