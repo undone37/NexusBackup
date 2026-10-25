@@ -785,6 +785,15 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   rollback approved: pre-rollback snapshot, 95 of 4096 chunks written, job 68 s; `qemu-img compare` equal to a
   plain restore of the snapshot; boots without marker and junk. Found (lab): the clone step's address wait ended the
   script when the guest agent did not answer yet (fixed). Left: LVM-thin and RBD (pve-test has neither).
+- [x] (#55) Instant rollback of a container (2026-10-25, VM 201 on 0.0.46-dev, nexusbackup-pve 0.1.2 on pve-test):
+  `lab/pvehost/ct-rollback.sh`: unprivileged Debian 13 container 265 on ZFS (vmpool), backup, then a changed,
+  added, removed and re-moded file, 50 MB junk and a marker; rollback approved by the security officer: 24 files
+  (8.5 MB) written, 35 paths deleted, 19944 unchanged, job 23 s (a full restore of the same snapshot: 41 s, the whole
+  580 MB tar); the tree equals a plain restore of the snapshot (21968 entries: type, mode, owner, size, mtime,
+  SHA-256 of each file); the container boots without the marker. Found (lab, first image): GNU tar writes POSIX
+  archives with `--xattrs`/`--acls`, so ZFS-compressed files came as PAX 1.0 sparse entries (GNUSparseFile.<pid>
+  names) the tar crate does not decode: 4227 "changed" files, 4241 deletions, and the node extracted literal
+  GNUSparseFile directories into the lab container (fixed: decoded, PAX keys kept; test with the plugin's flags).
 - [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
   secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
   existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:

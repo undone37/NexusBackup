@@ -10,8 +10,11 @@
 #   ct-rollback.sh group     group "ctrollback-$CT" on the PVE source $NODE, policy "daily"
 #   ct-rollback.sh backup    backup of the group (snapshot A)
 #   ct-rollback.sh change    in the container: a changed, an added, a removed and a re-moded file, $JUNK_MB of junk
-#   ct-rollback.sh rollback  restore of snapshot A onto $CT with rollback ($SPARE: the fallback ID, must stay unused)
-#   ct-rollback.sh compare   snapshot A restored as $CHECK; both trees listed on the node and compared
+#   ct-rollback.sh rollback  restore of snapshot A onto $CT with rollback, not started ($SPARE: the fallback ID, must
+#                            stay unused)
+#   ct-rollback.sh compare   snapshot A restored as $CHECK; both trees listed on the node and compared (before either
+#                            starts: a start rewrites /etc/hosts, logs, spools)
+#   ct-rollback.sh boot      $CT started: running, without the marker
 #   ct-rollback.sh cleanup   $CHECK and $CT destroyed, the group deleted
 #
 # env: as rollback.sh (LAB, PORT, PVE_HOST, SSH_KEY, NODE pve-test); CT (265), CHECK (266), SPARE (267),
@@ -82,6 +85,7 @@ step_backup() {
 }
 
 step_change() {
+	pve "pct status $CT | grep -q running || pct start $CT"
 	pve "pct exec $CT -- sh -c 'echo changed >> /etc/motd; rm -f /etc/issue.net; chmod 600 /etc/hostname;
 		echo rolled-back-if-missing > /root/marker; mkdir -p /opt/junk; head -c ${JUNK_MB}M /dev/urandom > /opt/junk/a.bin;
 		rm -rf /usr/share/doc/apt; sync'"
@@ -89,12 +93,14 @@ step_change() {
 }
 
 step_rollback() {
-	local r q j id t0=$SECONDS
+	local r q j id last t0=$SECONDS
 	pve "pct status $SPARE" >/dev/null 2>&1 && die "guest $SPARE exists (the fallback ID must be free)"
+	# the approved request becomes a job later: one newer than every job now
+	last=$(api admin GET '/jobs?limit=1' | jq -r '.[0].id // 0')
 	r=$(api admin POST /jobs "$(jq -nc --argjson t "$(cat "$OUT/a.time")" --argjson v "$SPARE" --arg s "ct-$CT" \
 		--arg n "$NODE" --arg st "$STORAGE" \
 		'{kind:"restore_ct", tenant:"lab", params:{source:$s, time:$t, node:$n, target:$v, storage:$st, replace:true,
-		  rollback:true, start:true}}')")
+		  rollback:true, start:false}}')")
 	[ "$(status)" = 202 ] || [ "$(status)" = 200 ] || die "rollback: HTTP $(status) $(cat "$S/body")"
 	q=$(jq -r '.quorum_id // empty' <<<"$r")
 	if [ -n "$q" ] && [ "$(jq -r '.state // empty' <<<"$r")" != approved ]; then
@@ -106,8 +112,8 @@ step_rollback() {
 	id=$(jq -r '.id // empty' <<<"$r")
 	for _ in $(seq 30); do
 		[ -n "$id" ] && break
-		id=$(api admin GET '/jobs?limit=10' | jq -r --arg s "ct-$CT" \
-			'[.[] | select(.kind == "restore_ct" and .params.source == $s)][0].id // empty')
+		id=$(api admin GET '/jobs?limit=10' | jq -r --arg s "ct-$CT" --argjson l "$last" \
+			'[.[] | select(.kind == "restore_ct" and .params.source == $s and .id > $l)][0].id // empty')
 		sleep 2
 	done
 	[ -n "$id" ] || die "no restore job after the approval"
@@ -147,6 +153,12 @@ step_compare() {
 	log "the rolled-back tree equals a plain restore of snapshot A ($(wc -l <"$OUT/restored.txt") entries)"
 }
 
+step_boot() {
+	pve "pct start $CT && sleep 5 && pct status $CT | grep -q running" || die "CT $CT does not start"
+	pve "pct exec $CT -- test -e /root/marker" && die "the marker survived the rollback"
+	log "CT $CT runs, without /root/marker; $(pve "pct exec $CT -- systemctl is-system-running" || true)"
+}
+
 step_cleanup() {
 	local id
 	for id in "$CHECK" "$SPARE" "$CT"; do
@@ -158,6 +170,6 @@ step_cleanup() {
 	log "CT $CT, $CHECK destroyed, group $GROUP deleted"
 }
 
-for s in ${*:-ct group backup change rollback compare}; do
+for s in ${*:-ct group backup change rollback compare boot}; do
 	"step_$s"
 done
