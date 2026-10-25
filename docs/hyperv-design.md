@@ -49,9 +49,12 @@ checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM o
   with `dd` in an Alpine live system, the data visible in the base afterwards), `GetVirtualDiskChanges` reported no
   ranges when asked between the two reference point identifiers, and "the specified change tracking identifier is
   not valid" when asked on the base or the `.avhdx` while the second checkpoint existed. The identifier sequence also
-  looked off (a new reference point taken right after the previous one carried its number). Next: the call order of
-  Microsoft's backup sample (query the checkpoint's own disk path, reference point kept until the query), and the
-  Win32 `QueryChangesVirtualDisk` on the opened VHDX as a second way.
+  looked off (a new reference point taken right after the previous one carried its number). The Win32 way
+  (`lab/windows/hyperv/qcvd.ps1`: `OpenVirtualDisk` v2 with `GetInfoOnly`, then `QueryChangesVirtualDisk` with the
+  reference point's identifier) on the running VM's VHDX: opened, but the query is refused with
+  `ERROR_ACCESS_DENIED`. Next: both ways on the frozen parent during a recovery checkpoint (the order backup products
+  use: checkpoint, query the parent against the previous reference point, read, convert), with the parent opened
+  read-only instead of `GetInfoOnly`.
 - Lab tooling: `Msvm_Keyboard.TypeText` does not reach a Linux guest's synthetic keyboard; `TypeKey` with virtual-key
   codes does (`lab/windows/hyperv/keys.ps1`); the VM's screen comes from `GetVirtualSystemThumbnailImage` (RGB565).
 
