@@ -430,7 +430,21 @@ impl Platform for Windows {
                 let log = ctx.paths.state.join(update::MSI_LOG);
                 let _ = std::fs::remove_file(&log);
                 let args = update::msiexec_args(&main.path, &log, &agent_core::update::staging_dir(ctx.paths))?;
-                let exe = update::msiexec(std::env::var_os("SystemRoot"));
+                let staging = agent_core::update::staging_dir(ctx.paths);
+                // #96: through a copy of this exe (`msi-run`), which starts the service again when the MSI rolled
+                // back to this version; msiexec directly if the copy cannot be made
+                let helper = staging.join("nexus-agent-msi-run.exe");
+                let via_helper = std::env::current_exe()
+                    .and_then(|me| std::fs::copy(me, &helper))
+                    .is_ok();
+                let (exe, args): (std::path::PathBuf, Vec<std::ffi::OsString>) = if via_helper {
+                    let mut a: Vec<std::ffi::OsString> = vec!["msi-run".into(), main.path.clone().into()];
+                    a.push(log.clone().into());
+                    a.push(staging.clone().into());
+                    (helper, a)
+                } else {
+                    (update::msiexec(std::env::var_os("SystemRoot")), args)
+                };
                 let spawn = |flags: u32| {
                     use std::os::windows::process::CommandExt;
                     std::process::Command::new(&exe)

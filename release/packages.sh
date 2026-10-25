@@ -207,7 +207,8 @@ RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 	name=nexus-agent-$wversion-x64.msi
 	podman run --rm --security-opt label=disable -v "$PWD/$stage:/stage" -w /stage "$msi_img" \
 		sh -c "wixl -a x64 -D Version=$wversion -o /stage/$name nexus-agent.wxs &&
-		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 1401 WHERE Action = 'RemoveExistingProducts'\" &&
+		init=\$(msiinfo export /stage/$name InstallExecuteSequence | awk -F'\t' '\$1 == \"InstallInitialize\" {print \$3}' | tr -d '\r') &&
+		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = \$((init + 1)) WHERE Action = 'RemoveExistingProducts'\" &&
 		msibuild /stage/$name -q \"UPDATE InstallExecuteSequence SET Sequence = 2001 WHERE Action = 'PurgeData'\" &&
 		msibuild /stage/$name -q \"UPDATE CustomAction SET Type = 11346 WHERE Action = 'FleetInit'\" &&
 		msibuild /stage/$name -q \"UPDATE File SET Version = '$wversion.0' WHERE File = 'AgentExe'\" &&
@@ -215,7 +216,9 @@ RUN dnf -y install --setopt=install_weak_deps=False msitools && dnf clean all")
 	# ^ wixl ignores After= relative to standard actions and appends RemoveExistingProducts and PurgeData after
 	#   the last custom action (found on Windows Server 2022):
 	#   - RemoveExistingProducts inside the install script without InstallExecute: error 2613, every install
-	#     failed. 1401 = right after InstallValidate, the WiX default (old version removed first).
+	#     failed. Right after InstallInitialize (WiX `afterInstallInitialize`): the old version is removed in the
+	#     same transaction as the new one is installed, so a failed upgrade rolls back to the old version (#96: right
+	#     after InstallValidate the removal committed on its own and a 1603 left the host without an agent).
 	#   - PurgeData after RemoveFiles: nexus-agent.exe was gone, error 1721, PURGE=1 never deleted anything.
 	#     2001 = right after DeleteServices, before RemoveFiles (3500).
 	#   wixl also drops HideTarget: FleetInit (3154 = deferred, no impersonation, exe from a file) gets

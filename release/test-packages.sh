@@ -137,12 +137,15 @@ msiinfo export "$m" File | tee /tmp/files | grep -P "^(AgentExe|GuiExe)\t" >/dev
 for f in AgentExe GuiExe; do
 	grep -P "^$f\t[^\t]*\t[^\t]*\t[0-9]+\t[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\t" /tmp/files >/dev/null || fail "$f without File.Version"
 done
-msiinfo export "$m" InstallExecuteSequence | tee /tmp/seq
+msiinfo export "$m" InstallExecuteSequence | tr -d "\r" | tee /tmp/seq
 grep -P "^ServiceSetup\tNOT REMOVE=\"ALL\"\t" /tmp/seq >/dev/null || fail "ServiceSetup condition"
-# Windows refuses RemoveExistingProducts inside the install script without InstallExecute (error 2613)
-v=$(grep -P "^InstallValidate\t" /tmp/seq | cut -f3); i=$(grep -P "^InstallInitialize\t" /tmp/seq | cut -f3)
+# RemoveExistingProducts right after InstallInitialize: inside the install transaction (a failed upgrade rolls
+# back to the old version, #96), and not later in the script (error 2613 without InstallExecute)
+i=$(grep -P "^InstallInitialize\t" /tmp/seq | cut -f3)
 r=$(grep -P "^RemoveExistingProducts\t" /tmp/seq | cut -f3)
-[ "$r" -gt "$v" ] && [ "$r" -lt "$i" ] || fail "RemoveExistingProducts ($r) not between InstallValidate and InstallInitialize"
+n=$(awk -F"\t" -v i="$i" "\$3 ~ /^[0-9]+\$/ && \$3 + 0 > i + 0" /tmp/seq | sort -t"$(printf "\t")" -k3 -n | head -1 | cut -f1)
+[ "$r" -eq $((i + 1)) ] && [ "$n" = RemoveExistingProducts ] ||
+	fail "RemoveExistingProducts ($r) not right after InstallInitialize ($i)"
 # PurgeData runs nexus-agent.exe: after DeleteServices, before RemoveFiles deletes the exe (error 1721)
 d=$(grep -P "^DeleteServices\t" /tmp/seq | cut -f3); f=$(grep -P "^RemoveFiles\t" /tmp/seq | cut -f3)
 pd=$(grep -P "^PurgeData\t" /tmp/seq | cut -f3)
