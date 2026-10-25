@@ -138,6 +138,10 @@ jobs:
         with:
           ref: ${{ env.TAG }}
       - name: Build and attach the rescue ISO
+        # Ubuntu's gcc fortifies by default (__memcpy_chk, glibc only): the musl agent's C code (zstd) must not be;
+        # set here as well so a manual run rebuilds tags whose build.sh predates the flag
+        env:
+          CFLAGS_x86_64_unknown_linux_musl: -U_FORTIFY_SOURCE
         run: |
           [ -x restore-vm/rescue/build.sh ] || { echo "$TAG predates the rescue ISO"; exit 0; }
           restore-vm/rescue/build.sh

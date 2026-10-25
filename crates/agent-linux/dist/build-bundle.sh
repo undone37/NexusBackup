@@ -8,8 +8,8 @@
 #               COSIGN_PASSWORD as for image signing; offline, --network none)
 #
 # Output: target/agent-dist/nexus-agent-<version>-x86_64/ and .tar.gz
-# No musl cross compiler is needed: the only C/asm in the tree (ring, blake3) is
-# freestanding, so the host gcc builds it for the musl target.
+# No musl cross compiler is needed: the host gcc builds the C/asm in the tree (ring, blake3, zstd) for the musl
+# target, without _FORTIFY_SOURCE (Ubuntu's gcc sets it by default; __memcpy_chk exists only in glibc).
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 
@@ -31,6 +31,7 @@ rustup target list --installed | grep -qx "$TARGET" || rustup target add "$TARGE
 cc=gcc
 command -v musl-gcc >/dev/null && cc=musl-gcc
 CC_x86_64_unknown_linux_musl=$cc \
+	CFLAGS_x86_64_unknown_linux_musl="${CFLAGS_x86_64_unknown_linux_musl:--U_FORTIFY_SOURCE}" \
 	CARGO_PROFILE_RELEASE_LTO=true \
 	CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
 	CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
