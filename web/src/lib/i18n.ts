@@ -1188,6 +1188,12 @@ export const en = {
     certUntil: (s: string) => `certificate valid until ${s}`,
     renewalPending: 'Renewal issued, waiting for the next session to confirm it',
     limits: 'Limits',
+    address: 'Change address',
+    addressTitle: (n: string) => `Address of ${n}`,
+    addressIntro:
+      'Where the appliance reaches this agent, for example after the computer got a new IP address. The enrolment stays. A one-time token that is not used yet becomes void: create a new one afterwards.',
+    addressHost: 'Host name or IP address',
+    addressPort: 'Port',
     limitsTitle: (n: string) => `Limits for ${n}`,
     limitsIntro:
       'Enforced by the agent for every backup: a bandwidth cap on the data sent to the appliance and a lower CPU / I/O priority for the backup. Needs an agent of this release; older agents ignore them (the job log warns).',

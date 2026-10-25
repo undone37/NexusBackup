@@ -3937,6 +3937,7 @@ async fn tenant_admin_routes_classified() {
         ("POST", "/agents", "/api/v1/agents".into(), Some(json!({"tenant": "acme", "name": "ta-a", "host": "h"})), 'Y'),
         ("DELETE", "/agents/{id}", format!("/api/v1/agents/{agent}"), none(), 'Y'),
         ("POST", "/agents/{id}/token", format!("/api/v1/agents/{agent}/token"), e(), 'Y'),
+        ("PUT", "/agents/{id}/address", format!("/api/v1/agents/{agent}/address"), Some(json!({"host": "10.0.0.9", "port": 7444})), 'Y'),
         ("POST", "/agents/{id}/enroll", format!("/api/v1/agents/{agent}/enroll"), e(), 'Y'),
         ("PUT", "/agents/{id}/limits", format!("/api/v1/agents/{agent}/limits"), Some(json!({"bwlimit": 1 << 20, "nice": 10})), 'Y'),
         // Phase 19a bare-metal recovery: provider roles only (admin, operator)
@@ -4695,6 +4696,55 @@ async fn tenant_directory() {
         t.post(&format!("{url}/sync"), &admin, json!({})).await.status,
         StatusCode::BAD_REQUEST
     );
+    t.finish();
+}
+
+/// #127: an agent's address can change (a new DHCP lease); its pending one-time token, sealed to the old address,
+/// becomes void; tenant users cannot change it; audited.
+#[tokio::test]
+async fn agent_address_change() {
+    let t = T::new();
+    let admin = t.login("alice").await;
+    let r = t
+        .post(
+            "/api/v1/agents",
+            &admin,
+            json!({"tenant": "acme", "name": "ws1", "host": "10.0.0.5", "port": 7444}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let id = r.body["id"].as_str().unwrap().to_owned();
+    let url = format!("/api/v1/agents/{id}/address");
+    for bad in [
+        json!({"host": "a b", "port": 7444}),
+        json!({"host": "x", "port": 0}),
+        json!({"host": "x"}),
+    ] {
+        assert_eq!(
+            t.put(&url, &admin, bad.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    let tina = t.login("tina").await;
+    assert_eq!(
+        t.put(&url, &tina, json!({"host": "10.0.0.6", "port": 7444}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    let r = t
+        .put(&url, &admin, json!({"host": "ws1.acme.example", "port": 7445}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["host"].clone(), r.body["port"].clone()),
+        (json!("ws1.acme.example"), json!(7445))
+    );
+    assert_eq!(r.body["token_expires"], Value::Null, "the pending token is void");
+    let r = t.post(&format!("/api/v1/agents/{id}/enroll"), &admin, json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "no token: {:?}", r.body);
+    assert!(t.audit_actions().iter().any(|a| a == "agent.address"));
     t.finish();
 }
 

@@ -5454,6 +5454,23 @@ on('PUT', '/agents/:id/limits', async (c, [id]) => {
   await audit(u.name, 'agent.limits', `agent/${a.id}`, { new: a.limits, old });
   return [200, pubAgent(a)];
 });
+// #127: the agent's address; a pending token becomes void
+on('PUT', '/agents/:id/address', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const a = findAgent(u, id);
+  const b = c.body ?? {};
+  for (const k of Object.keys(b)) if (!['host', 'port'].includes(k)) throw new HttpError(400, `unknown field ${k}`);
+  if (typeof b.host !== 'string' || !/^[A-Za-z0-9.:\[\]-]{1,253}$/.test(b.host) || b.host.startsWith('-'))
+    throw new HttpError(400, 'host: a host name or address');
+  if (!(Number.isInteger(b.port) && b.port >= 1 && b.port <= 65535))
+    throw new HttpError(400, 'port: must be 1..=65535');
+  const old = { host: a.host, port: a.port };
+  a.host = b.host;
+  a.port = b.port;
+  a.token_expires = null;
+  await audit(u.name, 'agent.address', `agent/${a.id}`, { old, host: a.host, port: a.port });
+  return [200, pubAgent(a)];
+});
 // Phase 24a: endpoint UI policy (admins), laptop options, session summaries
 on('PUT', '/agents/:id/ui-policy', async (c, [id]) => {
   const u = need(c.user, 'admin');

@@ -77,6 +77,7 @@
       out.push({ label: t.agents.newToken, onselect: () => newToken(a) });
     }
     out.push({ label: t.agents.limits, onselect: () => limits(a) });
+    out.push({ label: t.agents.address, onselect: () => address(a) });
     if (bmrOk(a)) out.push({ label: t.bmr.action, onselect: () => rescue?.openFor(a) });
     out.push({ label: t.delete, onselect: () => remove(a) });
     return out;
@@ -182,6 +183,24 @@
     const body = { bwlimit, nice: Number(lim.nice) || 0 };
     if (await act(put(`/agents/${encodeURIComponent(limAgent.id)}/limits`, body), t.saved)) {
       limOpen = false;
+      load();
+    }
+  }
+  // #127: the agent's address (a new DHCP lease)
+  let addrOpen = $state(false);
+  let addrAgent: Agent | null = $state(null);
+  let addr = $state({ host: '', port: 7444 as number });
+  function address(a: Agent) {
+    addrAgent = a;
+    addr = { host: a.host, port: a.port };
+    addrOpen = true;
+  }
+  async function saveAddress(e: SubmitEvent) {
+    e.preventDefault();
+    if (!addrAgent) return;
+    const body = { host: addr.host.trim(), port: Number(addr.port) };
+    if (await act(put(`/agents/${encodeURIComponent(addrAgent.id)}/address`, body), t.saved)) {
+      addrOpen = false;
       load();
     }
   }
@@ -446,6 +465,26 @@
     </div>
     <div class="form-actions">
       <button type="button" onclick={() => (limOpen = false)}>{t.cancel}</button>
+      <button type="submit" class="primary">{t.save}</button>
+    </div>
+  </form>
+</Modal>
+
+<Modal bind:open={addrOpen} title={t.agents.addressTitle(addrAgent?.name ?? '')}>
+  <form onsubmit={saveAddress}>
+    <p class="hint">{t.agents.addressIntro}</p>
+    <div class="form-grid">
+      <div class="field">
+        <label for="a-host">{t.agents.addressHost}</label>
+        <input id="a-host" bind:value={addr.host} required spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="a-port">{t.agents.addressPort}</label>
+        <input id="a-port" type="number" min="1" max="65535" bind:value={addr.port} required />
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="button" onclick={() => (addrOpen = false)}>{t.cancel}</button>
       <button type="submit" class="primary">{t.save}</button>
     </div>
   </form>
