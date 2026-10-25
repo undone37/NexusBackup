@@ -4,8 +4,9 @@
 //! not required.
 //!
 //! Installing: a running `.exe` cannot be overwritten but can be renamed, so the new
-//! binary is written to `<exe>.new`, the running one is renamed to `<exe>.prev`, and
-//! `<exe>.new` is renamed to `<exe>`; then the process exits with
+//! binary is written to `<exe>.new.exe` and run once with `version` (#120: one that does not start is refused
+//! while the running agent is still in place), the running one is renamed to `<exe>.prev`, and
+//! `<exe>.new.exe` is renamed to `<exe>`; then the process exits with
 //! [`RESTART_EXIT_CODE`] and the service control manager restarts it (failure actions
 //! set by `nexus-agent install`). If the running binary cannot be renamed, the
 //! replacement is scheduled with `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` and the
@@ -39,10 +40,15 @@ pub enum Installed {
     AtReboot,
 }
 
-/// Write `binary` next to `exe` and swap it in (see module docs). `delay_rename` is
-/// the rename-on-reboot fallback (`MoveFileExW(.., MOVEFILE_DELAY_UNTIL_REBOOT |
-/// MOVEFILE_REPLACE_EXISTING)` on Windows).
-pub fn install(exe: &Path, binary: &[u8], delay_rename: fn(&Path, &Path) -> io::Result<()>) -> io::Result<Installed> {
+/// Write `binary` next to `exe`, check it with `probe` (`agent_core::update::probe`: it starts and answers
+/// `version`) and swap it in (see module docs). `delay_rename` is the rename-on-reboot fallback
+/// (`MoveFileExW(.., MOVEFILE_DELAY_UNTIL_REBOOT | MOVEFILE_REPLACE_EXISTING)` on Windows).
+pub fn install(
+    exe: &Path,
+    binary: &[u8],
+    probe: &dyn Fn(&Path) -> Result<(), String>,
+    delay_rename: fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<Installed> {
     let name = exe
         .file_name()
         .ok_or_else(|| io::Error::other("executable has no name"))?
@@ -51,13 +57,17 @@ pub fn install(exe: &Path, binary: &[u8], delay_rename: fn(&Path, &Path) -> io::
     let dir = exe
         .parent()
         .ok_or_else(|| io::Error::other("executable has no directory"))?;
-    let new = dir.join(format!("{name}.new"));
+    let new = dir.join(format!("{name}.new.exe"));
     let prev = dir.join(format!("{name}.prev"));
     let _ = fs::remove_file(&new);
     {
         let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&new)?;
         f.write_all(binary)?;
         f.sync_all()?;
+    }
+    if let Err(e) = probe(&new) {
+        let _ = fs::remove_file(&new);
+        return Err(io::Error::other(e));
     }
     let _ = fs::remove_file(&prev);
     if let Err(e) = fs::rename(exe, &prev) {
@@ -348,12 +358,24 @@ mod tests {
         fn no_delay(_: &Path, _: &Path) -> io::Result<()> {
             panic!("not needed")
         }
-        assert_eq!(install(&exe, b"new", no_delay).unwrap(), Installed::Now);
+        let runs = |_: &Path| Ok(());
+        // #120: a new binary that does not start is refused, the running one stays
+        let e = install(
+            &exe,
+            b"broken",
+            &|p: &Path| Err(format!("{} does not start", p.display())),
+            no_delay,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("nexus-agent.exe.new.exe does not start"), "{e}");
+        assert_eq!(fs::read(&exe).unwrap(), b"old");
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 1, "nothing staged left");
+        assert_eq!(install(&exe, b"new", &runs, no_delay).unwrap(), Installed::Now);
         assert_eq!(fs::read(&exe).unwrap(), b"new");
         assert_eq!(fs::read(t.path().join("nexus-agent.exe.prev")).unwrap(), b"old");
-        assert!(!t.path().join("nexus-agent.exe.new").exists());
+        assert!(!t.path().join("nexus-agent.exe.new.exe").exists());
         // second update replaces .prev
-        assert_eq!(install(&exe, b"newer", no_delay).unwrap(), Installed::Now);
+        assert_eq!(install(&exe, b"newer", &runs, no_delay).unwrap(), Installed::Now);
         assert_eq!(fs::read(t.path().join("nexus-agent.exe.prev")).unwrap(), b"new");
     }
 
@@ -365,11 +387,11 @@ mod tests {
             assert!(new.exists());
             Ok(())
         }
-        assert_eq!(install(&exe, b"new", delay).unwrap(), Installed::AtReboot);
+        assert_eq!(install(&exe, b"new", &|_| Ok(()), delay).unwrap(), Installed::AtReboot);
         fn fail(_: &Path, _: &Path) -> io::Result<()> {
             Err(io::Error::other("no"))
         }
-        assert!(install(&exe, b"new", fail).is_err());
-        assert!(!t.path().join("missing.exe.new").exists(), "cleaned up");
+        assert!(install(&exe, b"new", &|_| Ok(()), fail).is_err());
+        assert!(!t.path().join("missing.exe.new.exe").exists(), "cleaned up");
     }
 }

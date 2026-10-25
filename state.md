@@ -533,11 +533,17 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   update-watchdog`): lab on VM 201 (0.0.42-dev) with VM 225, bundle 0.1.9 of the branch installed (unit with the
   new line), a TEST-signed 0.1.10 that is /bin/false plus the version marker pushed: two failed starts, the third
   start's ExecStartPre put 0.1.9 back ("the new version did not start 3 times"), the agent served again; the
-  appliance recorded `rolled_back` with that reason 49 s after the update was sent. arm64 2026-10-25 (`lab/pvehost/agent-arm64.sh`,
-  TEST-key releases 0.1.20 and 0.1.21 from release/packages.sh, 12 artifacts each): the emulated Debian 13 aarch64
-  VM 200 got the 0.1.20 arm64 .deb and was enrolled (agent arch aarch64); the appliance's update plan chose
-  `linux-aarch64/nexus-agent_0.1.21-1_arm64.deb` (install deb), apt-get in band: 0.1.21 in 83 s (TCG). Open: desktop
-  package with the GUI running,
+  appliance recorded `rolled_back` with that reason 49 s after the update was sent. 2026-10-25 (#120): the running
+  agent now runs the staged binary with `version` before the swap: the same broken 0.1.10 pushed to a 0.1.5 build of
+  the branch on VM 225 (VM 201 on 0.0.48-dev) failed in 3 s with "the new binary does not start: `version` ended
+  with exit status: 1", nothing swapped, no `.prev`, no restart (NRestarts 0). Windows (`lab/windows/swap-probe.sh`,
+  a clone of VM 242 as VM 299 with its manual install replaced by a 0.1.5 build of the branch, enrolled anew): a
+  TEST-signed 0.1.11 whose exe is the real one cut to 1 MiB (PE headers intact) plus the marker, pushed: failed with
+  "the new binary does not start: %1 is not a valid Win32 application. (os error 193)", the service kept running
+  0.1.5, no `.prev`. arm64 2026-10-25 (`lab/pvehost/agent-arm64.sh`, TEST-key releases 0.1.20 and 0.1.21 from
+  release/packages.sh, 12 artifacts each): the emulated Debian 13 aarch64 VM 200 got the 0.1.20 arm64 .deb and was
+  enrolled (agent arch aarch64); the appliance's update plan chose `linux-aarch64/nexus-agent_0.1.21-1_arm64.deb`
+  (install deb), apt-get in band: 0.1.21 in 83 s (TCG). Open: desktop package with the GUI running,
   arm64 (needs aarch64 packages), an edge-connected laptop.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
   of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by

@@ -152,6 +152,10 @@ scheduler, the web-api and the web UI; deviations from the proposal above are ma
   service's job object). State: `<state>/update-pending.json` while an install runs, `<state>/update-state.json`
   with `{state: installing|ok|failed|rolled_back, kind, from, to, at, error, log}` afterwards (the answer to
   `UpdateStatus`).
+- **Start probe** (binary swaps, #120): before the swap the running agent runs the staged, signature-checked binary
+  with `version` (30 s); it must exit 0 and name the expected version, else the update fails and nothing is
+  swapped. This catches every binary that never reaches its own code (loader or libc mismatch, CPU features, a
+  truncated file that still carries the marker), on Linux and Windows alike.
 - **Start watchdog** (binary swaps): `update-pending.json` counts starts; the agent removes it once it listens. The
   third start without reaching "listening" swaps `.prev` back, records `rolled_back` and restarts.
   **Deviation:** the counter is checked by the agent binary at the very start of `run` (Linux and Windows), not by
