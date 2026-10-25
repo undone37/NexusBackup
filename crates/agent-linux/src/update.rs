@@ -34,7 +34,7 @@ fn is_native_elf(b: &[u8]) -> bool {
     b.len() > 64 && b[..4] == *b"\x7fELF" && b[4] == 2 && u16::from_le_bytes([b[18], b[19]]) == MACHINE
 }
 
-/// Check everything; on success atomically replace `exe`. Returns a summary.
+/// Check everything; on success atomically replace `exe` ([`swap`] with `probe`). Returns a summary.
 pub fn apply(
     claimed: &str,
     binary: &[u8],
@@ -42,10 +42,11 @@ pub fn apply(
     keys: &[(String, Vec<u8>)],
     current: &str,
     exe: &Path,
+    probe: &dyn Fn(&Path, &str) -> Result<(), String>,
 ) -> Result<String, String> {
     let (key, embedded) =
         agent_core::update::check_candidate(claimed, binary, signature, keys, current, is_native_elf)?;
-    swap(exe, binary)?;
+    swap(exe, binary, &|p| probe(p, &embedded))?;
     Ok(format!("updated {current} -> {embedded} (signed by {key})"))
 }
 
@@ -65,9 +66,10 @@ pub fn native(b: &[u8]) -> bool {
     is_native_elf(b)
 }
 
-/// Writes `binary` next to `exe` and renames it over `exe` atomically; the previous
-/// binary stays as `<exe>.prev` (start watchdog, manual rollback).
-pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
+/// Writes `binary` next to `exe`, checks it with `probe` (`agent_core::update::probe`: it starts and answers
+/// `version`, #120), and renames it over `exe` atomically; the previous binary stays as `<exe>.prev` (start
+/// watchdog, manual rollback).
+pub fn swap(exe: &Path, binary: &[u8], probe: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
     let dir = exe.parent().ok_or("executable has no directory")?;
     let name = exe
         .file_name()
@@ -86,7 +88,14 @@ pub fn swap(exe: &Path, binary: &[u8]) -> Result<(), String> {
     let res = f
         .write_all(binary)
         .and_then(|_| f.set_permissions(fs::Permissions::from_mode(0o755)))
-        .and_then(|_| f.sync_all())
+        .and_then(|_| f.sync_all());
+    // closed before it runs (a file open for writing cannot be executed: ETXTBSY)
+    drop(f);
+    if let Err(e) = res.as_ref().map_err(ToString::to_string).and_then(|_| probe(&tmp)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("installing update: {e}"));
+    }
+    let res = Ok(())
         .and_then(|_| {
             let prev = dir.join(format!("{name}.prev"));
             let _ = fs::remove_file(&prev);
@@ -308,25 +317,31 @@ mod tests {
         let keys = vec![("k.pub".to_string(), point)];
         let new = fake_binary("0.2.0");
         let sig = sign(&kp, &new);
+        let unreached = |_: &Path, _: &str| -> Result<(), String> { panic!("refused before the probe") };
         // unsigned / wrong signature
-        assert!(apply("0.2.0", &new, &sign(&kp, b"x"), &keys, "0.1.0", &exe).is_err());
+        assert!(apply("0.2.0", &new, &sign(&kp, b"x"), &keys, "0.1.0", &exe, &unreached).is_err());
         // claimed version differs from the embedded one
-        assert!(apply("0.3.0", &new, &sig, &keys, "0.1.0", &exe)
+        assert!(apply("0.3.0", &new, &sig, &keys, "0.1.0", &exe, &unreached)
             .unwrap_err()
             .contains("claimed"));
         // downgrade and reinstall
-        assert!(apply("0.2.0", &new, &sig, &keys, "0.2.0", &exe)
+        assert!(apply("0.2.0", &new, &sig, &keys, "0.2.0", &exe, &unreached)
             .unwrap_err()
             .contains("downgrade"));
-        assert!(apply("0.2.0", &new, &sig, &keys, "0.10.0", &exe)
+        assert!(apply("0.2.0", &new, &sig, &keys, "0.10.0", &exe, &unreached)
             .unwrap_err()
             .contains("downgrade"));
         // not an ELF
         let mut notelf = new.clone();
         notelf[0] = b'#';
-        assert!(apply("0.2.0", &notelf, &sign(&kp, &notelf), &keys, "0.1.0", &exe).is_err());
+        assert!(apply("0.2.0", &notelf, &sign(&kp, &notelf), &keys, "0.1.0", &exe, &unreached).is_err());
         assert_eq!(fs::read(&exe).unwrap(), b"old");
-        let msg = apply("0.2.0", &new, &sig, &keys, "0.1.0", &exe).unwrap();
+        // the probe sees the staged file and the embedded version
+        let probed = |p: &Path, v: &str| {
+            assert_eq!((fs::read(p).unwrap(), v), (new.clone(), "0.2.0"));
+            Ok(())
+        };
+        let msg = apply("0.2.0", &new, &sig, &keys, "0.1.0", &exe, &probed).unwrap();
         assert!(msg.contains("0.2.0"), "{msg}");
         assert_eq!(fs::read(&exe).unwrap(), new);
         assert_eq!(fs::read(t.path().join("nexus-agent.prev")).unwrap(), b"old");
@@ -454,8 +469,18 @@ mod tests {
         let exe = t.path().join("nexus-agent");
         fs::write(&exe, b"old").unwrap();
         assert!(restore_prev(&exe).is_err(), "nothing to restore yet");
-        swap(&exe, b"new").unwrap();
-        assert_eq!(fs::read(&exe).unwrap(), b"new");
+        // #120: the new binary must start and answer `version`; one that does not is refused before the swap
+        let broken = b"#!/bin/sh\nexit 1\n";
+        let probe = |v: &'static str| move |p: &Path| agent_core::update::probe(p, v);
+        let e = swap(&exe, broken, &probe("0.2.0")).unwrap_err();
+        assert!(e.contains("does not start"), "{e}");
+        let wrong = b"#!/bin/sh\necho nexus-agent 0.1.9\n";
+        assert!(swap(&exe, wrong, &probe("0.2.0")).unwrap_err().contains("0.1.9"));
+        assert_eq!(fs::read(&exe).unwrap(), b"old", "the running binary stays");
+        assert_eq!(fs::read_dir(t.path()).unwrap().count(), 1, "no temp files left");
+        let new = b"#!/bin/sh\necho nexus-agent 0.2.0\n";
+        swap(&exe, new, &probe("0.2.0")).unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), new);
         assert_eq!(fs::read(t.path().join("nexus-agent.prev")).unwrap(), b"old");
         restore_prev(&exe).unwrap();
         assert_eq!(fs::read(&exe).unwrap(), b"old");

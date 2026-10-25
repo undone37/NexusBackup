@@ -352,7 +352,10 @@ impl Platform for Windows {
             update::is_pe_x64,
         )?;
         let exe = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
-        match update::install(&exe, binary, sys::move_at_reboot).map_err(|e| format!("installing update: {e}"))? {
+        let probe = |p: &std::path::Path| agent_core::update::probe(p, &new);
+        match update::install(&exe, binary, &probe, sys::move_at_reboot)
+            .map_err(|e| format!("installing update: {e}"))?
+        {
             update::Installed::Now => Ok(format!(
                 "updated {} -> {new} (signed by {key})",
                 env!("CARGO_PKG_VERSION")
@@ -398,8 +401,9 @@ impl Platform for Windows {
             agent_proto::release::KIND_BINARY => {
                 let exe = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
                 let data = std::fs::read(&main.path).map_err(|e| format!("{}: {e}", main.path.display()))?;
-                let how =
-                    update::install(&exe, &data, sys::move_at_reboot).map_err(|e| format!("installing update: {e}"))?;
+                let probe = |p: &std::path::Path| agent_core::update::probe(p, &main.version);
+                let how = update::install(&exe, &data, &probe, sys::move_at_reboot)
+                    .map_err(|e| format!("installing update: {e}"))?;
                 let _ = std::fs::remove_file(&main.path);
                 match how {
                     update::Installed::Now => Ok(Installed::Restart(format!(

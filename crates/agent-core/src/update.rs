@@ -90,6 +90,50 @@ pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(r)
 }
 
+/// Runs a staged binary with `version` before it replaces the running one (#93, #120): a binary that never reaches
+/// its own code (loader or libc mismatch, missing CPU features, a truncated file that still carries the marker) is
+/// refused here, while the running agent is still in place. Failures later in start-up are the start watchdog's.
+pub fn probe(path: &Path, expected: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let mut c = Command::new(path)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("the new binary does not start: {e}"))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match c.try_wait() {
+            Ok(Some(st)) => {
+                let mut out = String::new();
+                if let Some(mut o) = c.stdout.take() {
+                    let _ = o.read_to_string(&mut out);
+                }
+                if !st.success() {
+                    return Err(format!("the new binary does not start: `version` ended with {st}"));
+                }
+                if out.lines().next().and_then(|l| l.split_whitespace().nth(1)) != Some(expected) {
+                    return Err(format!(
+                        "the new binary answered `version` with {:?}, not {expected}",
+                        out.trim()
+                    ));
+                }
+                return Ok(());
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = c.kill();
+                let _ = c.wait();
+                return Err("the new binary did not answer `version` within 30 s".into());
+            }
+            Err(e) => return Err(format!("the new binary: {e}")),
+        }
+    }
+}
+
 /// The version embedded in a candidate binary (exactly one distinct marker).
 pub fn embedded_version(binary: &[u8]) -> Result<String, String> {
     let mut found: Vec<String> = vec![];
