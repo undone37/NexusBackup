@@ -14,7 +14,7 @@
 #   ct-rollback.sh compare   snapshot A restored as $CHECK; both trees listed on the node and compared
 #   ct-rollback.sh cleanup   $CHECK and $CT destroyed, the group deleted
 #
-# env: as rollback.sh (LAB, PORT, PVE_HOST, SSH_KEY, NODE pve-test); CT (262), CHECK (263), SPARE (264),
+# env: as rollback.sh (LAB, PORT, PVE_HOST, SSH_KEY, NODE pve-test); CT (265), CHECK (266), SPARE (267),
 #      STORAGE (vmpool), JUNK_MB (50), OUT (~/nexus-lab/scratch/ct-rollback)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,9 +24,9 @@ export PORT=${PORT:-28444}
 PVE_HOST=${PVE_HOST:-10.2.34.200}
 SSH_KEY=${SSH_KEY:-$HOME/nexus-lab/pve-lab-key}
 NODE=${NODE:-pve-test}
-CT=${CT:-262}
-CHECK=${CHECK:-263}
-SPARE=${SPARE:-264}
+CT=${CT:-265}
+CHECK=${CHECK:-266}
+SPARE=${SPARE:-267}
 STORAGE=${STORAGE:-vmpool}
 JUNK_MB=${JUNK_MB:-50}
 OUT=${OUT:-$HOME/nexus-lab/scratch/ct-rollback}
