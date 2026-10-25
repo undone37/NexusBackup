@@ -529,7 +529,11 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   TEST-signed releases 0.1.1 -> 0.1.2): .deb on debian-13 (7 s), .rpm on alma-10 (5 s), bundle install with
   install.sh and the binary swap on debian-13 (10 s); the packaged production-key agents refuse TEST-signed
   releases. Watchdog: a signed binary that cannot start at all (0.1.4, an ELF that exits) was swapped in and
-  never reverted (the watchdog runs inside the new binary): #93. Open: desktop package with the GUI running,
+  never reverted (the watchdog runs inside the new binary): #93. Fixed 2026-10-25 (`ExecStartPre=-…nexus-agent.prev
+  update-watchdog`): lab on VM 201 (0.0.42-dev) with VM 225, bundle 0.1.9 of the branch installed (unit with the
+  new line), a TEST-signed 0.1.10 that is /bin/false plus the version marker pushed: two failed starts, the third
+  start's ExecStartPre put 0.1.9 back ("the new version did not start 3 times"), the agent served again; the
+  appliance recorded `rolled_back` with that reason 49 s after the update was sent. Open: desktop package with the GUI running,
   arm64 (needs aarch64 packages), an edge-connected laptop.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
   of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by

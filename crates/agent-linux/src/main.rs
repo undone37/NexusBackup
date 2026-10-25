@@ -100,6 +100,24 @@ fn real_main(args: &[String]) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         ["run"] => run(paths),
+        // the service's ExecStartPre, run as `<exe>.prev` (#93): see agent_core::update::watchdog_pre
+        ["update-watchdog"] => {
+            let me = std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .map_err(|e| e.to_string())?;
+            let Some(exe) = me
+                .to_str()
+                .and_then(|s| s.strip_suffix(".prev"))
+                .map(std::path::PathBuf::from)
+            else {
+                return Err("update-watchdog runs as the previous binary (<exe>.prev) only".into());
+            };
+            let restore = || nexus_agent::update::restore_prev(&exe);
+            if agent_core::update::watchdog_pre(&paths, &restore) == agent_core::update::Watchdog::Reverted {
+                eprintln!("nexus-agent: the new version did not start 3 times; the previous binary is back");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         ["rescue"] => {
             nexus_agent::rescue::main(rescue_config)?;
             Ok(ExitCode::SUCCESS)
