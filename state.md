@@ -1272,8 +1272,14 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   conversion), firewall (443 and NBD 10809 to the pool hosts), SELinux domain `nexus_xcpng_t`. Lab on VM 201
   (0.0.52-dev from the lab registry, enforcing), `lab/pvehost/xcpng-e2e.sh` against the running Debian 13 guest
   `nexus-deb` on the nested XCP-ng (`xcpng.sh guest`): full 3 GiB in 119 s, incremental 256 KiB in 7 s, files of
-  `/vda1/etc` listed, restored to pve-test as VM 292 in 48 s and booted to the login prompt, VM removed. Open: M4
-  (restore to the pool).
+  `/vda1/etc` listed, restored to pve-test as VM 292 in 48 s and booted to the login prompt, VM removed.
+  M4 (2026-10-25, branch `40-xcpng-m4`): restore into the pool (`nexus-xcpng restore`: a new VM from "Other install
+  media" with the stored settings, one VDI per disk over `import_raw_vdi`, NICs with new MACs, powered off; job
+  `restore` with an xcpng `source_id`, approval for flagged snapshots as a production restore). Lab test
+  (`crates/xcpng/tests/lab.rs` on VM 280): 1 GiB restored in 21.9 / 23.1 s, the disk read back over NBD identical.
+  Fixed on the way: reading the import response to the end (closing after the status line left the VDI plugged into
+  dom0) and metadata VDIs marked `other_config:nexusbackup`, each run removing older marked ones (a lost store
+  snapshot leaked them).
 - [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
   the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
   token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).

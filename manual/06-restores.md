@@ -37,7 +37,7 @@ The snapshot name tells you what was backed up. The menu follows from it:
 | `nas-<source>-<pool.dataset>` | TrueNAS dataset (built-in connector) | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `share-<source>` | NFS / SMB share | **Restore to a host…**, **Clean-file restore…** | **Browse files** |
 | `vmw-<VM UUID>` | VMware VM (ESXi / vCenter) | **Restore as Proxmox VE VM** | **Browse files** |
-| `xcp-<VM UUID>` | XCP-ng / XenServer VM | **Restore as Proxmox VE VM** | **Browse files** |
+| `xcp-<VM UUID>` | XCP-ng / XenServer VM | **Restore as Proxmox VE VM**, **Restore into the XCP-ng pool** | **Browse files** |
 | `plugin-<plugin>-<source>[-<guest>]` | plugin source, e.g. PostgreSQL or Microsoft 365 | the plugin's restores that apply to this kind of snapshot (see below); **Restore to a host…** if the plugin offers a download | the plugin's download button, e.g. **Download (tar/zip)** |
 
 Plugin snapshots come in two kinds: a **guest** snapshot (`plugin-<plugin>-<source>-<guest>`, e.g. one database or
@@ -341,6 +341,22 @@ check the network configuration on the first boot.
 
 Replace, roll back and instant recovery are not offered for VMware and XCP-ng snapshots: there is no Proxmox VE
 original. **Browse files**, the file index and file search work on them as on Proxmox VE VM snapshots (below).
+
+## XCP-ng VMs back into the pool
+
+**Restore → Restore into the XCP-ng pool** creates a **new VM** in an XCP-ng pool of the same tenant (an `xcpng`
+source); the original VM is never overwritten. Choose the pool and optionally:
+
+| Field | Default |
+|---|---|
+| **VM name** | the backed-up name with " (restored)" |
+| **SR UUID** | the pool's default SR |
+| **Network UUID** | the management network |
+
+The VM gets the backed-up memory, vCPUs, firmware and platform settings, one new disk per backed-up disk (written
+through XAPI's `import_raw_vdi`, the whole disk size over the network) and its network cards with **new MAC
+addresses**. It is created **powered off**: check it, then start it in Xen Orchestra or with `xe vm-start`. A restore
+of a snapshot flagged as infected counts as a restore to production (approval, [chapter 10](10-approvals-and-audit.md)).
 
 ## Instant recovery (VMs)
 

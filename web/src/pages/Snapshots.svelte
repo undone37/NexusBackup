@@ -14,7 +14,17 @@
   import { hostAgentId } from '../lib/jobs';
   import { parsePluginSnapshot, pluginKinds, restoreApplies, snapshotKind } from '../lib/plugins';
   import { buildValue, initValues, type FormValues } from '../lib/schema';
-  import type { Agent, Group, Plugin, PluginRestore, PveSource, Snapshot, Source, Tenant } from '../lib/types';
+  import type {
+    Agent,
+    Group,
+    Plugin,
+    PluginRestore,
+    PveSource,
+    Snapshot,
+    Source,
+    Tenant,
+    XcpngSource,
+  } from '../lib/types';
   import ConsistencyBadge from '../components/ConsistencyBadge.svelte';
   import Check from '../components/Check.svelte';
   import Modal from '../components/Modal.svelte';
@@ -354,6 +364,47 @@
   });
   const origVmid = (s: Snapshot | null) => s?.source.replace(/^(vm|ct)-/, '') ?? '';
 
+  // An XCP-ng snapshot into an XCP-ng pool of the tenant as a new VM (#40): powered off, new MACs
+  let poolOpen = $state(false);
+  let poolSnap: Snapshot | null = $state(null);
+  let pSource = $state('');
+  let pName = $state('');
+  let pSr = $state('');
+  let pNet = $state('');
+  const xcpSources = $derived(sources.filter((s): s is XcpngSource => s.kind === 'xcpng'));
+  const tenantPools = $derived(xcpSources.filter((s) => s.tenant === (poolSnap as Snapshot | null)?.tenant));
+  // an XAPI UUID (lower-cased on submit)
+  const UUID_PATTERN = '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}';
+  function openPoolRestore(s: Snapshot) {
+    poolSnap = preferClean(s);
+    pSource = String(xcpSources.find((x) => x.tenant === s.tenant)?.id ?? '');
+    pName = '';
+    pSr = '';
+    pNet = '';
+    poolOpen = true;
+  }
+  async function startPoolRestore(e: SubmitEvent) {
+    e.preventDefault();
+    if (!poolSnap) return;
+    busy = true;
+    const params: Record<string, unknown> = {
+      source: poolSnap.source,
+      time: poolSnap.time,
+      source_id: Number(pSource),
+    };
+    if (pName.trim()) params.name = pName.trim();
+    if (pSr.trim()) params.sr = pSr.trim().toLowerCase();
+    if (pNet.trim()) params.network = pNet.trim().toLowerCase();
+    const r = await act(
+      post<{ id?: number }>('/jobs', { kind: 'restore', tenant: poolSnap.tenant, params }),
+      (d) => (d.id ? t.snap.jobStarted(d.id) : t.ropts.replaceQueued),
+      jobLink,
+    );
+    busy = false;
+    if (r) poolOpen = false;
+    if (r && !r.quorum && r.data?.id) navigate(`/jobs/${r.data.id}`);
+  }
+
   // Phase 22b: instant disk recovery (one disk attached to an existing VM)
   let idrOpen = $state(false);
   let idrSnap: Snapshot | null = $state(null);
@@ -528,9 +579,9 @@
     // TrueNAS datasets and NFS/SMB shares (docs/truenas-connector.md, docs/nas-connector.md)
     if (s.source.startsWith('nas-') || s.source.startsWith('share-'))
       return s.local ? [toHost, synthetic(s)] : [toHost];
-    // VMware and XCP-ng VMs: restored as a new Proxmox VE VM (#34, #40)
-    if (foreignVm(s.source))
-      return [
+    // VMware and XCP-ng VMs: restored as a new Proxmox VE VM (#34, #40); XCP-ng VMs also into their pool
+    if (foreignVm(s.source)) {
+      const items: MenuItem[] = [
         {
           label: t.snap.vmwRestore,
           hint: s.source.startsWith('xcp-') ? t.snap.xcpRestoreHint : t.snap.vmwRestoreHint,
@@ -538,6 +589,15 @@
           onselect: () => openRestore(s, 'restore'),
         },
       ];
+      if (s.source.startsWith('xcp-'))
+        items.push({
+          label: t.snap.xcpPoolRestore,
+          hint: t.snap.xcpPoolRestoreHint,
+          icon: IconRestore,
+          onselect: () => openPoolRestore(s),
+        });
+      return items;
+    }
     const items: MenuItem[] = [
       {
         label: t.snap.fullRestore,
@@ -1084,6 +1144,62 @@
 </Modal>
 
 <InstantDisk bind:open={idrOpen} snap={idrSnap} nodes={nodesOf(idrSnap?.tenant)} />
+
+<Modal bind:open={poolOpen} title={poolSnap ? t.snap.xcpPoolTitle(labelOf(poolSnap.tenant, poolSnap.source)) : ''}>
+  {#if poolSnap}
+    <form onsubmit={startPoolRestore}>
+      <p class="muted">{poolSnap.tenant} · {fmtTime(poolSnap.time)}</p>
+      <InfectedNotice snap={poolSnap} production={true} />
+      <p class="banner info">{t.snap.xcpPoolHint}</p>
+      {#if tenantPools.length}
+        <div class="field">
+          <label for="p-source">{t.snap.xcpPool}</label>
+          <select id="p-source" bind:value={pSource} required>
+            {#each tenantPools as c (c.id)}<option value={String(c.id)}>{c.name}</option>{/each}
+          </select>
+        </div>
+        <div class="field">
+          <label for="p-name">{t.snap.xcpPoolName}</label>
+          <input id="p-name" bind:value={pName} maxlength="80" placeholder={t.snap.xcpPoolNameDefault} />
+        </div>
+        <div class="field">
+          <label for="p-sr">{t.snap.xcpPoolSr}</label>
+          <input
+            id="p-sr"
+            class="mono"
+            bind:value={pSr}
+            spellcheck="false"
+            autocomplete="off"
+            pattern={UUID_PATTERN}
+            aria-describedby="p-sr-hint"
+          />
+          <div class="hint" id="p-sr-hint">{t.snap.xcpPoolSrHint}</div>
+        </div>
+        <div class="field">
+          <label for="p-net">{t.snap.xcpPoolNet}</label>
+          <input
+            id="p-net"
+            class="mono"
+            bind:value={pNet}
+            spellcheck="false"
+            autocomplete="off"
+            pattern={UUID_PATTERN}
+            aria-describedby="p-net-hint"
+          />
+          <div class="hint" id="p-net-hint">{t.snap.xcpPoolNetHint}</div>
+        </div>
+      {:else}
+        <p class="banner warn">{t.snap.xcpNoPool}</p>
+      {/if}
+      <div class="form-actions">
+        <button type="button" onclick={() => (poolOpen = false)}>{t.cancel}</button>
+        <button type="submit" class="primary" disabled={busy || !tenantPools.length}
+          >{session.vault ? t.vault.requestRestore : t.snap.start}</button
+        >
+      </div>
+    </form>
+  {/if}
+</Modal>
 
 <Modal bind:open={manyOpen} title={t.ropts.manyTitle} wide>
   <form onsubmit={startMany}>

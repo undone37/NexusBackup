@@ -117,22 +117,37 @@ fn retry(x: &Xapi, method: &str, vdi: &str) -> Result<()> {
     }
 }
 
+/// `other_config` key on the metadata VDIs this connector keeps (other backup tools' CBT bases are left alone).
+const BASE_KEY: &str = "nexusbackup";
+
 /// After a commit: the snapshot VM destroyed, its VDIs with CBT reduced to CBT metadata (the next run's base, no data
-/// on the SR), the others destroyed; then the previous run's metadata VDIs (`prev`: their UUIDs) destroyed.
-fn keep_metadata(x: &Xapi, snap: &str, prev: &[String]) -> Result<()> {
+/// on the SR, marked with [`BASE_KEY`]), the others destroyed; then every older metadata VDI of ours of the same disks
+/// destroyed (also those whose snapshot left the store, which `xcpng.json` can no longer name).
+fn keep_metadata(x: &Xapi, snap: &str) -> Result<()> {
     let vdis = disks(x, snap)?;
     x.call("VM.destroy", &[json!(snap)])?;
-    for d in vdis {
+    for d in &vdis {
         let cbt = x.call("VDI.get_cbt_enabled", &[json!(d.vdi)])?.as_bool() == Some(true);
+        if cbt {
+            x.call(
+                "VDI.add_to_other_config",
+                &[json!(d.vdi), json!(BASE_KEY), json!("cbt-base")],
+            )?;
+        }
         retry(x, if cbt { "VDI.data_destroy" } else { "VDI.destroy" }, &d.vdi)?;
     }
-    for uuid in prev {
-        // gone already (or never ours: only snapshot VDIs are destroyed)
-        let Ok(r) = x.call("VDI.get_by_uuid", &[json!(uuid)]) else {
-            continue;
+    for d in vdis {
+        let Ok(orig) = x.call("VDI.get_snapshot_of", &[json!(d.vdi)]) else {
+            continue; // destroyed above (no CBT)
         };
-        if x.call("VDI.get_is_a_snapshot", std::slice::from_ref(&r))?.as_bool() == Some(true) {
-            x.call("VDI.destroy", &[r])?;
+        for old in x.call("VDI.get_snapshots", &[orig])?.as_array().into_iter().flatten() {
+            if old.as_str() == Some(d.vdi.as_str()) {
+                continue;
+            }
+            let r = x.call("VDI.get_record", std::slice::from_ref(old))?;
+            if r["type"] == "cbt_metadata" && r["other_config"].get(BASE_KEY).is_some() {
+                x.call("VDI.destroy", std::slice::from_ref(old))?;
+            }
         }
     }
     Ok(())
@@ -188,16 +203,6 @@ fn previous(store: &Store, source: &str) -> Result<Option<(Manifest, Value)>> {
     Ok(Some((m, serde_json::from_slice(&b).context(CONFIG)?)))
 }
 
-/// The metadata VDI UUIDs a config lists (`disks[].cbt_vdi`).
-fn cbt_vdis(cfg: &Value) -> Vec<String> {
-    cfg["disks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|d| Some(d["cbt_vdi"].as_str()?.to_owned()))
-        .collect()
-}
-
 /// Snapshots an earlier run left behind (`nexus-backup-*` of this VM: an aborted job) are removed first.
 fn remove_leftovers(x: &Xapi, vm: &Value, name: &str) -> Result<()> {
     for snap in x
@@ -248,7 +253,7 @@ pub fn backup_vm(x: &Xapi, store: &Store, uuid: &str, job: u64, timeout: Duratio
     let snap = snap.as_str().context("VM.snapshot")?.to_owned();
     let res = read_snapshot(x, store, uuid, &rec, &snap, prev.as_ref(), timeout);
     let cleanup = match &res {
-        Ok(_) => keep_metadata(x, &snap, &prev.as_ref().map(|(_, c)| cbt_vdis(c)).unwrap_or_default()),
+        Ok(_) => keep_metadata(x, &snap),
         Err(_) => destroy_snapshot(x, &snap),
     };
     if let Err(e) = cleanup {
@@ -368,9 +373,5 @@ mod tests {
         );
         assert_eq!(bitmap_extents(&[0xff], 8 * K), vec![(0, 8 * K)]);
         assert!(bitmap_extents(&[], K).is_empty());
-        assert_eq!(
-            cbt_vdis(&json!({"disks": [{"cbt_vdi": "a"}, {"cbt_vdi": null}]})),
-            vec!["a".to_owned()]
-        );
     }
 }

@@ -94,4 +94,42 @@ fn backup_of_a_vm() {
         .filter_map(|r| r["uuid"].as_str())
         .collect();
     assert_eq!(meta, [v["disks"][0]["cbt_vdi"].as_str().unwrap()], "metadata VDIs");
+
+    // the snapshot back into the pool as a new VM: its disk read over NBD holds the same first 64 MiB
+    let t = xcpng::restore::Target {
+        name: "nexus-m1 restore test",
+        sr: None,
+        network: None,
+    };
+    let t0 = Instant::now();
+    let uuid = xcpng::restore::restore_vm(&x, &store, &m.source, m.time, &t, Duration::from_secs(120)).unwrap();
+    eprintln!("restored as {uuid} in {:.1?}", t0.elapsed());
+    let vm = x.call("VM.get_by_uuid", &[uuid.into()]).unwrap();
+    let vbd = x.call("VM.get_VBDs", std::slice::from_ref(&vm)).unwrap()[0].clone();
+    let vdi = x.call("VBD.get_VDI", &[vbd]).unwrap();
+    // the import left nothing plugged (only the restored VM's own VBD, unplugged)
+    let vbds = x.call("VDI.get_VBDs", std::slice::from_ref(&vdi)).unwrap();
+    for b in vbds.as_array().unwrap() {
+        let r = x.call("VBD.get_record", std::slice::from_ref(b)).unwrap();
+        assert_eq!(r["currently_attached"], false, "{r}");
+    }
+    let info: Vec<xcpng::nbdtls::NbdInfo> =
+        serde_json::from_value(x.call("VDI.get_nbd_info", std::slice::from_ref(&vdi)).unwrap()).unwrap();
+    let mut c = xcpng::nbdtls::connect(&info[0], Duration::from_secs(60)).unwrap();
+    let mut back = vec![0u8; 64 << 20];
+    for (i, b) in back.chunks_mut(4 << 20).enumerate() {
+        c.read_at((i as u64) << 22, b).unwrap();
+    }
+    let _ = c.disconnect();
+    assert_eq!(format!("{:x}", Sha256::digest(&back)), env("XCPNG_SHA256"));
+    eprintln!("restored disk: the first 64 MiB as backed up");
+    x.call("VM.destroy", &[vm]).unwrap();
+    // in use for a moment after the NBD read (as in the connector's snapshot cleanup)
+    for i in 0.. {
+        match x.call("VDI.destroy", std::slice::from_ref(&vdi)) {
+            Ok(_) => break,
+            Err(e) if i == 30 => panic!("{e:#}"),
+            Err(_) => std::thread::sleep(Duration::from_secs(2)),
+        }
+    }
 }

@@ -160,6 +160,23 @@ pub(crate) struct RestoreP {
     pub bridge: Option<String>,
 }
 
+/// An XCP-ng VM snapshot (`xcp-<uuid>`) restored into an XCP-ng pool as a new VM (#40, `nexus-xcpng restore`):
+/// `source_id` is an xcpng source of the tenant; `name` (default "<stored name> (restored)"), `sr` and `network`
+/// (UUIDs; default the pool's default SR and the management network).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PoolRestoreP {
+    pub source: String,
+    pub time: i64,
+    pub source_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+}
+
 /// Instant disk recovery (Phase 22b, `nexus-pve instant-disk`): one disk of a VM
 /// snapshot attached to the existing VM `target` (a VM a group of the tenant
 /// protects on the same source; checked by the scheduler) as `key` (default:
@@ -509,6 +526,38 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             let a: AgentP = parse(p)?;
             agent_name(st, tenant, &a.agent_id)?;
             json!(a)
+        }
+        "restore"
+            if p["source"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(xcpng::names::SOURCE_PREFIX))
+                && p["source_id"].as_i64().is_some_and(|sid| {
+                    st.cat
+                        .conn()
+                        .query_row(
+                            "SELECT 1 FROM sources WHERE id = ?1 AND tenant = ?2 AND kind = 'xcpng'",
+                            params![sid, tenant],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .is_ok()
+                }) =>
+        {
+            // into an XCP-ng pool of the tenant as a new VM (never over the original)
+            let r: PoolRestoreP = parse(p)?;
+            validate::source_ref(&r.source)?;
+            if r.name
+                .as_deref()
+                .is_some_and(|n| n.is_empty() || n.len() > 80 || n.chars().any(char::is_control))
+            {
+                return Err(ApiError::bad("name: 1..=80 characters, no control characters"));
+            }
+            for (v, what) in [(&r.sr, "sr"), (&r.network, "network")] {
+                if v.as_deref().is_some_and(|u| !xcpng::names::valid_uuid(u)) {
+                    return Err(ApiError::bad(format!("{what}: a UUID from the pool")));
+                }
+            }
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            json!(r)
         }
         "restore" | "restore_ct" | "instant_recover" => {
             let r: RestoreP = parse(p)?;

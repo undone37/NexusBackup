@@ -10,6 +10,10 @@ pub struct Xapi {
     url: String,
     session: String,
     id: std::cell::Cell<u64>,
+    /// the pool master and its pinned TLS config, for the HTTP handlers next to the API (`import_raw_vdi`)
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) tls: std::sync::Arc<rustls::ClientConfig>,
 }
 
 impl Xapi {
@@ -17,7 +21,7 @@ impl Xapi {
     pub fn login(host: &str, port: u16, ca_pem: &[u8], user: &str, password: &str) -> Result<Xapi> {
         let tls = truenas::api::tls_config(ca_pem).context("the XCP-ng certificate (ca_pem)")?;
         let http = reqwest::blocking::Client::builder()
-            .use_preconfigured_tls(tls)
+            .use_preconfigured_tls(tls.clone())
             .timeout(Duration::from_secs(300))
             .build()?;
         let mut x = Xapi {
@@ -25,6 +29,9 @@ impl Xapi {
             url: format!("https://{host}:{port}/jsonrpc"),
             session: String::new(),
             id: std::cell::Cell::new(0),
+            host: host.to_owned(),
+            port,
+            tls: std::sync::Arc::new(tls),
         };
         let s = x.raw(
             "session.login_with_password",
@@ -58,6 +65,10 @@ impl Xapi {
         let mut p = vec![json!(self.session)];
         p.extend_from_slice(params);
         self.raw(method, Value::Array(p))
+    }
+
+    pub(crate) fn session(&self) -> &str {
+        &self.session
     }
 
     pub fn logout(&self) {

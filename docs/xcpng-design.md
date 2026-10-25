@@ -1,7 +1,7 @@
 # XCP-ng / XenServer backups: design (Phase 42, #40)
 
-Status (2026-10-25): M1 to M3 implemented (`crates/xcpng`, source kind `xcpng`, restore to Proxmox VE) and tested
-on a nested XCP-ng 8.3 ("Lab results" below); M4 (restore to the pool) open. The XAPI facts the design rests on were
+Status (2026-10-25): M1 to M4 implemented (`crates/xcpng`, source kind `xcpng`, restore to Proxmox VE and into the
+pool) and tested on a nested XCP-ng 8.3 ("Lab results" below). The XAPI facts the design rests on were
 checked before any code (`lab/pvehost/xcpng.sh xapi`).
 
 ## Decisions proposed
@@ -102,6 +102,12 @@ metadata-only VDIs stay, so the next run can still be incremental.
   incremental (256 KiB read, 7 s); files listed from the snapshot (`/vda1/etc`); restored to pve-test as a new VM
   (VirtIO SCSI, 2 cores, 1 GiB, `ostype l26` from the "Debian Trixie 13" template) in 48 s, booted to the login
   prompt. The restore gives the NICs new MACs (PVE `unique`), as for VMware.
+
+- M4 (restore into the pool, `crates/xcpng/tests/lab.rs`): the 1 GiB test VM restored as a new VM in 21 to 23 s
+  (`import_raw_vdi`), its disk read back over NBD identical to the backup. Two XAPI details: the HTTP client must
+  read the import's response until XAPI closes, or XAPI leaves the VDI plugged into dom0 (it cannot be destroyed or
+  attached afterwards); and our metadata VDIs carry `other_config:nexusbackup`, so each run removes its older ones
+  (also those whose snapshot left the store) without touching other tools' CBT bases.
 
 ## Open questions
 

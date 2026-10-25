@@ -4708,10 +4708,27 @@ async fn xcpng_sources() {
         .post("/api/v1/jobs", &admin, restore("restore", json!({"source_id": pve})))
         .await;
     assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    // into the pool (M4)
+    let r = t
+        .post(
+            "/api/v1/jobs",
+            &admin,
+            json!({"kind": "restore", "tenant": "acme", "params": {"source": format!("xcp-{u}"), "time": 1000,
+                   "source_id": sid, "name": "web (copy)", "sr": "0d7fa1b8-3c5e-4f0a-8b1e-6f1c2d3e4f50"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
     for bad in [
         restore("restore", json!({"source_id": sid})),
         restore("restore", json!({"source_id": pve, "replace": true})),
         restore("instant_recover", json!({"source_id": pve})),
+        // into the pool: no PVE fields, UUIDs for sr / network, a one-line name
+        json!({"kind": "restore", "tenant": "acme", "params": {"source": format!("xcp-{u}"), "time": 1000,
+               "source_id": sid, "node": "pve1"}}),
+        json!({"kind": "restore", "tenant": "acme", "params": {"source": format!("xcp-{u}"), "time": 1000,
+               "source_id": sid, "sr": "local"}}),
+        json!({"kind": "restore", "tenant": "acme", "params": {"source": format!("xcp-{u}"), "time": 1000,
+               "source_id": sid, "name": "a\nb"}}),
     ] {
         let r = t.post("/api/v1/jobs", &admin, bad.clone()).await;
         assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
