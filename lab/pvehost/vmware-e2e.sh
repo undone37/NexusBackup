@@ -21,7 +21,8 @@
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444, PVE_HOST, NODE pve-test); VC_LAB (~/nexus-lab/vcenter),
 #      ESXI_LABS (~/nexus-lab/esxi ~/nexus-lab/esxi8), VM (nx-cbt), TARGET (290), STORAGE (vmpool), BOOT (90),
-#      OUT (~/nexus-lab/scratch), TRANSPORT (nfc, hotadd), ESXI_PROXY_LAB (~/nexus-lab/esxi: the ESXi 7 host of nx-cbt)
+#      OUT (~/nexus-lab/scratch), TRANSPORT (nfc, hotadd), ESXI_PROXY_LAB (~/nexus-lab/esxi: the ESXi 7 host of nx-cbt),
+#      PROXY (nx-proxy: the proxy agent's name), PROXY_VM (nx-proxy: the proxy VM in vCenter's inventory)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -39,9 +40,14 @@ BOOT=${BOOT:-90}
 OUT=${OUT:-$HOME/nexus-lab/scratch}
 TRANSPORT=${TRANSPORT:-nfc}
 ESXI_PROXY_LAB=${ESXI_PROXY_LAB:-$HOME/nexus-lab/esxi}
+# the proxy: its agent's name and its name in vCenter's inventory (#37: the ESXi 8 proxy is "nx-proxy (1)" there,
+# vCenter numbers a name another host uses); another proxy gets its own source and group
+PROXY=${PROXY:-nx-proxy}
+PROXY_VM=${PROXY_VM:-nx-proxy}
+sfx=; [ "$PROXY" = nx-proxy ] || sfx=-$PROXY
 case $TRANSPORT in
 nfc) SRC=vc GROUP=vmware ;;
-hotadd) SRC=vc-hot GROUP=vmware-hot ;;
+hotadd) SRC=vc-hot$sfx GROUP=vmware-hot$sfx ;;
 *) echo "TRANSPORT: nfc or hotadd" >&2 && exit 2 ;;
 esac
 ROOT=$LAB/appliance/root
@@ -58,25 +64,25 @@ src_id() { api admin GET /sources | jq -r --arg n "$1" '.[] | select(.name == $n
 
 step_proxy() {
 	local r id tok j
-	id=$(api admin GET /agents | jq -r '.[] | select(.name == "nx-proxy") | .id')
+	id=$(api admin GET /agents | jq -r --arg p "$PROXY" '.[] | select(.name == $p) | .id')
 	if [ -n "$id" ]; then
-		log "agent nx-proxy exists ($id)"
+		log "agent $PROXY exists ($id)"
 		return
 	fi
 	local ip
 	LAB=$ESXI_PROXY_LAB "$here/esxi.sh" up >/dev/null
 	ip=$(LAB=$ESXI_PROXY_LAB "$here/esxi.sh" ssh "vim-cmd vmsvc/get.guest \$(vim-cmd vmsvc/getallvms | awk '\$2==\"nx-proxy\" {print \$1}') | sed -n 's/^ *ipAddress = \"\([0-9.]*\)\".*/\1/p' | head -1")
 	[ -n "$ip" ] || die "nx-proxy has no address (VMware Tools)"
-	r=$(api admin POST /agents "$(jq -nc --arg h "$ip" '{tenant:"lab", name:"nx-proxy", host:$h, port:7444}')")
-	expect 201 "create agent nx-proxy"
+	r=$(api admin POST /agents "$(jq -nc --arg h "$ip" --arg p "$PROXY" '{tenant:"lab", name:$p, host:$h, port:7444}')")
+	expect 201 "create agent $PROXY"
 	id=$(jq -r .id <<<"$r")
 	tok=$(jq -r .token <<<"$r")
 	PROXY_TOKEN=$tok LAB=$ESXI_PROXY_LAB "$here/esxi.sh" proxy >/dev/null
 	r=$(api admin POST "/agents/$id/enroll")
-	expect 202 "enroll nx-proxy"
+	expect 202 "enroll $PROXY"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 600)
-	[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll nx-proxy: $(jq -r .log <<<"$j" | tail -n 20)"
-	log "agent nx-proxy $id enrolled ($(cat "$ESXI_PROXY_LAB/proxy.ip"))"
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll $PROXY: $(jq -r .log <<<"$j" | tail -n 20)"
+	log "agent $PROXY $id enrolled ($(cat "$ESXI_PROXY_LAB/proxy.ip"))"
 }
 
 step_source() {
@@ -87,11 +93,11 @@ step_source() {
 	local vc ca hosts pw extra='{}'
 	if [ "$TRANSPORT" = hotadd ]; then
 		local agent pvm
-		agent=$(api admin GET /agents | jq -r '.[] | select(.name == "nx-proxy") | .id')
-		[ -n "$agent" ] || die "no agent nx-proxy (step proxy)"
+		agent=$(api admin GET /agents | jq -r --arg p "$PROXY" '.[] | select(.name == $p) | .id')
+		[ -n "$agent" ] || die "no agent $PROXY (step proxy)"
 		[ -n "$(src_id vc)" ] || die "no source vc for the proxy VM's UUID (TRANSPORT=nfc steps source inventory)"
-		pvm=$(api admin GET "/sources/$(src_id vc)/inventory" | jq -r '[.guests[] | select(.name == "nx-proxy" and .gone == null)][0].guest // empty')
-		[ -n "$pvm" ] || die "nx-proxy not in the inventory of vc"
+		pvm=$(api admin GET "/sources/$(src_id vc)/inventory" | jq -r --arg p "$PROXY_VM" '[.guests[] | select(.name == $p and .gone == null)][0].guest // empty')
+		[ -n "$pvm" ] || die "$PROXY_VM not in the inventory of vc"
 		extra=$(jq -nc --arg a "$agent" --arg v "$pvm" '{transport:"hotadd", proxy_vm:$v, proxy_agent:$a}')
 	fi
 	vc=$(cat "$VC_LAB/ip")

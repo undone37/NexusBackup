@@ -1149,8 +1149,16 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   compared 4096 chunks with the snapshot after the move back: 18 changed, all reported by CBT, 0 unreported: the
   change tracking survived both moves. Found (lab only): an ISO on a host's local datastore and a host floppy keep
   vCenter from moving a VM (CannotAccessVmDevice); the helper empties them first, answering the CD-ROM lock question.
-- [ ] (epic #23) rest of M3: the proxy OVA (#35), lab (#37: vSAN/NFS, quiesced Windows snapshots, proxy on another
-  host; all need a shared datastore or a Windows guest on ESXi).
+- [x] (#37, part) NFS datastore and a proxy on another host (2026-10-25, maintainer: TrueNAS for NFS): TrueNAS 27 lab
+  VM 241 got a 200 GB disk, pool `lab`, datasets `lab/esxi` and `lab/pve` exported over NFS to 10.2.34.0/24 (root
+  mapped); both ESXi hosts mount `lab/esxi` as datastore `nfs-lab`. nx-cbt (ESXi 7) moved onto it with
+  `vc_move.py move nx-cbt 10.2.34.65 nfs-lab`; the ESXi 8 proxy (`nx-proxy (1)` in vCenter, agent `nx-proxy8`,
+  `PROXY=nx-proxy8 PROXY_VM="nx-proxy (1)" ESXI_PROXY_LAB=~/nexus-lab/esxi8 TRANSPORT=hotadd vmware-e2e.sh
+  proxy source inventory group backup`) hot-added and read the disk of the VM on the other host: incremental
+  (19 ranges, 61 s); a full read through the same path (made due on the console) compared 4096 chunks, 9 changed,
+  0 unreported. nx-cbt moved back to datastore1 afterwards (the nightly run's state).
+- [ ] (epic #23) rest of M3: the proxy OVA (#35), lab (#37: vSAN, quiesced Windows snapshots: a Windows guest on
+  ESXi).
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 

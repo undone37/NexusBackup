@@ -4,8 +4,8 @@ vMotion network: shut down, relocated, started again), for vmware-e2e.sh move (#
 (~/nexus-lab/esxi/venv); the SSO password comes on stdin.
 
   vc_move.py where VM           the VM's host and datastore, as JSON
-  vc_move.py move VM HOST       to host HOST (its address as vCenter knows it) and that host's largest
-                                local datastore; prints the new place as JSON
+  vc_move.py move VM HOST [DS]  to host HOST (its address as vCenter knows it) and datastore DS (default: that
+                                host's largest local datastore); prints the new place as JSON
 
 env: VC (vCenter address)
 """
@@ -78,7 +78,7 @@ def where(vm):
 
 
 def main(argv):
-    if len(argv) < 3 or argv[1] not in ("where", "move") or (argv[1] == "move" and len(argv) != 4):
+    if len(argv) < 3 or argv[1] not in ("where", "move") or (argv[1] == "move" and len(argv) not in (4, 5)):
         sys.exit(__doc__)
     # ponytail: the lab vCenter by IP on the lab network; certificate checks are the connector tests' job
     si = SmartConnect(host=os.environ["VC"], user="administrator@vsphere.local", pwd=sys.stdin.readline().strip(),
@@ -89,8 +89,11 @@ def main(argv):
         if argv[1] == "move":
             detach_media(vm)
             host = find(content, vim.HostSystem, argv[3])
-            local = [d for d in host.datastore if d.summary.accessible and not d.summary.multipleHostAccess]
-            ds = max(local or host.datastore, key=lambda d: d.summary.freeSpace)
+            if len(argv) == 5:
+                ds = next((d for d in host.datastore if d.name == argv[4]), None) or sys.exit(f"no datastore {argv[4]}")
+            else:
+                local = [d for d in host.datastore if d.summary.accessible and not d.summary.multipleHostAccess]
+                ds = max(local or host.datastore, key=lambda d: d.summary.freeSpace)
             spec = vim.vm.RelocateSpec(host=host, datastore=ds, pool=host.parent.resourcePool)
             # ponytail: a cold migration (the lab hosts have no vMotion network); live vMotion when they get one
             was_on = vm.runtime.powerState == vim.VirtualMachine.PowerState.poweredOn
