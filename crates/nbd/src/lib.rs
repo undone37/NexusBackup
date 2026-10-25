@@ -1,7 +1,8 @@
 //! Minimal NBD client (fixed newstyle, structured replies, block status) for
 //! reading PVE/QEMU exports and their dirty bitmaps, and (Phase 30, in-place
 //! rollback) writing to a writable export. Transport-agnostic: works over a
-//! Unix socket or the stdio of an `ssh` process.
+//! Unix socket or the stdio of an `ssh` process; with [`greet`], [`starttls`] and
+//! [`Client::negotiate`] the caller puts TLS in between (XCP-ng's xapi-nbd, #40).
 //! Spec: <https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md>
 
 #![warn(missing_docs)]
@@ -20,12 +21,15 @@ const STRUCTURED_REPLY_MAGIC: u32 = 0x668e_33ef;
 const FLAG_FIXED_NEWSTYLE: u16 = 1;
 const FLAG_NO_ZEROES: u16 = 2;
 
+const OPT_EXPORT_NAME: u32 = 1;
+const OPT_STARTTLS: u32 = 5;
 const OPT_GO: u32 = 7;
 const OPT_STRUCTURED_REPLY: u32 = 8;
 const OPT_SET_META_CONTEXT: u32 = 10;
 const REP_ACK: u32 = 1;
 const REP_INFO: u32 = 3;
 const REP_META_CONTEXT: u32 = 4;
+const REP_ERR_UNSUP: u32 = 0x8000_0001;
 const INFO_EXPORT: u16 = 0;
 
 const CMD_READ: u16 = 0;
@@ -86,6 +90,69 @@ fn with_len(s: &str) -> Vec<u8> {
     [&(s.len() as u32).to_be_bytes()[..], s.as_bytes()].concat()
 }
 
+fn send_opt(w: &mut impl Write, opt: u32, data: &[u8]) -> io::Result<()> {
+    let mut m = Vec::with_capacity(16 + data.len());
+    m.extend(IHAVEOPT.to_be_bytes());
+    m.extend(opt.to_be_bytes());
+    m.extend((data.len() as u32).to_be_bytes());
+    m.extend(data);
+    w.write_all(&m)?;
+    w.flush()
+}
+
+/// An option reply; an error reply is an `Err` (`ErrorKind::Unsupported` for `NBD_REP_ERR_UNSUP`).
+fn recv_opt(r: &mut impl Read, opt: u32) -> io::Result<(u32, Vec<u8>)> {
+    if u64_(r)? != REPLY_MAGIC || u32_(r)? != opt {
+        return Err(proto("bad option reply"));
+    }
+    let ty = u32_(r)?;
+    let len = u32_(r)? as usize;
+    if len > 1 << 20 {
+        return Err(proto("option reply too large"));
+    }
+    let data = bytes(r, len)?;
+    if ty & 0x8000_0000 != 0 {
+        let msg = format!(
+            "nbd: option {opt} refused ({ty:#x}): {}",
+            String::from_utf8_lossy(&data)
+        );
+        let kind = if ty == REP_ERR_UNSUP {
+            io::ErrorKind::Unsupported
+        } else {
+            io::ErrorKind::InvalidData
+        };
+        return Err(io::Error::new(kind, msg));
+    }
+    Ok((ty, data))
+}
+
+/// The greeting of a fixed-newstyle server: its magic and handshake flags, our client flags. Returns whether the
+/// server takes `NO_ZEROES` (xapi-nbd does not: its `NBD_OPT_EXPORT_NAME` reply then ends with 124 zero bytes).
+pub fn greet(r: &mut impl Read, w: &mut impl Write) -> io::Result<bool> {
+    if u64_(r)? != NBDMAGIC || u64_(r)? != IHAVEOPT {
+        return Err(proto("not a newstyle NBD server"));
+    }
+    let flags = u16_(r)?;
+    if flags & FLAG_FIXED_NEWSTYLE == 0 {
+        return Err(proto("server lacks fixed newstyle"));
+    }
+    let no_zeroes = flags & FLAG_NO_ZEROES != 0;
+    let ours = FLAG_FIXED_NEWSTYLE | if no_zeroes { FLAG_NO_ZEROES } else { 0 };
+    w.write_all(&u32::from(ours).to_be_bytes())?;
+    w.flush()?;
+    Ok(no_zeroes)
+}
+
+/// `NBD_OPT_STARTTLS` after [`greet`]: on `Ok` the caller runs the TLS handshake on the same connection and continues
+/// with [`Client::negotiate`] over it.
+pub fn starttls(r: &mut impl Read, w: &mut impl Write) -> io::Result<()> {
+    send_opt(w, OPT_STARTTLS, &[])?;
+    match recv_opt(r, OPT_STARTTLS)?.0 {
+        REP_ACK => Ok(()),
+        t => Err(proto(format!("STARTTLS: expected ACK, got {t}"))),
+    }
+}
+
 impl<R: Read, W: Write> Client<R, W> {
     /// Handshake and enter transmission for `export`, requesting the given
     /// meta contexts (e.g. `qemu:dirty-bitmap:<name>`, `base:allocation`).
@@ -96,14 +163,14 @@ impl<R: Read, W: Write> Client<R, W> {
     /// Like `connect`; the `optional` meta contexts are requested too, but a server
     /// without them is fine (check `context_id` afterwards).
     pub fn connect_opt(mut r: R, mut w: W, export: &str, meta: &[&str], optional: &[&str]) -> io::Result<Self> {
-        if u64_(&mut r)? != NBDMAGIC || u64_(&mut r)? != IHAVEOPT {
-            return Err(proto("not a newstyle NBD server"));
-        }
-        let flags = u16_(&mut r)?;
-        if flags & FLAG_FIXED_NEWSTYLE == 0 || flags & FLAG_NO_ZEROES == 0 {
-            return Err(proto("server lacks fixed newstyle / no-zeroes"));
-        }
-        w.write_all(&u32::from(FLAG_FIXED_NEWSTYLE | FLAG_NO_ZEROES).to_be_bytes())?;
+        let no_zeroes = greet(&mut r, &mut w)?;
+        Self::negotiate(r, w, export, meta, optional, no_zeroes)
+    }
+
+    /// The options after [`greet`] (and [`starttls`]): structured replies and meta contexts where offered, then the
+    /// export with `NBD_OPT_GO`, or `NBD_OPT_EXPORT_NAME` on a server without GO (xapi-nbd, which also denies the
+    /// `NBD_OPT_LIST` some clients send first).
+    pub fn negotiate(r: R, w: W, export: &str, meta: &[&str], optional: &[&str], no_zeroes: bool) -> io::Result<Self> {
         let mut c = Client {
             r,
             w,
@@ -151,7 +218,20 @@ impl<R: Read, W: Write> Client<R, W> {
         d.extend(0u16.to_be_bytes()); // no extra info requests; INFO_EXPORT is mandatory
         c.option(OPT_GO, &d)?;
         loop {
-            let (ty, data) = c.opt_reply(OPT_GO)?;
+            let (ty, data) = match c.opt_reply(OPT_GO) {
+                Ok(r) => r,
+                Err(e) if e.kind() == io::ErrorKind::Unsupported && wanted.is_empty() => {
+                    // the old way: the size and transmission flags follow at once (no zero padding: NO_ZEROES)
+                    send_opt(&mut c.w, OPT_EXPORT_NAME, export.as_bytes())?;
+                    c.size = u64_(&mut c.r)?;
+                    c.tflags = u16_(&mut c.r)?;
+                    if !no_zeroes {
+                        bytes(&mut c.r, 124)?;
+                    }
+                    break;
+                }
+                Err(e) => return Err(e),
+            };
             match ty {
                 REP_ACK => break,
                 REP_INFO if data.len() >= 12 && u16::from_be_bytes([data[0], data[1]]) == INFO_EXPORT => {
@@ -182,32 +262,11 @@ impl<R: Read, W: Write> Client<R, W> {
     }
 
     fn option(&mut self, opt: u32, data: &[u8]) -> io::Result<()> {
-        let mut m = Vec::with_capacity(16 + data.len());
-        m.extend(IHAVEOPT.to_be_bytes());
-        m.extend(opt.to_be_bytes());
-        m.extend((data.len() as u32).to_be_bytes());
-        m.extend(data);
-        self.w.write_all(&m)?;
-        self.w.flush()
+        send_opt(&mut self.w, opt, data)
     }
 
     fn opt_reply(&mut self, opt: u32) -> io::Result<(u32, Vec<u8>)> {
-        if u64_(&mut self.r)? != REPLY_MAGIC || u32_(&mut self.r)? != opt {
-            return Err(proto("bad option reply"));
-        }
-        let ty = u32_(&mut self.r)?;
-        let len = u32_(&mut self.r)? as usize;
-        if len > 1 << 20 {
-            return Err(proto("option reply too large"));
-        }
-        let data = bytes(&mut self.r, len)?;
-        if ty & 0x8000_0000 != 0 {
-            return Err(proto(format!(
-                "option {opt} refused ({ty:#x}): {}",
-                String::from_utf8_lossy(&data)
-            )));
-        }
-        Ok((ty, data))
+        recv_opt(&mut self.r, opt)
     }
 
     fn expect_ack(&mut self, opt: u32) -> io::Result<()> {
@@ -734,6 +793,56 @@ mod tests {
             payload,
         ]
         .concat()
+    }
+
+    /// xapi-nbd (#40): STARTTLS acknowledged, no structured replies, no GO: the export by NBD_OPT_EXPORT_NAME (and no
+    /// NBD_OPT_LIST, which it denies); then plain reads with simple replies.
+    #[test]
+    fn starttls_and_export_name_without_go() {
+        let mut s = [
+            &NBDMAGIC.to_be_bytes()[..],
+            &IHAVEOPT.to_be_bytes(),
+            &1u16.to_be_bytes(), // fixed newstyle without NO_ZEROES, as xapi-nbd
+        ]
+        .concat();
+        s.extend(optrep(OPT_STARTTLS, REP_ACK, &[]));
+        s.extend(optrep(OPT_STRUCTURED_REPLY, REP_ERR_UNSUP, &[]));
+        s.extend(optrep(OPT_GO, REP_ERR_UNSUP, &[]));
+        s.extend((8u64 << 20).to_be_bytes());
+        s.extend(TFLAG_READ_ONLY.to_be_bytes());
+        s.extend([0u8; 124]);
+        s.extend(SIMPLE_REPLY_MAGIC.to_be_bytes());
+        s.extend(0u32.to_be_bytes());
+        s.extend(1u64.to_be_bytes());
+        s.extend([7u8; 4]);
+        let mut r = &s[..];
+        let mut w = Vec::new();
+        assert!(!greet(&mut r, &mut w).unwrap(), "no NO_ZEROES offered");
+        assert_eq!(w, 1u32.to_be_bytes(), "only the flags the server offers");
+        starttls(&mut r, &mut w).unwrap();
+        // (TLS would start here)
+        let mut c = Client::negotiate(r, w, "/vdi?session_id=x", &[], &[], false).unwrap();
+        assert_eq!((c.size(), c.read_only()), (8 << 20, true));
+        let mut buf = [0u8; 4];
+        c.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [7; 4]);
+        // client: flags, STARTTLS, STRUCTURED_REPLY, GO, EXPORT_NAME, the read; never LIST (3)
+        let opts: Vec<u32> =
+            c.w.windows(12)
+                .filter(|m| m[..8] == IHAVEOPT.to_be_bytes())
+                .map(|m| u32::from_be_bytes(m[8..12].try_into().unwrap()))
+                .collect();
+        assert_eq!(opts, [OPT_STARTTLS, OPT_STRUCTURED_REPLY, OPT_GO, OPT_EXPORT_NAME]);
+        // a GO refused for another reason stays an error
+        let mut s = [
+            &NBDMAGIC.to_be_bytes()[..],
+            &IHAVEOPT.to_be_bytes(),
+            &3u16.to_be_bytes(),
+        ]
+        .concat();
+        s.extend(optrep(OPT_STRUCTURED_REPLY, REP_ACK, &[]));
+        s.extend(optrep(OPT_GO, 0x8000_0006, b"unknown export"));
+        assert!(Client::connect(&s[..], io::sink(), "x", &[]).is_err());
     }
 
     /// Regression (fuzzing): a hostile server overshooting the requested range
