@@ -785,6 +785,15 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   rollback approved: pre-rollback snapshot, 95 of 4096 chunks written, job 68 s; `qemu-img compare` equal to a
   plain restore of the snapshot; boots without marker and junk. Found (lab): the clone step's address wait ended the
   script when the guest agent did not answer yet (fixed). Left: LVM-thin and RBD (pve-test has neither).
+- [x] (#72) Instant rollback on LVM-thin (2026-10-25, VM 201 on 0.0.46-dev): a nested PVE node (VM 284, PVE 9.2.2,
+  installed unattended by `lab/pvehost/pvenested.sh`, `local-lvm` LVM-thin, the appliance's second PVE source
+  "pve-nested"); a full clone of a Debian 13 cloud-image VM on `local-lvm` (`PVE_HOST=10.2.34.216 ... rollback.sh`):
+  backed up running, 300 MB junk + marker, rollback approved: pre-rollback snapshot, 83 of 1024 chunks written
+  (348 MB) through qemu-nbd on the thin LV, job 79 s; `qemu-img compare` equal to a plain restore; boots without
+  marker and junk. Found (lab): the first address chosen for the nested node (.212) belonged to the second
+  appliance VM 202 (its firewall drops pings, so a ping looked free): the appliance's ARP pointed there and its API calls timed out
+  (moved to .216; lab/README lists the addresses); rollback.sh's cleanup reset the agent VM in clone mode (fixed).
+  Left: Ceph RBD (a mini Ceph cluster next to the nested node).
 - [x] (#55) Instant rollback of a container (2026-10-25, VM 201 on 0.0.46-dev, nexusbackup-pve 0.1.2 on pve-test):
   `lab/pvehost/ct-rollback.sh`: unprivileged Debian 13 container 265 on ZFS (vmpool), backup, then a changed,
   added, removed and re-moded file, 50 MB junk and a marker; rollback approved by the security officer: 24 files

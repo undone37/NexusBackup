@@ -238,6 +238,23 @@ tunnel setup` (disk: `LAB=~/nexus-lab/pvehost2 SIZE=300G lab/appliance/build-dis
 (10.2.34.211, port 28444). Used by `lab/pvehost/fleet.sh` (nexusctl fleet over both) and for the labs that need two
 appliances (replication secondary, vault mode, configuration restore).
 
+## Nested Proxmox VE node on the PVE lab host (`lab/pvehost/pvenested.sh`, VM 284)
+
+A second PVE, installed unattended inside VM 284 (`proxmox-auto-install-assistant` on pve-test, answer file with
+ext4 on LVM: `local-lvm` is LVM-thin), at 10.2.34.216 (`pve-nested`), the second PVE source "pve-nested" of the
+appliance VM 201 (tenant lab, fleecing on `local-lvm`). For storage pve-test does not have (LVM-thin, later Ceph RBD)
+without changing pve-test. Its guests run nested (CPU type host): VM 205 `deb13-base` (Debian 13 cloud image on
+`local-lvm`, 10.2.34.217, guest agent) is the clone source for `rollback.sh`.
+
+```sh
+lab/pvehost/pvenested.sh iso vm node source guest       # ~10 min; secrets in ~/nexus-lab/pvehost/pve-nested.env
+PVE_HOST=10.2.34.216 NODE=pve-nested CLONE=210 SRC_VMID=205 STORAGE=local-lvm FORMAT=raw CHECK=211 SPARE=212 \
+  lab/pvehost/rollback.sh clone group backup change rollback compare boot cleanup   # #72 on LVM-thin
+```
+
+Addresses: 10.2.34.211 and .212 are the appliances (VMs 201, 202), .215 the VMware proxy, .216/.217 the nested node
+and its guest.
+
 ## Appliance replication lab (`lab/appliance/replication.sh`, docs/replication.md)
 
 Two appliance VMs from the same bootc image, both SELinux enforcing, on separate QEMU user networks:

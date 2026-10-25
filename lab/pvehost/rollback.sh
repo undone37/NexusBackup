@@ -217,8 +217,9 @@ step_boot() {
 step_cleanup() {
 	pve "qm stop $CHECK >/dev/null 2>&1; qm destroy $CHECK --purge >/dev/null 2>&1" || true
 	[ -z "${CLONE:-}" ] || pve "qm stop $CLONE >/dev/null 2>&1; qm destroy $CLONE --purge >/dev/null 2>&1" || true
-	"$here/agent-vms.sh" reset "$VM" </dev/null
-	log "VM $CHECK removed, $VM reset to clean-os"
+	# a clone leaves its source as it was; only the agent VM itself was changed
+	[ -n "${CLONE:-}" ] || "$here/agent-vms.sh" reset "$VM" </dev/null
+	log "VM $CHECK removed${CLONE:+, clone $CLONE removed}${CLONE:-, $VM reset to clean-os}"
 }
 
 first=vm
