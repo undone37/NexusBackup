@@ -415,7 +415,9 @@ restore runs.
 - **Packages:** the agent installs the signed `.deb`/`.rpm` it received with `apt-get install` / `dnf install` in a
   transient systemd unit (`nexus-agent-update.service`, no shell, only the received files), together with
   `nexus-agent-desktop` if the desktop UI is installed. The package's own scripts restart the service; the
-  enrollment stays. You can still update by hand: `apt install ./…`, `dnf upgrade ./…`.
+  enrollment stays. You can still update by hand: `apt install ./…`, `dnf upgrade ./…`. A tray program that is
+  running stays open: it reconnects to the restarted agent within seconds and shows the new agent version, but it
+  is still the old program until the user logs in again (then the new `nexus-agent-gui` starts).
 - **Bundle:** the agent replaces `/usr/local/sbin/nexus-agent` (the old binary stays as `nexus-agent.prev`) and
   restarts. **Start watchdog:** if the new binary fails to start listening three times in a row, the agent swaps
   `.prev` back and reports **Rolled back**.

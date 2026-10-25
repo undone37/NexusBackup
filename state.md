@@ -525,7 +525,7 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   0.1.0 -> 0.1.1 in-band via apt-get in the transient unit, postinst restart, update state `ok` in 6 s; same version refused;
   a signed 9.9.9 .deb with an unmet dependency: apt-get exit 100 reported as `failed` with the apt output, agent stays on
   0.1.1 and keeps serving. The failure log holds only this attempt (journal by invocation id).
-- [ ] (#66) Linux agent update labs: plan.md Phase 39 L6 Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/agent-release.sh`,
+- [x] (#66) Linux agent update labs: plan.md Phase 39 L6 Partly done 2026-10-24 (appliance 0.0.32-dev, `lab/pvehost/agent-release.sh`,
   TEST-signed releases 0.1.1 -> 0.1.2): .deb on debian-13 (7 s), .rpm on alma-10 (5 s), bundle install with
   install.sh and the binary swap on debian-13 (10 s); the packaged production-key agents refuse TEST-signed
   releases. Watchdog: a signed binary that cannot start at all (0.1.4, an ELF that exits) was swapped in and
@@ -552,6 +552,13 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   while the agent was away, 506 s after it came back the update went through the edge (0.1.5 -> 0.1.21, via edge).
   Open: desktop package with the GUI running,
   arm64 (needs aarch64 packages), an edge-connected laptop.
+  2026-10-25 (desktop package with the GUI running, `lab/pvehost/desktop-update.sh`, appliance 0.0.54-dev): VM 225
+  (debian-13) with XFCE, LightDM logging in `desk` (group nexus-agent-ui), packaged agent 0.1.21 + desktop 0.1.0
+  (TEST key); release 0.1.22 with desktop 0.1.22 pushed in-band: both packages in one apt transaction, ok in 10 s.
+  The running tray program (0.1.0, its file now `(deleted)`) stayed open, reconnected to the restarted agent and
+  showed agent 0.1.22 (screen captures before/after); after a new login the 0.1.22 tray program ran. Manual chapter
+  16 says so. Found: an agent's address cannot be changed (no API for it): VM 225 got a new DHCP lease after the
+  reset, the lab gave it the old address as a second one; issue opened.
 - [ ] (#67) Windows agent update labs: plan.md Phase 39 L7. Partly done 2026-10-24 (appliance 0.0.34-dev, a clone
   of VM 242 as VM 298, TEST-signed MSIs 0.1.5/0.1.6 from release/packages.sh): MSI major upgrade 0.1.0 -> 0.1.5 by
   hand (`lab/windows/e2e.sh 298 upgrade`: msiexec 0, the service runs 0.1.5 and stays enrolled; the GUI check failed
