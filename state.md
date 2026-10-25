@@ -1280,6 +1280,12 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   Fixed on the way: reading the import response to the end (closing after the status line left the VDI plugged into
   dom0) and metadata VDIs marked `other_config:nexusbackup`, each run removing older marked ones (a lost store
   snapshot leaked them).
+  M4 through the appliance (0.0.53-dev on VM 201, `xcpng-e2e.sh backup pool`): incremental backup of the running
+  `nexus-deb` (2.1 MiB read, 7 s), restored into the pool as "nexus-deb (e2e)" in 65 s (3 GiB over
+  `import_raw_vdi`): 1 GiB, 2 vCPUs, BIOS boot as stored, a new MAC; started, running after 60 s (11.6 s CPU,
+  the idle guest), removed. Found: the job result was empty because the restore step's stdout was captured instead
+  of logged (`restored {json}` is read from the log); fixed in the scheduler (capture off, as for nexus-pve restore)
+  and checked by its unit test, not again in the lab. The pre-tag metadata VDI of nexus-deb removed by hand.
 - [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
   the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
   token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).

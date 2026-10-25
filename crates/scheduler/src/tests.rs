@@ -2534,7 +2534,7 @@ fn xcpng_jobs() {
         .unwrap();
     assert_eq!(p.key, format!("guest:t1/xcp-{u1}"));
     assert!(
-        matches!(&p.steps[..], [Step::Cli { bin, args, capture: true, .. }] if bin == &e.cfg.xcpng_bin && args[1] == "restore")
+        matches!(&p.steps[..], [Step::Cli { bin, args, capture: false, .. }] if bin == &e.cfg.xcpng_bin && args[1] == "restore")
     );
     let cfg: Value = serde_json::from_slice(&p.files.iter().find(|f| f.0 == "xcpng.json").unwrap().1).unwrap();
     assert_eq!(

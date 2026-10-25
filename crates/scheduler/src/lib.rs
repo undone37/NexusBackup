@@ -3349,7 +3349,7 @@ impl Scheduler {
                         bin: self.cfg.xcpng_bin.clone(),
                         args: vec![dir.join("xcpng.json").to_string_lossy().into_owned(), "restore".into()],
                         alert: None,
-                        capture: true,
+                        capture: false, // the `restored {json}` line goes to the log, the result is taken from there
                     });
                     return Ok(plan);
                 }
