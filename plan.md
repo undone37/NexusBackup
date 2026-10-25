@@ -1097,7 +1097,7 @@ checks, maintenance window, greenboot rollback, audit entry. Agent releases come
   bundle: `bootc upgrade`. **Done 2026-10-20** for 36a (release/update-bundle.sh), 36b, 36c (upload API + UI);
   lab on the appliance VM: see state.md. `nexusctl update upload` (an
   administrator's session, not a token) and `nexus-setup import-update` (USB at the console) done 2026-10-24 (#28).
-  Open: an online update after an offline one (lab, #29).
+  Online after offline: done 2026-10-25 (#29, a lab registry; state.md). Phase 36 complete.
 Open work: epic #18.
 
 ### Phase 37 — Windows bare-metal recovery (added 2026-10-20 by user request)
