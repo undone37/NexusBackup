@@ -265,7 +265,8 @@ from the state backed up in step 1.
 
 > **Status:** Run on a Proxmox VE 9 host with a Linux VM on ZFS (2026-10-24): 95 of 4096 chunks written back in
 > 38 s, the result identical to a full restore of the snapshot; the same with a Windows Server 2022 VM (412 of 10240
-> chunks in 77 s). Not yet run on LVM-thin, directory (qcow2) or Ceph RBD storage. Needs version 0.1.x of the `nexusbackup-pve` package on every node (it adds
+> chunks in 77 s); also on LVM-thin (83 of 1024 chunks, 79 s), Ceph RBD (123 of 1024, 51 s) and qcow2 files on an
+> NFS storage (95 of 4096, 68 s), each equal to a full restore (2026-10-25). Needs version 0.1.x of the `nexusbackup-pve` package on every node (it adds
 > the `nexusbackup-rollback.socket` service).
 >
 > When requesting it through the API, `target` is still a new, unused VMID: the job restores there only if it has

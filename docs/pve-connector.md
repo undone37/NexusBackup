@@ -409,9 +409,9 @@ alone therefore cannot write any disk: it needs a VM that an API token holder st
 Token privileges in addition to replace: `VM.PowerMgmt` (suspend, resume, stop, start) and `VM.Config.Options`
 (tags) on the VM; the pre-rollback backup needs what a backup needs.
 
-Not lab-verified yet (lab steps in state.md, Phase 30): vzdump of a paused VM in snapshot mode with bitmap reuse,
-the stub-free PVE module calls (`lock_config`, `parse_drive`, `parse_volname`, `path`, `activate_volumes`), qemu-nbd
-on LVM-thin, ZFS, directory (qcow2) and Ceph RBD volumes, the socket unit.
+Lab-verified (state.md, #72): the pre-rollback vzdump of a paused VM with bitmap reuse, the PVE module calls and the
+socket unit, and qemu-nbd writing ZFS zvols, qcow2 files on an NFS directory storage, LVM-thin volumes and Ceph RBD
+images (`rbd:` paths; a nested PVE node with a single-host Ceph); each result equal to a plain restore.
 
 ## Instant rollback of a container (#55, `crates/pve/src/ctrollback.rs`, `pve-plugin/rollback`)
 "Replace original" with `--rollback` on a container (`nexus-pve <cfg> restore-ct … --replace --rollback`) writes

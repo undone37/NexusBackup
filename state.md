@@ -793,7 +793,12 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   marker and junk. Found (lab): the first address chosen for the nested node (.212) belonged to the second
   appliance VM 202 (its firewall drops pings, so a ping looked free): the appliance's ARP pointed there and its API calls timed out
   (moved to .216; lab/README lists the addresses); rollback.sh's cleanup reset the agent VM in clone mode (fixed).
-  Left: Ceph RBD (a mini Ceph cluster next to the nested node).
+  Ceph RBD the same day: a single-host Ceph 20.2 on the nested node (`pvenested.sh ceph`: three 16 GB OSDs, one
+  monitor and manager, every pool on a CRUSH rule over OSDs), RBD storage `rbd`; clone on it, backup, junk + marker,
+  rollback: 123 of 1024 chunks written (516 MB) through qemu-nbd on the `rbd:` path, job 51 s; `qemu-img compare`
+  equal to a plain restore; boots clean. Found: the PVE 9.2 ISO's pve-common rejects Ceph 20 keys in an RBD
+  storage's keyring ("Not a proper rbd authentication file"; fixed upstream, the script updates the node), the
+  manager's pool needs the OSD rule on one host.
 - [x] (#55) Instant rollback of a container (2026-10-25, VM 201 on 0.0.46-dev, nexusbackup-pve 0.1.2 on pve-test):
   `lab/pvehost/ct-rollback.sh`: unprivileged Debian 13 container 265 on ZFS (vmpool), backup, then a changed,
   added, removed and re-moded file, 50 MB junk and a marker; rollback approved by the security officer: 24 files

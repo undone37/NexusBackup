@@ -12,13 +12,16 @@
 #   pvenested.sh guest    on the node: VM $GUEST from the Debian 13 cloud image on local-lvm (LVM-thin), static
 #                         $GUEST_ADDR, root with ~/nexus-lab/lab_ed25519, qemu-guest-agent; left stopped (the source
 #                         of rollback.sh's clone step: PVE_HOST=$IP NODE=$NAME SRC_VMID=$GUEST STORAGE=local-lvm)
+#   pvenested.sh ceph     a mini Ceph cluster on the node (pveceph, maintainer 2026-10-25): three ${OSD_GB} GB disks on
+#                         $STORAGE as OSDs, one monitor and manager, a CRUSH rule over OSDs (one host), pool and RBD
+#                         storage "rbd" (images), OSD memory target 1 GiB
 #   pvenested.sh destroy  VM $VMID destroyed (the source stays: delete it in the UI)
 #
 # Secrets stay in ~/nexus-lab: $LAB/pve-nested.env (root password, token secret; created by step iso / node).
 # env: LAB (~/nexus-lab/pvehost), PORT (28444), PVE_HOST (10.2.34.200), SSH_KEY (~/nexus-lab/pve-lab-key), VMID (284),
 #      NAME (pve-nested), ADDR (10.2.34.216/24; .211 and .212 are the lab appliances), GW (10.2.34.254), DNS (10.2.34.253), STORAGE (vmpool), DISK (96),
 #      MEM (12288), CORES (4), ISO (proxmox-ve_9.2-1.iso), ISO_OUT (proxmox-ve-nested-auto.iso), GUEST (205),
-#      GUEST_ADDR (10.2.34.217/24)
+#      GUEST_ADDR (10.2.34.217/24), OSD_GB (16)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -38,6 +41,7 @@ CORES=${CORES:-4}
 ISO=${ISO:-proxmox-ve_9.2-1.iso}
 ISO_OUT=${ISO_OUT:-proxmox-ve-nested-auto.iso}
 GUEST=${GUEST:-205}
+OSD_GB=${OSD_GB:-16}
 GUEST_ADDR=${GUEST_ADDR:-10.2.34.217/24}
 VM_KEY=${VM_KEY:-$HOME/nexus-lab/lab_ed25519}
 ENV=$LAB/pve-nested.env
@@ -111,6 +115,13 @@ step_node() {
 	local deb tok
 	deb=$(ls "$repo"/target/deb/nexusbackup-pve_*_all.deb 2>/dev/null | sort -V | tail -1)
 	[ -n "$deb" ] || die "build the package first: pve-plugin/build-deb.sh"
+	# no subscription: the no-subscription repository, and up to date (the ISO's pve-common 9.1 rejects the keys of
+	# Ceph 20 in an RBD storage's keyring: "Not a proper rbd authentication file"; 9.2 accepts them)
+	node "test -f /etc/apt/sources.list.d/pve-no-subscription.sources || {
+		sed -i 's/^Types:/Enabled: no\nTypes:/' /etc/apt/sources.list.d/pve-enterprise.sources
+		printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' \
+			> /etc/apt/sources.list.d/pve-no-subscription.sources; }
+		apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold dist-upgrade >/dev/null"
 	scp -q -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$deb" "root@$IP:/root/"
 	node "apt-get install -y -qq /root/$(basename "$deb") >/dev/null 2>&1 || dpkg -i /root/$(basename "$deb") >/dev/null"
 	node "install -d -o root -g root -m 0755 /var/lib/nexusbackup/.ssh
@@ -186,6 +197,29 @@ step_guest() {
 		die "VM $GUEST: no SSH or no guest agent package"
 	node "qm shutdown $GUEST --timeout 120 --forceStop 1"
 	log "VM $GUEST on $NAME: Debian 13 on local-lvm, $GUEST_ADDR, guest agent; stopped"
+}
+
+step_ceph() {
+	local d
+	for d in 1 2 3; do
+		pve "qm config $VMID | grep -q '^scsi$d:' || qm set $VMID --scsi$d $STORAGE:$OSD_GB,serial=NXOSD$d >/dev/null"
+	done
+	node "pveceph status >/dev/null 2>&1 || {
+		yes | pveceph install --repository no-subscription >/dev/null 2>&1 || exit 1
+		pveceph init --network ${IP%.*}.0/24 >/dev/null && pveceph mon create >/dev/null && pveceph mgr create >/dev/null; }
+		ceph config set osd osd_memory_target 1073741824
+		for s in NXOSD1 NXOSD2 NXOSD3; do
+			dev=/dev/\$(lsblk -dno NAME,SERIAL | awk -v s=\$s '\$2 == s {print \$1}')
+			[ \$dev != /dev/ ] || exit 1
+			pvs --noheadings \$dev 2>/dev/null | grep -q ceph || pveceph osd create \$dev >/dev/null 2>&1 || exit 1
+		done
+		ceph osd crush rule ls | grep -qx rep-osd || ceph osd crush rule create-replicated rep-osd default osd
+		# one host: every pool on the OSD rule (the manager's own pool too)
+		ceph osd pool set .mgr crush_rule rep-osd >/dev/null
+		pvesm status | grep -q '^rbd ' || pveceph pool create rbd --size 3 --min_size 2 --crush_rule rep-osd --pg_num 32 \
+			--add_storages 1 >/dev/null
+		for i in \$(seq 60); do ceph health | grep -q HEALTH_OK && break; sleep 5; done" || die "ceph setup failed"
+	log "$NAME: $(node 'ceph -s --format json' | jq -r '"\(.health.status), \(.osdmap.num_up_osds) of \(.osdmap.num_osds) OSDs up, \(.pgmap.num_pgs) PGs"'); $(node "pvesm status | grep '^rbd '" | tr -s ' ')"
 }
 
 step_destroy() {
