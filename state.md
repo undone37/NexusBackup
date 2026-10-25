@@ -581,8 +581,8 @@ threat model T57–T59, alerts `agent_update_failed` / `rollout_paused`, quorum 
   still one process); (2) the non-admin user's window showed "Cannot reach the agent service: Access is denied":
   the client opened the pipe with GENERIC_READ | GENERIC_WRITE, more than the pipe grants interactive users; now
   `PIPE_CLIENT_ACCESS` (0x100083, a test ties it to the pipe's ACL): lab with the fixed exe: status, backups and
-  sessions shown. Also seen: the Windows agent reports no `gui_version` (the Linux one does). Still open here: a
-  real 1603 whose rollback works.
+  sessions shown. The Windows agent reports no `gui_version` on purpose (the MSI carries the UI; Linux reports it
+  to pick the desktop package). Still open here: a real 1603 whose rollback works.
 - [x] (#68) Image with a signed agent release, SELinux checks: plan.md Phase 39 L8 Done 2026-10-24 (appliance 0.0.32-dev built with
   a TEST-key-signed agent release 0.1.1 in os/agent-release, `lab/pvehost/agent-release.sh`): the image's release
   listed as signed; a signed 0.1.2 uploaded through the API and listed as signed; the packaged 0.1.0 agent on
