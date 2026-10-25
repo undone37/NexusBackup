@@ -779,6 +779,12 @@ Scope: docs/netbackup-comparison.md "Tier 2", one item after the other (code, te
   (1.7 GB, 21 s), 412 of 10240 chunks written back, job 77 s, disk identical (qemu-img compare), Windows boots
   with the guest agent up, junk and marker gone. Open: dir qcow2 (the host's `local` storage takes no VM images;
   needs a storage config change on pve-test), LVM-thin and RBD (no such storage in the lab).
+- [x] (#72) Instant rollback on a file storage with qcow2 (2026-10-25, VM 201 on 0.0.42-dev): TrueNAS NFS export
+  `lab/pve` added to pve-test as storage `nfs-lab` (images, NFSv3; maintainer: TrueNAS for NFS); a full qcow2 clone of
+  debian-12 there (`CLONE=296 STORAGE=nfs-lab FORMAT=qcow2 rollback.sh`): backed up running, 300 MB junk + marker,
+  rollback approved: pre-rollback snapshot, 95 of 4096 chunks written, job 68 s; `qemu-img compare` equal to a
+  plain restore of the snapshot; boots without marker and junk. Found (lab): the clone step's address wait ended the
+  script when the guest agent did not answer yet (fixed). Left: LVM-thin and RBD (pve-test has neither).
 - [x] 4 hybrid post-quantum key wrapping: `keyd::hybrid` (X25519 + ML-KEM-768, BLAKE3 combiner over both shared
   secrets, the ciphertext and the recipient; XChaCha20-Poly1305; `NXHYB2` magic; ML-KEM keys derived from the
   existing X25519 secrets), RustCrypto `ml-kem` 0.3 + `curve25519-dalek` 4 (both already in the tree via russh:

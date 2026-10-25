@@ -97,7 +97,8 @@ step_clone() {
 		return
 	fi
 	for _ in $(seq 60); do
-		ip=$(pve "qm guest cmd $CLONE network-get-interfaces 2>/dev/null" | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"][0] // empty')
+		# the guest agent answers some seconds after the start: a failing call is a retry, not the end
+		ip=$(pve "qm guest cmd $CLONE network-get-interfaces 2>/dev/null" | jq -r '[.[] | select(.name != "lo") | ."ip-addresses"[]? | select(."ip-address-type" == "ipv4") | ."ip-address"][0] // empty' || true)
 		[ -n "$ip" ] && break
 		sleep 5
 	done
