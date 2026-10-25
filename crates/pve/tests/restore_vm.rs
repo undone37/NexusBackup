@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// Size of the large file: > 100 MiB, deliberately not chunk/sector aligned.
 const BIG: u64 = (100 << 20) + 12345;
-const FIXTURE_VERSION: &str = "v1";
+const FIXTURE_VERSION: &str = "v2";
 
 fn target() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
@@ -161,6 +161,8 @@ fn single_file_restore_from_disk_images() {
             ("/vda4", "btrfs", "btrfs"),
             ("/vda5", "vfat", "vfat"),
             ("/lvm/vgtest-data", "ext4", "lvm"),
+            // a thin LV: activated on a copy-on-write overlay in the VM (#71)
+            ("/lvm/vgtest-thin", "ext4", "thin"),
             ("/zfs/tank+data", "zfs", "zfs"),
         ];
         for (p, ty, _) in expect {
@@ -385,7 +387,15 @@ fn fsindex_matches_micro_vm_listing() {
             .map(|(p, s, t, k)| (p.to_owned(), k, if k == 0 { s } else { 0 }, if k == 0 { t } else { 0 }))
             .collect()
     };
-    for root in ["vda1", "vda2", "vda3", "vda4", "vda5", "lvm/vgtest-data"] {
+    for root in [
+        "vda1",
+        "vda2",
+        "vda3",
+        "vda4",
+        "vda5",
+        "lvm/vgtest-data",
+        "lvm/vgtest-thin",
+    ] {
         let (a, b) = (set(&vm_names, root), set(&ours, root));
         assert!(!a.is_empty(), "{root}: micro-VM listed nothing");
         assert_eq!(a, b, "{root}: micro-VM vs nexus-fsindex");
@@ -417,11 +427,20 @@ fn fsindex_matches_micro_vm_listing() {
     eprintln!("second snapshot with the micro-VM fallback {:.1?}: {r}", t.elapsed());
     assert_eq!(
         (r["reused"].as_u64(), r["micro_vm"].as_bool()),
-        (Some(6), Some(true)),
+        (Some(7), Some(true)),
         "{r}"
     );
     let ours = store.load_names(&m2).unwrap().unwrap();
-    for root in ["vda1", "vda2", "vda3", "vda4", "vda5", "lvm/vgtest-data", "zfs"] {
+    for root in [
+        "vda1",
+        "vda2",
+        "vda3",
+        "vda4",
+        "vda5",
+        "lvm/vgtest-data",
+        "lvm/vgtest-thin",
+        "zfs",
+    ] {
         assert_eq!(
             set(&vm_names, root),
             set(&ours, root),
