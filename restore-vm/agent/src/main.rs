@@ -57,6 +57,7 @@ const MODULES: &[&str] = &[
     "dm_mod",
     "dm_snapshot",
     "dm_thin_pool",
+    "loop",
     "dm_mirror",
     "raid1",
     "raid10",
@@ -217,6 +218,128 @@ fn probe(dev: &str) -> Option<(String, Option<String>, Option<String>)> {
             .find_map(|l| l.strip_prefix(k)?.strip_prefix('=').map(str::to_owned))
     };
     Some((get("TYPE")?, get("LABEL"), get("UUID")))
+}
+
+/// linux/loop.h
+const LOOP_SET_FD: libc::Ioctl = 0x4C00;
+const LOOP_CTL_GET_FREE: libc::Ioctl = 0x4C82;
+/// Copy-on-write area of one overlay (sparse, in RAM): activating a thin pool writes a few metadata blocks.
+const COW_BYTES: u64 = 64 << 20;
+
+/// A loop device over a new sparse file `path` of `size` bytes.
+fn loop_file(path: &str, size: u64) -> io::Result<String> {
+    let f = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    f.set_len(size)?;
+    let ctl = File::open("/dev/loop-control")?;
+    // SAFETY: LOOP_CTL_GET_FREE takes no argument and returns a device number or -1.
+    let n = unsafe { libc::ioctl(ctl.as_raw_fd(), LOOP_CTL_GET_FREE) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let dev = format!("/dev/loop{n}");
+    let l = fs::OpenOptions::new().read(true).write(true).open(&dev)?;
+    // SAFETY: LOOP_SET_FD takes the backing file's descriptor, valid for the call; the loop device keeps its own
+    // reference to the file afterwards.
+    if unsafe { libc::ioctl(l.as_raw_fd(), LOOP_SET_FD, f.as_raw_fd()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(dev)
+}
+
+/// Thin pools cannot be activated on the read-only disks: the kernel refuses a thin-pool target in a read-only
+/// table, and the pool writes its metadata. Every PV of a VG with a thin pool therefore gets a dm snapshot over it
+/// with the copy-on-write area in RAM (a loop device on a sparse file in /run); LVM sees the overlay instead of the
+/// PV (`global_filter`) and activates those VGs read-write there. What activation writes stays in RAM; the disk
+/// is never written (QEMU attaches it read-only) and the file systems are mounted read-only as everywhere.
+/// Returns the VGs on overlays and the filter (empty: no thin pool).
+fn thin_overlays() -> (Vec<String>, String) {
+    let field = |out: &str| -> Vec<(String, String)> {
+        out.lines()
+            .filter_map(|l| {
+                let (a, b) = l.trim().split_once(':')?;
+                Some((a.to_owned(), b.to_owned()))
+            })
+            .collect()
+    };
+    let Some(lvs) = cmd(
+        "lvm",
+        &[
+            "lvs",
+            "--noheadings",
+            "--separator",
+            ":",
+            "-o",
+            "vg_name,segtype",
+            "--config",
+            LVM_CFG,
+        ],
+    ) else {
+        return (Vec::new(), String::new());
+    };
+    let mut vgs: Vec<String> = field(&lvs)
+        .into_iter()
+        .filter(|(_, t)| t == "thin-pool")
+        .map(|(v, _)| v)
+        .collect();
+    vgs.sort();
+    vgs.dedup();
+    if vgs.is_empty() {
+        return (vgs, String::new());
+    }
+    let pvs = cmd(
+        "lvm",
+        &[
+            "pvs",
+            "--noheadings",
+            "--separator",
+            ":",
+            "-o",
+            "pv_name,vg_name",
+            "--config",
+            LVM_CFG,
+        ],
+    )
+    .unwrap_or_default();
+    let mut reject = Vec::new();
+    for (i, (pv, _)) in field(&pvs).into_iter().filter(|(_, vg)| vgs.contains(vg)).enumerate() {
+        let real = fs::canonicalize(&pv).unwrap_or_else(|_| PathBuf::from(&pv));
+        let name = real
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let Some(sectors) = fs::read_to_string(format!("/sys/class/block/{name}/size"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+        else {
+            log!("thin overlay: no size of {pv}");
+            continue;
+        };
+        let cow = match loop_file(&format!("/run/nexus-cow-{i}"), COW_BYTES) {
+            Ok(d) => d,
+            Err(e) => {
+                log!("thin overlay for {pv}: {e}");
+                continue;
+            }
+        };
+        let table = format!("0 {sectors} snapshot {} {cow} N 8", real.display());
+        if cmd("dmsetup", &["create", &format!("nexus-cow-{i}"), "--table", &table]).is_some() {
+            // anchored, every name LVM may see for it
+            reject.push(format!("\"r|^{}$|\"", real.display()));
+            if real.as_path() != Path::new(&pv) {
+                reject.push(format!("\"r|^{pv}$|\""));
+            }
+        }
+    }
+    if reject.is_empty() {
+        return (Vec::new(), String::new());
+    }
+    reject.push("\"a|.*|\"".into());
+    log!("thin pools in {vgs:?}: activated on copy-on-write overlays");
+    (vgs, format!("devices{{global_filter=[{}]}}", reject.join(",")))
 }
 
 /// Block devices without holders (holders = PV/md member/thin pool internals).
@@ -420,12 +543,23 @@ fn mount_all() -> Vec<Mount> {
     if Path::new("/usr/sbin/mdadm").exists() {
         cmd("mdadm", &["--assemble", "--scan", "--readonly"]);
     }
-    // LVM: read-only activation of every VG found (list built from a scan, `*` is not accepted).
-    if let Some(vgs) = cmd("lvm", &["vgs", "--noheadings", "-o", "vg_name", "--config", LVM_CFG]) {
-        let names: Vec<String> = vgs.split_whitespace().map(|v| format!("\"{v}\"")).collect();
-        if !names.is_empty() {
-            let cfg = format!("{LVM_CFG} activation{{read_only_volume_list=[{}]}}", names.join(","));
-            cmd("lvm", &["vgchange", "-ay", "--config", &cfg]);
+    // LVM: read-only activation of every VG found (list built from a scan, `*` is not accepted); VGs with a thin
+    // pool read-write on overlays in RAM ([`thin_overlays`])
+    let (thin, filter) = thin_overlays();
+    let base = format!("{LVM_CFG} {filter}");
+    if let Some(vgs) = cmd("lvm", &["vgs", "--noheadings", "-o", "vg_name", "--config", &base]) {
+        let (rw, ro): (Vec<&str>, Vec<&str>) = vgs.split_whitespace().partition(|v| thin.iter().any(|t| t == v));
+        if !ro.is_empty() {
+            let names: Vec<String> = ro.iter().map(|v| format!("\"{v}\"")).collect();
+            let cfg = format!("{base} activation{{read_only_volume_list=[{}]}}", names.join(","));
+            let mut args = vec!["vgchange", "-ay", "--config", &cfg];
+            args.extend(&ro);
+            cmd("lvm", &args);
+        }
+        if !rw.is_empty() {
+            let mut args = vec!["vgchange", "-ay", "--config", &base];
+            args.extend(&rw);
+            cmd("lvm", &args);
         }
     }
     log!("md + lvm: {:.1?}", t.elapsed());

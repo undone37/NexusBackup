@@ -70,7 +70,10 @@ All disk indexes of the snapshot are attached in manifest order (virtio serial
 = index name, reported as `disk` by `mounts`). The mountpoints are:
 
 - `/vdXN`: partition or whole-disk file system
-- `/lvm/<dm name>`: LVM LVs, activated read-only (`read_only_volume_list`)
+- `/lvm/<dm name>`: LVM LVs, activated read-only (`read_only_volume_list`); a VG with a thin pool on a
+  copy-on-write overlay instead (#71): the kernel refuses a thin pool in a read-only table and the pool writes its
+  metadata, so each PV gets a dm snapshot with its copy-on-write area in RAM (64 MiB sparse, loop device on /run),
+  LVM sees only the overlay (`global_filter`); the disk itself stays read-only
 - `/zfs/<dataset with / → +>`: every pool is imported with `readonly=on`,
   `cachefile=none` and an altroot, and every dataset is mounted at a fixed
   path. The datasets' own mountpoints are ignored.
@@ -156,8 +159,7 @@ Each request is one JSON line. Each reply is one JSON line:
   agent channel are reachable. A QEMU escape is the remaining risk, mitigated
   only by the sandbox above.
 - Not covered: encrypted volumes (LUKS, ZFS native encryption, BitLocker),
-  Windows dynamic disks/Storage Spaces, thin-provisioned LVs inside guests
-  (untested), ZFS zvols inside pools, duplicate pool or VG names across disks.
+  Storage Spaces, ZFS zvols inside pools, duplicate pool or VG names across disks.
 - `ls` shows non-UTF-8 names lossily. Tar of the parent directory keeps the
   exact bytes.
 - The fixture overlay contains mkfs tools. It is a separate file and is never
@@ -175,7 +177,7 @@ first run it boots the micro-VM with the fixture overlay and writable scratch
 disks, so no root is needed. It creates:
 
 - disk0 (GPT): ext4 with a 100 MiB + 12345 B file, xfs, ntfs, btrfs, vfat, and
-  an LVM PV with VG `vgtest` and ext4 LV `data`
+  an LVM PV with VG `vgtest`, ext4 LV `data` and a thin pool with ext4 thin LV `thin`
 - disk1: ZFS pool `tank` with dataset `tank/data`, also containing the large file
 
 The images are cached in `target/restore-vm-fixtures/`. The test stores them

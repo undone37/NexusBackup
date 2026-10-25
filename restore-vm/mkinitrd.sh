@@ -13,7 +13,7 @@ work=$(mktemp -d)
 # modules (with dependencies) for disks, file systems, device mapper, md, ZFS; with the own kernel all but
 # ZFS are built in (modprobe answers "builtin", nothing to copy)
 MODS="virtio_blk ext4 xfs btrfs ntfs3 vfat exfat isofs nls_cp437 nls_utf8
-	dm_mod dm_snapshot dm_thin_pool dm_mirror raid1 raid10 raid456 zfs"
+	dm_mod dm_snapshot dm_thin_pool dm_mirror loop raid1 raid10 raid456 zfs"
 
 # copy a binary and its shared libraries into the tree $1 (merged /usr layout)
 copy_bin() {

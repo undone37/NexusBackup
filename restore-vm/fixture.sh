@@ -2,7 +2,7 @@
 # Test fixture builder, run by the agent inside the micro-VM when booted with
 # the fixture overlay and `nexus.fixture=1` (crates/pve/tests/restore_vm.rs).
 # Disks (writable): vda 1100M (GPT: ext4, xfs, ntfs, btrfs, vfat, LVM PV with
-# VG vgtest / LV data ext4), vdb 256M (ZFS pool tank, dataset tank/data),
+# VG vgtest / LV data ext4 and a thin pool with thin LV thin ext4), vdb 256M (ZFS pool tank, dataset tank/data),
 # vdc = seed (the large file payload, `nexus.bigsize` bytes).
 set -eu
 mkdir -p /bb && /usr/bin/busybox --install -s /bb
@@ -11,7 +11,7 @@ big=$(sed -n 's/.*nexus.bigsize=\([0-9]*\).*/\1/p' /proc/cmdline)
 cat >/etc/lvm/lvm.conf <<EOF
 activation { udev_sync = 0 udev_rules = 0 monitoring = 0 }
 devices { obtain_device_list_from_udev = 0 }
-global { use_lvmpolld = 0 }
+global { use_lvmpolld = 0 thin_check_executable = "" }
 EOF
 
 sfdisk -q /dev/vda <<EOF
@@ -33,6 +33,9 @@ lvm pvcreate -q /dev/vda6
 lvm vgcreate -q vgtest /dev/vda6
 lvm lvcreate -q -y -n data -L 100M vgtest
 mkfs.ext4 -q -L fx-lvm /dev/vgtest/data
+lvm lvcreate -q -y -L 64M -T vgtest/pool
+lvm lvcreate -q -y -V 48M -T vgtest/pool -n thin
+mkfs.ext4 -q -L fx-thin /dev/vgtest/thin
 printf "label: gpt\n,\n" | sfdisk -q /dev/vdb
 sleep 1
 # a partition, not the whole disk: whole-disk labeling waits for udev
@@ -60,13 +63,14 @@ mnt ntfs ntfs3 /dev/vda3
 mnt btrfs btrfs /dev/vda4
 mnt vfat vfat /dev/vda5 iocharset=utf8
 mnt lvm ext4 /dev/vgtest/data
-for fs in ext4 xfs ntfs btrfs vfat lvm; do populate "/fx/$fs" "$fs"; done
+mnt thin ext4 /dev/vgtest/thin
+for fs in ext4 xfs ntfs btrfs vfat lvm thin; do populate "/fx/$fs" "$fs"; done
 populate /fx/tank/data zfs
 echo "pool root" >/fx/tank/root.txt
 head -c "$big" /dev/vdc >/fx/ext4/big.bin
 head -c "$big" /dev/vdc >/fx/tank/data/big.bin
 
-for fs in ext4 xfs ntfs btrfs vfat lvm; do umount "/fx/$fs"; done
+for fs in ext4 xfs ntfs btrfs vfat lvm thin; do umount "/fx/$fs"; done
 lvm vgchange -q -an vgtest
 zpool export tank
 sync
