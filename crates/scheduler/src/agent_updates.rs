@@ -97,6 +97,9 @@ impl Scheduler {
             (_, "cancelled") => "cancelled".to_owned(),
             (Some(r), _) => r["state"].as_str().unwrap_or("failed").to_owned(),
             (None, "ok") => "ok".into(),
+            // never reached the agent (no `agent-info`): it is away, e.g. a laptop between networks; the rollout
+            // waits for it instead of counting a failure (#66)
+            (None, _) if !log.lines().any(|l| l.starts_with("agent-info ")) => "unreachable".into(),
             (None, _) => "failed".into(),
         };
         let error = r
@@ -130,9 +133,15 @@ impl Scheduler {
         let col = match outcome.as_str() {
             "ok" => Some("ok"),
             "rolled_back" => Some("rolled_back"),
-            "busy" | "cancelled" => None,
+            "busy" | "cancelled" | "unreachable" => None,
             _ => Some("failed"),
         };
+        if outcome == "unreachable" {
+            // held (update_hold) until the poller sees it again
+            self.db
+                .conn()
+                .execute("UPDATE agents SET reachable = 0 WHERE id = ?1", [agent])?;
+        }
         {
             let c = self.db.conn();
             match col {
@@ -206,7 +215,7 @@ impl Scheduler {
         if let Some(rid) = job.params["rollout_id"].as_i64() {
             let item = match outcome.as_str() {
                 "ok" => "ok",
-                "busy" => "waiting",
+                "busy" | "unreachable" => "waiting",
                 "cancelled" => "cancelled",
                 _ => "failed",
             };
