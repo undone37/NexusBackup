@@ -152,6 +152,22 @@ jobs:
           [[ $d =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "EDGE_REF=$NEXUS_IMAGE_REPO-edge@$d" >> "$GITHUB_ENV"
 
+      - name: Hot-add proxy image (#35; its OVA comes from iso.yml)
+        run: |
+          img=localhost/nexus-proxy-os:release
+          podman build --pull=always --build-arg NEXUS_VERSION="$VERSION" --build-arg RELEASE_KEYS=release/keys \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.source="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -f os/proxy/Containerfile -t "$img" .
+          podman run --rm "$img" bootc container lint
+          if podman run --rm "$img" grep -rl "NEXUS TEST KEY" /etc 2>/dev/null; then
+            echo "TEST key in the proxy image"; exit 1
+          fi
+          podman push --digestfile proxy-digest "$img" "docker://$NEXUS_IMAGE_REPO-proxy:$GITHUB_REF_NAME"
+          d=$(cat proxy-digest)
+          [[ $d =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "PROXY_REF=$NEXUS_IMAGE_REPO-proxy@$d" >> "$GITHUB_ENV"
+
       - name: SBOM (syft) and metadata
         # label=disable: on an SELinux host unlabeled bind mounts are refused (as release/lib.sh)
         run: |
@@ -162,11 +178,11 @@ jobs:
             -e SYFT_REGISTRY_AUTH_PASSWORD="${{ secrets.GITHUB_TOKEN }}" \
             "$SYFT_IMAGE" scan "registry:$IMAGE_REF" -o spdx-json=/out/sbom.spdx.json
           base=$(podman image inspect --format '{{.Digest}}' "$POLICY_CHECK_IMAGE" 2>/dev/null || true)
-          jq -n --arg v "$VERSION" --arg tag "$GITHUB_REF_NAME" --arg img "$IMAGE_REF" --arg edge "$EDGE_REF" \
+          jq -n --arg v "$VERSION" --arg tag "$GITHUB_REF_NAME" --arg img "$IMAGE_REF" --arg edge "$EDGE_REF" --arg proxy "$PROXY_REF" \
             --arg commit "$GITHUB_SHA" --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             --arg base "quay.io/almalinuxorg/almalinux-bootc:10@$base" \
             --arg keys "$(cd release/keys && sha256sum -- *.pub)" \
-            '{version: $v, tag: $tag, image: $img, edge_image: $edge, git_commit: $commit, workflow_run: $run,
+            '{version: $v, tag: $tag, image: $img, edge_image: $edge, proxy_image: $proxy, git_commit: $commit, workflow_run: $run,
               base_image: $base, pinned_keys_sha256: ($keys | split("\n")),
               signed: false, sign_with: "release/sign.sh sign \($img)"}' > out/release-metadata.json
           cat out/release-metadata.json

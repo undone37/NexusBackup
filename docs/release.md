@@ -135,7 +135,10 @@ podman is the only host tool needed, plus `jq`/`openssl` for check-trust.
    existing release: `gh workflow run iso.yml -f tag=vX.Y.Z`. The ISO embeds the image (no signature inside); the
    installed system switches to signature enforcement on its first update check. Check an ISO before publishing
    with `lab/appliance/iso-test.sh <iso>` (unattended UEFI install in QEMU, then a screenshot of the first-boot
-   wizard).
+   wizard). Its `ova` job builds `nexusbackup-proxy-<version>.ova` (with a `.sha256`) from the release's hot-add proxy
+   image (`proxy_image`, `os/proxy/Containerfile`, pushed by `release.yml` as `<repo>-proxy`): bootc-image-builder
+   `--type vmdk`, packed by `os/proxy/ova.sh` (OVF with the enrolment and network properties, SHA-256 manifest).
+   Check it with `lab/pvehost/esxi_ova.py deploy` on the lab vCenter.
 
 6. The `packages` job of `release.yml` (after the image job) builds the agent packages with
    `release/packages.sh` (nexus-agent `.deb`/`.rpm` for x86_64 and aarch64, the Windows

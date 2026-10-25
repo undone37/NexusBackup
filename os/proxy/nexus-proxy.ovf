@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NexusBackup VMware hot-add proxy (#35): os/proxy/build.sh fills @VERSION@, @VMDK@, @VMDK_BYTES@, @CAPACITY@.
+     One paravirtual SCSI controller (the appliance hot-adds snapshot disks at SCSI 0:1..15), one VMXNET3 NIC,
+     the OVF environment through VMware Tools (guestinfo) for the enrolment token. -->
+<Envelope xmlns="http://schemas.dmtf.org/ovf/envelope/1" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"
+    xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"
+    xmlns:vssd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_VirtualSystemSettingData"
+    xmlns:vmw="http://www.vmware.com/schema/ovf">
+  <References>
+    <File ovf:id="disk1-file" ovf:href="@VMDK@" ovf:size="@VMDK_BYTES@"/>
+  </References>
+  <DiskSection>
+    <Info>Virtual disks</Info>
+    <Disk ovf:diskId="disk1" ovf:fileRef="disk1-file" ovf:capacity="@CAPACITY@" ovf:capacityAllocationUnits="byte"
+        ovf:format="http://www.vmware.com/interfaces/specifications/vmdk.html#streamOptimized"/>
+  </DiskSection>
+  <NetworkSection>
+    <Info>Networks</Info>
+    <Network ovf:name="VM Network">
+      <Description>The network the appliance reaches the proxy on (7444/tcp)</Description>
+    </Network>
+  </NetworkSection>
+  <VirtualSystem ovf:id="nexus-proxy">
+    <Info>NexusBackup VMware hot-add proxy</Info>
+    <Name>nexus-proxy</Name>
+    <ProductSection>
+      <Info>Enrolment with the appliance</Info>
+      <Product>NexusBackup hot-add proxy</Product>
+      <Version>@VERSION@</Version>
+      <Property ovf:key="nexus.token" ovf:type="string" ovf:userConfigurable="true" ovf:value="">
+        <Label>Enrolment token</Label>
+        <Description>From the appliance: Agents, New agent with the proxy's address (valid 24 hours). The proxy initialises its agent with it at first boot; the appliance then enrols it.</Description>
+      </Property>
+      <Property ovf:key="nexus.ip" ovf:type="string" ovf:userConfigurable="true" ovf:value="">
+        <Label>Address (CIDR)</Label>
+        <Description>A static address such as 192.0.2.20/24, the one the agent was created with on the appliance. Empty: DHCP.</Description>
+      </Property>
+      <Property ovf:key="nexus.gateway" ovf:type="string" ovf:userConfigurable="true" ovf:value="">
+        <Label>Gateway</Label>
+        <Description>With a static address.</Description>
+      </Property>
+      <Property ovf:key="nexus.dns" ovf:type="string" ovf:userConfigurable="true" ovf:value="">
+        <Label>DNS servers</Label>
+        <Description>With a static address; separated by spaces.</Description>
+      </Property>
+    </ProductSection>
+    <OperatingSystemSection ovf:id="80" vmw:osType="rhel9_64Guest">
+      <Info>AlmaLinux 10 (bootc)</Info>
+    </OperatingSystemSection>
+    <VirtualHardwareSection ovf:transport="com.vmware.guestInfo">
+      <Info>2 vCPU, 2 GiB, paravirtual SCSI, VMXNET3</Info>
+      <System>
+        <vssd:ElementName>Virtual hardware</vssd:ElementName>
+        <vssd:InstanceID>0</vssd:InstanceID>
+        <vssd:VirtualSystemType>vmx-14</vssd:VirtualSystemType>
+      </System>
+      <Item>
+        <rasd:AllocationUnits>hertz * 10^6</rasd:AllocationUnits>
+        <rasd:ElementName>2 virtual CPUs</rasd:ElementName>
+        <rasd:InstanceID>1</rasd:InstanceID>
+        <rasd:ResourceType>3</rasd:ResourceType>
+        <rasd:VirtualQuantity>2</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:AllocationUnits>byte * 2^20</rasd:AllocationUnits>
+        <rasd:ElementName>2048 MB of memory</rasd:ElementName>
+        <rasd:InstanceID>2</rasd:InstanceID>
+        <rasd:ResourceType>4</rasd:ResourceType>
+        <rasd:VirtualQuantity>2048</rasd:VirtualQuantity>
+      </Item>
+      <Item>
+        <rasd:Address>0</rasd:Address>
+        <rasd:ElementName>SCSI controller 0</rasd:ElementName>
+        <rasd:InstanceID>3</rasd:InstanceID>
+        <rasd:ResourceSubType>VirtualSCSI</rasd:ResourceSubType>
+        <rasd:ResourceType>6</rasd:ResourceType>
+      </Item>
+      <Item>
+        <rasd:AddressOnParent>0</rasd:AddressOnParent>
+        <rasd:ElementName>Hard disk 1</rasd:ElementName>
+        <rasd:HostResource>ovf:/disk/disk1</rasd:HostResource>
+        <rasd:InstanceID>4</rasd:InstanceID>
+        <rasd:Parent>3</rasd:Parent>
+        <rasd:ResourceType>17</rasd:ResourceType>
+      </Item>
+      <Item>
+        <rasd:AddressOnParent>7</rasd:AddressOnParent>
+        <rasd:AutomaticAllocation>true</rasd:AutomaticAllocation>
+        <rasd:Connection>VM Network</rasd:Connection>
+        <rasd:ElementName>Network adapter 1</rasd:ElementName>
+        <rasd:InstanceID>5</rasd:InstanceID>
+        <rasd:ResourceSubType>VmxNet3</rasd:ResourceSubType>
+        <rasd:ResourceType>10</rasd:ResourceType>
+      </Item>
+      <vmw:Config ovf:required="false" vmw:key="tools.syncTimeWithHost" vmw:value="false"/>
+    </VirtualHardwareSection>
+  </VirtualSystem>
+</Envelope>

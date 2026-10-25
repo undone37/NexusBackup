@@ -81,6 +81,43 @@ jobs:
       - name: Attach to the release
         run: gh release upload "$TAG" "$ISO" "$ISO.sha256" --clobber
 
+  # the VMware hot-add proxy as an OVA (#35, manual chapter 4): bootc-image-builder vmdk of the release's proxy image
+  ova:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BIB: quay.io/centos-bootc/bootc-image-builder:latest
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+      - uses: actions/checkout@v7
+      - name: Proxy image of the release
+        run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "bad tag $TAG"; exit 1; }
+          gh release download "$TAG" -p release-metadata.json
+          img=$(jq -er '.proxy_image' release-metadata.json)
+          [[ $img =~ ^ghcr\.io/[a-z0-9/_.-]+@sha256:[0-9a-f]{64}$ ]] || { echo "bad proxy image $img"; exit 1; }
+          echo "IMAGE=$img" >> "$GITHUB_ENV"
+          echo "OVA=nexusbackup-proxy-${TAG#v}.ova" >> "$GITHUB_ENV"
+      - name: Build the OVA
+        run: |
+          echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          sudo podman pull "$IMAGE" && sudo podman pull "$BIB"
+          sudo rm -rf out && mkdir out
+          sudo podman run --rm --privileged --security-opt label=type:unconfined_t -v "$PWD/out:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            "$BIB" --type vmdk --rootfs xfs --use-librepo=true "$IMAGE"
+          vmdk=$(sudo find out -name '*.vmdk' | head -n 1)
+          sudo chown -R "$USER" out
+          os/proxy/ova.sh "$vmdk" "${TAG#v}" "$OVA"
+          [ "$(stat -c %s "$OVA")" -lt 2147483648 ] || { echo "OVA larger than 2 GiB"; exit 1; }
+          sha256sum "$OVA" > "$OVA.sha256"
+      - name: Attach to the release
+        run: gh release upload "$TAG" "$OVA" "$OVA.sha256" --clobber
+
   # bare-metal recovery ISO (docs/bmr.md), built from the release's own sources
   rescue:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
@@ -112,7 +149,7 @@ jobs:
 
   # every file the maintainer signs and publishes, before the draft is handed over
   assets:
-    needs: [iso, rescue]
+    needs: [iso, rescue, ova]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -126,6 +163,7 @@ jobs:
           missing=0
           for want in "nexusbackup-$v-x86_64.iso" "nexusbackup-$v-x86_64.iso.sha256" 'nexus-rescue-.*\.iso' \
                       "nexusbackup-edge-$v-x86_64.iso" "nexusbackup-edge-$v-x86_64.iso.sha256" \
+                      "nexusbackup-proxy-$v.ova" "nexusbackup-proxy-$v.ova.sha256" \
                       sbom.spdx.json release-metadata.json cve-report.txt SHA256SUMS \
                       'nexus-agent_.*_amd64\.deb' 'nexus-agent_.*_arm64\.deb' 'nexus-agent-.*\.x86_64\.rpm' \
                       'nexus-agent-.*\.aarch64\.rpm' 'nexus-agent-.*-x64\.msi' 'nexus-agent-release-.*\.tar'; do
