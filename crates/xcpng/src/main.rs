@@ -45,7 +45,7 @@ struct Config {
     restore: Option<RestoreCfg>,
 }
 
-/// `restore`: snapshot `source`/`time` as a new VM `name` (empty: "<stored name> (restored)") on SR `sr` with its
+/// `restore`: snapshot `source`/`time` as a new VM `name` (empty: `<stored name> (restored)`) on SR `sr` with its
 /// NICs on `network` (UUIDs; empty: the pool's default SR, the management network).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

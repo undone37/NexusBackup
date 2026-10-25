@@ -161,7 +161,7 @@ pub(crate) struct RestoreP {
 }
 
 /// An XCP-ng VM snapshot (`xcp-<uuid>`) restored into an XCP-ng pool as a new VM (#40, `nexus-xcpng restore`):
-/// `source_id` is an xcpng source of the tenant; `name` (default "<stored name> (restored)"), `sr` and `network`
+/// `source_id` is an xcpng source of the tenant; `name` (default `<stored name> (restored)`), `sr` and `network`
 /// (UUIDs; default the pool's default SR and the management network).
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
