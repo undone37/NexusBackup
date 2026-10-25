@@ -90,6 +90,9 @@ pub fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(r)
 }
 
+/// Signature of [`probe`] (replaceable in tests: a fake binary cannot run).
+pub type Probe = fn(&Path, &str) -> Result<(), String>;
+
 /// Runs a staged binary with `version` before it replaces the running one (#93, #120): a binary that never reaches
 /// its own code (loader or libc mismatch, missing CPU features, a truncated file that still carries the marker) is
 /// refused here, while the running agent is still in place. Failures later in start-up are the start watchdog's.

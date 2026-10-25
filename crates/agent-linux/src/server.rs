@@ -32,6 +32,8 @@ pub struct Linux {
     pub exe: Option<PathBuf>,
     /// desktop package version (asked once: the process restarts after an update)
     gui: std::sync::OnceLock<Option<String>>,
+    /// runs a staged binary before the swap (tests); default: `agent_core::update::probe`
+    pub probe: Option<agent_core::update::Probe>,
 }
 
 impl Linux {
@@ -373,7 +375,8 @@ impl Platform for Linux {
                 }
                 let exe = self.exe()?;
                 let data = fs::read(&main.path).map_err(|e| format!("{}: {e}", main.path.display()))?;
-                update::swap(&exe, &data, &|p| agent_core::update::probe(p, &main.version))?;
+                let probe = self.probe.unwrap_or(agent_core::update::probe);
+                update::swap(&exe, &data, &|p| probe(p, &main.version))?;
                 let _ = fs::remove_file(&main.path);
                 Ok(Installed::Restart(format!(
                     "updated {} -> {} ({})",

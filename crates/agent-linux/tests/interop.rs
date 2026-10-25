@@ -548,12 +548,17 @@ fn chunked_update_from_the_release_store() {
         hook_owner: nexus_agent::sys::geteuid(),
         ..Default::default()
     };
-    let mut agent = Agent::with_platform(
-        nexus_agent::server::Linux::with_exe(exe.clone()),
-        paths.clone(),
-        settings,
-    )
-    .unwrap();
+    let mut platform = nexus_agent::server::Linux::with_exe(exe.clone());
+    // the fake ELF cannot run: the probe (#120) checks the staged file carries the expected version instead
+    platform.probe = Some(|p, v| {
+        let got = agent_core::update::embedded_version(&fs::read(p).map_err(|e| e.to_string())?)?;
+        if got == v {
+            Ok(())
+        } else {
+            Err(format!("staged {got}, expected {v}"))
+        }
+    });
+    let mut agent = Agent::with_platform(platform, paths.clone(), settings).unwrap();
     agent.exit_on_update = false;
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
