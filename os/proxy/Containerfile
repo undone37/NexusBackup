@@ -1,0 +1,91 @@
+# NexusBackup VMware hot-add proxy OS image (#35, plan.md Phase 41, docs/vmware-design.md): a minimal bootc image that
+# runs only the Linux agent with `proxy = on`, deployed as an OVA next to the VMs (os/proxy/build.sh --ova). The
+# appliance hot-adds snapshot disks to this VM and reads them through the agent on 7444/tcp, the only open port. No
+# SSH, no login. The agent lives in /usr/local/sbin (a link to the writable /var/usrlocal/sbin), so the appliance's agent
+# rollouts update it like any bundle install (binary swap with the start watchdog of the unit, #93); a newer agent
+# in a new image replaces an older copy at boot (nexus-proxy-setup).
+# Build from the repository root:
+#   podman build -f os/proxy/Containerfile -t localhost/nexus-proxy-os:dev .
+# Lab builds pin the test release key: --build-arg RELEASE_KEYS=release/testkey
+ARG BASE=quay.io/almalinuxorg/almalinux-bootc:10
+ARG RUST_VERSION=1.93.0
+
+# ---- Stage 1: the Linux agent (the workspace manifest needs every member present)
+FROM ${BASE} AS rust
+ARG RUST_VERSION
+ARG JOBS=8
+RUN dnf -y install --setopt=install_weak_deps=False gcc make \
+ && dnf clean all
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
+ && sh /tmp/rustup.sh -y --no-modify-path --profile minimal --default-toolchain ${RUST_VERSION} \
+ && rm /tmp/rustup.sh
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY restore-vm/agent/ restore-vm/agent/
+COPY plugins/ plugins/
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -j ${JOBS} -p agent-linux --bin nexus-agent \
+ && mkdir -p /out && cp target/release/nexus-agent /out/
+
+# ---- Stage 2: the proxy image
+FROM ${BASE}
+ARG RELEASE_KEYS=release/keys
+ARG NEXUS_VERSION=0.0.0-dev
+
+# VMware Tools (the OVF properties, the appliance sees the address and powers it off cleanly); nftables, chrony
+RUN dnf -y upgrade --refresh \
+ && dnf -y install --setopt=install_weak_deps=False open-vm-tools nftables chrony \
+ && for p in toolbox flatpak-session-helper; do ! rpm -q $p >/dev/null || rpm -e $p; done \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
+ && command -v nft chronyd vmtoolsd >/dev/null
+
+# stripped like the appliance (os/slim.sh; rpm -e refuses to remove what VMware Tools still needs)
+COPY os/slim.sh /tmp/slim.sh
+RUN bash /tmp/slim.sh \
+ && rm /tmp/slim.sh \
+ && command -v vmtoolsd >/dev/null
+
+# the agent as shipped; nexus-proxy-setup puts it into /usr/local/sbin, which in this image is a link to the writable
+# /var/usrlocal/sbin (the base's /usr/local is part of the read-only /usr; SELinux labels /var/usrlocal like
+# /usr/local, so systemd may run the binary there)
+COPY --from=rust /out/nexus-agent /usr/lib/nexus-proxy/nexus-agent
+COPY os/proxy/tmpfiles.conf /usr/lib/tmpfiles.d/nexus-proxy.conf
+RUN rm -rf /usr/local/sbin && ln -s ../../var/usrlocal/sbin /usr/local/sbin \
+ && matchpathcon /var/usrlocal/sbin/nexus-agent | grep -q bin_t
+COPY os/proxy/nexus-proxy-setup /usr/libexec/nexus-proxy/nexus-proxy-setup
+# release keys for the agent's self-update (as a bundle install puts them)
+COPY ${RELEASE_KEYS}/*.pub /etc/nexus-agent/release-keys/
+RUN chmod 0755 /usr/lib/nexus-proxy/nexus-agent /usr/libexec/nexus-proxy/nexus-proxy-setup \
+ && chmod 0644 /etc/nexus-agent/release-keys/*.pub && chmod 0700 /etc/nexus-agent \
+ && ls /etc/nexus-agent/release-keys/*.pub >/dev/null
+
+# the agent's own unit (ExecStart /usr/local/sbin/nexus-agent, the start watchdog of #93)
+COPY crates/agent-linux/dist/nexus-agent.service /usr/lib/systemd/system/nexus-agent.service
+COPY os/proxy/nexus-proxy-setup.service /usr/lib/systemd/system/
+COPY os/proxy/nftables.conf /etc/sysconfig/nftables.conf
+# boot hardening shared with the appliance: no rd.shell, sulogin refuses the locked root
+COPY os/greenboot/usr/lib/bootc/kargs.d/10-nexus.toml /usr/lib/bootc/kargs.d/10-nexus.toml
+COPY os/greenboot/usr/lib/systemd/system/emergency.service.d/10-nexus.conf \
+     /usr/lib/systemd/system/emergency.service.d/10-nexus.conf
+# no updates from a registry: the agent is updated by the appliance, the OS with a new proxy image
+RUN ln -sf /dev/null /etc/systemd/system/bootc-fetch-apply-updates.timer \
+ && ln -sf /dev/null /etc/systemd/system/rpm-ostreed-automatic.timer
+RUN systemctl enable nftables.service chronyd.service vmtoolsd.service nexus-proxy-setup.service nexus-agent.service \
+ && { systemctl disable sshd.service sshd.socket 2>/dev/null || true; } \
+ && ! systemctl is-enabled -q sshd.service \
+ && usermod -L root && grep -q '^root:!' /etc/shadow \
+ && systemctl mask rescue.target rescue.service \
+ && ln -sf /dev/null /etc/systemd/system/getty@.service \
+ && ln -sf /dev/null /etc/systemd/system/autovt@.service \
+ && ln -sf /dev/null /etc/systemd/system/serial-getty@.service \
+ && systemctl is-enabled -q nexus-agent.service nexus-proxy-setup.service nftables.service
+LABEL org.opencontainers.image.title="NexusBackup VMware hot-add proxy" org.opencontainers.image.version=${NEXUS_VERSION}
+
+RUN find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*' \
+      -exec chmod go-w {} + \
+ && test -z "$(find /etc /usr -xdev \( -type f -o -type d \) -perm /022 -not -path '/usr/share/doc/*')"
+RUN bootc container lint

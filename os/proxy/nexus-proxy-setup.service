@@ -1,0 +1,17 @@
+[Unit]
+Description=NexusBackup proxy: agent binary and first-boot enrolment token (OVF properties)
+# VMware Tools answer the OVF environment; a static address is set before the network counts as online
+After=vmtoolsd.service NetworkManager.service
+Wants=vmtoolsd.service
+Before=network-online.target nexus-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus-proxy/nexus-proxy-setup
+# the token is in the OVF environment as long as the VM exists: read it once (the agent keeps its key)
+RemainAfterExit=yes
+# what it did (address, token) also on the console: the proxy has no login
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

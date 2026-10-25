@@ -1,0 +1,8 @@
+# Lab variant of the hot-add proxy image (#35): root may log in with a password given at build time (never in the
+# repository: ROOT_HASH from openssl passwd -6), so VMware Tools guest operations can run commands for lab checks
+# (lab/pvehost/esxi_guest.py). Never ship this image.
+ARG IMAGE=localhost/nexus-proxy-os:dev
+FROM ${IMAGE}
+ARG ROOT_HASH
+RUN test -n "$ROOT_HASH" && usermod -p "$ROOT_HASH" root && grep -q '^root:\$6\$' /etc/shadow
+LABEL org.opencontainers.image.title="NexusBackup VMware hot-add proxy (LAB: root password)"

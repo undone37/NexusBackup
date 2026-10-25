@@ -1009,6 +1009,21 @@ instance UUID; on a standalone host its BIOS UUID) and are shown with the VM's n
 image per virtual disk plus the VM's `.vmx`; files in it can be browsed, indexed and searched like a Proxmox VE VM's
 (the group's **Index files** switch).
 
+**The hot-add proxy as an OVA.** Every release has `nexusbackup-proxy-<version>.ova`: a small, locked-down VM that
+runs only the agent in proxy mode (no SSH, no login, only 7444/tcp open). To set it up:
+
+1. Pick the proxy's address. On the appliance, **Agents → New agent** with that address: copy the token (valid 24
+   hours).
+2. In vSphere, **Deploy OVF Template** on a host that sees the protected VMs' datastores. Under **Customize template**
+   set **Enrolment token**, and **Address (CIDR)**, **Gateway** and **DNS servers** (empty address: DHCP).
+3. Power it on. At first boot it sets the address and initialises its agent with the token; then **Enroll** it on the
+   appliance. In the VMware source choose **Hot-add**, the proxy VM's UUID (the source's inventory lists it) and its
+   agent.
+
+The appliance updates the proxy's agent like any other agent (**Agents → Updates**, with the start watchdog that
+puts the previous version back when a new one does not start). The proxy's operating system is updated by deploying
+the OVA of a newer release and enrolling it again.
+
 A VMware snapshot is restored as a **new Proxmox VE VM** ([chapter 6](06-restores.md#vmware-vms-as-proxmox-ve-vms)).
 
 Limits: a crash of the ESXi host or a hard power-off can leave CBT "unclean"; the next backup of that VM then reads
