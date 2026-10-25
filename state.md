@@ -1167,8 +1167,19 @@ incrementals, quiesced snapshots, restore to PVE). Takes over Phase 39 C5. Spike
   proxy source inventory group backup`) hot-added and read the disk of the VM on the other host: incremental
   (19 ranges, 61 s); a full read through the same path (made due on the console) compared 4096 chunks, 9 changed,
   0 unreported. nx-cbt moved back to datastore1 afterwards (the nightly run's state).
-- [ ] (epic #23) rest of M3: the proxy OVA (#35), lab (#37: vSAN, quiesced Windows snapshots: a Windows guest on
-  ESXi).
+- [x] (#35) Hot-add proxy OVA (2026-10-25, maintainer: separate image, OS by deploying a newer OVA, agent updates by
+  the appliance): `os/proxy` (bootc, agent with proxy = on, VMware Tools, only 7444 open, no login), OVF properties
+  token / address / gateway / DNS read at first boot, OVA by `os/proxy/build.sh --ova` (lab) and iso.yml (release).
+  Lab on the ESXi 8 host through vCenter (`lab/pvehost/esxi_ova.py deploy`): agent created on VM 201 for
+  10.2.34.214, OVA deployed with token and static address: up at 10.2.34.214, agent listening 5 s after Tools
+  reported it, enrolled (AlmaLinux 10.2, install `bundle`); hot-add backup of `nx-cbt (1)` through it: full 16 GB in
+  170 s, application consistent. Agent update pushed by the appliance 0.1.0 -> 0.1.9 in 10 s (`.prev` kept for the
+  watchdog). Found on the way: the UEFI firmware did not boot the disk (OVF now BIOS); the first boot read the OVF
+  environment before VMware Tools answered (now waits); the base's /usr/local is read-only (now a link to
+  /var/usrlocal/sbin); the agent's /proc/self/exe is wrong inside its private mount namespace on bootc
+  (/usrlocal/sbin/...: the first self-update failed; it now resolves its executable before). Lab image with a root
+  password for guest operations: `lab/proxy/Containerfile.lab` + `esxi_guest.py`.
+- [ ] (epic #23) rest of M3, lab (#37: quiesced Windows snapshots: a Windows guest on ESXi; vSAN ignored).
 - VixDiskLib 7.0.1 + nbdkit were installed on the regression VM (VM 280) while evaluating the VDDK/nbdkit path
   (not used; we speak NFC ourselves) and removed again 2026-10-23 (`/opt/vddk-7.0.1`, nbdkit packages gone).
 
