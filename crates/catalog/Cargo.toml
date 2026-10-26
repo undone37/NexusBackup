@@ -17,7 +17,7 @@ blake3 = "1"
 ml-kem = "0.3"
 # the written form (24 BIP39 words) of a new tenant recovery key
 recovery-key = { path = "../recovery-key" }
-rand = "0.8"
+rand = "0.10"
 totp-rs = { version = "6", default-features = false, features = ["std", "gen_secret", "otpauth"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

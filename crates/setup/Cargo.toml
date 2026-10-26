@@ -28,7 +28,7 @@ libc = "0.2"
 nftsync = { path = "../nftsync" }
 offsite = { path = "../offsite" }
 qrcode = { version = "0.14", default-features = false }
-rand = "0.8"
+rand = "0.10"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 ring = "0.17"

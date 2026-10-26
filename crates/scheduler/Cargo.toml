@@ -19,7 +19,7 @@ xcpng = { path = "../xcpng", default-features = false }
 chunkstore = { path = "../chunkstore" }
 # the appliance's own SSH keys (ed25519, OpenSSH format; src/sshkeys.rs)
 ed25519-dalek = "3"
-rand = "0.8"
+rand = "0.10"
 sha2 = "0.10"
 zeroize = "1"
 keyd = { path = "../keyd" }

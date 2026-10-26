@@ -14,7 +14,7 @@ crypto_box = { version = "0.9", features = ["seal"] }
 curve25519-dalek = "5.0"
 ml-kem = { version = "0.3", features = ["hazmat"] }
 libc = "0.2"
-rand = "0.8"
+rand = "0.10"
 recovery-key = { path = "../recovery-key" }
 zeroize = "1"
 zstd = "0.14"
