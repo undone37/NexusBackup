@@ -27,7 +27,7 @@ catalog = { path = "../catalog", optional = true }
 chunkstore = { path = "../chunkstore", optional = true }
 keyd = { path = "../keyd", optional = true }
 libc = { version = "0.2", optional = true }
-pem = { version = "3", optional = true }
+pem = { version = "4", optional = true }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring", "x509-parser"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 time = { version = "0.3", optional = true }
