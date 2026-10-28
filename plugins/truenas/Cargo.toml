@@ -11,7 +11,7 @@ description = "NexusBackup plugin: the TrueNAS connector (crate truenas) on the 
 anyhow = "1"
 base64 = "0.22"
 chunkstore = { path = "../../crates/chunkstore" }
-pem = "3"
+pem = "4"
 plugin-sdk = { path = "../../crates/plugin-sdk" }
 serde_json = "1"
 truenas = { path = "../../crates/truenas", default-features = false, features = ["client"] }

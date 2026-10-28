@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 libc = "0.2"
-pem = "3"
+pem = "4"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
