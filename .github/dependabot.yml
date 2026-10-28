@@ -17,6 +17,10 @@ updates:
       # rasterizer into the desktop GUI only for the tray icon (PR #14); bump with iced
       - dependency-name: tiny-skia
         update-types: [version-update:semver-major, version-update:semver-minor]
+      # rand's OsRng is the RNG handed to crypto_box/aead, which implement rand_core 0.6 (rand 0.8); rand 0.10
+      # removed that OsRng (PR #135). Bump with the RustCrypto crates' move to a newer rand_core
+      - dependency-name: rand
+        update-types: [version-update:semver-major, version-update:semver-minor]
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly, day: monday, time: "02:00", timezone: Europe/Berlin }
