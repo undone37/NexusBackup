@@ -1314,7 +1314,7 @@ Split out of Phase 39 (S6) as its own phase. The plan §12.2 disk layout without
 - The NVMe metadata tier: catalog and chunk indexes on a mirrored NVMe pair, the data array for packs only.
 - Virtual appliances: vTPM limits (manual chapter 2), and what the setup wizard offers without a TPM.
 - Lab: appliance VM with vTPM and Secure Boot on pve-test; unlock, update, rollback, disk replacement, recovery.
-Not started. Epic #22.
+Design proposal: docs/disk-encryption-design.md (2026-10-28, awaiting the maintainer's review). Epic #22.
 
 ### Phase 41 — VMware ESXi and vCenter backups as plugins (added 2026-10-21 by user request)
 
