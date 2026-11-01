@@ -1,0 +1,6 @@
+## Lock the rules until the next reboot (-e 2, CIS): nobody, root included, can remove or change a rule of the
+## running system; a changed rule set takes effect only through a reboot, which is itself logged. This does not
+## get in the way of updates: bootc stages the new image with its /etc (rules included) and the new rules load
+## when it boots; a rollback boots the old deployment with its own rules.
+## Break-glass (debugging with an extra rule): delete this file and reboot.
+-e 2

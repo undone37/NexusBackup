@@ -1,0 +1,52 @@
+## NexusBackup audit rules (#143), merged by augenrules at boot (audit-rules.service, after tmpfiles) with the
+## package's audit.rules (-D, the backlog and -f 1: a lost event is logged, never a kernel panic).
+## A short CIS-style set: SELinux denials, logins and PAM account changes are audit events without any rule;
+## these add the changes an administrator should be able to trace. Kept small on purpose: the services write
+## the catalog and the store all the time (their own audit log is the hash-chained one in the catalog), so
+## those paths are audited only for processes of a login session (auid set: the console root shell), never
+## for the services, which systemd starts without a login uid.
+## Rules are evaluated in order and the first match wins: the narrower paths come first.
+
+## Identity: local accounts and passwords (no sssd, no sudo on the appliance: slim.sh removes them)
+-w /etc/passwd -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+## Remote access: the sshd configuration (sshd is off; enabling it is a change worth a record)
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /etc/ssh/sshd_config.d -p wa -k sshd
+
+## Key material: keyd's KEK, its recovery escrow and the tenant keys (reads too: who opened a key file; keyd
+## reads them once at start), the web certificate's key, the appliance's SSH key for PVE nodes
+-w /var/lib/nexus/keyd -p rwa -k nexus-keys
+-w /var/lib/nexus/tls -p wa -k nexus-keys
+-w /etc/nexus/ssh -p wa -k nexus-keys
+-w /var/lib/nexus/console-unlock -p wa -k nexus-console
+
+## Appliance configuration: update policy and signing trust, time sources, plugin keys
+-w /etc/nexus -p wa -k nexus-config
+-w /etc/containers/policy.json -p wa -k nexus-config
+-w /etc/pki/nexus -p wa -k nexus-config
+
+## Catalog and chunk store: writes, renames and deletes from a login session only (see above; perm=wa selects
+## the write and attribute-change syscalls of both architectures)
+-a always,exit -F dir=/var/lib/nexus/catalog -F perm=wa -F auid!=unset -k nexus-catalog
+-a always,exit -F dir=/var/lib/nexus/chunkstore -F perm=wa -F auid!=unset -k nexus-store
+
+## Audit and SELinux configuration
+-w /etc/audit -p wa -k audit-config
+-w /etc/selinux -p wa -k mac-policy
+
+## Time changes by anything but chronyd (it adjusts the clock all the time; its steps are in the journal): a
+## forged clock breaks TOTP, certificates, schedules and retention locks (the compliance clock checks it too)
+-a always,exit -F arch=b64 -S adjtimex,settimeofday -F subj_type!=chronyd_t -k time-change
+-a always,exit -F arch=b64 -S clock_settime -F a0=0x0 -F subj_type!=chronyd_t -k time-change
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,stime -F subj_type!=chronyd_t -k time-change
+-a always,exit -F arch=b32 -S clock_settime -F a0=0x0 -F subj_type!=chronyd_t -k time-change
+-w /etc/localtime -p wa -k time-change
+
+## Kernel module load and unload attempts
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules

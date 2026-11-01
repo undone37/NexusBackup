@@ -387,6 +387,16 @@ Reviewed with the implementation (2026-10-10):
   `Forwarding::weaker_than`); a CA or pin on a plain sink is refused, so it cannot look protected.
 - SELinux: the scheduler may now connect to `rsh_port_t` (514/tcp) and `syslogd_port_t` (601, 20514) as well.
 
+### 3.13 OS audit trail (#143)
+
+- Before: `audit` was installed without `audit-rules` (a weak dependency the build skips), so auditd ran with no
+  rules loader and no rules, default sizing and no `audit=1`. Now: `audit-rules` installed and enabled, the CIS-style
+  rule set in `os/etc/audit/rules.d/50-nexus.rules` (key material including reads, configuration, identity, time,
+  modules; catalog and store writes only from login sessions, so the services do not flood it), locked with `-e 2`,
+  `audit=1 audit_backlog_limit=8192`, 40 MB of log that suspends instead of halting. Build checks (augenrules merge,
+  syscall names, watched parents) and `os/greenboot/tests/test_audit.py`; diagnostics row `auditd` (warning).
+  Not verified on a running appliance yet (lab).
+
 ---
 
 ## 4. Findings

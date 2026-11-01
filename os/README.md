@@ -39,7 +39,7 @@ not valid JSON, or if `bootc container lint` fails.
 | `rust` stage | `/usr/libexec/nexus/{keyd,nexus-pve,nexus-offsite,nexus-web-api,nexus-scheduler,nexus-setup,nexus-nft-sync}` | the services and the CLIs the scheduler spawns (names = cargo binary names, used by the units and the scheduler defaults) |
 | `restorevm` stage | `/usr/lib/nexus/restore-vm/{vmlinuz,initrd.img,manifest.txt}` | restore micro-VM (default `image_dir` of `pve::restorevm`) |
 | `qemu-kvm-core` | `/usr/libexec/qemu-kvm` | runs the micro-VM (`NEXUS_QEMU` in the scheduler unit) |
-| `audit` | auditd | AVC denials and security events in `/var/log/audit` (`ausearch -m avc`) |
+| `audit`, `audit-rules` | auditd | AVC denials and security events in `/var/log/audit` (`ausearch -m avc`); rules in `os/etc/audit/rules.d` (locked, `-e 2`), `audit=1` kernel argument, 5 x 8 MB, suspends instead of halting on a full `/var` (#143) |
 | `greenboot` | greenboot units | health-gated rollback (docs/release.md) |
 | `os/slim.sh` | (removals) | strips the base to what the appliance runs, shared with the edge image: no GPU/Wi-Fi/audio firmware, translations, docs; no dnf, sudo, sssd, Samba client, flashrom, Bluetooth, kdump, LVM/LUKS/TPM tools, cloud agents. podman stays (bootc's image store needs it on every upgrade). Each group's reason is in the script; rpm refuses a removal a kept package needs, so the build fails instead |
 | `sysusers.d/nexus.conf` | `/usr/lib/sysusers.d/` | users `nexus-keyd`, `nexus-chunkstore` (scheduler and its jobs), `nexus-webapi`; groups `nexus-keyd` (keyd socket), `nexus-catalog` (catalog, downloads, update control); `nexus-chunkstore` ∈ `nexus-keyd`, `nexus-catalog`, `kvm` |

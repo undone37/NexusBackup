@@ -35,6 +35,11 @@ load, no AVC denials, a PVE backup and restore is byte-identical.
 - sshd (not enabled) starts hardened if anyone enables it: `sshd_config.d/40-nexus-hardening.conf`, mode 0600.
 - Login banners `/etc/issue`, `/etc/issue.net`; umask 027 (`login.defs`, `bashrc`, `profile`); 15-minute shell
   timeout (`profile.d`).
+- auditd (6.3, #143): `audit-rules` installed with the rules loader enabled, `audit=1 audit_backlog_limit=8192`,
+  `os/etc/audit/rules.d/50-nexus.rules` (identity files, sshd config, key material incl. reads, appliance
+  configuration, catalog and store writes from login sessions, audit and SELinux config, time changes, module
+  loads), locked with `-e 2`. Deviation: `auditd.conf` suspends logging instead of halting when `/var` fills (a full
+  `/var` must not stop backups) and keeps 5 x 8 MB.
 
 ## Main deviations
 

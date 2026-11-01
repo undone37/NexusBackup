@@ -375,6 +375,15 @@ def selinux():
     return "pass", 1, "enforcing"
 
 
+def auditd():
+    """The OS audit trail of SELinux denials and the watched changes (#143). A warning, never an update
+    blocker: the update may be what brings auditd back."""
+    if run("systemctl", "is-active", "--quiet", "auditd.service")[0] != 0:
+        return ("fail", 2, "auditd.service is not running: SELinux denials reach only the kernel log and no OS"
+                " audit trail is kept (journalctl -u auditd; free space on /var)")
+    return "pass", 1, "auditd.service running (/var/log/audit)"
+
+
 def failed_units():
     rc, out, err = run("systemctl", "list-units", "--failed", "--plain", "--no-legend", "--no-pager")
     if rc == 127:
@@ -657,6 +666,7 @@ def checks():
         check("audit.chain", "Audit log hash chain", audit_chain),
         check("catalog.integrity", "Catalog integrity", catalog_integrity),
         check("selinux", "SELinux mode", selinux),
+        check("auditd", "Audit daemon (auditd)", auditd),
         check("systemd.failed", "Failed system services", failed_units),
         check("bootc", "OS image (bootc)", bootc),
         check("smart", "Disk health (SMART)", smart),

@@ -238,7 +238,7 @@ class Checks(Host):
         self.assertEqual(
             sorted(cs),
             sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
-                    "catalog.integrity", "selinux", "systemd.failed", "bootc", "smart", "network.mtu"]),
+                    "catalog.integrity", "selinux", "auditd", "systemd.failed", "bootc", "smart", "network.mtu"]),
         )
         for cid, c in cs.items():
             want = "skip" if cid in ("smart", "network.mtu") else "pass"
@@ -259,6 +259,7 @@ class Checks(Host):
             "chronyc -c -n authdata": [0, "1.2.3.4,-,0,0,0,0,0,0,0,0\n"],
             "nft list set inet nexus allowed_out_v6": [1, ""],
             "systemctl is-active --quiet nexus-keyd.service": [3, ""],
+            "systemctl is-active --quiet auditd.service": [3, ""],
             "systemctl list-units --failed": [0, "nexus-scheduler.service loaded failed failed NexusBackup scheduler\n"],
         })
         self.save()
@@ -274,12 +275,14 @@ class Checks(Host):
             "tls.cert": ("warn", 2),
             "audit.chain": ("fail", 4),
             "selinux": ("fail", 4),
+            "auditd": ("fail", 2),
             "systemd.failed": ("fail", 3),
         }
         for cid, (status, sev) in expect.items():
             self.assertEqual((cs[cid]["status"], cs[cid]["severity"]), (status, sev), cs[cid])
         self.assertIn("seq 2", cs["audit.chain"]["detail"])
         self.assertIn("allowed_out_v6", cs["egress"]["detail"])
+        self.assertIn("kernel log", cs["auditd"]["detail"])
         self.assertEqual(
             sorted(c["id"] for c in self.m.blocking(list(cs.values()))),
             ["audit.chain", "egress", "keyd", "selinux", "systemd.failed", "time.sync"],
