@@ -2163,10 +2163,19 @@ export const en = {
       intro:
         'Sends the audit log (every entry with its sequence number and hash), alert events (raised, escalated, acknowledged, resolved) and finished jobs to your SIEM, in order and at least once. If a receiver is down, the appliance keeps the backlog and retries; after 15 minutes it raises a forwarding alert. Once a day the scheduler writes an audit.anchor entry with the current chain head, so the head leaves the appliance at least daily.',
       quorumHint:
-        'Adding or enabling a sink applies at once. Disabling or removing an enabled sink, or changing its destination, certificate trust or headers, needs a second person when approvals are enabled.',
-      syslog: 'Syslog over TLS',
+        'Adding or enabling a sink applies at once. Disabling or removing an enabled sink, changing its destination, certificate trust or headers, or moving syslog from TLS to plain TCP, needs a second person when approvals are enabled.',
+      syslog: 'Syslog',
       syslogIntro:
-        'RFC 5424 messages with RFC 5425 framing over TLS (port 6514), for rsyslog, syslog-ng or a SIEM collector.',
+        'RFC 5424 messages with RFC 5425 framing over TLS (port 6514), for rsyslog, syslog-ng or a SIEM collector. For Wazuh: plain TCP and the Wazuh format.',
+      transport: 'Transport',
+      transports: { tls: 'TLS (RFC 5425)', tcp: 'TCP, unencrypted' } as Record<string, string>,
+      plainWarn:
+        'Plain TCP sends the audit log and alerts in clear text. Use it only on the management network, for receivers without TLS such as the Wazuh manager.',
+      sFormat: 'Message format',
+      sFormats: { rfc5424: 'RFC 5424', wazuh: 'Wazuh (JSON)' } as Record<string, string>,
+      rfc5424Hint: 'Fields as structured data [nexus@32473 …] and a one-line text.',
+      wazuhHint:
+        'A BSD header with the app name as program and the record as one JSON object, for the decoder and rules in integrations/wazuh (Wazuh: syslog listener on TCP 514, allowed-ips set to this appliance).',
       https: 'HTTPS (JSON)',
       httpsIntro:
         'Batches of entries POSTed to the URL, as a JSON array or as Splunk HEC events. Any 2xx answer counts as delivered.',

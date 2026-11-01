@@ -189,6 +189,7 @@ jobs:
       - run: python3 -m unittest discover -s os/greenboot/tests
       - run: python3 -m unittest discover -s release/tests
       - run: python3 integrations/pegaprox/test_core.py
+      - run: python3 integrations/wazuh/test_rules.py
       - run: release/check-trust.sh
   web:
     # the SPA embedded in nexus-web-api (same Node major as os/Containerfile)

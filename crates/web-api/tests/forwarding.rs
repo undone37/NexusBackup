@@ -351,6 +351,46 @@ async fn forwarding_settings_sealing_and_weakening_approval() {
     );
 }
 
+/// Wazuh: plain TCP and the Wazuh format; a certificate setting on plain TCP is refused, and moving an enabled
+/// TLS sink to plain TCP is a weakening (approval).
+#[tokio::test]
+async fn syslog_plain_tcp_for_wazuh() {
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let tls = json!({"syslog": {"host": "wazuh.example", "port": 514, "pin_sha256": PIN}});
+    let mut bad = tls.clone();
+    bad["syslog"]["transport"] = json!("tcp");
+    let r = t.put("/api/v1/settings/forwarding", &alice, bad).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(r.body.to_string().contains("transport tls"), "{:?}", r.body);
+    // trusted through the public roots (no pin): only the transport changes below
+    let tls = json!({"syslog": {"host": "wazuh.example", "port": 514}});
+    assert_eq!(
+        t.put("/api/v1/settings/forwarding", &alice, tls).await.status,
+        StatusCode::OK
+    );
+    let plain = json!({"syslog": {"host": "wazuh.example", "port": 514, "transport": "tcp", "format": "wazuh"}});
+    let r = t.put("/api/v1/settings/forwarding", &alice, plain).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.body);
+    assert_eq!(t.setting()["syslog"]["transport"], "tls", "unchanged until approved");
+
+    // a new plain sink applies at once, port 514 by default
+    let t = T::new();
+    let alice = t.login("alice").await;
+    let r = t
+        .put(
+            "/api/v1/settings/forwarding",
+            &alice,
+            json!({"syslog": {"host": "wazuh.example", "transport": "tcp", "format": "wazuh"}}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(
+        (r.body["syslog"]["port"].as_i64(), r.body["syslog"]["format"].as_str()),
+        (Some(514), Some("wazuh"))
+    );
+}
+
 #[tokio::test]
 async fn audit_filters_and_csv_export() {
     let t = T::new();

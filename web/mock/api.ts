@@ -370,6 +370,8 @@ const db = {
       pin_sha256: '3f'.repeat(32),
       app_name: 'nexus',
       facility: 13,
+      transport: 'tls',
+      format: 'rfc5424',
     },
     https: null,
   } as Json,
@@ -8987,14 +8989,25 @@ on('PUT', '/settings/forwarding', async (c) => {
     const app = s.app_name ?? 'nexus';
     if (!/^[!-~]{1,48}$/.test(app))
       throw new HttpError(400, 'syslog.app_name: 1..=48 printable ASCII characters, no spaces');
+    // plain tcp (Wazuh: no TLS) refuses certificate trust; the wazuh format sends BSD header + JSON
+    const transport = s.transport ?? 'tls';
+    const format = s.format ?? 'rfc5424';
+    if (!['tls', 'tcp'].includes(transport)) throw new HttpError(400, 'syslog.transport: tls or tcp');
+    if (!['rfc5424', 'wazuh'].includes(format)) throw new HttpError(400, 'syslog.format: rfc5424 or wazuh');
+    const ca = pem(s.ca_pem, 'syslog');
+    const p = pin(s.pin_sha256, 'syslog');
+    if (transport === 'tcp' && (ca || p))
+      throw new HttpError(400, 'syslog: ca_pem and pin_sha256 need transport tls (plain tcp is not encrypted)');
     syslog = {
       enabled: s.enabled ?? true,
       host: s.host,
-      port: s.port ?? 6514,
-      ca_pem: pem(s.ca_pem, 'syslog'),
-      pin_sha256: pin(s.pin_sha256, 'syslog'),
+      port: s.port ?? (transport === 'tcp' ? 514 : 6514),
+      ca_pem: ca,
+      pin_sha256: p,
       app_name: app,
       facility,
+      transport,
+      format,
     };
   }
   let https: Json | null = null;
@@ -9034,7 +9047,9 @@ on('PUT', '/settings/forwarding', async (c) => {
   const same = (a: Json, b: Json | null, keys: string[]) =>
     !!a && !!b && b.enabled && keys.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k]));
   const weaker =
-    (old.syslog?.enabled && !same(old.syslog, syslog, ['host', 'port', 'ca_pem', 'pin_sha256'])) ||
+    (old.syslog?.enabled &&
+      (!same(old.syslog, syslog, ['host', 'port', 'ca_pem', 'pin_sha256']) ||
+        ((old.syslog.transport ?? 'tls') === 'tls' && syslog?.transport === 'tcp'))) ||
     (old.https?.enabled && !same(old.https, https, ['url', 'ca_pem', 'pin_sha256', 'headers']));
   if (weaker) return quorum(u, 'settings.forwarding', { forwarding: next, old: pubForwarding(old) });
   db.forwarding = next;

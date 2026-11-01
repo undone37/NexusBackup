@@ -51,6 +51,34 @@ pub struct Syslog {
     /// syslog facility code (0..=23); default 13 ("log audit")
     #[serde(default = "facility")]
     pub facility: u8,
+    #[serde(default)]
+    pub transport: Transport,
+    #[serde(default)]
+    pub format: SyslogFormat,
+}
+
+/// How syslog messages travel.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    /// RFC 5425: TLS, octet-counting framing
+    #[default]
+    Tls,
+    /// plain TCP, each message ended by a newline (RFC 6587 non-transparent framing), for receivers without TLS
+    /// such as Wazuh's syslog listener; unencrypted, so for the management network only
+    Tcp,
+}
+
+/// What a syslog message looks like.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SyslogFormat {
+    /// RFC 5424 with the fields as structured data `[nexus@<PEN> ...]`
+    #[default]
+    Rfc5424,
+    /// BSD header (`<PRI>Mmm dd hh:mm:ss host app: `) and the record as one JSON object (the HTTPS sink's), which
+    /// Wazuh pre-decodes and splits into fields with its JSON decoder (`integrations/wazuh/`)
+    Wazuh,
 }
 
 /// Batched POST in [`Format`]; header values are sealed to the scheduler at
@@ -153,6 +181,7 @@ impl Forwarding {
                 n.enabled
                     && n.host == o.host
                     && n.port == o.port
+                    && (n.transport == o.transport || n.transport == Transport::Tls)
                     && n.ca_pem == o.ca_pem
                     && n.pin_sha256 == o.pin_sha256
             })
@@ -204,6 +233,15 @@ mod tests {
         assert!(edit(&|n| {
             n.https.as_mut().unwrap().headers.clear();
         }));
+        assert!(
+            edit(&|n| n.syslog.as_mut().unwrap().transport = Transport::Tcp),
+            "TLS to plain TCP"
+        );
+        assert!(
+            !edit(&|n| n.syslog.as_mut().unwrap().format = SyslogFormat::Wazuh),
+            "a format option"
+        );
+        assert_eq!(s.transport, Transport::Tls, "default");
         assert!(!edit(&|n| n.syslog.as_mut().unwrap().facility = 16));
         assert!(!edit(&|n| n.https.as_mut().unwrap().batch_max = 10));
         assert!(

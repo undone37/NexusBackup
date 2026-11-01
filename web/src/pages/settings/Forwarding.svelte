@@ -11,7 +11,8 @@
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconX from '@lucide/svelte/icons/x';
 
-  // Setting `forwarding` (Phase 14a): syslog over TLS and/or HTTPS JSON. Header values are write-only.
+  // Setting `forwarding` (Phase 14a): syslog (TLS, or plain TCP for Wazuh) and/or HTTPS JSON. Header values are
+  // write-only.
   type Header = { name: string; value: string; stored: boolean };
   const FACILITIES = Object.entries(t.settings.fw.facilities).map(([k, v]) => ({ k: Number(k), v }));
   const admin = $derived(session.user?.role === 'admin');
@@ -21,7 +22,17 @@
   let result: Record<string, string> | null = $state(null);
   let f = $state({
     sOn: false,
-    s: { enabled: true, host: '', port: 6514, ca_pem: '', pin_sha256: '', app_name: 'nexus', facility: 13 },
+    s: {
+      enabled: true,
+      host: '',
+      port: 6514,
+      ca_pem: '',
+      pin_sha256: '',
+      app_name: 'nexus',
+      facility: 13,
+      transport: 'tls' as 'tls' | 'tcp',
+      format: 'rfc5424' as 'rfc5424' | 'wazuh',
+    },
     hOn: false,
     h: {
       enabled: true,
@@ -47,6 +58,8 @@
         pin_sha256: c.syslog?.pin_sha256 ?? '',
         app_name: c.syslog?.app_name ?? 'nexus',
         facility: c.syslog?.facility ?? 13,
+        transport: c.syslog?.transport ?? 'tls',
+        format: c.syslog?.format ?? 'rfc5424',
       },
       hOn: !!c.https,
       h: {
@@ -81,8 +94,9 @@
             ...f.s,
             port: Number(f.s.port),
             facility: Number(f.s.facility),
-            ca_pem: opt(f.s.ca_pem),
-            pin_sha256: opt(f.s.pin_sha256),
+            // no certificate trust on a plain connection (the API refuses it)
+            ca_pem: plain ? null : opt(f.s.ca_pem),
+            pin_sha256: plain ? null : opt(f.s.pin_sha256),
           }
         : null,
       https: f.hOn
@@ -122,6 +136,12 @@
       f.headers.push({ name: 'Authorization', value: '', stored: false });
   }
   const hec = $derived(f.h.format === 'splunk_hec');
+  const plain = $derived(f.s.transport === 'tcp');
+  // the usual port follows the transport unless one was typed
+  function setTransport() {
+    if (plain && f.s.port === 6514) f.s.port = 514;
+    else if (!plain && f.s.port === 514) f.s.port = 6514;
+  }
   const label = (k: string) => (k === 'syslog' ? t.settings.fw.syslog : k === 'https' ? t.settings.fw.https : k);
 </script>
 
@@ -178,6 +198,20 @@
               <input id="fw-port" type="number" min="1" max="65535" bind:value={f.s.port} required />
             </div>
             <div class="field">
+              <label for="fw-transport">{t.settings.fw.transport}</label>
+              <select id="fw-transport" bind:value={f.s.transport} onchange={setTransport}>
+                <option value="tls">{t.settings.fw.transports.tls}</option>
+                <option value="tcp">{t.settings.fw.transports.tcp}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="fw-sformat">{t.settings.fw.sFormat}</label>
+              <select id="fw-sformat" bind:value={f.s.format} aria-describedby="fw-sformat-hint">
+                <option value="rfc5424">{t.settings.fw.sFormats.rfc5424}</option>
+                <option value="wazuh">{t.settings.fw.sFormats.wazuh}</option>
+              </select>
+            </div>
+            <div class="field">
               <label for="fw-app">{t.settings.fw.appName}</label>
               <input id="fw-app" class="mono" bind:value={f.s.app_name} required maxlength="48" spellcheck="false" />
             </div>
@@ -188,23 +222,30 @@
               </select>
             </div>
           </div>
-          <p class="hint">{t.settings.fw.trustHint}</p>
-          <div class="form-grid">
-            <div class="field">
-              <label for="fw-spin">{t.settings.fw.pin}</label>
-              <input id="fw-spin" class="mono" bind:value={f.s.pin_sha256} spellcheck="false" placeholder="ab:cd:…" />
+          <p class="hint" id="fw-sformat-hint">
+            {f.s.format === 'wazuh' ? t.settings.fw.wazuhHint : t.settings.fw.rfc5424Hint}
+          </p>
+          {#if plain}
+            <p class="banner warn" role="note">{t.settings.fw.plainWarn}</p>
+          {:else}
+            <p class="hint">{t.settings.fw.trustHint}</p>
+            <div class="form-grid">
+              <div class="field">
+                <label for="fw-spin">{t.settings.fw.pin}</label>
+                <input id="fw-spin" class="mono" bind:value={f.s.pin_sha256} spellcheck="false" placeholder="ab:cd:…" />
+              </div>
             </div>
-          </div>
-          <div class="field">
-            <label for="fw-sca">{t.settings.fw.caPem}</label>
-            <textarea
-              id="fw-sca"
-              class="mono"
-              rows="4"
-              bind:value={f.s.ca_pem}
-              spellcheck="false"
-              placeholder="-----BEGIN CERTIFICATE-----"></textarea>
-          </div>
+            <div class="field">
+              <label for="fw-sca">{t.settings.fw.caPem}</label>
+              <textarea
+                id="fw-sca"
+                class="mono"
+                rows="4"
+                bind:value={f.s.ca_pem}
+                spellcheck="false"
+                placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+            </div>
+          {/if}
         {/if}
       </section>
 

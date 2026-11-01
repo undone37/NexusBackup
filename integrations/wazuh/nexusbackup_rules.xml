@@ -1,0 +1,115 @@
+<!--
+  NexusBackup appliance rules for Wazuh (integrations/wazuh/README.md), ids 110100 to 110199: change the range if it
+  collides with local rules. Fields come from the JSON record (docs/control-plane.md "Forwarding"):
+  type audit | alert | job | test; audit: action, actor, target, details.*; alert: kind, severity, event
+  (raised | escalated | acknowledged | resolved), category, message, tenant, alert_url; job: kind, state, tenant.
+  `action` (and `id`) are Wazuh static fields: rules match them with <action>, not <field>.
+  Children are checked in file order, so the more specific rule comes first.
+-->
+<group name="nexusbackup,">
+
+  <rule id="110100" level="3">
+    <decoded_as>nexusbackup</decoded_as>
+    <description>NexusBackup: event from $(host)</description>
+  </rule>
+
+  <rule id="110101" level="3">
+    <if_sid>110100</if_sid>
+    <field name="type" type="pcre2">^test$</field>
+    <description>NexusBackup: test message from $(host) (Settings, Forwarding)</description>
+  </rule>
+
+  <!-- audit log entries -->
+  <rule id="110110" level="3">
+    <if_sid>110100</if_sid>
+    <field name="type" type="pcre2">^audit$</field>
+    <description>NexusBackup audit: $(action) $(target) by $(actor)</description>
+    <group>audit,</group>
+  </rule>
+
+  <rule id="110111" level="12">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^console\.(root_shell|unlock)$</action>
+    <description>NexusBackup audit: console unlocked or root shell opened on $(host)</description>
+    <group>audit,policy_changed,</group>
+  </rule>
+
+  <rule id="110112" level="10">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^auth\.lockout$</action>
+    <description>NexusBackup audit: account $(target) locked after failed logins</description>
+    <group>audit,authentication_failures,</group>
+  </rule>
+
+  <rule id="110113" level="5">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^auth\.(login_failed|reauth_failed|activate_failed|oidc_denied)$</action>
+    <description>NexusBackup audit: $(action) for $(target)</description>
+    <group>audit,authentication_failed,</group>
+  </rule>
+
+  <rule id="110114" level="8">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^(snapshot\.(delete|hold_release|keep_until)|retention\.orphans|tenant\.(delete|disable|lockdown|impersonate))$</action>
+    <description>NexusBackup audit: $(action) $(target) by $(actor) (backup data or tenant access)</description>
+    <group>audit,</group>
+  </rule>
+
+  <rule id="110115" level="8">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^settings\.(forwarding|alerts|anomaly)$</action>
+    <description>NexusBackup audit: $(action) changed by $(actor) (what reaches the SIEM or raises alerts)</description>
+    <group>audit,policy_changed,</group>
+  </rule>
+
+  <rule id="110116" level="3">
+    <if_sid>110110</if_sid>
+    <action type="pcre2">^auth\.(login|oidc_login)$</action>
+    <description>NexusBackup audit: $(actor) logged in</description>
+    <group>audit,authentication_success,</group>
+  </rule>
+
+  <!-- alerts -->
+  <rule id="110120" level="3">
+    <if_sid>110100</if_sid>
+    <field name="type" type="pcre2">^alert$</field>
+    <description>NexusBackup alert $(kind) $(event): $(message)</description>
+  </rule>
+
+  <rule id="110121" level="14">
+    <if_sid>110120</if_sid>
+    <field name="event" type="pcre2">^(raised|escalated)$</field>
+    <field name="severity" type="pcre2">^critical$</field>
+    <field name="category" type="pcre2">^security$</field>
+    <description>NexusBackup critical security alert $(kind): $(message)</description>
+    <group>attack,</group>
+  </rule>
+
+  <rule id="110122" level="12">
+    <if_sid>110120</if_sid>
+    <field name="event" type="pcre2">^(raised|escalated)$</field>
+    <field name="severity" type="pcre2">^critical$</field>
+    <description>NexusBackup critical alert $(kind): $(message)</description>
+  </rule>
+
+  <rule id="110123" level="7">
+    <if_sid>110120</if_sid>
+    <field name="event" type="pcre2">^(raised|escalated)$</field>
+    <field name="severity" type="pcre2">^warning$</field>
+    <description>NexusBackup warning $(kind): $(message)</description>
+  </rule>
+
+  <!-- jobs -->
+  <rule id="110130" level="2">
+    <if_sid>110100</if_sid>
+    <field name="type" type="pcre2">^job$</field>
+    <description>NexusBackup job $(kind) $(state) (tenant $(tenant))</description>
+  </rule>
+
+  <rule id="110131" level="7">
+    <if_sid>110130</if_sid>
+    <field name="state" type="pcre2">^failed$</field>
+    <description>NexusBackup job $(kind) failed (tenant $(tenant))</description>
+  </rule>
+
+</group>
