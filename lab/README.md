@@ -258,7 +258,9 @@ and its guest. Added 2026-10-25: .218 the nested XCP-ng (VM 287, `xcpng.sh`), .2
 (`directory-e2e.sh`), VM 296 the nested Hyper-V host (`lab/windows/hyperv.sh`), VM 298 a Windows Server with an
 autologon user for the desktop UI tests (`lab/windows/gui-update.sh`). Added 2026-11-01: VM 290 `nx-wazuh` (Debian 12,
 a full clone of VM 224, DHCP, wazuh-manager 4.14 without vulnerability detection: its feed fills the 15 GB disk), the
-receiver of `lab/pvehost/wazuh.sh` (#139).
+receiver of `lab/pvehost/wazuh.sh` (#139). VM 292 `nx-nexusstor` (10.2.34.221, NexusStor from its lab ISO with a VM
+kickstart, UEFI, pool tank on two 20 GB disks, vStor acme on a second NIC with link down, root by
+`~/nexus-lab/nexusstor/root_ed25519`): the paired NexusStor of `lab/pvehost/nexusstor.sh` (#137).
 
 ## Edge proxy and lab registry on the PVE lab host
 

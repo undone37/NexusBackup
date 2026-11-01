@@ -1594,8 +1594,21 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   chapter 19 + screenshot `source-nexusstor`. Tests: `cargo test -p nexusstor-plugin` (9 unit, 10 integration against
   an in-process NexusStor over TLS incl. the binary in the real sandbox), `cargo test -p web-api --test plugins
   nexusstor`.
-  - open: lab run against a NexusStor appliance (needs its step 1); restores, reports back, ransomware signals and the
-    S3 target (steps 3 and 4).
+  - lab 2026-11-01 (`lab/pvehost/nexusstor.sh`; NexusStor main 35c0365 installed as VM 292 from its
+    lab/build-iso.sh with a VM kickstart, pool tank = mirror of two 20 GB disks, vStor acme with exports / and
+    /projects and 6 files / 64 MB as uid 20000, pairing `nexusbackup-lab` scoped to acme; VM 201 on 0.0.55-dev with
+    the plugin bundle nexusstor 1.0.0 signed by the TEST key, installed through approval): source from the pasted
+    token (host, port and pin derived by the web-api), plugin_validate paired on first contact, plugin_guests
+    "acme (2 NFS)"; full backup 6 files 67.1 MB in 5 s from the held snapshot nexusbackup-1793557804; after a file
+    added, one changed and one removed on NexusStor the incremental read 2 files (37 bytes, 656 bytes transferred,
+    4 unchanged reused, 4 changes from zfs diff) in 1 s; the latest snapshot downloaded as tar: the 6 files equal by
+    SHA-256 to the vStor's data root, the user xattr kept; NexusStor holds both nexusbackup snapshots (tag
+    nexusbackup). Setup notes for the VM: NexusStor's wizard sets the management network (ens18 stays unmanaged until
+    then): applied with `nexusstor-net console-apply` on the console (German keyboard layout of the lab kickstart);
+    the pool through nexusstor-disks' create_pool request, the admin with `nexusstor-web-api create-admin`, then
+    `nexusstor-setup detect`; a vStor needs its own port (a VLAN on the management port is refused): a second NIC
+    with link down. Seen, not NexusStor-specific: the snapshot list shows size 0 for most snapshots of every kind.
+  - open: restores into vStors, reports back, ransomware signals and the S3 target (steps 3 and 4).
 
 ## Wazuh (added 2026-11-01, #139)
 
