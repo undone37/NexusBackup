@@ -130,7 +130,8 @@ FROM ${BASE}
 
 # chrony, nftables: part of the base, asserted. qemu-kvm-core: the restore
 # micro-VM (/usr/libexec/qemu-kvm, nbd block driver and seccomp built in). audit:
-# auditd keeps AVC denials and other security events in /var/log/audit.
+# auditd keeps AVC denials and other security events in /var/log/audit; audit-rules (auditctl, augenrules,
+# audit-rules.service) is its own package on EL10 and only a weak dependency of audit, so it is named (#143).
 # smartmontools (smartctl, ~2.3 MB) and mdadm (~1.1 MB), both AlmaLinux BaseOS: disk health
 # and the data array of nexus-disks (Phase 16, docs/hardware.md); xfsprogs and util-linux
 # (mkfs.xfs, xfs_growfs, lsblk, wipefs, blkid) are part of the base, asserted.
@@ -139,7 +140,7 @@ FROM ${BASE}
 # anything depends on them. podman and skopeo stay: bootc needs them. dnf upgrade: the base image lags the
 # AlmaLinux security updates by days (kernel, openssl, python3 in the 0.2.0-alpha scan).
 RUN dnf -y upgrade --refresh \
- && dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit smartmontools mdadm \
+ && dnf -y install --setopt=install_weak_deps=False chrony nftables qemu-kvm-core audit audit-rules smartmontools mdadm \
  && for p in toolbox flatpak-session-helper; do ! rpm -q $p >/dev/null || rpm -e $p; done \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/cache/ldconfig /var/lib/dnf /var/log/dnf* /var/log/hawkey.log \
@@ -315,6 +316,30 @@ RUN usermod -L root \
       nexus-plugin-install.service nexus-plugin-install.path nexus-tls.path nexus-config-backup.path \
  && test "$(systemctl is-enabled getty@tty2.service)" = masked \
  && ! systemctl is-enabled -q nexus-web-api.service nexus-scheduler.service nexus-keyd.service
+
+# auditd (#143): enabled with its rules loader (audit 4: audit-rules.service runs augenrules --load after
+# tmpfiles), os/etc/audit/auditd.conf (40 MB of log, never halts) and os/etc/audit/rules.d. Loading the rules
+# needs the kernel's audit socket, which a build does not get: augenrules merges them into
+# /etc/audit/audit.rules (the same merge runs at boot), every syscall name must exist for its architecture
+# (ausyscall), and every watched path below /etc must have its parent in the image (the /var/lib/nexus ones
+# come from tmpfiles, os/greenboot/tests/test_audit.py).
+RUN command -v auditd auditctl augenrules ausearch ausyscall >/dev/null \
+ && systemctl preset auditd.service audit-rules.service \
+ && systemctl is-enabled -q auditd.service audit-rules.service \
+ && grep -q augenrules /usr/lib/systemd/system/audit-rules.service \
+ && augenrules \
+ && grep -qx -- '-w /var/lib/nexus/keyd -p rwa -k nexus-keys' /etc/audit/audit.rules \
+ && test "$(tail -n 1 /etc/audit/audit.rules)" = '-e 2' \
+ && sed -n 's/^-a .*-F arch=\(b32\|b64\) -S \([^ ]*\).*/\1 \2/p' /etc/audit/rules.d/50-nexus.rules | grep -q . \
+ && sed -n 's/^-a .*-F arch=\(b32\|b64\) -S \([^ ]*\).*/\1 \2/p' /etc/audit/rules.d/50-nexus.rules \
+    | while read -r arch calls; do m=x86_64; [ "$arch" = b32 ] && m=i386; \
+        for c in $(echo "$calls" | tr , " "); do ausyscall --exact "$m" "$c" >/dev/null || { echo "audit rule: no syscall $c on $m" >&2; exit 1; }; done; done \
+ && for p in $(awk '$1 == "-w" && $2 ~ "^/etc/" {print $2}' /etc/audit/rules.d/50-nexus.rules); do \
+      test -d "$(dirname "$p")" || { echo "audit rule: no directory $(dirname "$p")" >&2; exit 1; }; done \
+ && grep -q '"audit=1"' /usr/lib/bootc/kargs.d/10-nexus.toml \
+ && grep -q '^d /var/log/audit  *0700  *root  *root ' /usr/lib/tmpfiles.d/nexus.conf \
+ && matchpathcon /var/log/audit/audit.log | grep -q auditd_log_t \
+ && chmod 0640 /etc/audit/auditd.conf /etc/audit/rules.d/*.rules
 
 # Only the packages the appliance runs (os/slim.sh: firmware, translations, docs and unused base packages);
 # also keeps the installer ISO below GitHub's 2 GiB asset limit. The base image's layers only shrink in the

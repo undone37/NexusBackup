@@ -2,4 +2,6 @@
 # mount the root file system, dracut would start an emergency shell with sulogin, and the
 # initramfs's root account has no password. rd.shell=0: no shell; rd.emergency=reboot: try
 # again (after an update, greenboot's boot counter falls back to the previous deployment).
-kargs = ["rd.shell=0", "rd.emergency=reboot"]
+# audit=1: every process is auditable from the start, not only those started after auditd (CIS);
+# audit_backlog_limit: room for the events of early boot until auditd reads them (#143).
+kargs = ["rd.shell=0", "rd.emergency=reboot", "audit=1", "audit_backlog_limit=8192"]

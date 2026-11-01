@@ -62,7 +62,7 @@ rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
 
 # what must survive
 rpm -q bootc ostree rpm-ostree skopeo podman python3 linux-firmware realtek-firmware amd-ucode-firmware microcode_ctl \
-	xfsprogs dosfstools e2fsprogs NetworkManager nftables chrony >/dev/null
+	xfsprogs dosfstools e2fsprogs NetworkManager nftables chrony audit audit-rules >/dev/null
 for d in bnx2 bnx2x qed tigon cxgb4 rtl_nic intel/ice; do
 	test -d "/usr/lib/firmware/$d" || { echo "slim.sh: missing NIC firmware $d" >&2; exit 1; }
 done

@@ -1610,3 +1610,13 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   `cargo test -p catalog forwarding`, `cargo test -p web-api --test forwarding`, `python3 integrations/wazuh/test_rules.py`.
   - open: lab run against a Wazuh manager VM on pve-test (`wazuh-logtest` with `samples.log`, live forwarding from
     VM 201, the static-field handling of `action` and `$(field)` in descriptions).
+
+## OS audit trail (added 2026-11-01, #143)
+
+- [x] auditd made real (2026-11-01, branch `143-auditd`, no lab run yet): `audit-rules` installed (EL10 splits the
+  rules loader off; the build skips weak dependencies), auditd and audit-rules enabled in the preset,
+  `os/etc/audit/auditd.conf` (ENRICHED, 5 x 8 MB, SYSLOG then SUSPEND, never HALT), `rules.d/50-nexus.rules` +
+  `99-nexus-finalize.rules` (`-e 2`), kargs `audit=1 audit_backlog_limit=8192`, `/var/log/audit` in tmpfiles,
+  build checks, `os/greenboot/tests/test_audit.py`, diagnostics row `auditd`. Adapted from NexusStor issue #6.
+  - open: image build and a lab check on an appliance VM (`rpm -q audit-rules`, `auditctl -s` enabled 2,
+    `auditctl -l`, `ausearch --input-logs -k nexus-keys`, kargs in `/proc/cmdline`).
