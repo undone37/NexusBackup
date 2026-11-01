@@ -5,7 +5,7 @@ use crate::api::Api;
 use crate::exclude::{self, Excluded};
 use crate::fleecing::{self, Level};
 use anyhow::{bail, Context, Result};
-use chunkstore::drift::{self, Drift};
+use chunkstore::drift::Drift;
 use chunkstore::progress::Meter;
 use chunkstore::store::IMAGE_CHUNK_SIZE;
 use chunkstore::{FileEntry, Index, Manifest, Store};
@@ -256,9 +256,17 @@ impl Cluster {
         // The node decides incremental vs. full (bitmap reuse) from its copy of
         // the index; a stale one (new/replaced store, retention since the last
         // push) would make PVE reuse a bitmap whose base snapshot is gone.
+        // a full read needs a fresh bitmap: over a reused one PVE's snapshot access (copy-before-write
+        // with that bitmap) refuses reads outside the dirty regions (EINVAL, lab #70), so the node gets
+        // the VM without devices for this backup and answers 'new' (not for the pre-rollback backup,
+        // which needs the bitmap)
+        let hide: BTreeSet<u32> = match self.full_read.contains(&vmid) && !require_bitmap {
+            true => BTreeSet::from([vmid]),
+            false => BTreeSet::new(),
+        };
         ssh.run(
             &format!("put-index {}", self.storage),
-            Some(&serde_json::to_vec(&build_index(store)?)?),
+            Some(&serde_json::to_vec(&build_index_hiding(store, &hide)?)?),
         )
         .with_context(|| format!("push index to {node}"))?;
         self.check_fleecing(&node)?;
@@ -453,10 +461,9 @@ impl Cluster {
         let excluded = self.exclude.get(&vmid).map(Vec::as_slice).unwrap_or_default();
         let parts = job.devices.iter().filter(|d| !excluded.contains(&d.name)).count() as u32;
         let mut part = 0;
-        // Phase 29: per-chunk comparison with the base of every disk whose bitmap was reused
+        // Phase 29: a full read over fresh bitmaps (the index push hid the VM's devices)
         let force = self.full_read.contains(&vmid);
-        let mut drift = Drift::new("dirty-bitmap", prev.as_ref().map(|m| m.time));
-        let mut compared = false;
+        let mut postponed = false;
         let mut skipped = Excluded {
             mode: self.exclude_mode,
             disks: Vec::new(),
@@ -485,7 +492,7 @@ impl Cluster {
             };
             part += 1;
             let at = (part, parts);
-            let (idx, n, reported) = pull_device(
+            let (idx, n, later) = pull_device(
                 store,
                 ssh,
                 vmid,
@@ -496,10 +503,7 @@ impl Cluster {
                 force,
             )
             .with_context(|| format!("device {}", dev.name))?;
-            if let (Some(r), Some(b)) = (reported, &base) {
-                drift::fixed(&mut drift, b, &idx, &r, &dev.name);
-                compared = true;
-            }
+            postponed |= later;
             read += n;
             names.push(dev.name.as_str());
             indexes.push(idx);
@@ -537,8 +541,14 @@ impl Cluster {
             serde_json::json!({"vmgenid": id.vmgenid, "smbios_uuid": id.smbios_uuid, "changed": changed,
                                "previous": if changed { serde_json::to_value(&previous).unwrap_or_default() } else { serde_json::Value::Null }})
         );
-        if force {
-            println!("{}", if compared { drift } else { Drift::none() }.line(&source, time));
+        // read in full over fresh bitmaps: nothing to compare with what the bitmap would have reported
+        // (scheduler result "not_compared"; Drift::none() = no previous snapshot)
+        if force && !postponed {
+            let d = match &prev {
+                Some(m) => Drift::new("none", Some(m.time)),
+                None => Drift::none(),
+            };
+            println!("{}", d.line(&source, time));
         }
         Ok((m, read))
     }
@@ -770,11 +780,8 @@ impl Drop for Kill {
     }
 }
 
-/// `(offset, length)` ranges of a device
-type Extents = Vec<(u64, u64)>;
-
-/// Returns the device index, the bytes read from the export and, for a forced
-/// full read (`full`) over a reused bitmap, the extents the bitmap reported.
+/// Returns the device index, the bytes read from the export and whether a forced full read
+/// (`full`) had to be postponed (the node reused the bitmap).
 /// Progress: part `at.0` of `at.1` with the bytes to read (dirty extents and
 /// grown area) as its total (chunkstore::progress).
 #[allow(clippy::too_many_arguments)]
@@ -787,7 +794,7 @@ fn pull_device(
     limit: Option<&catalog::schedule::Throttle>,
     at: (u32, u32),
     full: bool,
-) -> Result<(Index, u64, Option<Extents>)> {
+) -> Result<(Index, u64, bool)> {
     let ctx = dev.bitmap_name.as_ref().map(|b| format!("qemu:dirty-bitmap:{b}"));
     let meta: Vec<&str> = ctx
         .iter()
@@ -829,10 +836,18 @@ fn pull_device(
         },
         None => (vec![(0, dev.size)], false),
     };
-    let (dirty, reported) = read_plan(dirty, dev.size, incremental && tracked && full);
-    if reported.is_some() {
+    // a full read gets a fresh bitmap (the index push hid the VM's devices); a reused one here means
+    // another push won the race: reading outside its dirty regions would fail, so this run stays
+    // incremental and the full read stays due
+    let postponed = incremental && tracked && full;
+    if postponed {
         println!(
-            "{}: full read (Phase 29): the whole device, compared with the dirty bitmap",
+            "{}: full read postponed: the node reused the dirty bitmap (Proxmox VE then serves only its dirty regions); it stays due",
+            dev.name
+        );
+    } else if full {
+        println!(
+            "{}: full read (Phase 29): the whole device over a fresh bitmap (not compared: Proxmox VE serves a reused bitmap's dirty regions only)",
             dev.name
         );
     }
@@ -903,6 +918,13 @@ fn pull_device(
         });
         drop(rx);
         let reader = reader.join().map_err(|_| anyhow::anyhow!("NBD reader panicked"))?;
+        // the store only saw the reader end: the reader's error is the cause (lab #70 showed just
+        // "NBD reader stopped")
+        if let (Err(e), Err(r)) = (&idx, &reader) {
+            if format!("{e:#}").contains("NBD reader stopped") {
+                bail!("read {}: {r}", dev.name);
+            }
+        }
         // a store error wins (the reader then only saw "consumer gone"); else the reader's error
         let idx = idx?;
         reader.with_context(|| format!("read {}", dev.name))?;
@@ -924,16 +946,7 @@ fn pull_device(
             store.chunk_workers()
         );
     }
-    Ok((idx, read, reported))
-}
-
-/// The extents to read and, for a forced full read over a reused bitmap
-/// (`compare`), the bitmap's extents kept as the "reported" ones.
-fn read_plan(dirty: Extents, size: u64, compare: bool) -> (Extents, Option<Extents>) {
-    match compare {
-        true => (vec![(0, size)], Some(dirty)),
-        false => (dirty, None),
-    }
+    Ok((idx, read, postponed))
 }
 
 /// Ranges a backup reads: the dirty extents plus a grown (or never backed up) tail, merged.
@@ -1181,6 +1194,12 @@ pub(crate) fn read_config(store: &Store, m: &Manifest, file: &str) -> Result<Opt
 }
 
 pub fn build_index(store: &Store) -> Result<serde_json::Value> {
+    build_index_hiding(store, &BTreeSet::new())
+}
+
+/// [`build_index`] with the devices of the VMs in `hide` left out, so the node starts fresh bitmaps
+/// for them (a full read).
+pub fn build_index_hiding(store: &Store, hide: &BTreeSet<u32>) -> Result<serde_json::Value> {
     let mut archives = Vec::new();
     for m in store.list_snapshots()? {
         if let Some(vmid) = m.source.strip_prefix("ct-").and_then(|v| v.parse().ok()) {
@@ -1212,7 +1231,11 @@ pub fn build_index(store: &Store) -> Result<serde_json::Value> {
         let size = device_sizes.values().sum();
         // a base with bad chunks (chunkstore::health) must not be built upon: without its
         // devices the node starts fresh bitmaps, so the next backup reads the disks in full
-        let devices = if store.is_damaged(&m)? { Vec::new() } else { devices };
+        let devices = if hide.contains(&vmid) || store.is_damaged(&m)? {
+            Vec::new()
+        } else {
+            devices
+        };
         let mut config = read_config(store, &m, "qemu-server.conf")?.unwrap_or_default();
         if let Some(x) = read_excluded(store, &m)? {
             let (c, placeholders) = x.catalog(&config);
@@ -1464,47 +1487,39 @@ mod tests {
         );
     }
 
-    /// Phase 29: a forced full read over a reused bitmap reads the whole disk and
-    /// finds the chunk the bitmap missed; the reported change is not drift.
+    /// Phase 29 / lab #70: a VM due for a full read is pushed to the node without devices, so PVE
+    /// starts a fresh bitmap (over a reused one its snapshot access refuses reads outside the dirty
+    /// regions); other VMs keep theirs.
     #[test]
-    fn full_read_finds_changes_the_bitmap_missed() {
+    fn full_read_vm_gets_a_fresh_bitmap() {
         let dir = tempfile::tempdir().unwrap();
         let keys = chunkstore::Keyring::new("t", &[(1, [7; 32])]);
         let store = Store::open(dir.path(), keys, chunkstore::Options::default()).unwrap();
-        let cs = 4096;
-        let mut disk = vec![1u8; 4 * cs];
-        let read = |d: &[u8]| {
-            let d = d.to_vec();
-            move |off: u64, buf: &mut [u8]| {
-                buf.copy_from_slice(&d[off as usize..off as usize + buf.len()]);
-                Ok(())
-            }
+        let disk = vec![1u8; 8192];
+        for vmid in [100, 101] {
+            let idx = store
+                .store_image_extents(None, 4096, disk.len() as u64, &[(0, disk.len() as u64)], |off, buf| {
+                    buf.copy_from_slice(&disk[off as usize..off as usize + buf.len()]);
+                    Ok(())
+                })
+                .unwrap();
+            let conf = Index::Dynamic {
+                entries: vec![config_entry(&store, "qemu-server.conf", "scsi0: x").unwrap()],
+            };
+            store
+                .commit_snapshot(&format!("vm-{vmid}"), 1000, &[("drive-scsi0", idx), ("config", conf)])
+                .unwrap();
+        }
+        let devices = |idx: &serde_json::Value| -> Vec<(u64, usize)> {
+            idx["archives"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| (a["vmid"].as_u64().unwrap(), a["devices"].as_array().unwrap().len()))
+                .collect()
         };
-        let base = store
-            .store_image_extents(None, cs, disk.len() as u64, &[(0, disk.len() as u64)], read(&disk))
-            .unwrap();
-        disk[cs] = 2; // reported by the bitmap
-        disk[3 * cs + 5] = 3; // missed
-        let bitmap = vec![(cs as u64, 512)];
-        // an incremental without a full read: dirty = the bitmap, nothing to compare
-        assert_eq!(
-            read_plan(bitmap.clone(), disk.len() as u64, false),
-            (bitmap.clone(), None)
-        );
-        let (dirty, reported) = read_plan(bitmap.clone(), disk.len() as u64, true);
-        assert_eq!(
-            (dirty.as_slice(), reported.as_deref()),
-            (&[(0, 4 * cs as u64)][..], Some(&bitmap[..]))
-        );
-        let idx = store
-            .store_image_extents(Some(&base), cs, disk.len() as u64, &dirty, read(&disk))
-            .unwrap();
-        let mut d = Drift::new("dirty-bitmap", Some(1));
-        drift::fixed(&mut d, &base, &idx, &reported.unwrap(), "drive-scsi0");
-        assert_eq!(
-            (d.compared, d.changed, d.unreported, d.unreported_bytes),
-            (4, 2, 1, cs as u64)
-        );
-        assert_eq!(d.examples, [format!("drive-scsi0@{}", 3 * cs)]);
+        assert_eq!(devices(&build_index(&store).unwrap()), [(100, 1), (101, 1)]);
+        let hidden = build_index_hiding(&store, &BTreeSet::from([101])).unwrap();
+        assert_eq!(devices(&hidden), [(100, 1), (101, 0)]);
     }
 }

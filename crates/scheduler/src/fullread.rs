@@ -157,6 +157,10 @@ impl Scheduler {
             let (unreported, bytes) = (n("unreported"), n("unreported_bytes"));
             let result = if v["baseline"].is_null() {
                 "no_baseline"
+            } else if v["tracker"] == "none" {
+                // read in full, but the tracker's report was not available (Proxmox VE: a full
+                // read needs a fresh bitmap, lab #70)
+                "not_compared"
             } else if unreported > 0 {
                 "drift"
             } else {

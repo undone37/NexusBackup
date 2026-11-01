@@ -126,6 +126,27 @@ full-read vm-100/12 {"tracker":"dirty-bitmap","baseline":11,"compared":256,"chan
     assert_eq!(result, "clean");
     assert!(clean.is_some());
     assert!(next > catalog::now() + 89 * 86_400, "PVE default: 90 days");
+
+    // Proxmox VE reads in full over a fresh bitmap (lab #70): nothing to compare, still recorded
+    s.db.conn().execute("UPDATE full_reads SET next_due = 1", []).unwrap();
+    pve_printing(
+        &e,
+        r#"committed vm-100/13
+full-read vm-100/13 {"tracker":"none","baseline":12,"compared":0,"changed":0,"unreported":0,"unreported_bytes":0,"examples":[]}"#,
+    );
+    let g = manual(&s, "backup", "t1", json!({"group_id": 1}));
+    run_all(&mut s);
+    assert_eq!(state(&s, g), "ok");
+    let (result, next): (String, i64) =
+        s.db.conn()
+            .query_row(
+                "SELECT result, next_due FROM full_reads WHERE source = 'vm-100'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!(result, "not_compared");
+    assert!(next > catalog::now() + 89 * 86_400, "due again after the interval");
 }
 
 /// Frozen deletions: retention steps leave the plan (with a log line), a

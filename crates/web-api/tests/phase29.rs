@@ -266,7 +266,7 @@ async fn full_read_setting_list_and_dashboard() {
     let d = t.get("/api/v1/dashboard", &tina).await.body;
     assert_eq!(
         d["full_reads"],
-        json!({"sources": 3, "verified": 1, "drift": 1, "never": 1, "oldest_verified": 1000})
+        json!({"sources": 3, "verified": 1, "drift": 1, "never": 1, "not_compared": 0, "oldest_verified": 1000})
     );
 }
 

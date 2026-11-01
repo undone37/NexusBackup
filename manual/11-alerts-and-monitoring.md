@@ -186,7 +186,9 @@ incremental snapshots between the last clean full read and this one may lack the
 restore of data from that period prefer the full-read snapshot or check the restored data. Look for the cause (a
 crash of the Proxmox host while the VM ran, a program that restores modification times, a USN journal that wrapped,
 a clock jump) and set a short interval until a full read is clean again; the alert then resolves itself. **No
-baseline** means there was nothing to compare with (the first snapshot, or a VM whose dirty bitmap was new).
+baseline** means there was nothing to compare with (the first snapshot). **Read in full** (Proxmox VE VMs) means the
+source was read completely but not compared: a Proxmox VE full read needs a fresh dirty bitmap, so the old bitmap's
+report is not available ([05](05-policies-and-groups.md#full-read-change-tracking-check)); nothing to do.
 
 ## Expiry warnings
 

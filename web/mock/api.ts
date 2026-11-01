@@ -16050,6 +16050,7 @@ function fullReadSummary(u: User): Json {
     verified: verified.length,
     drift: rows.filter((r) => r.result === 'drift').length,
     never: rows.filter((r) => r.result === null || r.result === 'no_baseline').length,
+    not_compared: rows.filter((r) => r.result === 'not_compared').length,
     oldest_verified: verified.length ? Math.min(...verified.map((r) => r.last_at)) : null,
   };
 }

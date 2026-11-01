@@ -19,7 +19,14 @@
   // drift first, then never checked, then the oldest verification
   const rank = (r: FullRead) => (r.result === 'drift' ? 0 : r.result === null || r.result === 'no_baseline' ? 1 : 2);
   const sorted = $derived([...rows].sort((a, b) => rank(a) - rank(b) || (a.last_at ?? 0) - (b.last_at ?? 0)));
-  const cls: Record<string, string> = { clean: 'ok', drift: 'bad', no_baseline: 'warn', never: 'plain' };
+  // not_compared: read in full, the tracker's report not available (Proxmox VE): complete, nothing to fix
+  const cls: Record<string, string> = {
+    clean: 'ok',
+    drift: 'bad',
+    no_baseline: 'warn',
+    never: 'plain',
+    not_compared: 'plain',
+  };
   const tracker = (r: FullRead) => {
     const k = String(r.details?.tracker ?? '');
     return k ? (t.p29.fullRead.trackers[k] ?? k) : '—';
@@ -36,6 +43,9 @@
       <span class="chip ok">{t.p29.fullRead.verified}: {summary.verified}</span>
       <span class="chip {summary.drift ? 'bad' : 'plain'}">{t.p29.fullRead.drift}: {summary.drift}</span>
       <span class="chip {summary.never ? 'warn' : 'plain'}">{t.p29.fullRead.never}: {summary.never}</span>
+      {#if summary.not_compared}<span class="chip plain" title={t.p29.fullRead.notComparedHint}
+          >{t.p29.fullRead.results.not_compared}: {summary.not_compared}</span
+        >{/if}
       {#if summary.oldest_verified}<span class="muted small"
           >{t.p29.fullRead.oldest(fmtAgo(summary.oldest_verified))}</span
         >{/if}

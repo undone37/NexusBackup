@@ -122,21 +122,23 @@ pub async fn list(State(st): State<St>, ctx: Ctx, Q(q): Q<ListQ>) -> ApiResult<J
     Ok(Json(Value::Array(rows)))
 }
 
-/// Dashboard: `{sources, verified, drift, never, oldest_verified}` (sources
-/// with a full-read row; `verified` = last full read without drift).
+/// Dashboard: `{sources, verified, drift, never, not_compared, oldest_verified}` (sources
+/// with a full-read row; `verified` = last full read without drift; `not_compared` = read in
+/// full without the tracker's report: Proxmox VE, lab #70).
 pub fn summary(c: &Connection, scope: Option<&str>) -> ApiResult<Value> {
-    let (sources, verified, drift, never, oldest): (i64, i64, i64, i64, Option<i64>) = c.query_row(
+    let (sources, verified, drift, never, not_compared, oldest): (i64, i64, i64, i64, i64, Option<i64>) = c.query_row(
         "SELECT COUNT(*),
-                COALESCE(SUM(result IN ('clean', 'no_baseline')), 0),
-                COALESCE(SUM(result = 'drift'), 0),
-                COALESCE(SUM(last_at IS NULL), 0),
-                MIN(last_clean_at)
-         FROM full_reads WHERE ?1 IS NULL OR tenant = ?1",
+                    COALESCE(SUM(result IN ('clean', 'no_baseline')), 0),
+                    COALESCE(SUM(result = 'drift'), 0),
+                    COALESCE(SUM(last_at IS NULL), 0),
+                    COALESCE(SUM(result = 'not_compared'), 0),
+                    MIN(last_clean_at)
+             FROM full_reads WHERE ?1 IS NULL OR tenant = ?1",
         [scope],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     )?;
     Ok(
         json!({"sources": sources, "verified": verified, "drift": drift, "never": never,
-              "oldest_verified": oldest}),
+              "not_compared": not_compared, "oldest_verified": oldest}),
     )
 }
