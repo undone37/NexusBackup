@@ -307,6 +307,7 @@ RUN usermod -L root \
  && systemctl mask rescue.target rescue.service \
  && test "$(systemctl is-enabled rescue.target)" = masked \
  && grep -qx 'Environment=SYSTEMD_SULOGIN_FORCE=0' /usr/lib/systemd/system/emergency.service.d/10-nexus.conf \
+ && grep -qx 'ConditionPathExists=/sys/firmware/efi' /usr/lib/systemd/system/bootloader-update.service.d/10-nexus.conf \
  && ln -sf /dev/null /etc/systemd/system/getty@tty2.service \
  && ln -sf /dev/null /etc/systemd/system/autovt@tty2.service \
  && systemctl preset sshd.service sshd.socket nftables.service chronyd.service nexus-console-gate.service \

@@ -1671,3 +1671,10 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     recommended restore point; three snapshot scans in the micro-VM, about 3 minutes each (job 1756). Marker and
     rule removed afterwards.
   - open: passkey step-up (maintainer).
+
+## bootloader-update.service on BIOS boots (added 2026-11-01, #145)
+
+- [x] Drop-in `bootloader-update.service.d/10-nexus.conf`: `ConditionPathExists=/sys/firmware/efi`, so a BIOS-booted
+  appliance skips bootupd's update on boot instead of failing it (lab VM 201). Build check on the drop-in. Open in
+  #145: whether a UEFI appliance should update its boot loader on every boot or only with an image update
+  (maintainer); a lab check that VM 201 boots without the failed unit follows with the next lab image.
