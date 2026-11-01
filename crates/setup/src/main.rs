@@ -14,6 +14,10 @@ const USAGE: &str = "usage: nexus-setup [options]
                                 print the boot menu (GRUB) password derived from the recovery key (stdin);
                                 needs nothing else, so it also works on another Linux machine. --install
                                 (appliance, root): check the key against keyd and set the password (audited)
+       nexus-setup keys-reseal [--dry-run] [--root DIR] [--catalog FILE] [--keyd-dir DIR]
+                                after a firmware update or a Secure Boot change (the TPM no longer unseals
+                                the master key): asks for the recovery key (stdin), seals the key to the TPM
+                                again and restarts the key service
        nexus-setup vault-disable [--root DIR] [--catalog FILE] [--keyd-dir DIR]
                                 switch vault mode off after an approved vault.disable request;
                                 asks for the recovery key (stdin)
@@ -260,6 +264,33 @@ fn vault_disable(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// `keys-reseal` (#22): the recovery key seals the master key to the TPM's current state again.
+fn keys_reseal(args: &[String]) -> Result<ExitCode> {
+    let o = parse(args)?;
+    if o.script.is_some() || o.force_network {
+        bail!("keys-reseal takes only --dry-run and path options");
+    }
+    let real = o.root == std::path::Path::new("/");
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if real && unsafe { libc::geteuid() } != 0 {
+        bail!("must run as root on the appliance console");
+    }
+    eprint!("Recovery key (as printed at first boot): ");
+    let mut key = zeroize::Zeroizing::new(String::new());
+    std::io::stdin().read_line(&mut key)?;
+    let runner: Box<dyn Runner> = if o.dry_run {
+        Box::new(DryRunRunner)
+    } else {
+        Box::new(SystemRunner)
+    };
+    let mut s = Setup::open(o.paths, runner, o.dry_run, real)?;
+    s.keys_reseal(key.trim())?;
+    println!(
+        "The master key is sealed to the TPM again and the key service was restarted (audited: setup.keys_reseal)."
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
 /// `restore-config`: a new appliance takes over the configuration of a lost one.
 fn restore_config(args: &[String]) -> Result<ExitCode> {
     let (mut bundle, mut offsite, mut appliance, mut rest) = (None, None, None, Vec::new());
@@ -404,6 +435,16 @@ fn main() -> ExitCode {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("nexus-setup disable-approvals: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if args.first().is_some_and(|a| a == "keys-reseal") {
+        keyd::harden_process();
+        return match keys_reseal(&args[1..]) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("nexus-setup keys-reseal: {e:#}");
                 ExitCode::FAILURE
             }
         };

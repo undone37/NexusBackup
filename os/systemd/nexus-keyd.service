@@ -2,6 +2,9 @@
 Description=NexusBackup key daemon (KEK + tenant DEKs, hands keyrings to the scheduler)
 # Requires `keyd init` from the first-boot wizard (nexus-setup).
 ConditionPathExists=/var/lib/nexus/keyd/kek.recovery
+# #22: the KEK is the credential nexus-keyd-seal made (sealed to the TPM): without it keyd does not start
+Requires=nexus-keyd-seal.service
+After=nexus-keyd-seal.service
 
 [Service]
 Type=exec
@@ -28,8 +31,9 @@ PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any
 
-# TPM sealing is deferred (state.md): no devices. With TPM this becomes
-# DevicePolicy=closed + DeviceAllow=/dev/tpmrm0 rw + SupplementaryGroups=tss.
+# The KEK, decrypted by systemd (PID 1 talks to the TPM) into the service's own credentials directory
+# ($CREDENTIALS_DIRECTORY/kek, ramfs, only this service): keyd itself keeps no device access.
+LoadCredentialEncrypted=kek:/var/lib/nexus/keyd/kek.cred
 PrivateDevices=yes
 # No PrivateUsers=: the peer-uid check needs the real uid of the scheduler.
 NoNewPrivileges=yes

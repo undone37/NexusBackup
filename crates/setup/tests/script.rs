@@ -16,6 +16,8 @@ struct Env {
     answers: PathBuf,
     admin_secret: String,
     so_secret: String,
+    /// #22: run as on a machine without a TPM
+    tpm_absent: bool,
 }
 
 fn env() -> Env {
@@ -28,6 +30,7 @@ fn env() -> Env {
         _dir: dir,
         admin_secret: auth::new_totp_secret(),
         so_secret: auth::new_totp_secret(),
+        tpm_absent: false,
     }
 }
 
@@ -58,6 +61,8 @@ impl Env {
             ])
             .args(extra)
             .env_remove("NEXUS_SETUP_ROOT")
+            .env_remove("NEXUS_SETUP_DRY_RUN_TPM")
+            .envs(self.tpm_absent.then_some(("NEXUS_SETUP_DRY_RUN_TPM", "0")))
             .output()
             .unwrap();
         let (o, e) = (
@@ -489,6 +494,63 @@ fn invalid_totp_and_shared_names_are_rejected() {
     let (out, _, stderr) = e.run(&ans, &[]);
     assert!(!out.status.success());
     assert!(stderr.contains("at least 12 characters"), "{stderr}");
+}
+
+/// #22: no TPM, no NexusBackup: setup stops before it creates any key, says why, and audits it; with a TPM the
+/// confirmed key is sealed (nexus-keyd-seal.service) before the wizard goes on.
+#[test]
+fn no_tpm_no_key_service() {
+    let mut e = env();
+    e.tpm_absent = true;
+    let (out, stdout, stderr) = e.run(&e.answers("192.0.2.10"), &[]);
+    assert!(!out.status.success(), "{stdout}");
+    assert!(stderr.contains("no TPM 2.0 found"), "{stderr}");
+    assert!(!e.p("var/lib/nexus/keyd/kek.recovery").exists(), "no key created");
+    assert!(!stdout.contains("RECOVERY KEY"));
+    let c = e.catalog();
+    assert!(audit_actions(&c).iter().any(|(_, act, _)| act == "setup.keyd.no_tpm"));
+
+    e.tpm_absent = false;
+    let (out, stdout, stderr) = e.run(&e.answers("192.0.2.10"), &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("systemctl start nexus-keyd-seal.service"), "{stdout}");
+    let c = e.catalog();
+    assert!(audit_actions(&c).iter().any(|(_, act, _)| act == "setup.keyd.sealed"));
+}
+
+/// #22: `keys-reseal` after the TPM stopped unsealing: a wrong recovery key is refused; the right one restores the
+/// plain KEK for nexus-keyd-seal and restarts the key service (audited).
+#[test]
+fn keys_reseal_with_the_recovery_key() {
+    let e = env();
+    let (out, stdout, stderr) = e.run(&e.answers("192.0.2.10"), &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    let key = recovery_key(&stdout);
+    let plain = e.p("var/lib/nexus/keyd/kek.local");
+    let kek = fs::read(&plain).unwrap();
+    fs::remove_file(&plain).unwrap(); // what nexus-keyd-seal does after sealing
+    let reseal = |k: &str| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_nexus-setup"))
+            .args(["keys-reseal", "--root", e.root.to_str().unwrap(), "--dry-run"])
+            .env_remove("NEXUS_SETUP_ROOT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        writeln!(c.stdin.take().unwrap(), "{k}").unwrap();
+        c.wait_with_output().unwrap()
+    };
+    let bad = reseal(&keyd::format_recovery_key(&[1; 32]));
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("does not open the key escrow"));
+    assert!(!plain.exists());
+    let ok = reseal(&key);
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    assert_eq!(fs::read(&plain).unwrap(), kek, "the same KEK, ready to be sealed again");
+    let c = e.catalog();
+    assert!(audit_actions(&c).iter().any(|(_, act, _)| act == "setup.keys_reseal"));
 }
 
 #[test]

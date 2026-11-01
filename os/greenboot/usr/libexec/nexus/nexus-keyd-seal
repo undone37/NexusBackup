@@ -1,0 +1,160 @@
+#!/usr/bin/python3 -I
+# NexusBackup: the KEK sealed to the TPM (#22, docs/disk-encryption-design.md M1, plan.md §2: a TPM 2.0 is required).
+#
+#   nexus-keyd-seal migrate   what nexus-keyd-seal.service runs before nexus-keyd: a plain kek.local (written by
+#                             `keyd init` at first boot or by `keyd recover` for a reseal) becomes the systemd
+#                             credential kek.cred, encrypted with the TPM and bound to PCR 7 (Secure Boot state),
+#                             checked by decrypting it, then the plain file is overwritten and removed. An
+#                             appliance installed before the TPM requirement that has no TPM gets a credential with
+#                             the host key only (mode "host", reported as critical by diagnostics) so its backups do
+#                             not stop; once a TPM is there, the next run re-seals it with the TPM.
+#   nexus-keyd-seal status    print the status file
+#
+# nexus-keyd.service loads the credential (LoadCredentialEncrypted=kek:<dir>/kek.cred): systemd decrypts it with
+# the TPM and hands it to keyd in its credentials directory; keyd itself has no device access.
+# Status: /var/lib/nexus/keyd-seal.json (0644: mode tpm2 | host, pcrs, at). Root only, stdlib only; every path and
+# tool can be overridden through NEXUS_KEYDSEAL_* environment variables (tests).
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/keyd",
+    "STATUS": "/var/lib/nexus/keyd-seal.json",
+    "SYSTEMD_CREDS": "systemd-creds",
+    "PCRS": "7",
+    "TIMEOUT": "60",
+}
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_KEYDSEAL_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-keyd-seal: {msg}", file=sys.stderr, flush=True)
+
+
+def creds(*args, stdin=None):
+    """(exit code, stdout bytes, stderr text) of systemd-creds; 127 when it is missing."""
+    try:
+        p = subprocess.run(
+            [cfg("SYSTEMD_CREDS"), *args],
+            input=stdin,
+            capture_output=True,
+            timeout=float(cfg("TIMEOUT")),
+        )
+        return p.returncode, p.stdout, p.stderr.decode(errors="replace").strip()
+    except FileNotFoundError:
+        return 127, b"", "systemd-creds not installed"
+    except subprocess.TimeoutExpired:
+        return 124, b"", "systemd-creds timed out"
+
+
+def has_tpm2():
+    # exit 0 only when firmware, kernel driver, the TSS libraries and systemd support are all there
+    return creds("has-tpm2", "--quiet")[0] == 0
+
+
+def read_status():
+    try:
+        with open(cfg("STATUS")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_status(mode):
+    st = {"mode": mode, "pcrs": [int(p) for p in cfg("PCRS").split(",")] if mode == "tpm2" else [], "at": int(time.time())}
+    tmp = cfg("STATUS") + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, cfg("STATUS"))
+
+
+def encrypt(plain, mode):
+    """The credential for `plain` (bytes), sealed to the TPM (PCRs) or with the host key; checked by decrypting."""
+    args = ["encrypt", "--name=kek"]
+    args += ["--with-key=tpm2", f"--tpm2-pcrs={cfg('PCRS')}"] if mode == "tpm2" else ["--with-key=host"]
+    rc, out, err = creds(*args, "-", "-", stdin=plain)
+    if rc != 0 or not out:
+        raise RuntimeError(f"systemd-creds encrypt ({mode}) failed: {err or rc}")
+    rc, back, err = creds("decrypt", "--name=kek", "-", "-", stdin=out)
+    if rc != 0 or back != plain:
+        raise RuntimeError(f"the new credential does not decrypt to the KEK ({err or 'content differs'})")
+    return out
+
+
+def put(path, data):
+    tmp = path + ".new"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+def wipe(path):
+    """Overwrites the plain KEK before unlinking it (a copy-on-write file system may keep old blocks: the TPM
+    seal, not this, is the protection)."""
+    size = os.path.getsize(path)
+    fd = os.open(path, os.O_WRONLY)
+    try:
+        os.write(fd, b"\0" * size)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.unlink(path)
+
+
+def migrate():
+    d = cfg("DIR")
+    plain_path, cred_path = os.path.join(d, "kek.local"), os.path.join(d, "kek.cred")
+    tpm = has_tpm2()
+    mode = "tpm2" if tpm else "host"
+    if os.path.exists(plain_path):
+        with open(plain_path, "rb") as f:
+            plain = f.read()
+        if len(plain) != 32:
+            raise RuntimeError("kek.local is not a 32-byte key: left untouched")
+        put(cred_path, encrypt(plain, mode))
+        wipe(plain_path)
+        write_status(mode)
+        log(f"KEK sealed ({'TPM, PCR ' + cfg('PCRS') if tpm else 'host key only: NO TPM'}); kek.local removed")
+        return 0
+    if os.path.exists(cred_path) and tpm and read_status().get("mode") == "host":
+        # a TPM appeared (added vTPM, replaced mainboard): seal the host-key credential to it
+        rc, plain, err = creds("decrypt", "--name=kek", cred_path, "-")
+        if rc != 0 or len(plain) != 32:
+            raise RuntimeError(f"decrypting the host-key credential failed: {err or rc}")
+        put(cred_path, encrypt(plain, "tpm2"))
+        write_status("tpm2")
+        log(f"KEK re-sealed to the TPM (PCR {cfg('PCRS')}): it was sealed with the host key only")
+        return 0
+    if os.path.exists(cred_path) and not read_status():
+        write_status(mode)
+    return 0
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == "migrate":
+        try:
+            return migrate()
+        except (OSError, RuntimeError) as e:
+            log(str(e))
+            return 1
+    if len(argv) == 2 and argv[1] == "status":
+        print(json.dumps(read_status()))
+        return 0
+    print("usage: nexus-keyd-seal migrate|status", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

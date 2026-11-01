@@ -35,17 +35,30 @@ fn err(kind: io::ErrorKind, msg: impl Into<String>) -> io::Error {
     io::Error::new(kind, msg.into())
 }
 
-// ponytail: file-based sealing (0600 via umask, root-only dir). TPM2 sealing bound
-// to Secure Boot PCRs replaces seal/unseal once libtss2-dev is available.
+// The KEK at rest (#22, docs/disk-encryption-design.md M1): keyd writes it in clear only as `kek.local`, which
+// the root helper nexus-keyd-seal turns into the systemd credential `kek.cred` sealed to the TPM (PCR 7) and then
+// removes; nexus-keyd.service loads that credential (LoadCredentialEncrypted=kek:...), so systemd, not keyd, talks
+// to the TPM. keyd itself has no device access.
 fn seal(dir: &Path, kek: &[u8; 32]) -> io::Result<()> {
     write_atomic(&dir.join("kek.local"), kek)
 }
 
+/// Where the KEK is read from: the credential systemd loaded for the service (`$CREDENTIALS_DIRECTORY/kek`) when
+/// there is one, else `kek.local` (a first boot before the seal, a reseal, tests).
+fn kek_path(dir: &Path, credentials: Option<&Path>) -> PathBuf {
+    credentials
+        .map(|c| c.join("kek"))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| dir.join("kek.local"))
+}
+
 fn unseal(dir: &Path) -> io::Result<Key> {
-    let b = Zeroizing::new(fs::read(dir.join("kek.local"))?);
+    let creds = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
+    let path = kek_path(dir, creds.as_deref());
+    let b = Zeroizing::new(fs::read(&path)?);
     let mut k = Zeroizing::new([0u8; 32]);
     if b.len() != 32 {
-        return Err(err(io::ErrorKind::InvalidData, "kek.local corrupt"));
+        return Err(err(io::ErrorKind::InvalidData, format!("{} corrupt", path.display())));
     }
     k.copy_from_slice(&b);
     Ok(k)
@@ -84,12 +97,16 @@ fn kek_from_recovery(dir: &Path, recovery_key: &str) -> io::Result<Key> {
     Ok(Zeroizing::new(unwrap_key(&rk, &blob, "kek-recovery")?))
 }
 
-/// Proves the recovery key was recorded correctly (first-boot wizard).
+/// Proves the recovery key was recorded correctly (first-boot wizard). Unwrapping `kek.recovery` (AEAD) succeeds
+/// only with the right key; where the plain KEK is still there it must match it too. Once the KEK is sealed
+/// (#22: kek.local gone, setup has no credential directory) the unwrap is the proof.
 pub fn check_recovery_key(dir: &Path, recovery_key: &str) -> io::Result<()> {
-    if *kek_from_recovery(dir, recovery_key)? == *unseal(dir)? {
-        Ok(())
-    } else {
-        Err(err(io::ErrorKind::InvalidData, "recovery key does not match KEK"))
+    let from_escrow = kek_from_recovery(dir, recovery_key)?;
+    match unseal(dir) {
+        Ok(kek) if *kek == *from_escrow => Ok(()),
+        Ok(_) => Err(err(io::ErrorKind::InvalidData, "recovery key does not match KEK")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -1038,6 +1055,33 @@ fn request_keyring(socket: &Path, request: &str, tenant: &str) -> io::Result<Key
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #22: under systemd the KEK comes from the loaded credential (sealed to the TPM), not from a file in keyd's
+    /// directory; without a credential directory (or without `kek` in it) the plain kek.local is used.
+    #[test]
+    fn kek_from_the_systemd_credential() {
+        let d = tempfile::tempdir().unwrap();
+        let creds = tempfile::tempdir().unwrap();
+        assert_eq!(kek_path(d.path(), None), d.path().join("kek.local"));
+        assert_eq!(
+            kek_path(d.path(), Some(creds.path())),
+            d.path().join("kek.local"),
+            "no kek in it"
+        );
+        fs::write(creds.path().join("kek"), [9u8; 32]).unwrap();
+        assert_eq!(kek_path(d.path(), Some(creds.path())), creds.path().join("kek"));
+    }
+
+    /// #22: once the KEK is sealed (kek.local removed) the recovery key is still checked: the escrow unwrap only
+    /// succeeds with the right key.
+    #[test]
+    fn recovery_key_check_after_the_seal() {
+        let d = tempfile::tempdir().unwrap();
+        let rk = init(d.path()).unwrap();
+        fs::remove_file(d.path().join("kek.local")).unwrap();
+        check_recovery_key(d.path(), &rk).unwrap();
+        assert!(check_recovery_key(d.path(), &format_recovery_key(&[3; 32])).is_err());
+    }
 
     #[test]
     fn lifecycle_rotation_and_recovery() {

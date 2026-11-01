@@ -58,7 +58,8 @@ The root account is locked (`usermod -L`). Emergency access is through the local
 
 | Unit | User | Domain | Notes |
 |---|---|---|---|
-| `nexus-keyd.service` | nexus-keyd | `nexus_keyd_t` | socket `/run/nexus-keyd/keyd.sock` (dir 0750, group nexus-keyd), `PrivateNetwork`, no devices (TPM deferred) |
+| `nexus-keyd.service` | nexus-keyd | `nexus_keyd_t` | socket `/run/nexus-keyd/keyd.sock` (dir 0750, group nexus-keyd), `PrivateNetwork`, no devices; the KEK from `LoadCredentialEncrypted=kek:` (systemd decrypts it with the TPM, #22) |
+| `nexus-keyd-seal.service` | root (oneshot, before keyd) | unconfined (no own domain yet) | `nexus-keyd-seal migrate`: a plain `kek.local` becomes the credential `kek.cred` sealed to the TPM (PCR 7) and is removed; no TPM (installed before the requirement): host key, status `host`; status `/var/lib/nexus/keyd-seal.json`; only `/dev/tpmrm0`, no network |
 | `nexus-web-api.service` | nexus-webapi (+nexus-catalog) | `nexus_webapi_t` | `Type=notify`, binds only tcp:8443, catalog rw, downloads read, update control rw |
 | `nexus-scheduler.service` | nexus-chunkstore (+nexus-catalog, nexus-keyd, kvm) | `nexus_scheduler_t` | spawns `nexus-pve` (`nexus_pve_t`) and `nexus-offsite` (`nexus_offsite_t`); nexus-pve spawns QEMU (`nexus_restorevm_t`); `DeviceAllow=/dev/kvm`; writes the firewall allow-list |
 | `nexus-setup.service` | root | `nexus_setup_t` | first boot on tty1; capabilities CHOWN, FOWNER, DAC_OVERRIDE only |

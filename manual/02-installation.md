@@ -25,7 +25,7 @@ The reference sizing (plan §3.2 and §12.3) covers 5 tenants with 1–2 TB of r
 | Metadata | 2 NVMe drives (≥ 1 TB), mirrored |
 | Data | for example 6 × 12 TB in RAID6: about 40 TB usable for 10 TB of raw source data after two years of GFS retention |
 | Network | separate NICs for management, backup and offsite traffic (at least two) |
-| Firmware | TPM 2.0 and Secure Boot capable (needed later for disk encryption) |
+| Firmware | **TPM 2.0 required** (the master key is sealed to it; without a TPM the first-boot setup stops), Secure Boot capable |
 
 Plan for 30–40 % headroom. The appliance raises a warning alert when the store is more than 75 % full.
 
@@ -36,10 +36,11 @@ The appliance runs as a VM as well as on its own hardware (the lab runs it in QE
 - **Never on the Proxmox VE cluster it protects.** If that cluster fails (storage, quorum, ransomware with
   hypervisor access), the backups fail with it. Run the VM on a separate host or cluster, ideally in another fire
   compartment, and keep its offsite copies (chapter 7) as for a physical appliance.
-- **Virtual TPM:** a vTPM lives in a file on the host. Whoever can copy the VM's disks can usually copy the vTPM
-  state too, so it does not protect the disks the way a hardware TPM does (relevant once disk encryption with TPM
-  unlock exists; see [Known gaps](#known-gaps-after-installation)). Restrict who administers the host, and keep the
-  recovery key offline as for any appliance.
+- **Virtual TPM (required):** add a TPM 2.0 to the VM before the first boot (Proxmox VE: **Hardware -> Add -> TPM
+  State**, version 2.0; VMware: a vTPM device), otherwise the first-boot setup stops. A vTPM lives in a file on the
+  host: whoever can copy the VM's disks can usually copy the vTPM state too, so it does not protect against a copy of
+  the whole VM the way a hardware TPM does. Restrict who administers the host, and keep the recovery key offline as
+  for any appliance.
 - **Disk controller:** VirtIO SCSI single (Proxmox VE's default), with iothread and discard, for all appliance disks.
   Data disks can then be added and replaced while the appliance runs (**Hardware**); with virtio-blk a new disk only
   appears after a reboot.
@@ -526,7 +527,11 @@ These are open production items (see `state.md`, "Production gaps"):
   the recovery key. A replacement appliance restores it at first boot (key **b** on the wizard's overview, see
   [14 Disaster recovery](14-disaster-recovery.md#new-appliance-from-a-configuration-backup)). Not yet run on an
   installed appliance.
-- **Disk encryption:** LUKS2 with TPM unlock is deferred. Backup data is always encrypted per chunk, but the master
-  key file (`kek.local`) is protected only by file permissions and SELinux, not by a TPM.
+- **Disk encryption:** the master key is sealed to the TPM (PCR 7, Secure Boot state); LUKS2 on the data array and
+  on `/var` follows. Backup data is always encrypted per chunk. After a firmware update or a change of the Secure
+  Boot settings the TPM no longer unseals the key: the key service stays down and diagnostics say so; reseal with
+  the recovery key on the console (`nexus-setup keys-reseal`, [14 Disaster recovery](14-disaster-recovery.md)).
+  An appliance installed before the TPM requirement keeps running without a TPM (diagnostics **tpm** reports it)
+  until a TPM is added; the key is then sealed to it at the next start.
 - **Certificate renewal** for agents and TrueNAS pins is not automated. The appliance warns before agent,
   replication and web certificates expire ([11 Alerts](11-alerts-and-monitoring.md#expiry-warnings)).

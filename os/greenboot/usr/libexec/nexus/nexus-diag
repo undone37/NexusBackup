@@ -56,6 +56,8 @@ DEFAULTS = {
     "SETUP_DONE": "/var/lib/nexus/setup-done",
     "CATALOG": "/var/lib/nexus/catalog/catalog.db",
     "UPDATE_STATUS": "/var/lib/nexus/update/status.json",
+    # nexus-keyd-seal's status (#22): mode tpm2 | host
+    "KEYD_SEAL": "/var/lib/nexus/keyd-seal.json",
     "KEYD_SOCKET": "/run/nexus-keyd/keyd.sock",
     "TLS_CERT": "/etc/nexus/tls/cert.pem",
     "SELINUX_ENFORCE": "/sys/fs/selinux/enforce",
@@ -375,6 +377,26 @@ def selinux():
     return "pass", 1, "enforcing"
 
 
+def tpm():
+    """#22: the KEK is sealed to the TPM (plan.md §2: a TPM 2.0 is required). An appliance installed before the
+    requirement without a TPM runs on a host-key credential: reported, but it does not block updates (the fix is
+    a TPM, not the absence of an update)."""
+    if not os.path.exists(cfg("SETUP_DONE")):
+        return "skip", 1, "first-boot setup not finished"
+    try:
+        with open(cfg("KEYD_SEAL")) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return "fail", 2, "the master key is not sealed yet (nexus-keyd-seal has not run: journalctl -u nexus-keyd-seal)"
+    except (OSError, ValueError) as e:
+        return "warn", 2, f"seal status unreadable: {e}"
+    if st.get("mode") == "tpm2":
+        pcrs = ",".join(str(p) for p in st.get("pcrs", [])) or "-"
+        return "pass", 1, f"master key sealed to the TPM (PCR {pcrs})"
+    return ("fail", 2, "NO TPM: the master key is only protected by a key on the same disk. NexusBackup requires a TPM 2.0:"
+            " enable it in the firmware or add a vTPM to the VM, then reboot (the key is sealed to it at the next start)")
+
+
 def auditd():
     """The OS audit trail of SELinux denials and the watched changes (#143). A warning, never an update
     blocker: the update may be what brings auditd back."""
@@ -667,6 +689,7 @@ def checks():
         check("catalog.integrity", "Catalog integrity", catalog_integrity),
         check("selinux", "SELinux mode", selinux),
         check("auditd", "Audit daemon (auditd)", auditd),
+        check("tpm", "Master key sealed to the TPM", tpm),
         check("systemd.failed", "Failed system services", failed_units),
         check("bootc", "OS image (bootc)", bootc),
         check("smart", "Disk health (SMART)", smart),

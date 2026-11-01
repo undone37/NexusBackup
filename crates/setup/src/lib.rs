@@ -1088,9 +1088,56 @@ impl Setup {
 
     /// `keyd init`. Refuses if keyd was already initialised (never re-init).
     /// The returned key is never written anywhere by this crate.
+    /// #22: a TPM 2.0 is required (plan.md §2, no TPM, no NexusBackup). `systemd-creds has-tpm2` exits 0 only
+    /// when firmware, kernel driver, the TSS libraries and systemd's support are all there. A dry run assumes one
+    /// unless `NEXUS_SETUP_DRY_RUN_TPM=0` (tests).
+    pub fn tpm_present(&mut self) -> bool {
+        if self.dry_run {
+            return std::env::var("NEXUS_SETUP_DRY_RUN_TPM").map_or(true, |v| v != "0");
+        }
+        self.cmd("systemd-creds", &["has-tpm2", "--quiet"]).is_ok()
+    }
+
+    /// Seals the KEK right after the recovery key was confirmed (nexus-keyd-seal.service: kek.local becomes the
+    /// TPM-sealed credential kek.cred and is removed), so the plain key does not wait on disk for the rest of the
+    /// wizard. Starting nexus-keyd would do it as well (Requires=).
+    fn seal_kek(&mut self) -> Result<()> {
+        self.cmd("systemctl", &["start", "nexus-keyd-seal.service"])
+            .context("sealing the KEK to the TPM (journalctl -u nexus-keyd-seal)")?;
+        self.audit("setup.keyd.sealed", "keyd", json!({"pcrs": [7]}))
+    }
+
+    /// #22: after a firmware update or a change of the Secure Boot settings the TPM no longer unseals the KEK
+    /// (PCR 7 changed) and the key service stays down. The recovery key opens the escrowed KEK again (`keyd
+    /// recover`: a plain kek.local), and restarting the key service seals it to the TPM's current state
+    /// (nexus-keyd-seal runs first). Audited.
+    pub fn keys_reseal(&mut self, recovery_key: &str) -> Result<()> {
+        if self.key_state()? == KeyState::Uninitialized {
+            bail!("the key service was never initialised: run the first-boot setup");
+        }
+        if !self.tpm_present() {
+            bail!("no TPM 2.0 found: enable it in the firmware (or add a vTPM to the VM) first");
+        }
+        let dir = self.paths.keyd_dir.clone();
+        keyd::recover(&dir, recovery_key).context("the recovery key does not open the key escrow")?;
+        let plain = dir.join("kek.local");
+        fs::set_permissions(&plain, fs::Permissions::from_mode(0o600))?;
+        self.own(&plain, Some("nexus-keyd"), Some("nexus-keyd"))?;
+        self.cmd("systemctl", &["restart", "nexus-keyd.service"])
+            .context("restarting the key service (journalctl -u nexus-keyd-seal -u nexus-keyd)")?;
+        self.audit("setup.keys_reseal", "keyd", json!({"pcrs": [7]}))
+    }
+
     pub fn keyd_init(&mut self) -> Result<RecoveryKey> {
         if self.key_state()? != KeyState::Uninitialized {
             bail!("keyd is already initialised; it is never re-initialised by setup");
+        }
+        if !self.tpm_present() {
+            self.audit("setup.keyd.no_tpm", "keyd", json!({}))?;
+            bail!(
+                "no TPM 2.0 found: NexusBackup requires one to seal its master key (a hardware TPM, or a vTPM for \
+                 a virtual appliance; enable it in the firmware or the VM settings, manual chapter 2)"
+            );
         }
         let dir = self.paths.keyd_dir.clone();
         mkdir(&dir, 0o700)?;
@@ -1123,6 +1170,7 @@ impl Setup {
             "keyd",
             json!({"method": "words", "words": words}),
         )?;
+        self.seal_kek()?;
         self.grub_password(key.expose())?;
         Ok(true)
     }
@@ -1152,6 +1200,7 @@ impl Setup {
             bail!("recovery key rejected: {e}");
         }
         self.audit("setup.keyd.confirmed", "keyd", json!({"method": "full"}))?;
+        self.seal_kek()?;
         self.grub_password(&entered)
     }
 

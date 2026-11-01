@@ -1704,3 +1704,15 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   API login (maintainer allowed the lab login, 2026-11-01). The README pictures are not from the lab (lab data stays
   out of the repository): `integrations/pegaprox/tools/screenshots.mjs` renders the real `ui.html` against demo data.
   Open: submission to the PegaProx plugin catalogue (maintainer).
+
+## KEK sealed to the TPM (added 2026-11-01, #22 M1)
+
+- [x] Code (branch `22-tpm-kek`): a TPM 2.0 is required (maintainer 2026-11-01): setup refuses to create keys
+  without one; `nexus-keyd-seal` (root oneshot before keyd) turns the plain kek.local into the systemd credential
+  kek.cred sealed to the TPM (PCR 7), checked by decrypting, then removes the plain file; installs without a TPM
+  get a host-key credential (diagnostics `tpm`, not blocking updates) and are re-sealed once a TPM appears;
+  nexus-keyd loads the credential (`LoadCredentialEncrypted=`); `nexus-setup keys-reseal` with the recovery key after
+  a PCR 7 change. Tests: keyd (credential path, recovery check after the seal), setup script (no TPM, reseal), the
+  seal helper (fake systemd-creds), diagnostics.
+  - open: lab (vTPM on VM 201: migration of the existing kek.local, keyd from the credential, SELinux for keyd's
+    credentials directory; a fresh install with and without a vTPM; a reseal after a PCR 7 change).
