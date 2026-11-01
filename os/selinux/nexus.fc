@@ -43,6 +43,8 @@
 /var/lib/nexus/catalog(/.*)?			gen_context(system_u:object_r:nexus_catalog_t,s0)
 /var/lib/nexus/downloads(/.*)?			gen_context(system_u:object_r:nexus_downloads_t,s0)
 /var/lib/nexus/keyd(/.*)?			gen_context(system_u:object_r:nexus_keyd_var_lib_t,s0)
+# #22: the KEK sealed to the TPM; systemd (init_t) reads it for nexus-keyd's LoadCredentialEncrypted=
+/var/lib/nexus/keyd/kek\.cred		--	gen_context(system_u:object_r:nexus_keyd_cred_t,s0)
 /var/lib/nexus/chunkstore(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/offsite(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)
 /var/lib/nexus/scheduler(/.*)?			gen_context(system_u:object_r:nexus_store_t,s0)

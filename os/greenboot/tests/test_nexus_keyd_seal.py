@@ -45,7 +45,8 @@ class Seal(unittest.TestCase):
         fake.chmod(0o755)
         self.env = {**os.environ, "NEXUS_KEYDSEAL_DIR": str(self.d / "keyd"),
                     "NEXUS_KEYDSEAL_STATUS": str(self.d / "keyd-seal.json"),
-                    "NEXUS_KEYDSEAL_SYSTEMD_CREDS": str(fake), "FAKE_LOG": str(self.d / "calls")}
+                    "NEXUS_KEYDSEAL_SYSTEMD_CREDS": str(fake), "FAKE_LOG": str(self.d / "calls"),
+                    "NEXUS_KEYDSEAL_RESTORECON": "true"}
         self.kek = bytes(range(32))
 
     def tearDown(self):
@@ -98,6 +99,14 @@ class Seal(unittest.TestCase):
         self.assertIn("does not decrypt", r.stderr)
         self.assertEqual((self.d / "keyd/kek.local").read_bytes(), self.kek)
         self.assertFalse((self.d / "keyd/kek.cred").exists())
+
+    def test_the_credential_must_get_its_selinux_label(self):
+        # lab: with keyd's directory label systemd could not read it and keyd failed at step CREDENTIALS
+        self.plain()
+        r = self.run_helper("migrate", FAKE_TPM="1", NEXUS_KEYDSEAL_RESTORECON="false")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("restorecon", r.stderr)
+        self.assertEqual((self.d / "keyd/kek.local").read_bytes(), self.kek, "the plain KEK stays until it is usable")
 
     def test_nothing_before_setup(self):
         r = self.run_helper("migrate", FAKE_TPM="1")

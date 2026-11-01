@@ -148,6 +148,8 @@ type nexus_vmware_work_t;	# hot-add proxy handoff in a job dir (plan, state, dis
 files_type(nexus_vmware_work_t)
 type nexus_keyd_var_lib_t;	# wrapped KEK + DEKs
 files_type(nexus_keyd_var_lib_t)
+type nexus_keyd_cred_t;	# the KEK as a systemd credential sealed to the TPM (#22): only PID 1 reads it
+files_type(nexus_keyd_cred_t)
 type nexus_store_t;		# chunk stores, offsite inventories, scheduler state
 files_type(nexus_store_t)
 type nexus_escrow_t;		# wrapped key escrow uploaded to the boxes
@@ -269,6 +271,11 @@ neverallow { nexus_domain -nexus_replica_t -nexus_cfgbackup_t } nexus_replica_ke
 # keyd: own state + socket. No network (PrivateNetwork=yes in the unit as well).
 
 manage_dirs_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
+# #22: systemd decrypts the sealed KEK for keyd's LoadCredentialEncrypted= (lab: "(sd-mkdcreds)" denied, keyd
+# failed at step CREDENTIALS); keyd itself never reads the sealed file
+allow init_t nexus_keyd_var_lib_t:dir search;
+allow init_t nexus_keyd_cred_t:file { getattr open read };
+neverallow { nexus_domain } nexus_keyd_cred_t:file { read open write };
 manage_files_pattern(nexus_keyd_t, nexus_keyd_var_lib_t, nexus_keyd_var_lib_t)
 # the listening socket in /run/nexus-keyd (dir created by systemd, RuntimeDirectory=)
 manage_sock_files_pattern(nexus_keyd_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t)

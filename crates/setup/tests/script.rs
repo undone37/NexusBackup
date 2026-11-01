@@ -513,7 +513,7 @@ fn no_tpm_no_key_service() {
     e.tpm_absent = false;
     let (out, stdout, stderr) = e.run(&e.answers("192.0.2.10"), &[]);
     assert!(out.status.success(), "{stdout}\n{stderr}");
-    assert!(stdout.contains("systemctl start nexus-keyd-seal.service"), "{stdout}");
+    assert!(stdout.contains("systemctl restart nexus-keyd-seal.service"), "{stdout}");
     let c = e.catalog();
     assert!(audit_actions(&c).iter().any(|(_, act, _)| act == "setup.keyd.sealed"));
 }

@@ -25,6 +25,7 @@ DEFAULTS = {
     "DIR": "/var/lib/nexus/keyd",
     "STATUS": "/var/lib/nexus/keyd-seal.json",
     "SYSTEMD_CREDS": "systemd-creds",
+    "RESTORECON": "restorecon",
     "PCRS": "7",
     "TIMEOUT": "60",
 }
@@ -98,6 +99,13 @@ def put(path, data):
     finally:
         os.close(fd)
     os.replace(tmp, path)
+    # its own SELinux type (nexus_keyd_cred_t, nexus.fc): only systemd may read it, for keyd's credential
+    try:
+        p = subprocess.run([cfg("RESTORECON"), path], capture_output=True, text=True, timeout=float(cfg("TIMEOUT")))
+    except FileNotFoundError:
+        raise RuntimeError("restorecon not installed: the credential keeps the wrong SELinux label")
+    if p.returncode != 0:
+        raise RuntimeError(f"restorecon {path} failed: {p.stderr.strip()}")
 
 
 def wipe(path):

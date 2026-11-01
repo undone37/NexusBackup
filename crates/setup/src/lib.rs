@@ -1102,7 +1102,7 @@ impl Setup {
     /// TPM-sealed credential kek.cred and is removed), so the plain key does not wait on disk for the rest of the
     /// wizard. Starting nexus-keyd would do it as well (Requires=).
     fn seal_kek(&mut self) -> Result<()> {
-        self.cmd("systemctl", &["start", "nexus-keyd-seal.service"])
+        self.cmd("systemctl", &["restart", "nexus-keyd-seal.service"])
             .context("sealing the KEK to the TPM (journalctl -u nexus-keyd-seal)")?;
         self.audit("setup.keyd.sealed", "keyd", json!({"pcrs": [7]}))
     }
@@ -1123,8 +1123,11 @@ impl Setup {
         let plain = dir.join("kek.local");
         fs::set_permissions(&plain, fs::Permissions::from_mode(0o600))?;
         self.own(&plain, Some("nexus-keyd"), Some("nexus-keyd"))?;
-        self.cmd("systemctl", &["restart", "nexus-keyd.service"])
-            .context("restarting the key service (journalctl -u nexus-keyd-seal -u nexus-keyd)")?;
+        self.cmd(
+            "systemctl",
+            &["restart", "nexus-keyd-seal.service", "nexus-keyd.service"],
+        )
+        .context("restarting the key service (journalctl -u nexus-keyd-seal -u nexus-keyd)")?;
         self.audit("setup.keys_reseal", "keyd", json!({"pcrs": [7]}))
     }
 
