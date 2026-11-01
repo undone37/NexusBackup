@@ -46,7 +46,7 @@ class AuditdConf(unittest.TestCase):
 class Rules(unittest.TestCase):
     def test_only_watches_and_syscall_rules(self):
         for l in rules():
-            self.assertRegex(l, r"^(-w /\S+ -p [rwxa]+ -k [a-z-]+|-a always,exit( -F \S+)+( -S \S+)?( -F \S+)*( -k [a-z-]+)?)$")
+            self.assertRegex(l, r"^(-w /\S+ -p [rwxa]+ -k [a-z-]+|-a (always|never),exit( -F \S+)+( -S \S+)?( -F \S+)*( -k [a-z-]+)?)$")
             if "-S " in l:
                 self.assertRegex(l, r"-F arch=b(32|64) -S ", "a syscall rule needs its arch")
 
@@ -60,6 +60,10 @@ class Rules(unittest.TestCase):
         r = rules()
         idx = {l.split()[1]: i for i, l in enumerate(r) if l.startswith("-w")}
         self.assertLess(idx["/etc/nexus/ssh"], idx["/etc/nexus"])
+        # keyd's own reads are excluded before the watch that would match them (first match wins)
+        never = [i for i, l in enumerate(r) if l.startswith("-a never,exit -F dir=/var/lib/nexus/keyd ")]
+        self.assertEqual(len(never), 2)
+        self.assertLess(max(never), idx["/var/lib/nexus/keyd"])
 
     def test_services_are_not_audited_on_busy_paths(self):
         # the catalog and the store are written by the services all the time: only login sessions are audited
@@ -77,7 +81,7 @@ class Rules(unittest.TestCase):
         made = set(re.findall(r"^d (\S+) ", tmpfiles, re.M))
         text = "\n".join(rules())
         dirs = re.findall(r"^-w (/var/\S+) ", text, re.M) + re.findall(r"dir=(\S+)", text)
-        self.assertEqual(len(dirs), 5)
+        self.assertEqual(len(dirs), 7)
         for d in dirs:
             self.assertIn(d, made, d)
         for d in ("os/etc/ssh/sshd_config.d", "os/etc/pki/nexus", "os/etc/nexus"):

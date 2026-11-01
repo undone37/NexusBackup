@@ -18,8 +18,12 @@
 -w /etc/ssh/sshd_config -p wa -k sshd
 -w /etc/ssh/sshd_config.d -p wa -k sshd
 
-## Key material: keyd's KEK, its recovery escrow and the tenant keys (reads too: who opened a key file; keyd
-## reads them once at start), the web certificate's key, the appliance's SSH key for PVE nodes
+## Key material: keyd's KEK, its recovery escrow and the tenant keys (reads too: who opened a key file), the web
+## certificate's key, the appliance's SSH key for PVE nodes. keyd itself reads its files on every keyring request
+## and systemd opens the directory to set up each service's sandbox (lab, 2026-11-01: 90 of 107 events in four
+## minutes): both are left out, so anything else that opens a key file stands out.
+-a never,exit -F dir=/var/lib/nexus/keyd -F subj_type=nexus_keyd_t
+-a never,exit -F dir=/var/lib/nexus/keyd -F subj_type=init_t
 -w /var/lib/nexus/keyd -p rwa -k nexus-keys
 -w /var/lib/nexus/tls -p wa -k nexus-keys
 -w /etc/nexus/ssh -p wa -k nexus-keys
