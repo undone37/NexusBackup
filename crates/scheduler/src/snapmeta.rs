@@ -1,7 +1,9 @@
 //! Plugin snapshot metadata (protocol v1.8 `SnapshotMeta`, Phase 18b): the plugin
 //! host prints it per snapshot in its `result {json}` line; the backup result
 //! carries it as `snapshots[].meta` and it is kept in `snapshots.meta` (catalog v23),
-//! e.g. PostgreSQL's recoverable range for the point-in-time restore dialog.
+//! e.g. PostgreSQL's recoverable range for the point-in-time restore dialog. A source system's own
+//! change-rate finding in it (`anomaly`, e.g. NexusStor's, #137) flags the snapshot and raises `anomaly`
+//! ([`Scheduler::external_anomaly`]).
 
 use crate::{Job, Scheduler};
 use anyhow::Result;
@@ -47,8 +49,49 @@ impl Scheduler {
                  ON CONFLICT (tenant, source, time) DO UPDATE SET meta = json_patch(COALESCE(meta,'{}'), ?4)",
                 params![job.tenant, src, t, m.to_string()],
             )?;
+            if let Some(a) = m.get("anomaly").filter(|a| a.is_object()) {
+                self.external_anomaly(&job.tenant, src, t, a)?;
+            }
         }
         Ok(())
+    }
+
+    /// The source system reported a change-rate anomaly of its own (NexusStor's ransomware signal in the
+    /// plugin's snapshot meta: `{system, nexusstor?, snapshot, at, last_good, last_good_created}`, values from
+    /// the source system, so untrusted): the snapshot that carries the data after it is flagged, and the
+    /// `anomaly` alert names the newest clean snapshot from no later than the system's last good state (a
+    /// snapshot between that and the system's finding may already hold the changed data).
+    pub(crate) fn external_anomaly(&self, tenant: &str, source: &str, time: i64, a: &Value) -> Result<()> {
+        let text = |k: &str| -> String {
+            a[k].as_str()
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(120)
+                .collect()
+        };
+        let system = match text("system") {
+            s if s.is_empty() => "the source system".to_owned(),
+            s => s,
+        };
+        let why = format!(
+            "{system} reported a change-rate anomaly (its snapshot {})",
+            text("snapshot")
+        );
+        self.flag_snapshot(tenant, source, time, &why)?;
+        let bound = a["last_good_created"]
+            .as_i64()
+            .or(a["at"].as_i64())
+            .unwrap_or(time)
+            .min(time);
+        let last = self.last_clean(tenant, source, bound + 1)?;
+        self.raise(
+            "critical",
+            "anomaly",
+            &format!("anomaly:{tenant}/{source}"),
+            &format!("{why} on {tenant}/{source}: snapshot {time} holds the data after it; {last}"),
+            Some(tenant),
+        )
     }
 }
 

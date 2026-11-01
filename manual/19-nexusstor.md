@@ -7,9 +7,10 @@ of a NexusStor through the plugin **NexusStor** (source kind **NexusStor vStors 
 the backup protocol; it cannot use the NexusStor web interface or its REST API.
 
 > **Status:** Backups (full and incremental) pass their integration tests against a simulated NexusStor, also as
-> the plugin binary in the real sandbox. A lab run against a NexusStor appliance is still pending. Restores into a
-> NexusStor (files into an export, a LUN, a whole vStor), the backup status on the NexusStor side and ransomware
-> signals between the appliances come in a later version; until then, restore by download (see below).
+> the plugin binary in the real sandbox, and ran in the lab against a NexusStor appliance (2026-11-01). NexusStor's
+> change-rate finding reaches NexusBackup (see below). Restores into a NexusStor (files into an export, a LUN, a whole
+> vStor), the backup status on the NexusStor side and NexusBackup's findings sent to NexusStor come in a later
+> version; until then, restore by download (see below).
 
 ## How it works
 
@@ -82,6 +83,19 @@ UTF-8 cannot be transferred by the protocol: such files are skipped and listed a
   one. A run that fails releases the snapshot it created. Other `nexusbackup-*` snapshots of the vStor (for example
   of another paired NexusBackup, or left by a run the appliance could not commit) are never deleted; the job log
   lists them, delete them on NexusStor if nothing uses them.
+
+## Ransomware signal from NexusStor
+
+NexusStor watches how much each scheduled snapshot of a vStor wrote; a run far above the usual (a typical sign of
+ransomware encrypting files) is a **change-rate finding**, and NexusStor locks its last good snapshot. A backup that
+sees an open finding for the vStor:
+
+- flags its snapshot (**Snapshots**: anomaly badge; it holds the data after the jump),
+- raises the critical alert **anomaly** with the newest clean NexusBackup snapshot from no later than NexusStor's last
+  good snapshot: hold that one (**Alerts → Hold last good snapshot**) and restore from it,
+- notes it in the job log.
+
+Later backups are flagged too while NexusStor's finding is open; clear it on NexusStor once the cause is resolved.
 
 ## Limits
 
