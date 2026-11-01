@@ -1652,3 +1652,17 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     (bootupd 0.2.35, new in the base) fails on the BIOS-booted VM ("opening EFI dir"), 18 bootupd_t AVCs (#145).
     The lab registry on VM 280 had not come back after the host restart (container exited): started, restart=always,
     podman-restart.service enabled.
+
+## Full read against the PVE host (added 2026-11-01, #70)
+
+- [x] Lab 2026-11-01 (VM 201, group fault-data / VM 225 Debian 13 running, 16 GiB disk). On 0.0.55-dev a forced full
+  read failed every time: the node reused the dirty bitmap (140 MiB of 16 GiB dirty), and PVE's snapshot access
+  (copy-before-write with that bitmap) refused reads outside the dirty regions: the node helper's zeromap got NBD
+  EINVAL at offset 8 MiB and the appliance's reader stopped (the job said only "NBD reader stopped"); the scheduler
+  retried. Fix (PR #148): the index pushed before vzdump hides the devices of a VM due for a full read, so the node
+  starts a fresh bitmap; the whole disk is read and recorded as `not_compared` (the bitmap's report is not
+  available); a reused bitmap despite that postpones the full read; the reader's own error is reported. On
+  0.0.56-dev: full read of the 16 GiB disk ok in 61 s, recorded not_compared with the previous snapshot as baseline,
+  next due in 90 days; the following backup incremental again (bitmap reused, 32 MiB, 14 s). Found besides: the
+  image build shared its cargo target cache with NexusStor's build (crates of the same name): own cache id now.
+  - open: scan back in the real restore VM (#70), passkey step-up (maintainer).
