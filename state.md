@@ -1608,8 +1608,17 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   rule tree, CI). SELinux: scheduler may connect to `rsh_port_t` (514/tcp) and `syslogd_port_t`; the policy stage
   of the image build compiled locally with the neverallow check. Tests: `cargo test -p scheduler forward`,
   `cargo test -p catalog forwarding`, `cargo test -p web-api --test forwarding`, `python3 integrations/wazuh/test_rules.py`.
-  - open: lab run against a Wazuh manager VM on pve-test (`wazuh-logtest` with `samples.log`, live forwarding from
-    VM 201, the static-field handling of `action` and `$(field)` in descriptions).
+  - lab 2026-11-01 (`lab/pvehost/wazuh.sh`, VM 290 nx-wazuh: Debian 12, wazuh-manager 4.14.9; VM 201 on
+    0.0.55-dev): all 13 lines of samples.log end in their rule in `wazuh-logtest` (the static field `action` matches
+    with `<action>`, `$(field)` is filled in descriptions). Live: the syslog sink moved from the old TLS testbox to
+    the manager through approval (quorum 113, TLS to plain TCP is a weakening), "Send test message" ok (egress
+    allow-list and SELinux 514/tcp), then the whole audit chain arrived from seq 1: 6740 audit entries (110110), 795
+    logins (110116), 10 failed logins (110113), 4 console root shells (110111), 9 forwarding/alert setting changes
+    (110115), 2 critical security alerts (110121), 15 other critical alerts (110122), 16 warnings (110123), 99
+    failed jobs (110131). Found: a sink whose destination changed kept the old destination's retry backoff (up to
+    5 minutes before the first delivery): now reset per destination, test `new_destination_skips_the_old_backoff`.
+    Found in the lab script: its failed-login probe used admin and locked the account after a few runs (now a name
+    that does not exist).
 
 ## OS audit trail (added 2026-11-01, #143)
 
