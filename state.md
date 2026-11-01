@@ -1683,3 +1683,16 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   appliance skips bootupd's update on boot instead of failing it (lab VM 201). Build check on the drop-in. Open in
   #145: whether a UEFI appliance should update its boot loader on every boot or only with an image update
   (maintainer); a lab check that VM 201 boots without the failed unit follows with the next lab image.
+
+## Multi-node PVE cluster (added 2026-11-01, #63)
+
+- [x] Cluster of nested nodes (2026-11-01, `lab/pvehost/pvenested.sh cluster`, appliance VM 201 on 0.0.56-dev):
+  VM 285 `pve-nested2` (10.2.34.222, PVE 9.2.2) installed like VM 284, cluster `nexuslab` created on 284 and 285
+  joined (2 nodes, quorate; pve-test itself not in a cluster); the source `pve-nested` lists both nodes. VM 205
+  (Debian 13, 4 GiB on local-lvm) backed up on pve-nested (1.2 GB read, 34 s), migrated online with its local disk
+  to pve-nested2 (47 s), backed up there through the same source: 222 MB read (QEMU migrated the dirty bitmap, so the
+  chain stayed incremental across nodes), then 25 MB. Byte-exact check: VM 205 paused, one more incremental,
+  restored as VM 206 on pve-nested2: sha256 of both LVs equal. Found: a fresh nested node lists Proxmox's enterprise
+  Ceph repository (apt 401): the node step disables it now; pvecm's SSH join needs the key written once the cluster
+  file system settled after the create.
+  - open: installation on physical hardware (maintainer).

@@ -15,6 +15,10 @@
 #   pvenested.sh ceph     a mini Ceph cluster on the node (pveceph, maintainer 2026-10-25): three ${OSD_GB} GB disks on
 #                         $STORAGE as OSDs, one monitor and manager, a CRUSH rule over OSDs (one host), pool and RBD
 #                         storage "rbd" (images), OSD memory target 1 GiB
+#   pvenested.sh cluster  #63: a cluster "nexuslab" of this node and a second nested node installed the same way
+#                         (JOIN_NAME / JOIN_ADDR, e.g. VMID=285 NAME=pve-nested2 ADDR=10.2.34.222/24 ... iso vm node
+#                         first): created here, the second joins over SSH (it must have no guests); the PVE source
+#                         $NAME then lists both nodes (their host keys pinned). pve-test itself never joins.
 #   pvenested.sh destroy  VM $VMID destroyed (the source stays: delete it in the UI)
 #
 # Secrets stay in ~/nexus-lab: $LAB/pve-nested.env (root password, token secret; created by step iso / node).
@@ -119,6 +123,9 @@ step_node() {
 	# Ceph 20 in an RBD storage's keyring: "Not a proper rbd authentication file"; 9.2 accepts them)
 	node "test -f /etc/apt/sources.list.d/pve-no-subscription.sources || {
 		sed -i 's/^Types:/Enabled: no\nTypes:/' /etc/apt/sources.list.d/pve-enterprise.sources
+		# a fresh install also lists the enterprise Ceph repository (401 without a subscription)
+		! grep -qs enterprise.proxmox.com /etc/apt/sources.list.d/ceph.sources ||
+			sed -i 's/^Types:/Enabled: no\nTypes:/' /etc/apt/sources.list.d/ceph.sources
 		printf 'Types: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\n' \
 			> /etc/apt/sources.list.d/pve-no-subscription.sources; }
 		apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Options::=--force-confold dist-upgrade >/dev/null"
@@ -220,6 +227,44 @@ step_ceph() {
 			--add_storages 1 >/dev/null
 		for i in \$(seq 60); do ceph health | grep -q HEALTH_OK && break; sleep 5; done" || die "ceph setup failed"
 	log "$NAME: $(node 'ceph -s --format json' | jq -r '"\(.health.status), \(.osdmap.num_up_osds) of \(.osdmap.num_osds) OSDs up, \(.pgmap.num_pgs) PGs"'); $(node "pvesm status | grep '^rbd '" | tr -s ' ')"
+}
+
+step_cluster() {
+	local jip=${JOIN_ADDR%/*} con="$repo/lab/appliance/con.py" k kh cfg id
+	[ -n "$jip" ] && [ -n "${JOIN_NAME:-}" ] || die "JOIN_NAME and JOIN_ADDR (the second nested node)"
+	jnode() { ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+		-o LogLevel=ERROR "root@$jip" "$@"; }
+	node "test -f /etc/pve/corosync.conf || pvecm create nexuslab" >/dev/null
+	if ! node "pvecm nodes" | grep -qw "$JOIN_NAME"; then
+		# pvecm add --use_ssh logs in as root: the joining node's key into the cluster's authorized_keys (written
+		# only once the cluster file system settled after the create)
+		k=$(jnode "test -f /root/.ssh/id_rsa.pub || ssh-keygen -q -t rsa -b 3072 -N '' -f /root/.ssh/id_rsa; cat /root/.ssh/id_rsa.pub")
+		sleep 10
+		node "grep -qF '$k' /etc/pve/priv/authorized_keys || echo '$k' >> /etc/pve/priv/authorized_keys"
+		jnode "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new root@$IP true && pvecm add $IP --use_ssh 1" >/dev/null
+	fi
+	log "cluster: $(node "pvecm status | grep -E '^(Name|Nodes|Quorate):' | tr -s ' ' | tr '\n' ';'")"
+	# the appliance: the second node's host key and SSH key, and both nodes in the source
+	kh=$(ssh-keyscan -t ed25519 "$jip" 2>/dev/null | grep -v '^#')
+	[ -n "$kh" ] || die "no host key of $jip"
+	"$con" run "grep -v '^$jip ' /etc/nexus/ssh/known_hosts > /etc/nexus/ssh/known_hosts.new; echo '$kh' >> /etc/nexus/ssh/known_hosts.new; cat /etc/nexus/ssh/known_hosts.new > /etc/nexus/ssh/known_hosts; rm /etc/nexus/ssh/known_hosts.new" >/dev/null
+	"$con" put "$LAB/appliance_ed25519" "/etc/nexus/ssh/$JOIN_NAME" 0600 >/dev/null
+	"$con" run "chown nexus-chunkstore: /etc/nexus/ssh/$JOIN_NAME && restorecon -RF /etc/nexus/ssh" >/dev/null
+	S=$ROOT/run/api
+	mkdir -p "$S"
+	# shellcheck disable=SC1091
+	. "$ROOT/secrets.env"
+	# shellcheck source=lab/e2e/api-lib.sh
+	. "$repo/lab/e2e/api-lib.sh"
+	login admin "$ADMIN_PW" "$ADMIN_TOTP"
+	id=$(api admin GET /sources | jq -r --arg n "$NAME" '.[] | select(.name == $n) | .id')
+	[ -n "$id" ] || die "no PVE source $NAME (step source)"
+	cfg=$(api admin GET /sources | jq -c --arg n "$NAME" --arg j "$JOIN_NAME" --arg h "$jip" '.[] | select(.name == $n) | .config
+		| .nodes[$j] = {host: $h, port: 22, key: ("/etc/nexus/ssh/" + $j), known_hosts: "/etc/nexus/ssh/known_hosts"}
+		| del(.token_secret, .token_secret_set)')
+	api admin PUT "/sources/$id" "$(jq -nc --argjson c "$cfg" --arg n "$NAME" '{name:$n, config:$c}')" >/dev/null
+	expect 200 "update source $NAME"
+	log "PVE source $NAME: nodes $(jq -c '.nodes | keys' <<<"$cfg")"
 }
 
 step_destroy() {
