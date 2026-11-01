@@ -1507,3 +1507,54 @@ pub fn run(s: &mut Setup, force_network: bool) -> Result<Outcome> {
     restore_terminal();
     res
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    /// #79: the recovery key screen fits an 80x25 console (the smallest a server console gives): all 24
+    /// words with their numbers and the confirmation field are on the screen, nothing cut off.
+    #[test]
+    fn recovery_key_fits_80x25() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = Setup::open(
+            crate::Paths::under(dir.path()),
+            Box::new(crate::DryRunRunner),
+            false,
+            false,
+        )
+        .unwrap();
+        let key = RecoveryKey::from_string(keyd::format_recovery_key(&[0xa7; 32]));
+        let words: Vec<String> = key.words().iter().map(|w| w.to_string()).collect();
+        assert_eq!(words.len(), 24);
+        let app = App {
+            s: &mut s,
+            screen: Screen::ShowKey {
+                key,
+                form: Form::new(vec![Field::text("Type YES when done", "")]),
+            },
+            status: None,
+            force_network: false,
+            reconfigure_only: false,
+            abort_armed: false,
+            wipe: false,
+            outcome: None,
+        };
+        let mut t = Terminal::new(TestBackend::new(80, 25)).unwrap();
+        t.draw(|f| app.render(f)).unwrap();
+        let buf = t.backend().buffer();
+        let screen: String = (0..25)
+            .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect();
+        for (i, w) in words.iter().enumerate() {
+            assert!(
+                screen.contains(&format!("{:02} {w}", i + 1)),
+                "word {} missing:\n{screen}",
+                i + 1
+            );
+        }
+        assert!(screen.contains("Type YES when done"), "{screen}");
+        assert!(screen.contains("Type YES + Enter"), "the help line:\n{screen}");
+    }
+}
