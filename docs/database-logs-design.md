@@ -26,7 +26,7 @@ for Phase 42 ("a short design note first") applies.
   PostgreSQL and MySQL runs do now. Every snapshot is therefore restorable on its own; deleting an older snapshot never
   breaks a later one (chunks are shared, not chained).
 - **Retention**: log snapshots are kept by a `recent` class (`keep all of the last N hours`, default 48 h, the
-  `Gfs.recent` field the PostgreSQL design introduced); after that the normal GFS thins them like any snapshot. The
+  `Gfs.recent` field of Phase 18b, crates/retention); after that the normal GFS thins them like any snapshot. The
   recoverable ranges of the kept snapshots are shown as one timeline per database (gaps marked).
 - **Overlap**: a log run never runs while a full run of the same source does (plan key per source); a log run that
   finds no base yet runs as full.
