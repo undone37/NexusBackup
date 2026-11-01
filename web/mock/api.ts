@@ -18,6 +18,9 @@ import pgManifest from '../../plugins/postgresql/manifest.json' with { type: 'js
 import truenasManifest from '../../plugins/truenas/manifest.json' with { type: 'json' };
 import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' };
 import mysqlManifest from '../../plugins/mysql/manifest.json' with { type: 'json' };
+import nexusstorManifest from '../../plugins/nexusstor/manifest.json' with { type: 'json' };
+// NexusStor sources: the token decoder of the source form (the web-api decodes it the same way)
+import { decodeToken, NEXUSSTOR_KIND } from '../src/lib/nexusstor.ts';
 // Phase 23a: the published API description, served as is
 import openapiDoc from '../../crates/web-api/openapi.json' with { type: 'json' };
 // Phase 13b: the schedule grammar and blackout check the UI uses as well.
@@ -957,12 +960,23 @@ function offsiteResult(j: Job, t: number) {
 function pluginResult(j: Job, t: number) {
   const p = j.params;
   const src = db.sources.find((s) => s.id === Number(p.source_id));
-  if (j.kind === 'plugin_validate') {
+  if (j.kind === 'plugin_validate' && src?.kind !== NEXUSSTOR_KIND) {
     const host = String(src?.config.host ?? '');
     j.result = /bad|invalid/.test(host)
       ? { valid: false, field: 'host', message: `connection to ${host}:${src?.config.port} refused` }
       : { valid: true };
     j.log += j.result.valid ? '\nValid' : `\nInvalid: ${j.result.field}: ${j.result.message}`;
+  } else if (j.kind === 'plugin_validate' && src?.kind === NEXUSSTOR_KIND) {
+    // plugins/nexusstor: Validate pairs with the token's one-time code when NexusStor does not know this NexusBackup yet
+    j.result = { valid: true };
+    j.log += `\nplugin[info]: paired with NexusStor "nas1" (pairing p-${src.id}), vStors: all\nplugin[info]: NexusStor "nas1": 2 vStor(s) in this pairing's scope\nValid`;
+  } else if (j.kind === 'plugin_guests' && src?.kind === NEXUSSTOR_KIND) {
+    j.result = {
+      guests: [
+        { id: 'acme-files', title: 'acme-files (2 NFS, 1 SMB, S3)', size: 310 * 2 ** 30 },
+        { id: 'acme-vm', title: 'acme-vm (1 LUN)', size: 100 * 2 ** 30 },
+      ],
+    };
   } else if (j.kind === 'plugin_guests' && src?.kind === 'plugin:truenas') {
     j.result = {
       guests: [
@@ -1112,6 +1126,19 @@ function listDir(path: string, source: string): Json[] {
       '/contacts/Contacts': [f('Bob Builder ~0a1b2c3d4e5f.vcf', 611)],
       '/onedrive': [d('Documents')],
       '/onedrive/Documents': [f('budget-2026.xlsx', 501_877)],
+    };
+    return tree[path] ?? [];
+  }
+  if (source.startsWith('plugin-nexusstor-')) {
+    // plugins/nexusstor: one folder per dataset dir (exports, shares, S3 buckets), LUNs and the definition as streams
+    const tree: Record<string, Json[]> = {
+      '/': [d('.nexus-streams'), d('data'), d('s3')],
+      '/data': [d('projects'), f('README.txt', 1_204)],
+      '/data/projects': [f('plan-2027.odt', 48_331), f('site-survey.pdf', 3_811_204)],
+      '/s3': [d('backups')],
+      '/s3/backups': [f('db-2026-10-31.sql.gz', 91_337_216)],
+      '/.nexus-streams': [d('luns'), f('vstor.json', 2_048)],
+      '/.nexus-streams/luns': [f('vm1', 107_374_182_400)],
     };
     return tree[path] ?? [];
   }
@@ -1377,11 +1404,46 @@ function schemaCheck(schema: Json | undefined, v: Json, prefix: string) {
   }
 }
 
+/**
+ * plugin:nexusstor (crates/web-api/src/nexusstor.rs): host, port and the pinned fingerprint from the
+ * pairing token, a client certificate per pairing (kept while host and port stay); client values for
+ * these fields are ignored. Without a token an update keeps them; a new source needs one.
+ */
+function nexusstorConfig(cfg: Json, old?: Json): Json {
+  const out: Json = { ...(cfg ?? {}) };
+  for (const k of ['host', 'port', 'fingerprint', 'client_cert', 'client_key']) delete out[k];
+  if (!out.appliance) out.appliance = old?.appliance ?? 'nexus-demo';
+  if (!out.token) {
+    if (!old)
+      throw new HttpError(
+        400,
+        'config.token: paste the pairing token shown on NexusStor (Settings, NexusBackup, Pair)',
+      );
+    for (const k of ['host', 'port', 'fingerprint', 'client_cert']) out[k] = old[k];
+    return out;
+  }
+  const tok = decodeToken(String(out.token));
+  if (!tok) throw new HttpError(400, 'config.token: not a NexusStor pairing token (it starts with nst1.)');
+  if (tok.expires <= now())
+    throw new HttpError(
+      400,
+      'config.token: the pairing token has expired (valid 15 minutes); create a new one on NexusStor',
+    );
+  const same = old && old.host === tok.host && old.port === tok.port;
+  Object.assign(out, { host: tok.host, port: tok.port, fingerprint: tok.fingerprint });
+  if (same) out.client_cert = old.client_cert;
+  else {
+    out.client_cert = '-----BEGIN CERTIFICATE-----\n(pairing client certificate, demo)\n-----END CERTIFICATE-----\n';
+    out.client_key = 'SECRET';
+  }
+  return out;
+}
+
 /** Plugin source config: schema-checked; omitted secrets keep the stored ones unless an endpoint moved. */
 function pluginSourceConfig(kind: string, cfg: Json, old?: Json): Json {
   const pk = pluginKind(kind);
   if (!pk) throw new HttpError(400, `kind: no installed plugin provides ${kind}`);
-  const out = { ...(cfg ?? {}) };
+  const out = kind === NEXUSSTOR_KIND ? nexusstorConfig(cfg, old) : { ...(cfg ?? {}) };
   const moved = (pk.kind.endpoints ?? []).some((ep: Json) =>
     [ep.host, ep.port].some(
       (ptr) => ptr && old && JSON.stringify(pointerGet(old, ptr)) !== JSON.stringify(pointerGet(out, ptr)),
@@ -1978,6 +2040,24 @@ function seed() {
     } as Json,
   };
   db.sources.push(sPg, sNas02, sMy);
+  // NexusStor (plugins/nexusstor): a paired NexusStor with two vStors
+  db.plugins.push(pluginEntry(structuredClone(nexusstorManifest) as Json, 'admin', t - 86400 * 2));
+  const sNst = {
+    id: nextId(),
+    tenant: 'acme',
+    kind: 'plugin:nexusstor',
+    name: 'nexusstor-nas1',
+    config: {
+      token: 'SECRET',
+      host: 'nas1.acme.example.com',
+      port: 8443,
+      fingerprint: '3f9a0c41d27e85b6a1c09d4e7f2b38a65c1d0e9f47b2a83c6d5e1f0a9b8c7d6e',
+      client_cert: '-----BEGIN CERTIFICATE-----\n(pairing client certificate, demo)\n-----END CERTIFICATE-----\n',
+      client_key: 'SECRET',
+      appliance: 'nexus-demo',
+    } as Json,
+  };
+  db.sources.push(sNst);
 
   const grp = (
     tenant: string,
@@ -2035,6 +2115,7 @@ function seed() {
     grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
     grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
     grp('acme', sMy.id, hourly.id, 'acme-erp-db', ['erp']),
+    grp('acme', sNst.id, silver.id, 'acme-vstors', ['acme-files']),
     grp('acme', sMy.id, silver.id, 'acme-erp-server', []),
   );
   // guest inventory (scheduler `inventory` jobs, 20 minutes ago)
@@ -2077,6 +2158,10 @@ function seed() {
   inv(sMy.id, [
     ['erp', 'erp', '', []],
     ['erp_archive', 'erp_archive', '', []],
+  ]);
+  inv(sNst.id, [
+    ['acme-files', 'acme-files (2 NFS, 1 SMB, S3)', '', []],
+    ['acme-vm', 'acme-vm (1 LUN)', '', []],
   ]);
   inv(sNas02.id, [
     ['tank.media', 'tank/media (/mnt/tank/media)', '', []],
@@ -2158,6 +2243,7 @@ function seed() {
   series('acme', `share-${sNfs.id}`, 3, { hh: 22, skip: 1, days: 5 });
   series('acme', `share-${sSmb.id}`, 0.9, { hh: 3, offsite: false, days: 3 });
   series('acme', `plugin-truenas-${sNas02.id}-tank.media`, 2_400, { hh: 22, skip: 1, days: 3 });
+  series('acme', `plugin-nexusstor-${sNst.id}-acme-files`, 310, { hh: 23, skip: 1, days: 4 });
   series('acme', `plugin-postgresql-${sPg.id}`, 14, { hh: 22, skip: 1, days: 4 });
   // Phase 18b: recoverable range of the cluster snapshots (base backup of the oldest + WAL up to each)
   {

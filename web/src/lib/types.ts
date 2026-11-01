@@ -376,6 +376,20 @@ export type ShareSource = NfsSource | SmbSource;
  * `config_schema`; secret fields are write-only (GET returns `<field>_set: boolean` instead).
  */
 export type PluginSource = SourceBase & { kind: `plugin:${string}`; config: Record<string, unknown> };
+/**
+ * Public config of a `plugin:nexusstor` source (docs/nexusstor-design.md): `host`, `port`, the pinned
+ * `fingerprint` and the pairing's `client_cert` are derived by the server from the pasted pairing token;
+ * `token` and `client_key` are write-only.
+ */
+export interface NexusStorConfig {
+  host?: string;
+  port?: number;
+  fingerprint?: string;
+  client_cert?: string;
+  appliance?: string;
+  token_set?: boolean;
+  client_key_set?: boolean;
+}
 export type Source =
   PveSource | LinuxSource | TrueNasSource | VmwareSource | XcpngSource | NfsSource | SmbSource | PluginSource;
 export type SourceKind = Source['kind'];

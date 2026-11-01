@@ -11,10 +11,12 @@
   import { runJob } from '../lib/jobs';
   import { isPluginKind, pluginKinds, pointer } from '../lib/plugins';
   import { buildValue, initValues, secretFlags, type FormValues } from '../lib/schema';
-  import type { Agent, Group, Plugin, PluginSource, Source, SourceKind, Tenant } from '../lib/types';
+  import type { Agent, Group, NexusStorConfig, Plugin, PluginSource, Source, SourceKind, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import SchemaForm from '../components/SchemaForm.svelte';
+  import NexusStorPairing from '../components/NexusStorPairing.svelte';
+  import { NEXUSSTOR_KIND, decodeToken } from '../lib/nexusstor';
   import PauseDialog from '../components/PauseDialog.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
@@ -146,6 +148,9 @@
   // plugin config form (generated from the kind's config_schema)
   let pv: FormValues = $state({});
   let pErrors: Record<string, string> = $state({});
+  // plugin:nexusstor: its own form (pairing token + name), the server derives the rest
+  let nst = $state({ token: '', appliance: '' });
+  let nstError = $state('');
   let f = $state({
     kind: 'pve' as SourceKind,
     tenant: '',
@@ -317,6 +322,8 @@
     const k = ps ? kindsAll.get(ps.kind) : undefined;
     pv = k && ps ? initValues(k.kind.config_schema, ps.config, k.kind.secret_fields ?? []) : {};
     pErrors = {};
+    nst = { token: '', appliance: ps?.kind === NEXUSSTOR_KIND ? String(ps.config.appliance ?? '') : '' };
+    nstError = '';
     lastKind = f.kind;
     open = true;
   }
@@ -560,6 +567,7 @@
   /** Config of a plugin source from the generated form, or null when invalid. */
   function pluginConfig(): Record<string, unknown> | null {
     if (!pk) return null;
+    if (f.kind === NEXUSSTOR_KIND) return nexusstorConfig();
     const secretFields = pk.kind.secret_fields ?? [];
     let r = buildValue(pk.kind.config_schema, pv, { secretFields, secretSet: pSecretSet });
     // Like the server: a stored secret is only kept while the endpoint (host/port) stays the same.
@@ -578,6 +586,20 @@
       return null;
     }
     return r.value;
+  }
+
+  /** plugin:nexusstor: the pasted token (required for a new source) and the name shown on NexusStor. */
+  function nexusstorConfig(): Record<string, unknown> | null {
+    const token = nst.token.trim();
+    nstError = !token && !editing ? t.schema.required : token && !decodeToken(token) ? t.nexusstor.notAToken : '';
+    if (nstError) {
+      notify('error', t.schema.invalid);
+      return null;
+    }
+    const cfg: Record<string, unknown> = {};
+    if (token) cfg.token = token;
+    if (nst.appliance.trim()) cfg.appliance = nst.appliance.trim();
+    return cfg;
   }
 
   async function save(e: SubmitEvent) {
@@ -605,6 +627,13 @@
       const s = r.data as Source;
       if (!r.quorum && s?.kind === 'truenas' && s.config?.authorized_keys) {
         edit(s);
+        return;
+      }
+      // NexusStor: the token's code is valid 15 minutes, so pair right away (Validate pairs)
+      if (!r.quorum && s?.kind === NEXUSSTOR_KIND && (config as Record<string, unknown>).token) {
+        open = false;
+        notify('info', t.sources.pairing);
+        validate(s as PluginSource);
         return;
       }
       open = false;
@@ -1201,13 +1230,22 @@
     {#if isPluginKind(f.kind)}
       {#if pk}
         <p class="muted">{t.sources.pluginHint(pk.plugin.name, pk.plugin.version, pk.plugin.publisher)}</p>
-        <SchemaForm
-          schema={pk.kind.config_schema}
-          bind:values={pv}
-          errors={pErrors}
-          secretFields={pk.kind.secret_fields ?? []}
-          secretSet={pSecretSet}
-        />
+        {#if f.kind === NEXUSSTOR_KIND}
+          <NexusStorPairing
+            bind:token={nst.token}
+            bind:appliance={nst.appliance}
+            stored={editing && isPlugin(editing) ? (editing.config as NexusStorConfig) : null}
+            error={nstError}
+          />
+        {:else}
+          <SchemaForm
+            schema={pk.kind.config_schema}
+            bind:values={pv}
+            errors={pErrors}
+            secretFields={pk.kind.secret_fields ?? []}
+            secretSet={pSecretSet}
+          />
+        {/if}
       {:else}
         <p class="banner warn">{t.sources.noSchema}</p>
       {/if}
