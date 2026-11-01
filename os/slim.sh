@@ -49,7 +49,8 @@ remove=(
 	device-mapper-event-libs
 	# Python modules nothing of ours imports (dnf stays: see above)
 	python3-setuptools python3-requests python3-urllib3 python3-idna python3-charset-normalizer python3-pyyaml
-	python3-pexpect python3-ptyprocess python3-packaging python3-file-magic python3-dbus
+	python3-pexpect python3-ptyprocess python3-packaging python3-file-magic
+	# (python3-dbus stays: the AlmaLinux 10.2 base of 2026-10-31 ships python3-dnf-plugins-core, which needs it)
 	gawk-all-langpacks glibc-gconv-extra
 	"$@"
 )
