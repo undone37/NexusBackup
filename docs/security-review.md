@@ -378,6 +378,15 @@ Reviewed with the implementation (2026-10-10):
 - **Open:** no lab run against a NexusStor appliance yet; the NexusStor side (`storctl backup-serve`) is reviewed
   in that repository.
 
+### 3.12 Plain-TCP syslog for Wazuh (#139)
+
+- Wazuh's syslog listener has no TLS, so the syslog sink offers `transport: tcp` (opt-in, TLS stays the default):
+  the audit log and alerts then leave the box in clear text, on the network the admin chooses (the manual says
+  management network only). Moving an enabled sink from TLS to plain TCP is a weakening (quorum
+  `settings.forwarding`), test `syslog_plain_tcp_for_wazuh` (fails without the transport check in
+  `Forwarding::weaker_than`); a CA or pin on a plain sink is refused, so it cannot look protected.
+- SELinux: the scheduler may now connect to `rsh_port_t` (514/tcp) and `syslogd_port_t` (601, 20514) as well.
+
 ---
 
 ## 4. Findings

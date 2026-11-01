@@ -359,8 +359,11 @@ allow nexus_scheduler_t self:udp_socket create_socket_perms;
 corenet_tcp_connect_http_port(nexus_scheduler_t)
 corenet_tcp_connect_smtp_port(nexus_scheduler_t)
 corenet_tcp_connect_all_unreserved_ports(nexus_scheduler_t)
-# audit / alert forwarding (forward.rs): syslog over TLS (6514, syslog_tls_port_t)
+# audit / alert forwarding (forward.rs): syslog over TLS (6514, syslog_tls_port_t); plain TCP for Wazuh (#139):
+# its listener's 514/tcp is rsh_port_t in this policy, the other syslog ports 601 and 20514 are syslogd_port_t
 corenet_tcp_connect_syslog_tls_port(nexus_scheduler_t)
+corenet_tcp_connect_rsh_port(nexus_scheduler_t)
+corenet_tcp_connect_syslogd_port(nexus_scheduler_t)
 # the tenant directory over LDAPS (#52, directory_sync: 636 and 3269 are ldap_port_t)
 corenet_tcp_connect_ldap_port(nexus_scheduler_t)
 sysnet_dns_name_resolve(nexus_scheduler_t)

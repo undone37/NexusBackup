@@ -1647,6 +1647,8 @@ export interface ForwardingSettings {
     pin_sha256: string | null;
     app_name: string;
     facility: number;
+    transport: 'tls' | 'tcp';
+    format: 'rfc5424' | 'wazuh';
   } | null;
   https: {
     enabled: boolean;

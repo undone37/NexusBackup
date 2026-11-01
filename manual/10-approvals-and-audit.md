@@ -311,9 +311,19 @@ alert events and finished jobs to a log server or SIEM. Two sinks are available;
 
 ![Settings: Forwarding](images/settings-forwarding.png)
 
-- **Syslog over TLS**: RFC 5424 messages with RFC 5425 octet-counting framing over TLS, default port **6514**
+- **Syslog**: RFC 5424 messages with RFC 5425 octet-counting framing over TLS, default port **6514**
   (rsyslog `imtcp` with `StreamDriver.Mode="1"`, syslog-ng `network(transport("tls"))`, most SIEM collectors).
   **App name** (default `nexus`) and **Facility** (default 13, "log audit") go into each message header.
+  - **Transport**: **TLS** (default), or **TCP, unencrypted** for receivers without TLS (one message per line,
+    default port **514**). Plain TCP sends everything in clear text: use it only on the management network. A
+    certificate or fingerprint cannot be set with it, and switching an enabled sink from TLS to plain TCP needs a
+    second person when approvals are enabled.
+  - **Message format**: **RFC 5424** (default, the fields as structured data, table below), or **Wazuh (JSON)**:
+    `Mmm dd hh:mm:ss <appliance> <app name>: {…}` with the same JSON object the HTTPS sink sends. For **Wazuh**,
+    choose plain TCP and this format, and install the decoder and rules from
+    [`integrations/wazuh`](../integrations/wazuh/README.md) on the Wazuh manager (a syslog listener on TCP 514 with
+    `allowed-ips` set to the appliance); they give a malware finding, a console root shell or a failed backup a
+    high level.
 - **HTTPS**: batches of up to **Entries per request** (default 100) entries, POSTed to the URL in the **Body
   format** chosen:
   - **JSON array** (default): `[{"type": …, "category": …, …}, …]`;

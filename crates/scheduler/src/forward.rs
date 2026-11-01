@@ -9,6 +9,8 @@
 //!   `[nexus@32473 seq=".." hash=".." actor=".." action=".." target=".."]`.
 //!   Syslog has no acknowledgement: a batch counts as delivered when the
 //!   connection closed cleanly after it (close_notify, then the receiver's EOF).
+//!   Options: `transport: tcp` (plain, newline-framed, for receivers without
+//!   TLS) and `format: wazuh` (BSD header + the JSON record, [`wazuh`]).
 //! - **https**: POST of a JSON array `[{type: "audit"|"alert"|"job", category, …}]`,
 //!   or Splunk HEC events (`format: splunk_hec`, [`hec_body`]); any 2xx = delivered.
 //!
@@ -25,7 +27,7 @@
 
 use crate::{Scheduler, ACTOR};
 use anyhow::{bail, Context, Result};
-use catalog::forwarding::{self, Forwarding, Https, Syslog, PEN};
+use catalog::forwarding::{self, Forwarding, Https, Syslog, SyslogFormat, Transport, PEN};
 use catalog::rusqlite::{params, OptionalExtension};
 use catalog::secret::SchedulerKey;
 use catalog::Catalog;
@@ -109,7 +111,8 @@ fn header_field(s: &str, max: usize) -> String {
 }
 
 /// RFC 3339 UTC (`2026-10-12T08:30:00Z`) from unix seconds.
-pub fn rfc3339(ts: i64) -> String {
+/// (year, month, day, seconds of the day) in UTC.
+fn civil(ts: i64) -> (i64, i64, i64, i64) {
     let (days, secs) = (ts.div_euclid(86400), ts.rem_euclid(86400));
     // civil_from_days (H. Hinnant)
     let z = days + 719_468;
@@ -120,9 +123,28 @@ pub fn rfc3339(ts: i64) -> String {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    (yoe + era * 400 + i64::from(m <= 2), m, d, secs)
+}
+
+pub fn rfc3339(ts: i64) -> String {
+    let (y, m, d, secs) = civil(ts);
     format!(
         "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        secs / 3600,
+        secs / 60 % 60,
+        secs % 60
+    )
+}
+
+/// RFC 3164 timestamp `Mmm dd hh:mm:ss` (day padded with a space), UTC.
+pub fn bsd_time(ts: i64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (_, m, d, secs) = civil(ts);
+    format!(
+        "{} {d:>2} {:02}:{:02}:{:02}",
+        MONTHS[(m - 1) as usize],
         secs / 3600,
         secs / 60 % 60,
         secs % 60
@@ -156,6 +178,27 @@ fn sev_of_alert(s: &str) -> u8 {
     }
 }
 
+/// Syslog severity of a record: audit 5 (notice), alerts by their severity (resolved: notice), failed jobs 4
+/// (warning), cancelled 5, others 6 (informational).
+fn severity(r: &Record) -> u8 {
+    match r {
+        Record::Audit { .. } => 5,
+        Record::Event { kind, payload: p, .. } if kind == "alert" => {
+            if p["event"].as_str() == Some("resolved") {
+                5
+            } else {
+                sev_of_alert(p["severity"].as_str().unwrap_or_default())
+            }
+        }
+        Record::Event { payload: p, .. } => match p["state"].as_str() {
+            Some("failed") => 4,
+            Some("cancelled") => 5,
+            _ => 6,
+        },
+        Record::Test { .. } => 6,
+    }
+}
+
 fn str_of(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
@@ -167,7 +210,7 @@ fn str_of(v: &Value) -> String {
 /// One RFC 5424 message (without framing). MSG is plain UTF-8 text with
 /// control characters replaced by spaces.
 pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
-    let (sev, ts, msgid, sd, msg): (u8, i64, &str, Vec<(&str, String)>, String) = match r {
+    let (ts, msgid, sd, msg): (i64, &str, Vec<(&str, String)>, String) = match r {
         Record::Audit {
             seq,
             ts,
@@ -178,7 +221,6 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
             hash,
             ..
         } => (
-            5,
             *ts,
             "audit",
             vec![
@@ -198,13 +240,7 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
             payload: p,
         } if kind == "alert" => {
             let event = str_of(&p["event"]);
-            let sev = if event == "resolved" {
-                5
-            } else {
-                sev_of_alert(p["severity"].as_str().unwrap_or_default())
-            };
             (
-                sev,
                 *ts,
                 "alert",
                 vec![
@@ -230,13 +266,7 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
             seq, ts, payload: p, ..
         } => {
             let state = str_of(&p["state"]);
-            let sev = match state.as_str() {
-                "failed" => 4,
-                "cancelled" => 5,
-                _ => 6,
-            };
             (
-                sev,
                 *ts,
                 "job",
                 vec![
@@ -257,7 +287,6 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
             )
         }
         Record::Test { ts } => (
-            6,
             *ts,
             "test",
             Vec::new(),
@@ -272,11 +301,41 @@ pub fn rfc5424(r: &Record, host: &str, app: &str, facility: u8) -> String {
     let msg: String = msg.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     format!(
         "<{}>1 {} {} {} - {msgid} {sd_text} {msg}",
-        u16::from(facility.min(23)) * 8 + u16::from(sev),
+        pri(r, facility),
         rfc3339(ts),
         header_field(host, 255),
         header_field(app, 48),
     )
+}
+
+fn pri(r: &Record, facility: u8) -> u16 {
+    u16::from(facility.min(23)) * 8 + u16::from(severity(r))
+}
+
+/// The Wazuh format: a BSD header Wazuh pre-decodes (`program_name` = `app`), then the record's JSON object
+/// ([`json_record`], single line), which its JSON decoder splits into fields (`integrations/wazuh/`).
+pub fn wazuh(r: &Record, host: &str, app: &str, facility: u8) -> String {
+    format!(
+        "<{}>{} {} {}: {}",
+        pri(r, facility),
+        bsd_time(record_ts(r)),
+        header_field(host, 255),
+        header_field(app, 48),
+        json_record(r, host)
+    )
+}
+
+/// One message of the sink in its format and framing: RFC 5425 octet counting over TLS, a trailing newline over
+/// plain TCP (line breaks inside become spaces, so a message stays one line).
+pub fn syslog_frame(s: &Syslog, r: &Record, host: &str) -> Vec<u8> {
+    let msg = match s.format {
+        SyslogFormat::Rfc5424 => rfc5424(r, host, &s.app_name, s.facility),
+        SyslogFormat::Wazuh => wazuh(r, host, &s.app_name, s.facility),
+    };
+    match s.transport {
+        Transport::Tls => frame(&msg),
+        Transport::Tcp => format!("{}\n", msg.replace(['\n', '\r'], " ")).into_bytes(),
+    }
 }
 
 /// RFC 5425 octet counting: `MSG-LEN SP SYSLOG-MSG`.
@@ -433,7 +492,6 @@ pub fn tls_config(ca_pem: Option<&str>, pin_sha256: Option<&str>) -> Result<Clie
 /// One connection per batch: handshake, all frames, close_notify, then wait
 /// for the receiver to close (a reset or a TLS error = not delivered).
 pub fn send_syslog(s: &Syslog, host: &str, records: &[Record]) -> Result<()> {
-    let cfg = Arc::new(tls_config(s.ca_pem.as_deref(), s.pin_sha256.as_deref())?);
     let name = s.host.trim_matches(['[', ']']);
     let mut last = anyhow::anyhow!("{name}: no address");
     let mut tcp = None;
@@ -452,12 +510,13 @@ pub fn send_syslog(s: &Syslog, host: &str, records: &[Record]) -> Result<()> {
     let tcp = tcp.ok_or(last)?;
     tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let buf: Vec<u8> = records.iter().flat_map(|r| syslog_frame(s, r, host)).collect();
+    if s.transport == Transport::Tcp {
+        return send_plain(tcp, &buf);
+    }
+    let cfg = Arc::new(tls_config(s.ca_pem.as_deref(), s.pin_sha256.as_deref())?);
     let conn = ClientConnection::new(cfg, ServerName::try_from(name.to_owned())?)?;
     let mut tls = StreamOwned::new(conn, tcp);
-    let mut buf = Vec::new();
-    for r in records {
-        buf.extend(frame(&rfc5424(r, host, &s.app_name, s.facility)));
-    }
     tls.write_all(&buf).context("TLS")?;
     tls.flush()?;
     tls.conn.send_close_notify();
@@ -479,6 +538,22 @@ pub fn send_syslog(s: &Syslog, host: &str, records: &[Record]) -> Result<()> {
             {
                 return Ok(())
             }
+            Err(e) => return Err(e).context("syslog receiver closed the connection abnormally"),
+        }
+    }
+}
+
+/// Plain TCP: all lines, our side closed, then wait for the receiver's close as over TLS (a reset = not delivered;
+/// a receiver that keeps the connection open, as Wazuh's does, counts as delivered after the read timeout).
+fn send_plain(mut tcp: TcpStream, buf: &[u8]) -> Result<()> {
+    tcp.write_all(buf).context("TCP")?;
+    tcp.shutdown(Shutdown::Write)?;
+    let mut sink = [0u8; 1024];
+    loop {
+        match tcp.read(&mut sink) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => return Ok(()),
             Err(e) => return Err(e).context("syslog receiver closed the connection abnormally"),
         }
     }

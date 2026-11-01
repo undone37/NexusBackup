@@ -38,6 +38,12 @@ pub struct SyslogReq {
     app_name: Option<String>,
     #[serde(default)]
     facility: Option<u8>,
+    /// `tls` (default) or `tcp` (plain, newline-framed: Wazuh's syslog listener has no TLS)
+    #[serde(default)]
+    transport: forwarding::Transport,
+    /// `rfc5424` (default) or `wazuh`
+    #[serde(default)]
+    format: forwarding::SyslogFormat,
 }
 
 #[derive(Deserialize)]
@@ -129,7 +135,8 @@ fn pin(v: Option<String>, what: &str) -> ApiResult<Option<String>> {
 fn check_syslog(r: SyslogReq) -> ApiResult<Syslog> {
     let host = r.host.trim().trim_matches(['[', ']']).to_owned();
     crate::validate::host(&host).map_err(|_| ApiError::bad("syslog.host: host name or IP address"))?;
-    let port = r.port.unwrap_or(6514);
+    let plain = r.transport == forwarding::Transport::Tcp;
+    let port = r.port.unwrap_or(if plain { 514 } else { 6514 });
     if port == 0 {
         return Err(ApiError::bad("syslog.port: 1..=65535"));
     }
@@ -143,14 +150,23 @@ fn check_syslog(r: SyslogReq) -> ApiResult<Syslog> {
     if facility > 23 {
         return Err(ApiError::bad("syslog.facility: 0..=23"));
     }
+    let (ca_pem, pin_sha256) = (ca_pem(r.ca_pem, "syslog")?, pin(r.pin_sha256, "syslog")?);
+    // a certificate setting on a plain connection would read as protection that is not there
+    if plain && (ca_pem.is_some() || pin_sha256.is_some()) {
+        return Err(ApiError::bad(
+            "syslog: ca_pem and pin_sha256 need transport tls (plain tcp is not encrypted)",
+        ));
+    }
     Ok(Syslog {
         enabled: r.enabled,
         host,
         port,
-        ca_pem: ca_pem(r.ca_pem, "syslog")?,
-        pin_sha256: pin(r.pin_sha256, "syslog")?,
+        ca_pem,
+        pin_sha256,
         app_name,
         facility,
+        transport: r.transport,
+        format: r.format,
     })
 }
 
