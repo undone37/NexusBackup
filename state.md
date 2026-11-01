@@ -1714,5 +1714,16 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   nexus-keyd loads the credential (`LoadCredentialEncrypted=`); `nexus-setup keys-reseal` with the recovery key after
   a PCR 7 change. Tests: keyd (credential path, recovery check after the seal), setup script (no TPM, reseal), the
   seal helper (fake systemd-creds), diagnostics.
-  - open: lab (vTPM on VM 201: migration of the existing kek.local, keyd from the credential, SELinux for keyd's
-    credentials directory; a fresh install with and without a vTPM; a reseal after a PCR 7 change).
+  - lab 2026-11-02 (VM 201, SeaBIOS): 0.0.57-dev without a TPM: the seal failed (systemd-creds could not create
+    its host key: /var/lib/systemd read-only in the unit) and keyd with it (Requires=): VM 201 rolled back to 0.0.56,
+    plain KEK restored from the credential; sealed by hand, keyd then failed at step CREDENTIALS (systemd, init_t,
+    denied reading kek.cred with keyd's label) and its restarts ran the seal unit into the start limit. Fixed: own
+    type nexus_keyd_cred_t (relabelled by the helper), the unit stays active, /var/lib/systemd writable. 0.0.58-dev:
+    sealed with the host key (no TPM), kek.cred labelled, keyd up, but keyd's read of
+    /run/credentials/nexus-keyd.service/kek was denied (init_var_run_t, 55 denials, keyring requests failed): rule
+    added (a local module on the VM until the next image), a backup through keyd ok. vTPM added (tpmstate0 v2.0)
+    and VM 201 power-cycled: `systemd-analyze has-tpm2` "partial" (-firmware: SeaBIOS has no measured boot), so the
+    helper did not count the TPM: now usable = driver + system + subsystem + libraries, firmware recorded; re-sealed
+    by hand to the vTPM (status tpm2, PCR 7, firmware false), keyd restarted, a backup through the TPM-sealed key ok.
+  - open: a clean pass with the next image (helper and policy from the image, the local module removed), a fresh
+    install with and without a vTPM, a reseal after a PCR 7 change, a UEFI + Secure Boot appliance.

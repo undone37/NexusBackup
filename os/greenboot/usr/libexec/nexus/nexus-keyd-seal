@@ -25,6 +25,7 @@ DEFAULTS = {
     "DIR": "/var/lib/nexus/keyd",
     "STATUS": "/var/lib/nexus/keyd-seal.json",
     "SYSTEMD_CREDS": "systemd-creds",
+    "SYSTEMD_ANALYZE": "systemd-analyze",
     "RESTORECON": "restorecon",
     "PCRS": "7",
     "TIMEOUT": "60",
@@ -55,9 +56,21 @@ def creds(*args, stdin=None):
         return 124, b"", "systemd-creds timed out"
 
 
+def tpm2_support():
+    """`systemd-analyze has-tpm2`: (usable, firmware). Usable = kernel driver, system and subsystem support and the
+    TSS libraries; `firmware` is measured boot (UEFI TCG2). A BIOS-booted VM with a vTPM lacks only the firmware
+    part (lab VM 201, SeaBIOS: "partial", exit 1): its TPM seals fine, but PCR 7 is not bound to Secure Boot."""
+    try:
+        p = subprocess.run([cfg("SYSTEMD_ANALYZE"), "has-tpm2"], capture_output=True, text=True,
+                           timeout=float(cfg("TIMEOUT")))
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False, False
+    have = {l.strip()[1:] for l in p.stdout.splitlines() if l.strip().startswith("+")}
+    return {"driver", "system", "subsystem", "libraries"} <= have, "firmware" in have
+
+
 def has_tpm2():
-    # exit 0 only when firmware, kernel driver, the TSS libraries and systemd support are all there
-    return creds("has-tpm2", "--quiet")[0] == 0
+    return tpm2_support()[0]
 
 
 def read_status():
@@ -70,6 +83,8 @@ def read_status():
 
 def write_status(mode):
     st = {"mode": mode, "pcrs": [int(p) for p in cfg("PCRS").split(",")] if mode == "tpm2" else [], "at": int(time.time())}
+    if mode == "tpm2":
+        st["firmware"] = tpm2_support()[1]
     tmp = cfg("STATUS") + ".tmp"
     with open(tmp, "w") as f:
         json.dump(st, f)

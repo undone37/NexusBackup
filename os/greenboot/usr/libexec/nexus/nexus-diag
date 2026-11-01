@@ -392,6 +392,9 @@ def tpm():
         return "warn", 2, f"seal status unreadable: {e}"
     if st.get("mode") == "tpm2":
         pcrs = ",".join(str(p) for p in st.get("pcrs", [])) or "-"
+        if st.get("firmware") is False:
+            return ("warn", 2, f"master key sealed to the TPM (PCR {pcrs}), but the firmware does not measure the boot"
+                    " (BIOS boot): it is not bound to Secure Boot. Boot with UEFI and Secure Boot for the full binding")
         return "pass", 1, f"master key sealed to the TPM (PCR {pcrs})"
     return ("fail", 2, "NO TPM: the master key is only protected by a key on the same disk. NexusBackup requires a TPM 2.0:"
             " enable it in the firmware or add a vTPM to the VM, then reboot (the key is sealed to it at the next start)")

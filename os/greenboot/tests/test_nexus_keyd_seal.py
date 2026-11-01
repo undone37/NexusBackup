@@ -19,8 +19,6 @@ FAKE = r'''#!PYTHON
 import base64, os, sys
 a = sys.argv[1:]
 open(os.environ["FAKE_LOG"], "a").write(" ".join(a) + "\n")
-if a[0] == "has-tpm2":
-    sys.exit(0 if os.environ.get("FAKE_TPM") == "1" else 1)
 src = a[-2]
 data = sys.stdin.buffer.read() if src == "-" else open(src, "rb").read()
 if a[0] == "encrypt":
@@ -35,6 +33,18 @@ elif a[0] == "decrypt":
 '''
 
 
+# systemd-analyze stand-in: has-tpm2 as on a UEFI machine ($FAKE_TPM=1), a BIOS VM with a vTPM ($FAKE_TPM=bios),
+# or without a TPM
+ANALYZE = r'''#!PYTHON
+import os
+t = os.environ.get("FAKE_TPM")
+fw = "+firmware" if t == "1" else "-firmware"
+drv = "+driver" if t in ("1", "bios") else "-driver"
+print("yes" if t == "1" else "partial" if t == "bios" else "no")
+print("\n".join([fw, drv, "+system", "+subsystem", "+libraries"]))
+'''
+
+
 class Seal(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -43,10 +53,13 @@ class Seal(unittest.TestCase):
         fake = self.d / "systemd-creds"
         fake.write_text(FAKE.replace("PYTHON", sys.executable))
         fake.chmod(0o755)
+        analyze = self.d / "systemd-analyze"
+        analyze.write_text(ANALYZE.replace("PYTHON", sys.executable))
+        analyze.chmod(0o755)
         self.env = {**os.environ, "NEXUS_KEYDSEAL_DIR": str(self.d / "keyd"),
                     "NEXUS_KEYDSEAL_STATUS": str(self.d / "keyd-seal.json"),
                     "NEXUS_KEYDSEAL_SYSTEMD_CREDS": str(fake), "FAKE_LOG": str(self.d / "calls"),
-                    "NEXUS_KEYDSEAL_RESTORECON": "true"}
+                    "NEXUS_KEYDSEAL_RESTORECON": "true", "NEXUS_KEYDSEAL_SYSTEMD_ANALYZE": str(analyze)}
         self.kek = bytes(range(32))
 
     def tearDown(self):
@@ -91,6 +104,14 @@ class Seal(unittest.TestCase):
         before = self.cred()
         self.assertEqual(self.run_helper("migrate", FAKE_TPM="1").returncode, 0)
         self.assertEqual(self.cred(), before)
+
+    def test_bios_vm_with_a_vtpm_seals_to_it_without_firmware_binding(self):
+        # lab VM 201 (SeaBIOS + vTPM): has-tpm2 "partial", only -firmware
+        self.plain()
+        r = self.run_helper("migrate", FAKE_TPM="bios")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.cred().startswith(b"CRED:tpm2:7:"))
+        self.assertEqual((self.status()["mode"], self.status()["firmware"]), ("tpm2", False))
 
     def test_a_credential_that_does_not_decrypt_keeps_the_plain_kek(self):
         self.plain()

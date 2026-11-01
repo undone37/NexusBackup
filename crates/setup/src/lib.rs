@@ -169,6 +169,14 @@ fn lookup_gid(name: &str) -> Option<u32> {
     (!gr.is_null()).then(|| unsafe { (*gr).gr_gid })
 }
 
+/// [`Setup::tpm_present`]: the `+` lines of `systemd-analyze has-tpm2` name driver, system, subsystem and libraries.
+fn tpm_usable(out: &str) -> bool {
+    let have: Vec<&str> = out.lines().filter_map(|l| l.trim().strip_prefix('+')).collect();
+    ["driver", "system", "subsystem", "libraries"]
+        .iter()
+        .all(|k| have.contains(k))
+}
+
 // ---------------------------------------------------------------- steps
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1088,14 +1096,19 @@ impl Setup {
 
     /// `keyd init`. Refuses if keyd was already initialised (never re-init).
     /// The returned key is never written anywhere by this crate.
-    /// #22: a TPM 2.0 is required (plan.md §2, no TPM, no NexusBackup). `systemd-creds has-tpm2` exits 0 only
-    /// when firmware, kernel driver, the TSS libraries and systemd's support are all there. A dry run assumes one
-    /// unless `NEXUS_SETUP_DRY_RUN_TPM=0` (tests).
+    /// #22: a TPM 2.0 is required (plan.md §2, no TPM, no NexusBackup). Usable = `systemd-analyze has-tpm2`
+    /// reports the kernel driver, system and subsystem support and the TSS libraries; measured boot (`firmware`,
+    /// UEFI) is not required: a BIOS-booted VM with a vTPM seals fine, only without the Secure Boot binding (lab VM
+    /// 201; diagnostics `tpm` warns). A dry run assumes one unless `NEXUS_SETUP_DRY_RUN_TPM=0` (tests).
     pub fn tpm_present(&mut self) -> bool {
         if self.dry_run {
             return std::env::var("NEXUS_SETUP_DRY_RUN_TPM").map_or(true, |v| v != "0");
         }
-        self.cmd("systemd-creds", &["has-tpm2", "--quiet"]).is_ok()
+        // exit 1 for "partial": read the verdict lines, not the exit code
+        let out = self
+            .cmd("sh", &["-c", "systemd-analyze has-tpm2 || true"])
+            .unwrap_or_default();
+        tpm_usable(&out)
     }
 
     /// Seals the KEK right after the recovery key was confirmed (nexus-keyd-seal.service: kek.local becomes the
@@ -1381,6 +1394,16 @@ mod tests {
             hostname: Some("nexus01".into()),
             link: Link::default(),
         }
+    }
+
+    /// #22, lab VM 201 (SeaBIOS + vTPM): "partial" with only -firmware is a usable TPM; without a driver it is not.
+    #[test]
+    fn tpm_usable_without_measured_boot() {
+        let bios = "partial\n-firmware\n+driver\n+system\n+subsystem\n+libraries\n  +libtss2-esys.so.0\n";
+        assert!(tpm_usable(bios));
+        assert!(tpm_usable(&bios.replace("-firmware", "+firmware")));
+        assert!(!tpm_usable(&bios.replace("+driver", "-driver")));
+        assert!(!tpm_usable(""));
     }
 
     #[test]
