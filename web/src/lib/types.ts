@@ -858,7 +858,7 @@ export interface FullRead {
   last_at: number | null;
   last_snapshot: number | null;
   last_job: number | null;
-  result: 'clean' | 'drift' | 'no_baseline' | null;
+  result: 'clean' | 'drift' | 'no_baseline' | 'not_compared' | null;
   changed: number | null;
   unreported: number | null;
   unreported_bytes: number | null;
@@ -2032,7 +2032,15 @@ export interface Dashboard {
   };
   /** Phase 25: the newest restore test result per guest within the window */
   /** Phase 29: full reads (change-tracking check) */
-  full_reads?: { sources: number; verified: number; drift: number; never: number; oldest_verified: number | null };
+  full_reads?: {
+    sources: number;
+    verified: number;
+    drift: number;
+    never: number;
+    /** read in full without the tracker's report (Proxmox VE) */
+    not_compared?: number;
+    oldest_verified: number | null;
+  };
   restore_tests?: {
     tested: number;
     passed: number;

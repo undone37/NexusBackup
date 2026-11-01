@@ -313,6 +313,11 @@ read in full by every backup anyway); XCP-ng groups have none yet.
 
 ![Protection group: full read](images/group-full-read.png)
 
+**Proxmox VE VMs** are read in full but not compared: for a full read Proxmox VE has to start a fresh dirty bitmap
+(with the old one it serves only the regions that bitmap marks), so what the bitmap would have reported is not
+available. The result is **Read in full**: the snapshot is complete, so a write the bitmap missed is in it, but it
+is not detected as drift.
+
 The full-read backup is a normal snapshot (complete and usable). It takes as long as a first backup and moves the
 whole source over the network, so a long interval suits large VMs. The result of each source is shown on the
 **Dashboard** in the **Change tracking** card ([11 Alerts and monitoring](11-alerts-and-monitoring.md#change-tracking-scheduled-full-reads));
@@ -320,8 +325,9 @@ a source with unreported changes raises the critical alert `change_tracking`. Th
 approval) and is audited (`group.full_read`); administrators and tenant administrators set it, through the API
 `PUT /api/v1/groups/{id}/full-read {"days": null | 0..365}`.
 
-> **Status:** Implemented in Phase 29 (scheduler, connectors and API tests, demo backend); a lab run with a real
-> PVE dirty bitmap and the Windows agent's USN journal is pending.
+> **Status:** Implemented in Phase 29 (scheduler, connectors and API tests, demo backend). Lab 2026-11-01 with a
+> real PVE dirty bitmap: the comparison is not possible on Proxmox VE (see above); a lab run with the Windows
+> agent's USN journal is pending.
 
 ### Excluded disks and parallel guests (Proxmox VE)
 

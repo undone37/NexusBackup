@@ -45,9 +45,11 @@ COPY restore-vm/agent/ restore-vm/agent/
 COPY plugins/ plugins/
 COPY --from=web /src/web/dist web/dist
 # The cache mounts keep the registry and target dir across builds; the
-# binaries are copied out within the same RUN.
+# binaries are copied out within the same RUN. The target dir has its own id: a cache mount is keyed
+# by its path otherwise, and NexusStor's build (crates of the same names, e.g. catalog) shared it, so
+# cargo took the other workspace's newer catalog as fresh (lab build of #70 failed).
 RUN --mount=type=cache,target=/opt/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,id=nexusbackup-target,target=/src/target \
     cargo build --release --locked -j ${JOBS} \
       -p keyd -p pve -p offsite -p web-api -p scheduler -p setup -p nftsync -p agent-conn -p truenas -p vmware -p xcpng -p nas \
       -p plugin-host -p plugin-manager -p webtls -p fsindex -p fileindex \

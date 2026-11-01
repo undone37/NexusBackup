@@ -1294,10 +1294,11 @@ At most 50 devices per account are kept.
   tracking but still asks the tracker what it would have reported, reads everything, commits the snapshot as usual
   and prints `full-read <source>/<time> {tracker, baseline, compared, changed, unreported, unreported_bytes,
   examples}`. The scheduler records it in `full_reads` (one row per source: next due, last run, result `clean` /
-  `drift` / `no_baseline`, counts, details, last clean run) and raises `change_tracking` (critical, key
+  `drift` / `no_baseline` / `not_compared` (tracker `none` with a baseline: read in full, the tracker's report not
+  available; Proxmox VE, docs/pve-connector.md "Full read"), counts, details, last clean run) and raises `change_tracking` (critical, key
   `change_tracking:<tenant>/<source>`) on unreported changes; a clean full read resolves it.
 - `GET /full-reads?tenant=&source=` (every reading role, tenant-scoped) returns the rows; `GET /dashboard` has
-  `full_reads: {sources, verified, drift, never, oldest_verified}` (Dashboard card "Change tracking").
+  `full_reads: {sources, verified, drift, never, not_compared, oldest_verified}` (Dashboard card "Change tracking").
 
 ## PSA ticketing (Phase 33, `crates/scheduler/src/psa.rs`)
 A notification rule may have a `psa` channel (`catalog::alerting::Psa`): `{vendor: halopsa|connectwise|autotask,

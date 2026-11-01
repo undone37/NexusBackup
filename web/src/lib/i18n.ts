@@ -4656,8 +4656,11 @@ export const en = {
         clean: 'Verified',
         drift: 'Drift',
         no_baseline: 'No baseline',
+        not_compared: 'Read in full',
         never: 'Never',
       } as Record<string, string>,
+      notComparedHint:
+        "Read in full without comparing: a Proxmox VE full read needs a fresh dirty bitmap, so the bitmap's report is not available. The snapshot is complete.",
       trackers: {
         'dirty-bitmap': 'Dirty bitmap',
         'metadata-cache': 'Metadata cache',
