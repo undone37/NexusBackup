@@ -175,8 +175,19 @@ fn incremental(
     snap: &str,
     base_dirs: &[String],
     st: &mut Stats,
-) -> Result<BTreeMap<String, Act>> {
+) -> Result<Option<BTreeMap<String, Act>>> {
     let dirs = vs.dirs();
+    // 409: the base is gone after all (a NexusStor rollback or purge destroyed it): read in full
+    let resp = match nst.diff(&vs.name, base_snap, snap) {
+        Err(e) if crate::client::status_of(&e) == Some(409) => {
+            ctx.info(format!(
+                "{}: NexusStor cannot diff against {base_snap} ({e:#}), reading everything",
+                vs.name
+            ));
+            return Ok(None);
+        }
+        r => r?,
+    };
     let mut t: BTreeMap<String, Act> = BTreeMap::new();
     for e in sink.base_list()? {
         let Ok(p) = String::from_utf8(e.path) else { continue };
@@ -184,7 +195,7 @@ fn incremental(
     }
     // entries outside every current dataset dir (cannot happen: base dirs ⊆ current)
     t.retain(|p, _| dirs.iter().any(|d| under(p, d)));
-    let mut r = std::io::BufReader::new(nst.diff(&vs.name, base_snap, snap)?);
+    let mut r = std::io::BufReader::new(resp);
     let diff = crate::proto::parse_diff(&mut r, &dirs)?;
     let mut fresh: Vec<String> = dirs
         .iter()
@@ -238,7 +249,7 @@ fn incremental(
     for p in reads {
         t.insert(p, Act::Read);
     }
-    Ok(t)
+    Ok(Some(t))
 }
 
 /// Reads the `Read` paths in batches and sends everything in path order.
@@ -398,7 +409,7 @@ pub fn run(ctx: &Ctx, sink: &mut Sink, nst: &Nst, nexusstor: &str, vs: &VStor) -
     let mut st = Stats::default();
     let r = (|| -> Result<bool> {
         let dirs = vs.dirs();
-        let incr = match (&reference, &state) {
+        let mut incr = match (&reference, &state) {
             (Some(_), Some(s)) if !s.dirs.iter().all(|d| dirs.contains(d)) => {
                 ctx.info(format!("{v}: datasets were removed since the base, reading everything"));
                 false
@@ -406,7 +417,7 @@ pub fn run(ctx: &Ctx, sink: &mut Sink, nst: &Nst, nexusstor: &str, vs: &VStor) -
             (Some(_), Some(_)) => true,
             _ => false,
         };
-        let tree = if incr {
+        let partial = if incr {
             incremental(
                 ctx,
                 sink,
@@ -417,6 +428,12 @@ pub fn run(ctx: &Ctx, sink: &mut Sink, nst: &Nst, nexusstor: &str, vs: &VStor) -
                 &state.as_ref().unwrap().dirs,
                 &mut st,
             )?
+        } else {
+            None
+        };
+        incr = partial.is_some();
+        let tree = if let Some(t) = partial {
+            t
         } else {
             let mut t = BTreeMap::new();
             for d in &dirs {

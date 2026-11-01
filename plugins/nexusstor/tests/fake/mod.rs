@@ -96,6 +96,8 @@ pub enum Evil {
     FilesOversized,
     /// `diff` names a path outside the dataset's mountpoint
     DiffOutside,
+    /// `diff` answers 409 (the base was destroyed by a rollback after the inventory was read)
+    Diff409,
 }
 
 #[derive(Default)]
@@ -330,15 +332,18 @@ fn serve(tcp: TcpStream, cfg: Arc<ServerConfig>, st: &Mutex<State>) -> std::io::
                 return respond(&mut s, 400, &json!({"error": "not a nexusbackup snapshot"}));
             }
             let vs = g.vstors.get_mut(*v).unwrap();
-            vs.snaps.remove(*sn);
-            respond(&mut s, 200, &json!({}))
+            vs.snaps.remove(*sn); // a snapshot that is gone already is ok as well
+            respond(&mut s, 200, &json!({"ok": true}))
         }
         ("GET", ["vstors", v, "diff"]) => {
             let evil = g.evil;
             let vs = &g.vstors[*v];
             let (Some(a), Some(b)) = (vs.snaps.get(q["base"]), vs.snaps.get(q["snap"])) else {
-                return respond(&mut s, 400, &json!({"error": "no such snapshot"}));
+                return respond(&mut s, 409, &json!({"error": "zfs diff: snapshot does not exist"}));
             };
+            if evil == Evil::Diff409 {
+                return respond(&mut s, 409, &json!({"error": "zfs diff: snapshot does not exist"}));
+            }
             let mut out = diff(v, a, b, &vs.renames);
             if evil == Evil::DiffOutside {
                 out = out.replacen(
@@ -418,7 +423,14 @@ fn serve(tcp: TcpStream, cfg: Arc<ServerConfig>, st: &Mutex<State>) -> std::io::
             assert!(off.is_multiple_of(4096) && len <= 64 << 20);
             let end = (off + len).min(data.len());
             let out = data[off.min(end)..end].to_vec();
-            stream(&mut s, &out)
+            // the contract: lun answers carry a Content-Length
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                out.len()
+            )?;
+            s.write_all(&out)?;
+            s.flush()
         }
         _ => respond(&mut s, 404, &json!({"error": "unknown request"})),
     }

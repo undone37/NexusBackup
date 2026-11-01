@@ -146,7 +146,7 @@ impl Inventory {
 
 impl VStor {
     fn check(&self) -> Result<()> {
-        ensure!(!self.datasets.is_empty(), "no file system datasets");
+        // a vStor may have LUNs only (empty tree)
         ensure!(self.datasets.len() <= 1000, "too many datasets");
         let mut dirs = HashSet::new();
         for d in &self.datasets {

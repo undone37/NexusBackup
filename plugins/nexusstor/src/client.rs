@@ -148,7 +148,8 @@ impl Client {
             host: host.to_owned(),
             port,
             cfg: Arc::new(cfg),
-            timeout: Duration::from_secs(300),
+            // `zfs diff` of a large dataset may take minutes before its first line
+            timeout: Duration::from_secs(600),
         })
     }
 
@@ -213,9 +214,13 @@ impl Client {
             bail!("request body larger than 1 MiB");
         }
         let mut s = self.connect()?;
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
         let mut head = format!(
-            "{method} {PREFIX}{path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
-            self.host,
+            "{method} {PREFIX}{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n",
             body.len()
         );
         if !body.is_empty() {

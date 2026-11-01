@@ -375,6 +375,19 @@ fn hostile_diff_path_is_refused() {
     hostile(Evil::DiffOutside, true, "outside the dataset");
 }
 
+/// The base was destroyed after the inventory listed it (a NexusStor rollback): diff
+/// answers 409 and the run reads the vStor in full instead of failing.
+#[test]
+fn diff_409_falls_back_to_a_full_read() {
+    let l = paired();
+    l.host.backup(&l.cfg, Some("acme")).unwrap();
+    l.fake.state.lock().unwrap().evil = Evil::Diff409;
+    let b = l.host.backup(&l.cfg, Some("acme")).unwrap();
+    assert_eq!(b.unchanged, 0, "{b:?}");
+    assert!(b.summary.contains("full read"), "{}", b.summary);
+    assert_backup(&l, b.time);
+}
+
 #[test]
 fn unknown_vstor_is_refused() {
     let l = paired();
