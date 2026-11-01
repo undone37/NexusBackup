@@ -114,6 +114,8 @@ pub struct State {
     pub clock: u64,
     /// `list` page size (the contract allows 10000; small to exercise paging)
     pub page: usize,
+    /// every vStor's `anomaly` in the inventory (NexusStor's change-rate finding)
+    pub anomaly: Option<Value>,
 }
 
 pub struct Fake {
@@ -522,7 +524,7 @@ fn inventory(g: &State) -> Value {
                 "s3_root": v.dirs.iter().find(|d| d.as_str() == "s3"),
                 "luns": v.luns.iter().map(|(l, d)| json!({"name": l, "id": 0, "size": d.len()})).collect::<Vec<_>>(),
                 "snapshots": v.snaps.keys().map(|s| json!({"name": s, "created": 1, "held": true})).collect::<Vec<_>>(),
-                "anomaly": null,
+                "anomaly": g.anomaly,
                 "definition": {"name": name, "network": {"vlan": 10}},
             })
         })

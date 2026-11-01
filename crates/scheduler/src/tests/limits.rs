@@ -146,3 +146,56 @@ fn instant_disk_plan() {
     let id = manual(&s, "instant_disk", "t1", bad);
     assert!(s.plan(&s.job(id).unwrap()).is_err());
 }
+
+/// #137: a plugin's snapshot meta carrying the source system's own change-rate finding (NexusStor) flags that
+/// snapshot and raises `anomaly`, naming the newest clean snapshot from no later than the system's last good
+/// state; control characters from the source system do not reach the message.
+#[test]
+fn source_system_anomaly_from_plugin_meta() {
+    let e = env(1);
+    let s = sched(&e);
+    let src = "plugin-nexusstor-3-acme";
+    for t in [100, 200] {
+        s.db.conn()
+            .execute(
+                "INSERT INTO snapshots (tenant, source, time, local, offsite) VALUES ('t1', ?1, ?2, 1, 0)",
+                catalog::rusqlite::params![src, t],
+            )
+            .unwrap();
+    }
+    let job = Job {
+        id: 11,
+        kind: "backup".into(),
+        tenant: "t1".into(),
+        params: json!({"group_id": 1}),
+    };
+    // NexusStor: last good at 150, the jump found at 250; NexusBackup's snapshot 200 may hold it already
+    let result = json!({"snapshots": [{"source": src, "time": 300, "meta": {"vstor": "acme", "anomaly": {
+        "system": "NexusStor nas1", "snapshot": "auto-daily-\u{1b}[31m1", "at": 250,
+        "last_good": "auto-daily-0", "last_good_created": 150}}}]});
+    s.meta_bookkeeping(&job, Some(&result)).unwrap();
+    let flag: Option<String> =
+        s.db.conn()
+            .query_row(
+                "SELECT anomaly FROM snapshots WHERE tenant='t1' AND source=?1 AND time=300",
+                [src],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert!(flag.unwrap().contains("NexusStor nas1 reported a change-rate anomaly"));
+    let (sev, msg): (String, String) =
+        s.db.conn()
+            .query_row(
+                "SELECT severity, message FROM alerts WHERE kind='anomaly' AND key=?1",
+                [format!("anomaly:t1/{src}")],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+    assert_eq!(sev, "critical");
+    assert!(
+        msg.contains(&format!("{src}/100")),
+        "the snapshot before the last good state: {msg}"
+    );
+    assert!(!msg.contains(&format!("{src}/200")), "{msg}");
+    assert!(!msg.contains('\u{1b}'), "{msg}");
+}

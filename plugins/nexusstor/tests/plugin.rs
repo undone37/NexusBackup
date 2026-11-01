@@ -230,6 +230,31 @@ fn pairing_validate_and_guests() {
     assert!(format!("{e:#}").contains("not paired"), "{e:#}");
 }
 
+/// #137: NexusStor's change-rate finding is passed on in the snapshot meta (known fields only, bounded), where
+/// the scheduler flags the snapshot and raises `anomaly`; without one the meta has none.
+#[test]
+fn nexusstor_anomaly_reaches_the_snapshot_meta() {
+    let l = paired();
+    let b = l.host.backup(&l.cfg, Some("acme")).unwrap();
+    assert!(b.meta.as_ref().unwrap()["anomaly"].is_null(), "{:?}", b.meta);
+    l.fake.state.lock().unwrap().anomaly = Some(json!({"snapshot": "auto-daily-20261101-0000", "at": 1793500000,
+        "last_good": "auto-daily-20261031-0000", "last_good_created": 1793413600, "extra": "x".repeat(5000)}));
+    std::thread::sleep(std::time::Duration::from_secs(1)); // a later snapshot time
+    let b = l.host.backup(&l.cfg, Some("acme")).unwrap();
+    let a = &b.meta.as_ref().unwrap()["anomaly"];
+    assert_eq!(a["system"], "NexusStor nas1");
+    assert_eq!(
+        (a["snapshot"].as_str(), a["last_good_created"].as_i64()),
+        (Some("auto-daily-20261101-0000"), Some(1793413600))
+    );
+    assert!(a.get("extra").is_none(), "unknown fields are not passed on: {a}");
+    assert!(
+        l.host.log().iter().any(|x| x.contains("change-rate anomaly")),
+        "{:?}",
+        l.host.log()
+    );
+}
+
 #[test]
 fn unpinned_server_certificate_is_refused() {
     let l = lab();

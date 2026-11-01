@@ -1608,7 +1608,12 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     the pool through nexusstor-disks' create_pool request, the admin with `nexusstor-web-api create-admin`, then
     `nexusstor-setup detect`; a vStor needs its own port (a VLAN on the management port is refused): a second NIC
     with link down. Seen, not NexusStor-specific: the snapshot list shows size 0 for most snapshots of every kind.
-  - open: restores into vStors, reports back, ransomware signals and the S3 target (steps 3 and 4).
+  - [x] Ransomware signal NexusStor -> NexusBackup (2026-11-01, branch `137-anomaly-signal`): the inventory's
+    `anomaly` into the snapshot meta, the scheduler flags the snapshot and raises `anomaly` naming the clean snapshot
+    from no later than NexusStor's last good one. Tests: `nexusstor_anomaly_reaches_the_snapshot_meta` (plugin),
+    `source_system_anomaly_from_plugin_meta` (scheduler). Lab with a real NexusStor finding: open.
+  - open: restores into vStors, reports back, NexusBackup's findings to NexusStor and the S3 target (steps 3 and 4;
+    they need new sections in NexusStor's contract).
 
 ## Wazuh (added 2026-11-01, #139)
 

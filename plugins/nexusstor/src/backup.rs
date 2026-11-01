@@ -459,7 +459,22 @@ pub fn run(ctx: &Ctx, sink: &mut Sink, nst: &Nst, nexusstor: &str, vs: &VStor) -
             return Err(e);
         }
     };
+    // NexusStor's own change-rate finding (its ransomware signal, contract "inventory"): passed on in the
+    // snapshot meta, where the scheduler flags this snapshot and raises `anomaly` (#137); only the known
+    // fields, bounded (NexusStor's answer is untrusted)
+    let anomaly = vs.anomaly.as_ref().filter(|a| a.is_object()).map(|a| {
+        let s = |k: &str| a[k].as_str().map(|x| x.chars().take(120).collect::<String>());
+        json!({"system": format!("NexusStor {nexusstor}"), "snapshot": s("snapshot"), "at": a["at"].as_i64(),
+               "last_good": s("last_good"), "last_good_created": a["last_good_created"].as_i64()})
+    });
+    if let Some(a) = &anomaly {
+        ctx.warn(format!(
+            "{v}: NexusStor reports a change-rate anomaly (snapshot {}): this snapshot is flagged",
+            a["snapshot"].as_str().unwrap_or("?")
+        ));
+    }
     sink.snapshot_meta(&json!({
+        "anomaly": anomaly,
         "nexusstor": nexusstor, "vstor": v, "snapshot": snap, "quota": vs.quota, "used": vs.used,
         "encrypted": vs.encrypted, "datasets": vs.dirs(),
         "exports": vs.exports.iter().map(|e| json!({"path": e.path, "dir": e.dir})).collect::<Vec<_>>(),

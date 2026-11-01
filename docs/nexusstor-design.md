@@ -86,6 +86,11 @@ Wire contract: NexusStor `docs/nexusbackup-protocol.md`. Where the plugin system
 - The plugin does not see the host's commit: the previous base is released at the start of the next run (state
   blob `prev`), as the TrueNAS plugin rotates. Only snapshots this source recorded are released.
 - NFSv4 ACLs are kept as the xattr `system.nfs4_acl` (as the NAS connector keeps ACLs); no new metadata field.
+- Ransomware signal NexusStor -> NexusBackup (step 3, first part): the inventory's `anomaly` (contract) goes into the
+  snapshot meta as `anomaly {system, snapshot, at, last_good, last_good_created}` (known fields only). The scheduler
+  treats an `anomaly` object in any plugin's snapshot meta as the source system's own finding
+  (`snapmeta::external_anomaly`): the snapshot is flagged and `anomaly` (critical) names the newest clean snapshot
+  from no later than `last_good_created`. No contract change.
 
 ## Lab plan
 
