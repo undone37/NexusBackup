@@ -651,7 +651,8 @@ pub struct Forwarder {
     key: SchedulerKey,
     host: String,
     /// per sink: consecutive failures, next attempt (unix seconds)
-    retry: HashMap<&'static str, (u32, i64)>,
+    /// per sink: failed attempts, next attempt, and the destination they were for (a new one is tried at once)
+    retry: HashMap<&'static str, (u32, i64, String)>,
 }
 
 impl Forwarder {
@@ -671,7 +672,7 @@ impl Forwarder {
             Err(e) => return eprintln!("<3>forward: setting: {e:#}"),
         };
         for (sink, dest) in cfg.enabled() {
-            if self.retry.get(sink).is_some_and(|(_, at)| now < *at) {
+            if self.retry.get(sink).is_some_and(|(_, at, d)| now < *at && *d == dest) {
                 continue;
             }
             match self.deliver(&cfg, sink, &dest, now) {
@@ -679,9 +680,9 @@ impl Forwarder {
                     self.retry.remove(sink);
                 }
                 Err(e) => {
-                    let n = self.retry.get(sink).map_or(0, |r| r.0) + 1;
+                    let n = self.retry.get(sink).filter(|r| r.2 == dest).map_or(0, |r| r.0) + 1;
                     let delay = (10i64 << (n - 1).min(5)).min(300);
-                    self.retry.insert(sink, (n, now + delay));
+                    self.retry.insert(sink, (n, now + delay, dest.clone()));
                     let msg = format!("{e:#}");
                     eprintln!("<4>forward: {sink} ({dest}) failed (attempt {n}, next in {delay} s): {msg}");
                     if let Err(e) = self.db.conn().execute(

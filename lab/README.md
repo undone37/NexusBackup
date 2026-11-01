@@ -256,7 +256,9 @@ Addresses: 10.2.34.211 and .212 are the appliances (VMs 201, 202), .215 the VMwa
 and its guest. Added 2026-10-25: .218 the nested XCP-ng (VM 287, `xcpng.sh`), .219 the Samba AD DC (CT 289,
 `samba-ad.sh`, domain NXLAB.TEST); VM 291 is a stopped VM with an NTFS disk whose file belongs to a domain user
 (`directory-e2e.sh`), VM 296 the nested Hyper-V host (`lab/windows/hyperv.sh`), VM 298 a Windows Server with an
-autologon user for the desktop UI tests (`lab/windows/gui-update.sh`).
+autologon user for the desktop UI tests (`lab/windows/gui-update.sh`). Added 2026-11-01: VM 290 `nx-wazuh` (Debian 12,
+a full clone of VM 224, DHCP, wazuh-manager 4.14 without vulnerability detection: its feed fills the 15 GB disk), the
+receiver of `lab/pvehost/wazuh.sh` (#139).
 
 ## Edge proxy and lab registry on the PVE lab host
 

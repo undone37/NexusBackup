@@ -249,6 +249,30 @@ fn syslog_pin_and_untrusted_certificate() {
     assert!(forward::send_syslog(&s(json!({"host": "127.0.0.1", "port": srv.port})), "h", &rec).is_err());
 }
 
+/// A changed destination is tried at once, not after the old one's backoff (lab #139: a sink moved from a dead
+/// receiver to the Wazuh manager waited up to 5 minutes).
+#[test]
+fn new_destination_skips_the_old_backoff() {
+    let bad = tls_server(false);
+    bad.fail.store(true, Ordering::SeqCst);
+    let good = tls_server(false);
+    let db = Arc::new(Catalog::open_memory().unwrap());
+    audit_n(&db, 2);
+    set(
+        &db,
+        json!({"syslog": {"host": "127.0.0.1", "port": bad.port, "ca_pem": bad.pem}}),
+    );
+    let mut f = Forwarder::new(db.clone(), SchedulerKey::generate(), "nexus1".into());
+    f.step(1000);
+    assert!(cursor(&db, "syslog").3.is_some(), "failed, backing off until 1010");
+    set(
+        &db,
+        json!({"syslog": {"host": "127.0.0.1", "port": good.port, "ca_pem": good.pem}}),
+    );
+    f.step(1001);
+    assert_eq!(syslog_msgs(&good).len(), 2);
+}
+
 /// Wazuh: plain TCP, one line per record, BSD header Wazuh pre-decodes and the JSON record.
 #[test]
 fn syslog_plain_tcp_wazuh_lines() {
