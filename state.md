@@ -1665,4 +1665,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   0.0.56-dev: full read of the 16 GiB disk ok in 61 s, recorded not_compared with the previous snapshot as baseline,
   next due in 90 days; the following backup incremental again (bitmap reused, 32 MiB, 14 s). Found besides: the
   image build shared its cargo target cache with NexusStor's build (crates of the same name): own cache id now.
-  - open: scan back in the real restore VM (#70), passkey step-up (maintainer).
+  - Scan back in the real restore VM (2026-11-01, `lab/pvehost/scan-back.sh`, 0.0.56-dev): a lab YARA rule on a
+    marker, the marker written into VM 225, two backups; scan back from the newest: vm-225/1793566774 and
+    /1793566753 one match each (stopped at the first, incomplete), vm-225/1793566059 complete and clean = the
+    recommended restore point; three snapshot scans in the micro-VM, about 3 minutes each (job 1756). Marker and
+    rule removed afterwards.
+  - open: passkey step-up (maintainer).
