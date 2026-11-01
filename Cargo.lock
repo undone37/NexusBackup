@@ -7730,6 +7730,7 @@ dependencies = [
  "keyd",
  "libc",
  "nas",
+ "nexusstor-plugin",
  "plugin-manager",
  "plugin-proto",
  "rand 0.8.8",

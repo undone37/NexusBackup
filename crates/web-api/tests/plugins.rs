@@ -795,3 +795,112 @@ async fn plugin_upload_without_approvals() {
     assert!(t.paths.staging.join(".trigger").exists());
     assert_eq!(t.installer(), ["installed pgx 1.0.0"]);
 }
+
+/// NexusStor sources (plugins/nexusstor, docs/nexusstor-design.md): the pasted pairing
+/// token gives host, port and the pinned fingerprint; the appliance generates the
+/// pairing's client certificate; token and key are sealed and write-only; derived
+/// fields sent by a client are ignored.
+#[tokio::test]
+async fn nexusstor_source_from_pairing_token() {
+    use base64::Engine;
+    let t = T::new();
+    catalog::set_setting(&t.st.cat.conn(), "approvals_enabled", "false").unwrap();
+    let admin = t.login("alice").await;
+    let manifest = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/nexusstor/manifest.json"
+    ))
+    .unwrap();
+    let b = bundle::pack(&manifest, b"\x7fELF nexusstor", &BTreeMap::new()).unwrap();
+    let sig = bundle::sign(&b, &t.project_key).unwrap();
+    let r = t.upload(&admin, &b, Some(&sig), "application/octet-stream").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(t.installer(), ["installed nexusstor 1.0.0"]);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let fp = "ab".repeat(32);
+    let token = |expires: u64| {
+        let j = json!({"address": "nas1.example.com:9443", "fingerprint": fp, "code": "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "expires": expires});
+        format!(
+            "nst1.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(j.to_string())
+        )
+    };
+    let create = |cfg: Value| json!({"tenant": "acme", "kind": "plugin:nexusstor", "name": "nas1", "config": cfg});
+    let r = t
+        .call(Method::POST, "/api/v1/sources", &admin, Some(create(json!({}))))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/sources",
+            &admin,
+            Some(create(json!({"token": token(now - 1)}))),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    assert!(r.body["error"].as_str().unwrap().contains("expired"), "{:?}", r.body);
+    let r = t
+        .call(
+            Method::POST,
+            "/api/v1/sources",
+            &admin,
+            Some(create(
+                json!({"token": token(now + 900), "host": "evil.example.com", "appliance": "nb1"}),
+            )),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
+    let id = r.body["id"].as_i64().unwrap();
+    let c = &r.body["config"];
+    assert_eq!(
+        (c["host"].as_str(), c["port"].as_u64()),
+        (Some("nas1.example.com"), Some(9443))
+    );
+    assert_eq!(c["fingerprint"], fp.as_str());
+    assert!(c["client_cert"].as_str().unwrap().contains("BEGIN CERTIFICATE"));
+    assert_eq!(
+        (c["token_set"].clone(), c["client_key_set"].clone()),
+        (json!(true), json!(true))
+    );
+    assert!(c.get("client_key").is_none() && c.get("token").is_none(), "{c}");
+    let stored = |t: &T| -> Value {
+        let raw: String =
+            t.st.cat
+                .conn()
+                .query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    };
+    let mut v = stored(&t);
+    assert!(catalog::secret::is_sealed(v["client_key"].as_str().unwrap()));
+    assert!(catalog::secret::is_sealed(v["token"].as_str().unwrap()));
+    t.sk.open_all_with(&source_owner(id), &mut v, &["token", "client_key"])
+        .unwrap();
+    assert!(v["client_key"].as_str().unwrap().contains("BEGIN PRIVATE KEY"));
+    let cert = v["client_cert"].clone();
+
+    // an update without a token keeps the pairing (client values for derived fields ignored)
+    let r = t
+        .call(
+            Method::PUT,
+            &format!("/api/v1/sources/{id}"),
+            &admin,
+            Some(json!({"name": "nas1b", "config": {"host": "evil.example.com", "fingerprint": "00".repeat(32), "appliance": "nb2"}})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let mut v = stored(&t);
+    assert_eq!(
+        (v["host"].as_str(), v["fingerprint"].as_str()),
+        (Some("nas1.example.com"), Some(fp.as_str()))
+    );
+    assert_eq!((v["client_cert"].clone(), v["appliance"].clone()), (cert, json!("nb2")));
+    t.sk.open_all_with(&source_owner(id), &mut v, &["token", "client_key"])
+        .unwrap();
+    assert!(v["client_key"].as_str().unwrap().contains("BEGIN PRIVATE KEY"));
+}
