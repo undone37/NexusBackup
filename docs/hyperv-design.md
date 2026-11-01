@@ -1,6 +1,6 @@
 # Microsoft Hyper-V backups: design (Phase 42, #39)
 
-Status: proposal (2026-10-25), before any code (plan.md Phase 42: a design note first). The WMI facts below were
+Status: accepted (maintainer 2026-11-01: a mode of the Windows agent; plan.md §2). Proposal of 2026-10-25 (plan.md Phase 42: a design note first). The WMI facts below were
 checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM on pve-test, `lab/windows/hyperv.sh`,
 "Lab results"), the RCT change query included.
 

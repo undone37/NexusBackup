@@ -1,6 +1,6 @@
 # Database log chains: SQL Server, Oracle, log schedules (design, Phase 42: #41, #42, #43)
 
-Status: proposal (2026-11-01), before any code. Written without a SQL Server or Oracle installation: both need a
+Status: accepted (2026-11-01, plan.md §2: the options below as proposed), before any code. Written without a SQL Server or Oracle installation: both need a
 licence decision by the maintainer (SQL Server Developer edition, Oracle Database Free) before the lab. The plan's rule
 for Phase 42 ("a short design note first") applies.
 

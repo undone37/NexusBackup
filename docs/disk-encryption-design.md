@@ -1,6 +1,7 @@
 # Disk encryption with LUKS2 and TPM, NVMe metadata tier: design (Phase 40, #22)
 
-Status: proposal (2026-10-28), before any code. Written without the lab (no TPM run yet); the facts below come from
+Status: accepted (maintainer 2026-11-01, plan.md §2): **a TPM 2.0 is required, no TPM, no NexusBackup**; the
+proposals below are taken as written, with that change (no clear-file fallback). Proposal of 2026-10-28. Written without the lab (no TPM run yet); the facts below come from
 the tree. The decisions marked as proposed need the maintainer's review, as they decide what an attacker with the
 hardware gets.
 
@@ -26,8 +27,8 @@ follows that risk.
    keyd unit through `LoadCredentialEncrypted=kek:/var/lib/nexus/keyd/kek.cred`; keyd reads
    `$CREDENTIALS_DIRECTORY/kek`. systemd (PID 1) talks to the TPM, keyd keeps `PrivateDevices=yes` and never opens
    `/dev/tpmrm0`; no TPM library in our code. The plan's "keyd is the only process with TPM access" becomes "only
-   PID 1 and the enrolment helper". Without a TPM (or one that fails the self-test) the appliance keeps the clear
-   file and the dashboard says so; the first-boot wizard shows which mode it chose.
+   PID 1 and the enrolment helper". **Without a TPM the first-boot setup stops** before it creates any key (decision
+   2026-11-01: no TPM, no NexusBackup); a virtual appliance needs a vTPM.
 2. **PCR 7 only** (Secure Boot state and its certificate databases). Not PCR 4/9/11: they change on every bootc
    update and every kernel, and a rollback would need the old values. PCR 7 changes when the firmware's db/dbx is
    updated or Secure Boot is turned off: the KEK then does not unseal, keyd stays down, the dashboard and the console
