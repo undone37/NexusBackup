@@ -101,8 +101,9 @@ step_forward() {
 	log "test message: ok"
 }
 
-# alerts of a rule in the manager's alerts.json since the step started (JSON lines)
-alerts() { wz "jq -c --argjson t $1 'select(.rule.id == \"$2\" and (.timestamp | sub(\"\\\\.[0-9]+\"; \"\") | sub(\"[+-][0-9]{4}$\"; \"Z\") | fromdate) >= \$t)' /var/ossec/logs/alerts/alerts.json 2>/dev/null"; }
+# alerts of a rule in the manager's alerts.json since the step started (JSON lines; a line that does not parse,
+# for example one cut off when the disk was full, is skipped)
+alerts() { wz "jq -cR --argjson t $1 'fromjson? | select(.rule.id == \"$2\" and (.timestamp | sub(\"\\\\.[0-9]+\"; \"\") | sub(\"[+-][0-9]{4}$\"; \"Z\") | fromdate) >= \$t)' /var/ossec/logs/alerts/alerts.json 2>/dev/null"; }
 
 step_live() {
 	local t0
@@ -116,7 +117,7 @@ step_live() {
 	for _ in $(seq 1 24); do
 		n_test=$(alerts "$t0" 110101 | wc -l)
 		n_fail=$(alerts "$t0" 110113 | wc -l)
-		n_audit=$(wz "jq -c --argjson t $t0 'select(any(.rule.groups[]?; . == \"nexusbackup\") and .data.type == \"audit\" and (.timestamp | sub(\"\\\\.[0-9]+\"; \"\") | sub(\"[+-][0-9]{4}$\"; \"Z\") | fromdate) >= \$t)' /var/ossec/logs/alerts/alerts.json 2>/dev/null | wc -l")
+		n_audit=$(wz "jq -cR --argjson t $t0 'fromjson? | select(any(.rule.groups[]?; . == \"nexusbackup\") and .data.type == \"audit\" and (.timestamp | sub(\"\\\\.[0-9]+\"; \"\") | sub(\"[+-][0-9]{4}$\"; \"Z\") | fromdate) >= \$t)' /var/ossec/logs/alerts/alerts.json 2>/dev/null | wc -l")
 		[ "$n_test" -ge 1 ] && [ "$n_fail" -ge 1 ] && break
 		sleep 5
 	done
