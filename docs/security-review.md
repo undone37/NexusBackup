@@ -364,6 +364,20 @@ Reviewed with the implementation (2026-10-10):
 - **Open (L-4):** no per-peer bandwidth limit on the primary (concurrency is limited to 8 requests
   per peer; the secondary has `bwlimit`).
 
+### 3.11 NexusStor pairing (plugin `nexusstor`, #137, docs/nexusstor-design.md)
+
+- **Trust comes from the pasted token only.** The web-api decodes the pairing token itself
+  (`crates/web-api/src/nexusstor.rs`): host, port and the pinned certificate fingerprint are derived from it and the
+  client certificate is generated per pairing; client-supplied values for these fields are dropped. An expired token
+  (15 minutes) is refused. Tests `create_derives_endpoint_pin_and_identity`, `nexusstor_source_from_pairing_token`.
+- **Transport:** TLS 1.3 only (TLS 1.2 refused), ALPN `nexusbackup/1`, NexusStor's leaf certificate pinned by
+  SHA-256 with the handshake signature still verified, mutual TLS with the pairing's client key (a secret field,
+  like the token). Test `unpinned_server_certificate_is_refused`.
+- **Hostile NexusStor:** the plugin is sandboxed (network only to the token's endpoint, no keys, no store); its
+  parsers bound sizes and paths (the TrueNAS `zfs diff` parser); the host validates every item as for any plugin.
+- **Open:** no lab run against a NexusStor appliance yet; the NexusStor side (`storctl backup-serve`) is reviewed
+  in that repository.
+
 ---
 
 ## 4. Findings
