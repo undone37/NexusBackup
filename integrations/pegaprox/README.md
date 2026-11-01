@@ -12,6 +12,16 @@ What the plugin's tab shows for each guest of a mapped cluster:
   scheduled run, the newest restore test and open alerts that name the guest;
 - **Back up now**, when the plugin settings allow it and the PegaProx user may create backups of that cluster.
 
+![The NexusBackup tab in PegaProx](images/tab.png)
+
+After **Back up now** the tab names the job, which is followed in NexusBackup under **Jobs**:
+
+![Backup started from the tab](images/tab-backup-started.png)
+
+The pictures show demo data (`node integrations/pegaprox/tools/screenshots.mjs` renders the plugin's real
+`ui.html` against a small local stand-in for its API); the tab was checked against PegaProx 1.4.0 and the lab
+appliance (`lab/pvehost/pegaprox.sh check`, 2026-11-01).
+
 ## Install
 
 Requires PegaProx 1.4 or newer. Copy the directory `nexusbackup/` into PegaProx's `plugins/` directory, then

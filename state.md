@@ -1696,3 +1696,11 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   Ceph repository (apt 401): the node step disables it now; pvecm's SSH join needs the key written once the cluster
   file system settled after the create.
   - open: installation on physical hardware (maintainer).
+
+## PegaProx tab screenshots (added 2026-11-01, #44)
+
+- [x] PegaProx 1.4.0 on lab VM 270 started again, `lab/pvehost/pegaprox.sh check`: the plugin lists the guests of
+  pve-test with their state from VM 201 (0.0.56-dev), and the tab rendered in headless Chrome with the session of an
+  API login (maintainer allowed the lab login, 2026-11-01). The README pictures are not from the lab (lab data stays
+  out of the repository): `integrations/pegaprox/tools/screenshots.mjs` renders the real `ui.html` against demo data.
+  Open: submission to the PegaProx plugin catalogue (maintainer).
