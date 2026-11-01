@@ -75,7 +75,8 @@ above). SQL Server transaction logs and Oracle archive logs are part of the plan
   - legal hold.
 - **Four-eyes approvals** (quorum) for deleting, shortening, unlocking and weakening settings. Optionally tenants
   approve their own deletions.
-- **Hash-chained audit log**, forwarded over syslog/TLS, HTTPS or Splunk HEC.
+- **Hash-chained audit log**, forwarded over syslog/TLS, HTTPS, Splunk HEC or to Wazuh (decoder and rules in
+  `integrations/wazuh`).
 - **Ransomware:**
   - change-rate, duration and dedup-rate anomaly alerts;
   - YARA scans of snapshots in an offline restore micro-VM;

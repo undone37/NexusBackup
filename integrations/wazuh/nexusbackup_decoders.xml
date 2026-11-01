@@ -1,0 +1,11 @@
+<!--
+  NexusBackup appliance events for Wazuh (integrations/wazuh/README.md).
+  The appliance sends syslog lines `Mmm dd hh:mm:ss <host> nexus: {json}` (Settings, Forwarding, syslog format
+  "Wazuh"); Wazuh's pre-decoder takes the program name `nexus` from the header and the JSON decoder turns every
+  key of the record into a field (type, category, action, actor, target, kind, severity, event, state, ...).
+  If the appliance's syslog app name is not `nexus`, change the program name below to match.
+-->
+<decoder name="nexusbackup">
+  <program_name>^nexus$</program_name>
+  <plugin_decoder>JSON_Decoder</plugin_decoder>
+</decoder>
