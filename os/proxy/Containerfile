@@ -26,7 +26,7 @@ COPY crates/ crates/
 COPY restore-vm/agent/ restore-vm/agent/
 COPY plugins/ plugins/
 RUN --mount=type=cache,target=/opt/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,id=nexusbackup-target,target=/src/target \
     cargo build --release --locked -j ${JOBS} -p agent-linux --bin nexus-agent \
  && mkdir -p /out && cp target/release/nexus-agent /out/
 
