@@ -14,7 +14,7 @@ appliance.
 
 | Audience | Start with |
 |---|---|
-| **Administrators** (install, configure) | 01, 02, 04, 05, 07, 09, 12, 13, 14 |
+| **Administrators** (install, configure) | 01, 02, 04, 05, 07, 09, 12, 13, 14, 19 |
 | **Host administrators** (agents on servers) | 16 (Linux), 17 (Windows), 18 (laptops outside the office) |
 | **Security officers** (approve, audit) | 01, 09, 10, 14 |
 | **Operators** (daily operation, restores) | 03, 06, 11, 15 |
@@ -53,6 +53,7 @@ appliance.
     VSS writers, updates, removal
 18. [Edge proxy for roaming laptops](18-edge-proxy.md): the edge VM in a DMZ, enrolling it, assigning laptops,
     "back up now" from anywhere, updates, what a compromised edge can and cannot do
+19. [NexusStor](19-nexusstor.md): pairing with a NexusStor, what a vStor backup contains, incrementals, limits
 
 ## Conventions
 

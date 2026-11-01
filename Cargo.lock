@@ -3947,6 +3947,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexusstor-plugin"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chunkstore",
+ "pem 4.0.0",
+ "plugin-sdk",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tls-pq",
+ "truenas",
+]
+
+[[package]]
 name = "nftsync"
 version = "0.1.0"
 dependencies = [
@@ -7711,6 +7730,7 @@ dependencies = [
  "keyd",
  "libc",
  "nas",
+ "nexusstor-plugin",
  "plugin-manager",
  "plugin-proto",
  "rand 0.8.8",

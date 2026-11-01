@@ -56,6 +56,7 @@ pub mod lockdown;
 pub mod names;
 pub mod nasops;
 pub mod network;
+pub mod nexusstor;
 pub mod offsite;
 pub mod offsite2;
 pub mod oidc;

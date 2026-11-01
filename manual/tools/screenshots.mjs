@@ -587,6 +587,24 @@ async function main() {
       await shot('snapshot-pg-to-target');
       await closeDialogs();
     }],
+    // NexusStor (plugins/nexusstor): a new source from a pasted pairing token (demo token, decoded in the form)
+    ['nexusstor', async () => {
+      await go('/sources');
+      await ev(`$click('New source'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #s-kind')`, 'new source dialog');
+      await ev(`$fill('#s-kind', 'plugin:nexusstor'); return true;`);
+      await until(`return !!document.querySelector('dialog[open] #nst-token')`, 'pairing form');
+      const tok = 'nst1.' + Buffer.from(JSON.stringify({
+        address: 'nas2.acme.example.com', fingerprint: '8c41d0e9f47b2a83c6d5e1f0a9b8c7d6e3f9a0c41d27e85b6a1c09d4e7f2b38a',
+        code: 'K7Q2MZ4XWD6PLR3TB5VYHN2JCE', expires: EPOCH + 840,
+      })).toString('base64url');
+      await ev(`$fill('#s-name', 'nexusstor-nas2'); $fill('#nst-token', ${JSON.stringify(tok)}); return true;`);
+      await until(`return document.querySelector('dialog[open]').innerText.includes('Token valid until')`, 'token preview');
+      await ev(`document.querySelector('dialog[open] #nst-token').scrollIntoView({ block: 'center' }); return true;`);
+      await sleep(300);
+      await shot('source-nexusstor', { height: 1100 });
+      await closeDialogs();
+    }],
     // Phase 18a: Microsoft 365 source with further app registrations; restore into another M365 tenant
     ['m365', async () => {
       const sources = (await api('GET', '/sources')).body;

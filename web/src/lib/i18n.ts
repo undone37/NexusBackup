@@ -1139,6 +1139,30 @@ export const en = {
       `Invalid${field ? ` (${field})` : ''}${msg ? `: ${msg}` : ''}`,
     validateFailed: 'Validation job failed',
     job: (id: number) => `job #${id}`,
+    pairing: 'Pairing… (validating the connection pairs with NexusStor)',
+  },
+  // NexusStor sources (plugin:nexusstor, docs/nexusstor-design.md)
+  nexusstor: {
+    pairing: 'Pairing with NexusStor',
+    steps: [
+      'On the NexusStor: Settings, NexusBackup, Pair. Name this NexusBackup and choose the vStors it may back up.',
+      'Copy the pairing token NexusStor shows (valid 15 minutes, used once) and paste it below.',
+      'Save: NexusBackup pins the NexusStor certificate from the token and pairs at once (Validate connection).',
+    ],
+    token: 'Pairing token',
+    tokenHint: 'Starts with nst1. Contains the NexusStor address, its certificate fingerprint and a one-time code.',
+    newToken: 'New pairing token (optional)',
+    newTokenHint:
+      'Only to pair again, for example after the pairing was revoked on NexusStor or its certificate was replaced. Empty keeps the pairing.',
+    notAToken: 'This is not a NexusStor pairing token (nst1.…).',
+    pairedWith: 'Paired NexusStor',
+    address: 'NexusStor address',
+    fingerprint: 'Certificate SHA-256',
+    expires: 'Token valid until',
+    expired: 'expired: create a new token on NexusStor',
+    compare: 'Compare the fingerprint with the one NexusStor shows next to the token before you save.',
+    appliance: 'Name of this NexusBackup on NexusStor',
+    applianceHint: "Shown in NexusStor's list of paired backup appliances. Empty: the appliance host name.",
   },
   agents: {
     more: 'More',

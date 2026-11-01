@@ -1580,3 +1580,19 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   - Again on 0.0.37-dev with the fixes (`nexusctl`-uploaded lab image): the capacity alert was open when the failed
     backup ended (0 s); the restore log names the chunk ("failed verification and was moved aside: the snapshot is
     damaged"), VM 212 is gone after the failed restore; after the jump the alert is info (the remaining lag).
+
+## NexusStor integration (added 2026-11-01, #137, design docs/nexusstor-design.md)
+
+- [x] Step 2, NexusBackup side (2026-11-01, branch `nexusstor-plugin`, no lab run): `plugins/nexusstor` (crate
+  `nexusstor-plugin`, kind `plugin:nexusstor`) against NexusStor's contract `docs/nexusbackup-protocol.md`: TLS 1.3
+  client (ALPN `nexusbackup/1`, leaf pinned by SHA-256, per-pairing client certificate), Validate pairs with the
+  token's code on 403, guests = vStors, backup = one snapshot per vStor and run (tree of the dataset dirs in `files`
+  with xattrs and the NFSv4 ACL as `system.nfs4_acl`, LUNs as streams `luns/<name>`, `vstor.json` stream, catalog
+  metadata), full via `list` + `files`, incremental via `BaseList` + `zfs diff` (TrueNAS parser) with `Unchanged`,
+  previous base released one run later. Web-api: `crates/web-api/src/nexusstor.rs` derives host, port, pin and the
+  client certificate from the pasted token on create/update; Sources form `NexusStorPairing.svelte`, mock, manual
+  chapter 19 + screenshot `source-nexusstor`. Tests: `cargo test -p nexusstor-plugin` (9 unit, 10 integration against
+  an in-process NexusStor over TLS incl. the binary in the real sandbox), `cargo test -p web-api --test plugins
+  nexusstor`.
+  - open: lab run against a NexusStor appliance (needs its step 1); restores, reports back, ransomware signals and the
+    S3 target (steps 3 and 4).

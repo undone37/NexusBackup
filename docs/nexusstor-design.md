@@ -73,6 +73,20 @@ feel built in on both sides, not like a generic NAS connector.
 3. Restores (files, LUN, whole vStor), reports back, ransomware signals both ways.
 4. NexusStor as an S3 target with Object Lock.
 
+## Implementation notes (step 2, NexusBackup)
+
+Wire contract: NexusStor `docs/nexusbackup-protocol.md`. Where the plugin system shapes the result:
+
+- Snapshots are plugin snapshots, so the source name is `plugin-nexusstor-<source id>-<vstor>` (not `nst-…`), and
+  LUNs are the streams `luns/<name>` in the `streams` index (`Index::Dynamic`, content-defined chunks) instead of a
+  fixed index per LUN; `vstor.json` is a stream too. The tree uses exactly the inventory's dataset dirs.
+- The web-api cannot reach NexusStor before the egress firewall opens the source's endpoint, so pairing is split:
+  the web-api decodes the token (host, port, pinned fingerprint) and generates the pairing's client certificate
+  (`crates/web-api/src/nexusstor.rs`); the plugin's `Validate` sends `pair` when the inventory answers 403.
+- The plugin does not see the host's commit: the previous base is released at the start of the next run (state
+  blob `prev`), as the TrueNAS plugin rotates. Only snapshots this source recorded are released.
+- NFSv4 ACLs are kept as the xattr `system.nfs4_acl` (as the NAS connector keeps ACLs); no new metadata field.
+
 ## Lab plan
 
 A NexusStor appliance VM on pve-test (≥ 200) with a vStor carrying an export, an SMB share, an S3 bucket and a LUN,

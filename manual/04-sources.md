@@ -167,6 +167,7 @@ The built-in TrueNAS source still uses the key pair you enter in its form (see [
 | **SMB share** | `smb` | SMB (TCP 445) | tar/zip download, files to a host with an agent |
 | plugin kinds (e.g. **PostgreSQL server (14 or newer)**) | `plugin:<kind>` | the endpoints the plugin declares (PostgreSQL: 5432; optional restore server and SSH host) | per plugin |
 | **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)** (plugin) | `plugin:m365` | `graph.microsoft.com`, `login.microsoftonline.com` and your two SharePoint hosts (TCP 443) | download; restore to the original or another user/site/team (new folder) |
+| **NexusStor vStors (paired appliance)** (plugin) | `plugin:nexusstor` | the NexusStor's management address (TCP 8443) | download ([19 NexusStor](19-nexusstor.md)) |
 
 Restores are described in [06 Restores](06-restores.md).
 
@@ -1170,6 +1171,8 @@ formulas.
 ![Job with the skipped-files download](images/job-skipped-files.png)
 
 ## Plugin sources (PostgreSQL, MySQL/MariaDB, Microsoft 365)
+
+NexusStor sources (vStors of a paired NexusStor) have their own pairing form and chapter: [19 NexusStor](19-nexusstor.md).
 
 Kinds provided by installed and **enabled** plugins appear in the **Source type** list under **Plugins**. The form
 is generated from the plugin's configuration schema, and fields declared as secret are write-only. A note under

@@ -722,7 +722,14 @@ pub fn public_plugin_config(c: &Connection, kind: &str, raw: &str) -> Value {
     v
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Creates a plugin source (insert, then seal with the row id, one transaction).
+/// NexusStor sources first get their pairing fields from the token (crate::nexusstor).
 pub fn create_source(st: &St, tenant: &str, kind: &str, name: &str, cfg: Value) -> ApiResult<i64> {
     let pk = st.seal_key()?;
     let mut c = st.cat.conn();
@@ -740,6 +747,11 @@ pub fn create_source(st: &St, tenant: &str, kind: &str, name: &str, cfg: Value) 
         params![tenant, kind, name],
     )?;
     let id = tx.last_insert_rowid();
+    let cfg = if kind == crate::nexusstor::KIND {
+        crate::nexusstor::prepare(cfg, None, unix_now())?
+    } else {
+        cfg
+    };
     let v = sealed_plugin_config(&pk, id, &spec, cfg, None)?;
     tx.execute(
         "UPDATE sources SET config = ?2 WHERE id = ?1",
@@ -755,6 +767,11 @@ pub fn update_source(st: &St, id: i64, kind: &str, name: &str, cfg: Value) -> Ap
     let (_, spec) = kind_spec(&c, kind)?;
     let old: String = c.query_row("SELECT config FROM sources WHERE id = ?1", [id], |r| r.get(0))?;
     let old: Value = serde_json::from_str(&old).unwrap_or_default();
+    let cfg = if kind == crate::nexusstor::KIND {
+        crate::nexusstor::prepare(cfg, Some(&old), unix_now())?
+    } else {
+        cfg
+    };
     let v = sealed_plugin_config(&pk, id, &spec, cfg, Some(&old))?;
     c.execute(
         "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
