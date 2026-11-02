@@ -881,8 +881,12 @@ checkpoint into a **reference point**: the next backup reads only the blocks Hyp
 reports as changed. No checkpoint stays behind; a failed backup removes its own. The snapshots are named
 `hv-<VM id>` (one disk image per virtual disk plus the VM's settings).
 
-> **Status:** backups and incrementals are implemented and lab-tested on a nested Hyper-V host (#39). Restores of
-> Hyper-V snapshots (to Proxmox VE, back to Hyper-V) and failover clusters follow.
+**Restore:** a Hyper-V snapshot is restored as a new Proxmox VE VM (Snapshots → **Restore as Proxmox VE VM**, like a
+VMware or XCP-ng VM): generation 2 VMs get UEFI (and the Secure Boot setting they had), the disks come up on SATA
+and the NICs as e1000e with their MACs, which every guest drives; install the VirtIO drivers afterwards.
+
+> **Status:** backups, incrementals and the restore to Proxmox VE are implemented and lab-tested on a nested
+> Hyper-V host (#39). The restore back to Hyper-V and failover clusters follow.
 
 ## TrueNAS
 

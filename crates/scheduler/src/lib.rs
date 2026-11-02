@@ -581,7 +581,9 @@ pub(crate) fn vm_source_name(g: &GroupRow, uuid: &str) -> String {
 
 /// A VMware or XCP-ng VM snapshot (`vmw-` / `xcp-`): fixed disk images and a config, no PVE original.
 pub(crate) fn foreign_vm(source: &str) -> bool {
-    vmware::names::parse_source_name(source).is_some() || xcpng::names::parse_source_name(source).is_some()
+    vmware::names::parse_source_name(source).is_some()
+        || xcpng::names::parse_source_name(source).is_some()
+        || source.strip_prefix("hv-").is_some_and(valid_hyperv_vm)
 }
 
 /// Snapshots of guest disks (PVE VMs and containers, VMware VMs: #83, XCP-ng VMs) whose files come from a
@@ -3489,16 +3491,20 @@ impl Scheduler {
             // cluster
             "restore"
                 if p["source"].as_str().is_some_and(|s| {
-                    s.starts_with(vmware::names::SOURCE_PREFIX) || s.starts_with(xcpng::names::SOURCE_PREFIX)
+                    s.starts_with(vmware::names::SOURCE_PREFIX)
+                        || s.starts_with(xcpng::names::SOURCE_PREFIX)
+                        || s.starts_with("hv-")
                 }) =>
             {
                 let source = ident(p, "source")?;
                 let (cmd, uuid) = match (
                     vmware::names::parse_source_name(source),
                     xcpng::names::parse_source_name(source),
+                    source.strip_prefix("hv-").filter(|u| valid_hyperv_vm(u)),
                 ) {
-                    (Some(u), _) => ("restore-vmware", u),
-                    (_, Some(u)) => ("restore-xcpng", u),
+                    (Some(u), _, _) => ("restore-vmware", u),
+                    (_, Some(u), _) => ("restore-xcpng", u),
+                    (_, _, Some(u)) => ("restore-hyperv", u),
                     _ => bail!("invalid source {source:?}"),
                 };
                 let sid = p["source_id"]

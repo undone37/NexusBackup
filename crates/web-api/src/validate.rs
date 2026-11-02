@@ -131,6 +131,13 @@ pub fn source_ref(s: &str) -> ApiResult<()> {
             .map(|_| ())
             .ok_or_else(|| ApiError::bad("source: expected vmw-<VM UUID>"));
     }
+    if let Some(id) = s.strip_prefix("hv-") {
+        return if crate::resources::valid_hyperv_vm(id) && id == id.to_ascii_lowercase() {
+            Ok(())
+        } else {
+            Err(ApiError::bad("source: expected hv-<VM id>"))
+        };
+    }
     if s.starts_with(xcpng::names::SOURCE_PREFIX) {
         return xcpng::names::parse_source_name(s)
             .map(|_| ())

@@ -357,7 +357,8 @@
     ),
   ];
   // a foreign VM (VMware, XCP-ng) restored as a new Proxmox VE VM
-  const foreignVm = (source: string) => source.startsWith('vmw-') || source.startsWith('xcp-');
+  const foreignVm = (source: string) =>
+    source.startsWith('vmw-') || source.startsWith('xcp-') || source.startsWith('hv-');
   const isVmw = $derived(foreignVm((sel as Snapshot | null)?.source ?? ''));
   const isXcp = $derived(!!(sel as Snapshot | null)?.source.startsWith('xcp-'));
   const tenantClusters = $derived(pveSources.filter((s) => s.tenant === (sel as Snapshot | null)?.tenant));
@@ -612,7 +613,11 @@
       const items: MenuItem[] = [
         {
           label: t.snap.vmwRestore,
-          hint: s.source.startsWith('xcp-') ? t.snap.xcpRestoreHint : t.snap.vmwRestoreHint,
+          hint: s.source.startsWith('xcp-')
+            ? t.snap.xcpRestoreHint
+            : s.source.startsWith('hv-')
+              ? t.snap.hvRestoreHint
+              : t.snap.vmwRestoreHint,
           icon: IconRestore,
           onselect: () => openRestore(s, 'restore'),
         },

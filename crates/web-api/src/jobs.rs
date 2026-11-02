@@ -571,15 +571,16 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
         }
         "restore" | "restore_ct" | "instant_recover" => {
             let r: RestoreP = parse(p)?;
-            let foreign =
-                r.source.starts_with(vmware::names::SOURCE_PREFIX) || r.source.starts_with(xcpng::names::SOURCE_PREFIX);
+            let foreign = r.source.starts_with(vmware::names::SOURCE_PREFIX)
+                || r.source.starts_with(xcpng::names::SOURCE_PREFIX)
+                || r.source.starts_with("hv-");
             if foreign {
                 // a VMware (#34) or XCP-ng (#40) VM as a new Proxmox VE VM: full restore only, to a PVE source of
                 // the tenant
                 validate::source_ref(&r.source)?;
                 if kind != "restore" || r.replace || r.rollback == Some(true) {
                     return Err(ApiError::bad(
-                        "source: a VMware or XCP-ng snapshot is restored in full as a new VM (no replace, rollback or instant recovery)",
+                        "source: a VMware, XCP-ng or Hyper-V snapshot is restored in full as a new VM (no replace, rollback or instant recovery)",
                     ));
                 }
                 let sid = r

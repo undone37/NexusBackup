@@ -85,8 +85,9 @@ checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM o
   the commit.
 - M3 part 1: source kind `hyperv` (catalog v53, config `{agent_id}`), inventory through the agent (`nexus-agentctl
   hv-inventory`, the VM id as guest id), groups of VM ids with one `hv-backup` step per VM (lock per source), the
-  Sources and Groups pages. Still open: restore to PVE (the converter of VMware / XCP-ng snapshots), restore to
-  Hyper-V (M4), clusters.
+  Sources and Groups pages. M3 part 2: `hv-` snapshots restore as PVE VMs through the VMware converter
+  (`vmx_from_hyperv`: name, vCPUs, memory, generation 2 = OVMF, Secure Boot, NIC MACs; guests as "other": SATA,
+  e1000e). Still open: restore to Hyper-V (M4), clusters.
 
 ## Open questions
 

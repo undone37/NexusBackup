@@ -3058,4 +3058,18 @@ fn hyperv_source_groups_and_inventory() {
         [Step::Cli { args, capture, .. }] => assert_eq!((args[1].as_str(), *capture), ("hv-inventory", true)),
         st => panic!("{st:?}"),
     }
+    // an hv- snapshot as a new Proxmox VE VM (#39 M3): nexus-pve restore-hyperv
+    let p = s
+        .plan(&job(
+            52,
+            "restore",
+            json!({"source": format!("hv-{u1}"), "time": 1000, "source_id": 1, "node": "n1", "target": 240,
+                   "storage": "local-lvm", "bridge": "vmbr0"}),
+        ))
+        .unwrap();
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { args, .. }] if args[1..8] == ["restore-hyperv", u1, "1000", "n1", "240", "local-lvm", "vmbr0"]),
+        "{:?}",
+        p.steps
+    );
 }
