@@ -154,6 +154,7 @@
     prScan = '';
     prPick = '';
     prTarget = '';
+    prSwitched = false;
     prOpen = true;
   }
 
@@ -167,12 +168,39 @@
     const d = new Date(ts * 1000);
     return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}T${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
   };
+  // #43: the recoverable ranges of all snapshots of this source as one timeline (merged spans, gaps between them);
+  // a time picked in another snapshot's range switches to the newest snapshot that covers it
+  const ranged = $derived(
+    snaps
+      .filter((x) => x.source === (prSnap as Snapshot | null)?.source && x.meta?.recoverable)
+      .map((x) => ({ s: x, a: x.meta!.recoverable!.from_time, b: x.meta!.recoverable!.to_time }))
+      .filter((x) => x.a < x.b)
+      .sort((p, q) => p.a - q.a),
+  );
+  const spans = $derived.by(() => {
+    const out: { a: number; b: number }[] = [];
+    for (const r of ranged) {
+      const last = out[out.length - 1];
+      if (last && r.a <= last.b + 1) last.b = Math.max(last.b, r.b);
+      else out.push({ a: r.a, b: r.b });
+    }
+    return out;
+  });
+  let prSwitched = $state(false);
   function pickTime(v: string) {
     prPick = v;
     const d = new Date(v);
     if (!v || Number.isNaN(d.getTime())) return;
     const iso = d.toISOString();
     prValues.target_time = `${iso.slice(0, 10)} ${iso.slice(11, 19)}+00`;
+    const t = Math.floor(d.getTime() / 1000);
+    const cur = (prSnap as Snapshot | null)?.meta?.recoverable;
+    if (cur && t >= cur.from_time && t <= cur.to_time) return;
+    const hit = ranged.filter((r) => t >= r.a && t <= r.b).sort((p, q) => q.s.time - p.s.time)[0];
+    if (hit) {
+      prSnap = hit.s;
+      prSwitched = true;
+    }
   }
   /** `target_time` as unix seconds, null = empty or not parseable here (the plugin checks). */
   function targetSecs(v: unknown): number | null {
@@ -1318,6 +1346,15 @@
               >
             {/if}
           </p>
+          {#if spans.length > 1 || ranged.length > 1}
+            <ul class="timeline" aria-label={t.snap.timelineTitle}>
+              {#each spans as sp, i (sp.a)}
+                {#if i > 0}<li class="gap">{t.snap.timelineGap(fmtTime(spans[i - 1].b), fmtTime(sp.a))}</li>{/if}
+                <li>{t.snap.timelineSpan(fmtTime(sp.a), fmtTime(sp.b))}</li>
+              {/each}
+            </ul>
+          {/if}
+          {#if prSwitched}<p class="hint">{t.snap.timelineSwitched(fmtTime((prSnap as Snapshot).time))}</p>{/if}
           {#if range.from_time < range.to_time}
             <div class="field">
               <label for="pr-pick">{t.snap.pickTime}</label>
@@ -1325,8 +1362,8 @@
                 id="pr-pick"
                 type="datetime-local"
                 step="1"
-                min={localInput(range.from_time)}
-                max={localInput(range.to_time)}
+                min={localInput(spans[0]?.a ?? range.from_time)}
+                max={localInput(spans[spans.length - 1]?.b ?? range.to_time)}
                 value={prPick}
                 oninput={(e) => pickTime(e.currentTarget.value)}
                 aria-describedby="pr-pick-hint"
@@ -1472,6 +1509,14 @@
     border-radius: var(--radius, 6px);
     padding: 0.5rem 0.75rem;
     margin-bottom: 0.75rem;
+  }
+  .timeline {
+    margin: 0.25rem 0 0.5rem;
+    padding-left: 1.1rem;
+    font-size: 0.85rem;
+  }
+  .timeline .gap {
+    color: var(--warn);
   }
   .range p {
     margin: 0 0 0.25rem;
