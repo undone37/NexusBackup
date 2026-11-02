@@ -3809,6 +3809,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mssql"
+version = "1.0.2"
+dependencies = [
+ "anyhow",
+ "plugin-sdk",
+ "plugin-ssh",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "muda"
 version = "0.21.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4467,14 +4478,13 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "oracle"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "anyhow",
  "plugin-sdk",
- "russh",
+ "plugin-ssh",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -4893,6 +4903,16 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "plugin-ssh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "russh",
+ "russh-sftp",
+ "tokio",
 ]
 
 [[package]]

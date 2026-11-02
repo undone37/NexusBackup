@@ -1,7 +1,7 @@
 {
   "id": "oracle",
   "name": "Oracle Database",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [

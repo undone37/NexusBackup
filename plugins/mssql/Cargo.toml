@@ -1,0 +1,18 @@
+[package]
+name = "mssql"
+version = "1.0.2"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "NexusBackup plugin: SQL Server on Windows or Linux (Docker) over SSH: full, differential and log backups, point-in-time restore"
+
+[dependencies]
+anyhow = "1"
+plugin-sdk = { path = "../../crates/plugin-sdk" }
+plugin-ssh = { path = "../../crates/plugin-ssh" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

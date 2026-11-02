@@ -1,5 +1,5 @@
-//! SSH to the database host (pure Rust, russh; from the postgresql plugin plus stdout): runs one command per
-//! channel, streams stdin to it and its stdout back. The server's host key is pinned (no TOFU).
+//! SSH for plugins that run commands on a host (Oracle, SQL Server): pure Rust (russh), the server's host key
+//! pinned (no TOFU), one command per channel with stdin streamed to it and its stdout back.
 
 use anyhow::{anyhow, bail, Context, Result};
 use russh::client;
@@ -46,8 +46,7 @@ impl Ssh {
             .split_whitespace()
             .find_map(|t| keys::parse_public_key_base64(t).ok())
             .context("ssh_host_key: no SSH public key")?;
-        let key =
-            Arc::new(keys::decode_secret_key(&crate::rewrap_pem(key), None).map_err(|e| anyhow!("ssh_key: {e}"))?);
+        let key = Arc::new(keys::decode_secret_key(&rewrap_pem(key), None).map_err(|e| anyhow!("ssh_key: {e}"))?);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -118,6 +117,39 @@ impl Ssh {
     /// Runs `cmd` without input; Err with its stderr unless it exits 0.
     pub fn run(&self, cmd: &str) -> Result<()> {
         self.exec(cmd)?.finish()
+    }
+
+    /// Writes `data` into the file `path` over the SFTP subsystem (created or truncated; the directory must exist);
+    /// the bytes written. For hosts whose shell cannot take a binary stdin stream (Windows PowerShell 5.1 over
+    /// OpenSSH stalls after 128 KiB). Windows paths as `/C:/dir/file`.
+    pub fn upload(&self, path: &str, data: &mut dyn Read) -> Result<u64> {
+        use tokio::io::AsyncWriteExt;
+        self.rt.block_on(async {
+            let ch = self.h.channel_open_session().await?;
+            ch.request_subsystem(true, "sftp").await?;
+            let sftp = russh_sftp::client::SftpSession::new(ch.into_stream())
+                .await
+                .map_err(|e| anyhow!("sftp: {e}"))?;
+            let mut f = sftp
+                .create(path)
+                .await
+                .map_err(|e| anyhow!("sftp create {path}: {e}"))?;
+            let mut buf = vec![0u8; 256 << 10];
+            let mut total = 0u64;
+            loop {
+                let n = data.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                f.write_all(&buf[..n])
+                    .await
+                    .with_context(|| format!("sftp write {path}"))?;
+                total += n as u64;
+            }
+            f.shutdown().await.with_context(|| format!("sftp close {path}"))?;
+            let _ = sftp.close().await;
+            Ok(total)
+        })
     }
 
     /// Runs `cmd` with `input` on stdin; its stdout, or Err with stdout and stderr unless it exits 0.
@@ -212,4 +244,51 @@ impl Write for Exec<'_> {
 /// A shell single-quoted word.
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// A PEM block pasted into a single-line (password) field loses its line breaks: rebuild them.
+pub fn rewrap_pem(s: &str) -> String {
+    if s.contains('\n') {
+        return s.to_owned();
+    }
+    let mut out = String::new();
+    let mut rest = s.trim();
+    while let Some(b) = rest.find("-----BEGIN ") {
+        let after = &rest[b + 11..];
+        let Some(l) = after.find("-----") else { break };
+        let label = &after[..l];
+        let footer = format!("-----END {label}-----");
+        let Some(e) = after.find(&footer) else { break };
+        let body: String = after[l + 5..e].split_whitespace().collect();
+        out += &format!("-----BEGIN {label}-----\n");
+        for c in body.as_bytes().chunks(64) {
+            out += std::str::from_utf8(c).unwrap_or_default();
+            out.push('\n');
+        }
+        out += &footer;
+        out.push('\n');
+        rest = &after[e + footer.len()..];
+    }
+    if out.is_empty() {
+        s.to_owned()
+    } else {
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pem_without_line_breaks() {
+        let one = "-----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW QyNTUxOQ== -----END OPENSSH PRIVATE KEY-----";
+        assert_eq!(
+            rewrap_pem(one),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz\nc2gtZWQyNTUxOQ==\n-----END OPENSSH PRIVATE KEY-----\n"
+        );
+        assert_eq!(rewrap_pem("a\nb"), "a\nb");
+        assert_eq!(sh_quote("a'b"), "'a'\\''b'");
+        assert_eq!(tail("a\n\nb\nc\n", 2), "b\nc");
+    }
 }

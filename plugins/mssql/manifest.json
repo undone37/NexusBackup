@@ -1,0 +1,116 @@
+{
+  "id": "mssql",
+  "name": "Microsoft SQL Server",
+  "version": "1.0.2",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "mssql",
+      "title": "Microsoft SQL Server (Windows, or Linux / Docker; over SSH)",
+      "config_schema": {
+        "type": "object",
+        "required": ["host", "user", "ssh_key", "ssh_host_key"],
+        "properties": {
+          "platform": {
+            "type": "string",
+            "title": "Platform",
+            "enum": ["windows", "linux"],
+            "default": "windows",
+            "description": "windows = PowerShell with integrated security as the SSH account; linux = sqlcmd with a SQL login, in a container when one is named"
+          },
+          "host": { "type": "string", "format": "hostname", "title": "SQL Server host (or Docker host)" },
+          "port": { "type": "integer", "format": "port", "title": "SSH port", "default": 22 },
+          "user": {
+            "type": "string",
+            "title": "SSH user (Windows: an account that is sysadmin on the instance; Linux: a user allowed to run docker / podman)",
+            "pattern": "^[A-Za-z0-9_.\\\\@-]{1,104}$"
+          },
+          "ssh_key": { "type": "string", "format": "password", "title": "SSH private key (OpenSSH, unencrypted)", "maxLength": 16384 },
+          "ssh_host_key": { "type": "string", "title": "SSH host key (known_hosts line or public key)", "maxLength": 4096 },
+          "instance": {
+            "type": "string",
+            "title": "Windows: instance name (empty = the default instance)",
+            "pattern": "^[A-Za-z0-9_]{0,16}$"
+          },
+          "container": {
+            "type": "string",
+            "title": "Linux: container name (empty = SQL Server installed on the host)",
+            "pattern": "^[A-Za-z0-9._-]{0,128}$"
+          },
+          "container_cli": {
+            "type": "string",
+            "title": "Linux: container tool",
+            "enum": ["docker", "podman", "sudo docker", "sudo podman"],
+            "default": "docker"
+          },
+          "sqlcmd": {
+            "type": "string",
+            "title": "Linux: sqlcmd (in the container or on the host)",
+            "pattern": "^(/[A-Za-z0-9._/-]{1,198})?$",
+            "default": "/opt/mssql-tools18/bin/sqlcmd"
+          },
+          "sql_user": { "type": "string", "title": "Linux: SQL login (sysadmin, e.g. sa)", "pattern": "^([A-Za-z0-9_.-]{1,128})?$" },
+          "sql_password": { "type": "string", "format": "password", "title": "Linux: password of the SQL login", "maxLength": 256 },
+          "staging": {
+            "type": "string",
+            "title": "Staging folder as SQL Server sees it (room for one full backup; emptied after each run)",
+            "description": "Windows default C:\\NexusBackup\\staging, Linux default /var/opt/mssql/nexus-staging (inside the container)",
+            "pattern": "^([A-Za-z]:\\\\[A-Za-z0-9\\\\._-]{1,190}|/[A-Za-z0-9/._-]{1,198})?$"
+          },
+          "full_every_days": {
+            "type": "integer",
+            "title": "New full backup every … days (differential backups in between)",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 7
+          }
+        }
+      },
+      "secret_fields": ["ssh_key", "sql_password"],
+      "endpoints": [{ "host": "/host", "port": "/port", "default_port": 22, "proto": "tcp" }],
+      "guests": { "title": "Databases (each gets its own snapshot)", "list": true },
+      "backup": { "incremental": true, "consistent": "application", "logs": true },
+      "restores": [
+        { "id": "download", "title": "Download the backup files (.bak / .trn)" },
+        {
+          "id": "verify",
+          "title": "Restore test (into a throwaway database on the source instance, DBCC CHECKDB, optional SQL check, dropped again)",
+          "applies_to": "guest",
+          "params_schema": {
+            "type": "object",
+            "properties": {
+              "sql": { "type": "string", "maxLength": 4000, "title": "SQL check: one read-only query on the restored database; passes when its first value is true or not zero" },
+              "target_time": {
+                "type": "string",
+                "title": "Recover to time (empty = end of the backup; scheduled tests pick a random point)",
+                "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?( ?(Z|[+-][0-9]{2}(:?[0-9]{2})?))?)?$"
+              }
+            }
+          }
+        },
+        {
+          "id": "pitr",
+          "title": "Point-in-time restore into a database on the source instance",
+          "app_specific": true,
+          "applies_to": "guest",
+          "params_schema": {
+            "type": "object",
+            "required": ["database"],
+            "properties": {
+              "database": { "type": "string", "title": "Target database (a new name, or the existing one with Replace)", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$" },
+              "target_time": {
+                "type": "string",
+                "title": "Recover to time (e.g. 2026-11-02 14:30:00+00; empty = end of the backup)",
+                "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?( ?(Z|[+-][0-9]{2}(:?[0-9]{2})?))?)?$"
+              },
+              "replace": { "type": "boolean", "title": "Replace the existing database of that name", "default": false },
+              "confirm": { "type": "string", "title": "With Replace: type the database name again", "maxLength": 64 }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sandbox": { "network": "endpoints", "tmp_mb": 64, "memory_mb": 512 }
+}

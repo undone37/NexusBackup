@@ -8,40 +8,10 @@
 //! UNTIL and OPEN RESETLOGS on the source host.
 
 mod rman;
-mod ssh;
+use plugin_ssh as ssh;
 
 use anyhow::Result;
 use plugin_sdk::{error, BackupResult, Ctx, Guest, Plugin, Sink, Source, Validation};
-
-/// A PEM block pasted into a single-line (password) field loses its line breaks: rebuild them.
-pub(crate) fn rewrap_pem(s: &str) -> String {
-    if s.contains('\n') {
-        return s.to_owned();
-    }
-    let mut out = String::new();
-    let mut rest = s.trim();
-    while let Some(b) = rest.find("-----BEGIN ") {
-        let after = &rest[b + 11..];
-        let Some(l) = after.find("-----") else { break };
-        let label = &after[..l];
-        let footer = format!("-----END {label}-----");
-        let Some(e) = after.find(&footer) else { break };
-        let body: String = after[l + 5..e].split_whitespace().collect();
-        out += &format!("-----BEGIN {label}-----\n");
-        for c in body.as_bytes().chunks(64) {
-            out += std::str::from_utf8(c).unwrap_or_default();
-            out.push('\n');
-        }
-        out += &footer;
-        out.push('\n');
-        rest = &after[e + footer.len()..];
-    }
-    if out.is_empty() {
-        s.to_owned()
-    } else {
-        out
-    }
-}
 
 struct Oracle;
 

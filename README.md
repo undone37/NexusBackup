@@ -44,6 +44,7 @@ recovery key.
 | TrueNAS (SCALE) | ZFS snapshots plus `zfs diff` over the API and a restricted SSH user | tar/zip download |
 | PostgreSQL 14+ (plugin) | logical dumps per database; base backup plus WAL | restore to the source or another server, point in time |
 | MySQL / MariaDB (plugin) | dumps; physical backup plus binlog | restore, point in time |
+| Microsoft SQL Server (plugin), on Windows or Linux / Docker | full, differential and log backups (log runs on their own schedule), over SSH | point in time into a new or the existing database, restore tests, download of the `.bak` / `.trn` files |
 | Oracle Database (plugin) | RMAN over SSH on the database host: level 0/1, archived logs on their own schedule | point in time on the source host, download of the RMAN pieces |
 | NexusStor vStors (plugin) | ZFS snapshots, `zfs diff` incrementals | tar/zip download |
 | Microsoft 365 (plugin) | Microsoft Graph: mailboxes, OneDrive, SharePoint libraries, Teams, Entra ID export | download; restore to the original or another user, site or team; export as eml/mbox/PST |
@@ -55,16 +56,15 @@ None of these work yet unless the row says so.
 
 | Source | Planned approach | Planned restores | Issue |
 |---|---|---|---|
-| **Microsoft SQL Server** | full, differential and transaction log backups (log chain); today only copy-only VSS snapshots of the data files | database to a point in time, to the source or another instance | #41 |
 | **Windows bare metal** | volume images with the disk layout of every backup (WinPE-based restore; spike done) | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | #19 |
 | **Hyper-V failover clusters** | cluster-aware inventory and backups through the agent on every node | as standalone Hyper-V | #39 |
 | **Restore back to vSphere** | VM restore into ESXi / vCenter | full VM | #23 |
 | **Standalone agents** (no appliance) | working today: files and volumes into a local, USB, NFS, SMB repository with copies to SFTP or S3; planned: whole-machine images, application-aware processing, restores from the desktop UI, attaching a repository to an appliance | | #20 follow-ups |
 | **Exchange Server, Active Directory** | application-aware VSS with log truncation; AD objects | databases; AD objects | Phase 38f |
 
-Log backups that work today: PostgreSQL WAL, MySQL/MariaDB binlogs and Oracle archived logs, on their own schedule
-per group (for example every 15 minutes), with the recoverable time range shown per snapshot and an alert when the
-log chain breaks.
+Log backups that work today: PostgreSQL WAL, MySQL/MariaDB binlogs, SQL Server log backups and Oracle archived logs,
+on their own schedule per group (for example every 15 minutes), with the recoverable time range shown per snapshot
+and an alert when the log chain breaks.
 
 ### Storage and security
 - **Storage:**
@@ -147,9 +147,9 @@ log chain breaks.
   restore to Proxmox VE). Windows guests on VMware are not yet tested with quiesced snapshots.
 - **Cloud:** no AWS, Azure or GCP VMs, cloud PaaS databases, Kubernetes, Salesforce or Google Workspace.
 - **Tape and NDMP:** none, and no archive storage classes (Glacier Deep Archive and similar).
-- **Databases other than PostgreSQL, MySQL/MariaDB and Oracle** are not handled natively yet: SQL Server (log chain,
-  point in time) is planned; SAP HANA and DB2 are not. Oracle restores go to the source host only (no restore to
-  another host yet). On Windows, VSS takes copy-only snapshots and never truncates logs.
+- **Databases other than PostgreSQL, MySQL/MariaDB, SQL Server and Oracle** are not handled natively; SAP HANA and DB2
+  are not planned. SQL Server and Oracle restores go to the source instance or host only (no restore to another one
+  yet; SQL Server: download the files). On Windows, VSS takes copy-only snapshots and never truncates logs.
 - **Windows:**
   - file-level backups only, no block-level change tracking (Hyper-V VM disks excepted: RCT);
   - no bare-metal recovery (Linux only; Windows is planned);
@@ -173,6 +173,7 @@ In this list, "lab" means a run end to end against real software in VMs. The lab
 - nested XCP-ng 8.3;
 - a three-node Patroni PostgreSQL cluster (PostgreSQL 14 to 18);
 - Oracle AI Database Free 26ai on AlmaLinux 9;
+- SQL Server 2022 Developer on Windows Server 2022 and in Docker on Debian 13;
 - Linux VMs (Debian, AlmaLinux, Ubuntu with ZFS, Fedora with btrfs), and on 2026-10-20 the agent packages on the
   default installs of 14 releases: Ubuntu 22.04 to 26.10, Debian 12, 13 and testing, AlmaLinux and Rocky Linux 8, 9
   and 10, openSUSE Leap 16;
@@ -221,12 +222,12 @@ any cell. Detailed reviews: [Veeam](docs/veeam-comparison.md), [Cohesity](docs/c
 | **Physical Windows / Linux** | agents (file level on Windows) | agents | agents | agents | clients | agents | Linux client only |
 | **Bare-metal recovery** | Linux only | yes | yes | yes | yes | yes | no |
 | **Microsoft 365** | plugin, untested against a real tenant | separate product | yes | yes | separate SaaS | yes | no |
-| **Databases** | PostgreSQL, MySQL/MariaDB, Oracle; SQL Server planned | broad | broad | broad | broad | broad | no (file level only) |
+| **Databases** | PostgreSQL, MySQL/MariaDB, SQL Server (Windows, Linux, Docker), Oracle | broad | broad | broad | broad | broad | no (file level only) |
 | **Dedup + encryption** | per tenant, always encrypted | yes | yes | yes | yes | yes | yes (client-side encryption optional) |
 | **Immutability** | extend-only locks, S3 Object Lock | hardened repository, Object Lock | WORM (DataLock) | immutable by design | WORM storage, Object Lock | WORM, Object Lock | no native lock |
 | **Multi-person approval** | yes, for all destructive actions | four-eyes for selected actions | quorum | quorum authorization | multi-person authorization | multi-person authorization | no |
 | **Ransomware detection** | deterministic anomalies, YARA, IOC hashes | yes | yes, ML-based | yes, ML-based | yes, ML-based | yes, ML-based | no |
-| **Automated restore tests** | yes (PVE, PostgreSQL, MySQL) | yes (SureBackup) | yes | yes | yes | yes | no (verify jobs check data only) |
+| **Automated restore tests** | yes (PVE, PostgreSQL, MySQL, SQL Server) | yes (SureBackup) | yes | yes | yes | yes | no (verify jobs check data only) |
 | **Tape** | no | yes | via archive | via archive | yes | yes | yes |
 | **Scale-out / HA** | no | scale-out repositories | yes | yes | yes | yes | no (sync jobs between servers) |
 | **Multi-tenancy** | built in, separate keys | Cloud Connect / service providers | yes | yes | yes | yes | namespaces and permissions |
@@ -411,7 +412,7 @@ podman build -f os/Containerfile -t localhost/nexus-os:dev .   # appliance image
 | `crates/fsindex` | guest file system readers for the file index |
 | `crates/vmware`, `crates/xcpng`, `crates/nbd` | VMware vSphere (NFC, hot-add) and XCP-ng connectors, NBD client |
 | `crates/truenas`, `crates/nas` | TrueNAS and NFS/SMB connectors |
-| `crates/plugin-*`, `plugins/` | plugin protocol, sandbox host, SDK; PostgreSQL, MySQL, Oracle, TrueNAS, NexusStor, Microsoft 365 plugins |
+| `crates/plugin-*`, `plugins/` | plugin protocol, sandbox host, SDK; PostgreSQL, MySQL, SQL Server, Oracle, TrueNAS, NexusStor, Microsoft 365 plugins |
 | `crates/offsite`, `crates/remote`, `crates/replication` | offsite engine, SFTP / S3 / directory clients, second-appliance replication |
 | `crates/schedule`, `crates/retention`, `crates/reports`, `crates/edge` | schedules and windows, GFS retention, reports, edge proxy |
 | `integrations/` | PegaProx plugin, Wazuh decoder and rules |

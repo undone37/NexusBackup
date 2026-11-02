@@ -20,6 +20,7 @@ import m365Manifest from '../../plugins/m365/manifest.json' with { type: 'json' 
 import mysqlManifest from '../../plugins/mysql/manifest.json' with { type: 'json' };
 import nexusstorManifest from '../../plugins/nexusstor/manifest.json' with { type: 'json' };
 import oracleManifest from '../../plugins/oracle/manifest.json' with { type: 'json' };
+import mssqlManifest from '../../plugins/mssql/manifest.json' with { type: 'json' };
 // NexusStor sources: the token decoder of the source form (the web-api decodes it the same way)
 import { decodeToken, NEXUSSTOR_KIND } from '../src/lib/nexusstor.ts';
 // Phase 23a: the published API description, served as is
@@ -2048,6 +2049,7 @@ function seed() {
   // NexusStor (plugins/nexusstor): a paired NexusStor with two vStors
   db.plugins.push(pluginEntry(structuredClone(nexusstorManifest) as Json, 'admin', t - 86400 * 2));
   db.plugins.push(pluginEntry(structuredClone(oracleManifest) as Json, 'admin', t - 86400));
+  db.plugins.push(pluginEntry(structuredClone(mssqlManifest) as Json, 'admin', t - 86400));
   const sNst = {
     id: nextId(),
     tenant: 'acme',

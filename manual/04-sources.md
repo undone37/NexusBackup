@@ -1200,7 +1200,7 @@ formulas.
 
 ![Job with the skipped-files download](images/job-skipped-files.png)
 
-## Plugin sources (PostgreSQL, MySQL/MariaDB, Oracle, Microsoft 365)
+## Plugin sources (PostgreSQL, MySQL/MariaDB, Oracle, SQL Server, Microsoft 365)
 
 NexusStor sources (vStors of a paired NexusStor) have their own pairing form and chapter: [19 NexusStor](19-nexusstor.md).
 
@@ -1391,6 +1391,39 @@ files).
 an SCN (empty: the end of the snapshot); type the SID to confirm. The database is opened with RESETLOGS; the next
 backup is a new level 0. **Download** gives the RMAN pieces for a DBA. A restore to another host is not available
 yet.
+
+### Microsoft SQL Server (Windows, Linux, Docker; over SSH)
+
+The **Microsoft SQL Server** plugin (`mssql`, #41) backs up databases with SQL Server's own full, differential and
+log backups. Each database selected in a group gets its own snapshot. The appliance logs in to the SQL Server host
+over SSH and runs the backups there; tested with SQL Server 2022 Developer on Windows Server 2022 and with
+Microsoft's SQL Server 2022 container image on Debian 13 with Docker.
+
+- **Windows** (*Platform* `windows`): enable the OpenSSH server (`Add-WindowsCapability -Online -Name
+  OpenSSH.Server~~~~0.0.1.0`, `Start-Service sshd`) and use an account that is **sysadmin** on the instance; for a
+  local administrator the appliance's public key goes into `C:\ProgramData\ssh\administrators_authorized_keys`. The
+  staging folder (default `C:\NexusBackup\staging`) must be writable by the SQL Server service:
+  `icacls C:\NexusBackup /grant "NT SERVICE\MSSQLSERVER:(OI)(CI)M"`. No SQL password is stored: T-SQL runs with
+  integrated security as the SSH account.
+- **Linux / Docker** (*Platform* `linux`): an SSH user that may run `docker` or `podman` (membership in the `docker`
+  group is root-equivalent: use a dedicated host or *sudo*), the **container** name, and a sysadmin **SQL login**
+  (for example `sa`). The backups are written and read inside the container (staging default
+  `/var/opt/mssql/nexus-staging`), so no volume has to be shared. Without a container name SQL Server is used as
+  installed on the host.
+
+Runs: a **full** at the first run and every *New full backup every … days* (default 7), **differential** backups in
+between, and with the FULL recovery model a **log** backup in every run. With a log schedule on the group (*Log
+backups*, for example `every 15m`) log runs back up only the log. Databases in the SIMPLE model get full and
+differential backups only. Every snapshot holds the full, the differentials and all log backups since it and
+restores on its own; the restore dialog shows its recoverable time range.
+
+The plugin owns the log chain: stop native log backup jobs of these databases and take other full backups `WITH
+COPY_ONLY`. A log backup taken elsewhere makes the next run a full and raises the critical **log chain** alert.
+
+**Restores**: **Point-in-time restore** into a new database on the source instance (its files go to the instance's
+default data and log folders), or over the existing database with *Replace* and its name typed again; to a time or the
+end of the snapshot; `DBCC CHECKDB` runs afterwards. **Restore test** restores into a throwaway database, checks it
+(and runs the group's SQL check) and drops it. **Download** gives the `.bak` / `.trn` files for a restore anywhere.
 
 ### Microsoft 365 (Exchange, OneDrive, SharePoint, Teams)
 
