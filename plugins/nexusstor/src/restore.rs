@@ -65,7 +65,7 @@ pub fn header(rel: &str, m: &Meta, size: u64, append: bool) -> Option<Value> {
 /// Sends one batch of records.
 type Flush<'a> = Box<dyn FnMut(&[u8]) -> Result<()> + 'a>;
 
-/// Records collected up to [`BATCH`] bytes of file data, then handed to `flush`.
+/// Records collected up to `BATCH` (48 MiB) of file data, then handed to `flush`.
 pub struct Batcher<'a> {
     buf: Vec<u8>,
     data: u64,
