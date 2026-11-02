@@ -163,6 +163,10 @@ BitLocker volumes (restore them unlocked), dynamic disks and Storage Spaces, a s
 reads the whole partitions (unchanged blocks are hashed, not sent); schedule image backups less often than file
 backups.
 
+> **Status:** P2V tested in the lab (2026-11-02): Windows Server 2022 with BIOS/MBR and one NTFS partition, restored
+> as a Proxmox VE VM that booted with the guest agent answering (zero blocks skipped: 28 minutes for 40 GiB). Not
+> tested yet: UEFI/GPT machines, several partitions, the rescue ISO on physical hardware.
+
 ## Updates
 
 Updates normally come from the appliance (single agents or rollouts, see

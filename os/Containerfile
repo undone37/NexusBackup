@@ -226,6 +226,7 @@ RUN semodule -i /usr/share/selinux/packages/nexus/nexus.pp /usr/share/selinux/pa
  && matchpathcon /var/lib/nexus/net/status.json | grep -q nexus_net_var_lib_t \
  && matchpathcon /usr/libexec/nexus/nexus-time | grep -q nexus_time_exec_t \
  && matchpathcon /var/lib/nexus/time/status.json | grep -q nexus_time_var_lib_t \
+ && matchpathcon /var/lib/nexus/power/request.json | grep -q nexus_power_var_lib_t \
  && matchpathcon /etc/nexus/time/chrony.conf | grep -q nexus_time_conf_t \
  && matchpathcon /run/nexus-time/restart | grep -q nexus_time_var_run_t \
  && matchpathcon /etc/nexus/grub-user.cfg | grep -q nexus_grub_user_t \
@@ -280,6 +281,9 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
  # #22: the KEK sealed to the TPM: the helper, keyd loading the credential, systemd built with TPM2 support
  && test -x /usr/libexec/nexus/nexus-keyd-seal \
  && python3 -I -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" /usr/libexec/nexus/nexus-keyd-seal \
+ # #179: reboot and shutdown from the web UI (stdlib only, like the other helpers)
+ && test -x /usr/libexec/nexus/nexus-power \
+ && python3 -I -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" /usr/libexec/nexus/nexus-power \
  && grep -qx 'LoadCredentialEncrypted=kek:/var/lib/nexus/keyd/kek.cred' /usr/lib/systemd/system/nexus-keyd.service \
  && systemd-creds --version | grep -q '+TPM2' \
  && command -v cryptsetup >/dev/null && test -x /usr/bin/systemd-cryptenroll \
@@ -288,10 +292,10 @@ RUN if [ "$NEXUS_IMAGE_REPO" != ghcr.io/undone37/nexusbackup ]; then \
  && test -x /usr/lib/systemd/system-generators/systemd-cryptsetup-generator \
  && grep -q 'rd.shell=0' /usr/lib/bootc/kargs.d/10-nexus.toml \
  && ls /etc/pki/nexus/plugin-keys/*.pub >/dev/null \
- && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
+ && systemctl preset nexus-update.timer nexus-update.path nexus-diag.path nexus-power.path nexus-disks.timer nexus-disks.path \
       nexus-net.timer nexus-net.path nexus-time.timer nexus-time.path nexus-grub-password.service smartd.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service greenboot-success.target \
- && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path nexus-disks.timer nexus-disks.path \
+ && systemctl is-enabled -q nexus-update.timer nexus-update.path nexus-diag.path nexus-power.path nexus-disks.timer nexus-disks.path \
       nexus-net.timer nexus-net.path nexus-time.timer nexus-time.path \
       nexus-grub-password.service greenboot-healthcheck.service \
       greenboot-set-rollback-trigger.service \

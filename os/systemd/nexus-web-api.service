@@ -34,6 +34,9 @@ ReadWritePaths=-/var/lib/nexus/net
 # time servers (Settings -> Time): request.json for nexus-time.path, status.json read back
 # (2770 root:nexus-webapi, tmpfiles.d/nexus-time.conf)
 ReadWritePaths=-/var/lib/nexus/time
+# reboot and shutdown (top bar > Power, #179): request.json for nexus-power.path after approval,
+# status.json read back (2770 root:nexus-webapi, tmpfiles.d/nexus-power.conf)
+ReadWritePaths=-/var/lib/nexus/power
 # console unlock codes (hash files, 0700 nexus-webapi; read + deleted by nexus-console-gate)
 ReadWritePaths=/var/lib/nexus/console-unlock
 # plugin uploads (docs/plugin-system.md): bundle + signature into the staging dir

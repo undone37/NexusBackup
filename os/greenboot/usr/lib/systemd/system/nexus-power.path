@@ -1,0 +1,11 @@
+[Unit]
+Description=NexusBackup reboot and shutdown requests from the web UI
+
+[Path]
+# nexus-web-api writes /var/lib/nexus/power/request.json (reboot or poweroff after its approval, cancel);
+# nexus-power consumes (deletes) it.
+PathExists=/var/lib/nexus/power/request.json
+Unit=nexus-power.service
+
+[Install]
+WantedBy=paths.target

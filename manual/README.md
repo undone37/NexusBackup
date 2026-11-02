@@ -1,14 +1,14 @@
 # NexusBackup Appliance — User Manual
 
 This manual describes how to install, operate and use the NexusBackup appliance: an open-source backup appliance that
-pulls data from Proxmox VE, Linux and Windows hosts, TrueNAS, NFS/SMB shares and plugin sources such as PostgreSQL and
-Microsoft 365, stores it as deduplicated, encrypted forever-full snapshots, and keeps copies offsite and on a second
+pulls data from Proxmox VE, VMware vSphere, Hyper-V and XCP-ng, Linux and Windows hosts, TrueNAS, NexusStor, NFS/SMB
+shares and plugin sources such as PostgreSQL, SQL Server, Oracle and Microsoft 365, stores it as deduplicated, encrypted forever-full snapshots, and keeps copies offsite and on a second
 appliance.
 
 > **Status:** NexusBackup is **lab-proven, not production-ready**. All functions described here run end to end in a
 > nested lab with SELinux enforcing. Real hardware, scale tests, a real Hetzner Storage Box run, the external
-> penetration test, TPM/LUKS disk encryption, a VM drill of the configuration restore and the release key ceremony are still
-> open. Each chapter marks lab-only or missing parts with a **Status** note.
+> penetration test, a VM drill of the configuration restore and the release key ceremony are still open; TPM sealing and
+> LUKS2 disk encryption ran in the lab only. Each chapter marks lab-only or missing parts with a **Status** note.
 
 ## Who reads what
 

@@ -779,6 +779,9 @@ Good to know:
 
 ## Bare-metal recovery (Linux hosts)
 
+Windows hosts are rebuilt from volume images instead (preview): see
+[17 Windows agent](17-windows-agent.md#bare-metal-recovery-preview).
+
 Rebuilds a Linux host from a snapshot onto empty disks: after a disk failure, on new hardware, or as a new
 Proxmox VE VM. The appliance recreates the partitions, LVM volumes and file systems (with their original UUIDs),
 restores every file and reinstalls the boot loader. Details and limits: `docs/bmr.md`.

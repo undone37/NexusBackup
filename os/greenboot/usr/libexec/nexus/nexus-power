@@ -1,0 +1,241 @@
+#!/usr/bin/python3 -I
+# NexusBackup power actions (top bar > Power, issue #179; the design of NexusStor's nexusstor-power): reboot or
+# shut down the appliance as requested from the web UI after approval, after a delay, or cancel a scheduled
+# action.
+#
+#   nexus-power tick     what nexus-power.service runs (started by nexus-power.path): take the request, act on
+#                        it, write status.json
+#   nexus-power status   print status.json
+#
+# Control directory (default /var/lib/nexus/power, 2770 root:nexus-webapi, tmpfiles.d/nexus-power.conf):
+#   request.json   written by the web-api (crates/web-api/src/power.rs, tmp + rename) once the request is
+#                  approved, consumed (deleted) here: {"id", "action": "reboot"|"poweroff", "delay_s": 0-300,
+#                  "reason", "requested_by", "approved_by", "force", "running_jobs", "time"} or
+#                  {"id", "action": "cancel", "requested_by", "time"}
+#   status.json    written here (0640): {"boot_id", "pending": the scheduled action or null, "last": the last
+#                  outcome {"id", "action", "result": scheduled|executing|cancelled|refused|error, "detail",
+#                  "time", "requested_by"}}. "pending" belongs to the boot in "boot_id": after the reboot the
+#                  web-api ignores it.
+#
+# The action is scheduled through logind (`systemctl reboot|poweroff --when=@<unix time>`: logind warns
+# logged-in users and refuses new logins in the last minutes), or run at once for a delay of 0; a cancel is
+# `systemctl <action> --when=cancel`. The web-api checks the appliance's state first (an update request waiting
+# or being checked); here only what the web-api cannot see is checked: nexus-update holding its lock (a stage
+# or an apply runs right now; waited for a few seconds, as a plain timer tick holds it briefly), unless the
+# request says force. Running backups and restores are not stopped here: the reboot ends them and the
+# scheduler marks them failed (interrupted) when it starts again, the retry policy applies. Everything is
+# logged to the journal. Paths and tools can be overridden through NEXUS_POWER_* environment variables
+# (tests). Stdlib only.
+
+import fcntl
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+
+DEFAULTS = {
+    "DIR": "/var/lib/nexus/power",
+    "UPDATE_LOCK": "/run/nexus-update.lock",
+    "BOOT_ID": "/proc/sys/kernel/random/boot_id",
+    "SYSTEMCTL": "systemctl",
+    "LOCK_WAIT": "15",
+}
+ACTIONS = ("reboot", "poweroff")
+MAX_DELAY = 300
+MAX_REQUEST = 8 << 10
+ID = re.compile(r"[0-9a-f]{32}")
+
+
+def cfg(name):
+    return os.environ.get("NEXUS_POWER_" + name, DEFAULTS[name])
+
+
+def log(msg):
+    print(f"nexus-power: {msg}", file=sys.stderr, flush=True)
+
+
+def read_small(path, limit=MAX_REQUEST):
+    """A control file written by a less privileged user: no symlinks, regular file only."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return os.read(fd, limit + 1).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def take_request(d):
+    """The request, validated, or None (nothing there, or ignored: logged)."""
+    p = os.path.join(d, "request.json")
+    s = read_small(p)
+    if s is None:
+        try:
+            os.unlink(p)  # a symlink or something else that is not a regular file: never followed
+        except OSError:
+            pass
+        return None
+    try:
+        os.unlink(p)  # consume first, so a failing action cannot re-trigger the path unit forever
+    except FileNotFoundError:
+        pass
+    try:
+        r = json.loads(s) if len(s) <= MAX_REQUEST else None
+    except ValueError:
+        r = None
+    if not isinstance(r, dict) or not ID.fullmatch(str(r.get("id", ""))):
+        log("ignoring a malformed request")
+        return None
+    a = r.get("action")
+    if a == "cancel":
+        return {"id": r["id"], "action": a, "requested_by": str(r.get("requested_by", ""))[:200]}
+    d = r.get("delay_s", 0)
+    if a not in ACTIONS or type(d) is not int or not 0 <= d <= MAX_DELAY:
+        log(f"ignoring request {r['id']}: bad action or delay")
+        return None
+    j = r.get("running_jobs")
+    return {
+        "id": r["id"],
+        "action": a,
+        "delay_s": d,
+        "reason": " ".join(str(r.get("reason", "")).split())[:500],
+        "requested_by": str(r.get("requested_by", ""))[:200],
+        "approved_by": None if r.get("approved_by") is None else str(r["approved_by"])[:200],
+        "force": r.get("force") is True,
+        "running_jobs": j if type(j) is int else None,
+    }
+
+
+def boot_id():
+    try:
+        with open(cfg("BOOT_ID")) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def read_status(d):
+    try:
+        with open(os.path.join(d, "status.json")) as f:
+            s = json.load(f)
+        return s if isinstance(s, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_status(d, s):
+    p = os.path.join(d, "status.json")
+    tmp = p + ".tmp"
+    old = os.umask(0o027)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(s, f, indent=1, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, p)
+    finally:
+        os.umask(old)
+
+
+def update_busy():
+    """nexus-update holds its lock beyond the wait: a stage or an apply runs right now."""
+    try:
+        fd = os.open(cfg("UPDATE_LOCK"), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        deadline = time.monotonic() + float(cfg("LOCK_WAIT"))
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                return False
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    return True
+                time.sleep(1)
+    finally:
+        os.close(fd)
+
+
+def systemctl(*args):
+    """(ok, detail); never raises."""
+    try:
+        p = subprocess.run([cfg("SYSTEMCTL"), *args], capture_output=True, text=True, errors="replace",
+                           stdin=subprocess.DEVNULL, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+    return p.returncode == 0, (p.stderr or p.stdout).strip()[-500:]
+
+
+def tick(now=None):
+    now = int(now or time.time())
+    d = cfg("DIR")
+    st = read_status(d)
+    boot = boot_id()
+    if st.get("boot_id") != boot:  # rebooted since: whatever was pending is done
+        st["pending"] = None
+    st["boot_id"] = boot
+    req = take_request(d)
+    if req is None:
+        write_status(d, st)
+        return 0
+    pend = st.get("pending")
+    last = {"id": req["id"], "action": req["action"], "time": now, "requested_by": req["requested_by"]}
+    if req["action"] == "cancel":
+        if pend:
+            ok, detail = systemctl(pend["action"], "--when=cancel")
+            last.update(action=pend["action"], result="cancelled" if ok else "error",
+                        detail=f"{pend['action']} at {pend['at']} cancelled" if ok else f"cancel failed: {detail}")
+            if ok:
+                st["pending"] = None
+        else:
+            last.update(result="cancelled", detail="nothing was scheduled")
+    elif pend:
+        last.update(result="refused", detail=f"a {pend['action']} is scheduled already (by {pend.get('requested_by')})")
+    elif not req["force"] and update_busy():
+        last.update(result="refused", detail="nexus-update is staging or applying an update right now")
+    else:
+        a, delay = req["action"], req["delay_s"]
+        who = req["requested_by"] + (f", approved by {req['approved_by']}" if req["approved_by"] else "")
+        jobs = "" if req["running_jobs"] is None else f", {req['running_jobs']} job(s) running"
+        log(f"{a} requested by {who} in {delay} s{jobs}: {req['reason']}" + (" (forced)" if req["force"] else ""))
+        if delay == 0:
+            last.update(result="executing", detail=f"{a} now")
+            st["last"] = last
+            write_status(d, st)  # before the action: the web UI shows it after the reboot
+            ok, detail = systemctl(a)
+            if ok:
+                return 0
+            last.update(result="error", detail=f"systemctl {a}: {detail}")
+        else:
+            at = now + delay
+            ok, detail = systemctl(a, f"--when=@{at}")
+            if ok:
+                st["pending"] = {k: req[k] for k in ("id", "action", "reason", "requested_by", "approved_by")}
+                st["pending"]["at"] = at
+                last.update(result="scheduled", detail=f"{a} at {at}")
+            else:
+                last.update(result="error", detail=f"systemctl {a} --when: {detail}")
+    log(f"{last['action']}: {last['result']}: {last['detail']}")
+    st["last"] = last
+    write_status(d, st)
+    return 0
+
+
+def main(argv):
+    if argv[1:] == ["tick"]:
+        return tick()
+    if argv[1:] == ["status"]:
+        print(json.dumps(read_status(cfg("DIR")), indent=1, sort_keys=True))
+        return 0
+    print("usage: nexus-power tick|status", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

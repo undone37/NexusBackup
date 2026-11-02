@@ -15,6 +15,8 @@ use std::time::Duration;
 
 pub mod fleet;
 pub mod update;
+// #179: reboot and shut down the appliance (an administrator's session, like update upload)
+pub mod system;
 
 pub const USAGE: &str = "nexusctl — NexusBackup appliance API client (API tokens)
 
@@ -51,6 +53,14 @@ commands:
                                                           the bundle was refused; installing stays in
                                                           the web UI (approval). Without a terminal
                                                           the answers are read from stdin, one per line
+  system status --user NAME                               reboot or shutdown scheduled, the last
+                                                          outcome, running jobs, what blocks it
+  system reboot|poweroff --user NAME --reason TEXT [--delay SECONDS] [--force]
+                                                          reboot or shut down the appliance after the
+                                                          delay (0-300 s, default 0), signed in like
+                                                          update upload; with approvals on a second
+                                                          person approves it in the web UI first
+  system cancel --user NAME                               cancel a scheduled reboot or shutdown
 
 environment: NEXUS_URL, NEXUS_TOKEN, NEXUS_CA; fleet: NEXUS_FLEET (configuration file)";
 

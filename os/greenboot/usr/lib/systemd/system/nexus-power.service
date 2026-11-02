@@ -1,0 +1,47 @@
+[Unit]
+Description=NexusBackup reboot and shutdown (schedule, cancel)
+# Started by nexus-power.path (issue #179).
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-power tick
+# root (unconfined_service_t like nexus-update, whose `systemctl reboot` it shares): schedules and cancels the
+# action through logind (systemctl reboot|poweroff --when=), which checks CAP_SYS_BOOT of the caller, and
+# checks nexus-update's lock. The only input is /var/lib/nexus/power/request.json, read with O_NOFOLLOW,
+# regular files only, a size limit, every field checked.
+CapabilityBoundingSet=CAP_SYS_BOOT
+AmbientCapabilities=
+UMask=0027
+TimeoutStartSec=2min
+
+# Writes only its control dir (2770 root:nexus-webapi, tmpfiles.d/nexus-power.conf); systemctl talks to
+# logind and PID 1 over D-Bus (unix sockets), nothing else.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexus/power
+InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite
+InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus/ssh
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+KeyringMode=private
+LimitCORE=0
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

@@ -242,6 +242,16 @@ Before it downloads or installs an update the appliance runs its self-checks. A 
 The health check failed after the reboot and the appliance rolled back automatically. The reason is in the journal of
 the greenboot health check.
 
+<a id="reboot-from-the-web-interface"></a>
+**I asked for a reboot (or shutdown) and nothing happened.**
+Where the reboots of this chapter say "reboot the appliance", use **Power → Reboot** in the top bar
+([13 Updates](13-updates.md#reboot-and-shut-down)). With approvals enabled it waits for a second administrator or
+security officer (**Approvals**); the delay starts with the approval. An approval is refused while an update is being
+checked or installed: approve again afterwards, or request it again with **Do it anyway**. If it was approved but no
+banner appears, the last outcome is in `nexusctl system status` (`refused: nexus-update is staging or applying an
+update right now`, or `error` with the reason) and in `journalctl -u nexus-power` on the console. The console's
+`systemctl reboot` needs no approval.
+
 <a id="diagnostics-and-support-bundles"></a>
 ## Diagnostics and support bundles
 
@@ -370,7 +380,9 @@ No. Backups keep restore points for weeks, months and a few years. Legal archivi
 belongs in an archive or DMS.
 
 **Can I delete a single snapshot?**
-Not in the web interface. Snapshots are removed by retention once their lock has expired.
+Only an unlocked snapshot without a legal hold, and only with approval (`snapshot delete`,
+[10 Approvals and audit](10-approvals-and-audit.md#what-needs-approval)). Otherwise snapshots are removed by
+retention once their lock has expired.
 
 **Why does a tenant's data not deduplicate against another tenant's?**
 By design: each tenant has its own key and store, so tenants stay cryptographically separated.

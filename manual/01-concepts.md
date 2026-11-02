@@ -64,8 +64,13 @@ manifest is encrypted and authenticated with the tenant's key, on the appliance'
   and the offsite copy you can restore everything on new hardware, without the original appliance
   (see [14 Disaster recovery](14-disaster-recovery.md)).
 
-> **Status:** The KEK is currently sealed in a file (mode 0600) on the appliance. TPM sealing and full-disk
-> encryption (LUKS) are planned but not implemented. Chunks are encrypted on disk either way.
+- The KEK is sealed to the appliance's TPM 2.0 (required for new installations), so a copy of the system disk alone
+  does not reveal it. New data arrays are LUKS2 volumes and the installer ISO encrypts the system disk, both unlocked
+  by the TPM at boot ([02 Installation](02-installation.md)).
+
+> **Status:** Appliances installed before the TPM requirement without a TPM keep the KEK in a file (mode 0600); OVA
+> and `bootc install` installs keep the system disk unencrypted, and existing data arrays are not converted. Chunks
+> are encrypted on disk either way.
 
 ## Retention (GFS)
 

@@ -3915,6 +3915,10 @@ function execute(qid: number, action: string, p: Json, by = '', decider = ''): J
       db.time.servers = structuredClone(p.servers);
       db.time.last = { id: null, by, quorum_id: qid ?? null, time: now(), result: 'applied', error: null };
       break;
+    case 'system.reboot':
+    case 'system.poweroff':
+      powerSchedule(p, by, decider);
+      break;
     case 'update.apply':
       if (db.updates.available)
         Object.assign(db.updates, { staged: { ...db.updates.available, since: now() }, status: 'staged' });
@@ -11156,6 +11160,75 @@ on('PUT', '/settings/time', async (c) => {
     allow_ntp: allow,
     plain_ntp: servers.filter((sv: Json) => !sv.nts).map((sv: Json) => sv.host),
   });
+});
+// ---- reboot and shutdown (issue #179; crates/web-api/src/power.rs): scheduled only, never carried out here
+const powerState: { pending: Json | null; last: Json | null } = { pending: null, last: null };
+function powerSchedule(p: Json, by: string, decider: string) {
+  if (powerState.pending) throw new HttpError(409, 'a reboot or shutdown is scheduled already: cancel it first');
+  const at = now() + Number(p.delay_s ?? 0);
+  powerState.pending = {
+    id: 'p' + at,
+    action: p.action,
+    at,
+    reason: p.reason,
+    requested_by: by,
+    approved_by: decider && decider !== by ? decider : null,
+  };
+  powerState.last = {
+    action: p.action,
+    result: 'scheduled',
+    detail: `${p.action} at ${at}`,
+    time: now(),
+    requested_by: by,
+  };
+}
+on('GET', '/system/power', (c) => {
+  needAppliance(c.user, 'admin', 'operator', 'security_officer');
+  if (powerState.pending && powerState.pending.at <= now()) powerState.pending = null;
+  const running = db.jobs.filter((j) => j.state === 'running');
+  const kinds = [...new Set(running.map((j) => j.kind as string))].sort();
+  const req = db.quorum.filter((q) => q.action.startsWith('system.') && q.state === 'pending').pop();
+  return [
+    200,
+    {
+      appliance: 'nexus-demo',
+      pending: powerState.pending,
+      requested: null,
+      last: powerState.last,
+      blockers: db.updates.status === 'checking' ? ['an update is being checked and staged (Settings > Updates)'] : [],
+      running_jobs: running.length,
+      running_by_kind: kinds.map((kind) => ({ kind, count: running.filter((j) => j.kind === kind).length })),
+      request_pending: req ? { id: req.id, action: req.action, requested_by: req.requested_by } : null,
+      approval_required: db.approvals,
+      max_delay_s: 300,
+    },
+  ];
+});
+on('POST', '/system/power', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const b = c.body ?? {};
+  const action = String(b.action);
+  const reason = String(b.reason ?? '').trim();
+  const delay = Number(b.delay_s ?? 0);
+  if (!['reboot', 'poweroff'].includes(action) || reason.length < 3 || !(delay >= 0 && delay <= 300))
+    throw new HttpError(400, 'action, reason (3-500 characters) and delay_s (0-300) are required');
+  if (powerState.pending) throw new HttpError(409, 'a reboot or shutdown is scheduled already: cancel it first');
+  const running_jobs = db.jobs.filter((j) => j.state === 'running').length;
+  return quorum(
+    u,
+    `system.${action}`,
+    { action, reason, delay_s: delay, force: b.force === true, running_jobs },
+    { delay_s: delay },
+  );
+});
+on('DELETE', '/system/power', async (c) => {
+  const u = needAppliance(c.user, 'admin');
+  const pend = powerState.pending;
+  if (!pend) throw new HttpError(409, 'no reboot or shutdown is scheduled');
+  powerState.pending = null;
+  powerState.last = { action: pend.action, result: 'cancelled', detail: '', time: now(), requested_by: u.name };
+  await audit(u.name, 'system.power_cancel', 'appliance/power', { action: pend.action, at: pend.at });
+  return [200, { status: 'cancelled', action: pend.action }];
 });
 on('PUT', '/network', async (c) => {
   const u = netReader(c);

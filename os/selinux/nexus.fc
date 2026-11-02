@@ -66,6 +66,8 @@
 /var/lib/nexus/disks(/.*)?			gen_context(system_u:object_r:nexus_disks_var_lib_t,s0)
 /var/lib/nexus/net(/.*)?			gen_context(system_u:object_r:nexus_net_var_lib_t,s0)
 /var/lib/nexus/time(/.*)?			gen_context(system_u:object_r:nexus_time_var_lib_t,s0)
+# reboot and shutdown requests (#179): request.json (web-api), status.json (nexus-power, root, unconfined)
+/var/lib/nexus/power(/.*)?			gen_context(system_u:object_r:nexus_power_var_lib_t,s0)
 /etc/nexus/time(/.*)?			gen_context(system_u:object_r:nexus_time_conf_t,s0)
 /run/nexus-time(/.*)?			gen_context(system_u:object_r:nexus_time_var_run_t,s0)
 /var/lib/nexus/console-unlock(/.*)?		gen_context(system_u:object_r:nexus_console_unlock_t,s0)

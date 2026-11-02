@@ -450,6 +450,21 @@ Reviewed with the implementation (2026-10-10):
 - Remaining: installs from `bootc install to-disk` and the OVA stay clear; a passphrase typed in the installer
   replaces the TPM unlock; the recovery key typed at the initrd prompt is as exposed as any console input.
 
+### 3.18 Reboot and shutdown from the web UI (#179)
+
+- New privileged path: the web-api writes `/var/lib/nexus/power/request.json` for the root helper `nexus-power`
+  (logind's `systemctl reboot|poweroff --when=`). Both actions are quorum actions (`system.reboot`,
+  `system.poweroff`): a reboot ends every running backup and restore, so one admin account alone must not be able
+  to stop the backups (the same reasoning that gates `update.apply`). Admin, appliance-wide, a person's session
+  only: API tokens are refused by the allow-list and by the handler. The request file exists only after the
+  approval and the state is checked again then. Tests: `crates/web-api/tests/power.rs`
+  `both_actions_need_approval_then_request_file` (fails without the gate), `tests/tokens.rs` (never list).
+- The helper reads the request with `O_NOFOLLOW`, regular files only, 8 KiB, every field checked; removes a
+  symlinked request instead of following it; runs with `CAP_SYS_BOOT` only, `ProtectSystem=strict`, only its
+  control dir writable, no network (`os/greenboot/tests/test_nexus_power.py`). It runs in `unconfined_service_t`
+  like nexus-update; the control dir has its own type `nexus_power_var_lib_t`, which no nexus domain but the
+  web-api may write (neverallow). Not yet checked on an enforcing appliance (no lab run).
+
 ## 4. Findings
 
 ### Fixed in this review

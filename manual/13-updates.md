@@ -163,6 +163,66 @@ you to: `NEXUS_UPDATE_DIAG=off nexus-update apply` skips them.
 Before you apply: make sure no restore is running, and note the time. The web UI is unavailable while the appliance
 reboots; scheduled jobs that were due during the reboot run once afterwards.
 
+## Reboot and shut down
+
+Administrators reboot or shut down the appliance from the **Power** menu in the top bar (power icon): **Reboot** or
+**Shut down**. A plain reboot does not install a staged update; use **Install now** for that.
+
+![The Power menu in the top bar](images/power-menu.png)
+
+The dialog names the appliance and asks for:
+
+- **When**: now, or in 30 seconds, 1, 2 or 5 minutes. With approvals enabled the time counts from the approval. A
+  delay gives you time to cancel; users signed in on the console get a warning.
+- **Reason**: required (3 to 500 characters). The approver sees it, and it is written to the audit log.
+
+It also shows what the action interrupts:
+
+- **Running jobs**: their number and a link to them. A reboot ends them; when the appliance is back the scheduler
+  marks them failed ("interrupted"), and the retry policy of their protection group applies. Queued jobs wait and run
+  afterwards, as do scheduled backups that were due meanwhile. Wait for a restore to finish before you reboot.
+- **Not now**: an update request waiting, or an update being checked and downloaded. **Do it anyway** goes ahead;
+  the update check then has to be started again.
+- For **Shut down**: the appliance stays off until it is started again, from the hypervisor for a virtual
+  appliance, with the power button or the management board for a hardware one. No backup runs meanwhile.
+
+![Reboot dialog with the running jobs and the approval note](images/power-dialog.png)
+
+**Approval.** With approvals enabled both actions are requests that a second administrator or security officer
+approves (`reboot the appliance`, `shut down the appliance`, see
+[10 Approvals and audit](10-approvals-and-audit.md#what-needs-approval)): a reboot stops every running backup, so one
+account alone cannot do it. The state is checked again at the approval: while an update runs it is refused and the
+request stays pending. With approvals disabled the action is scheduled at once.
+
+**Scheduled.** While a reboot or shutdown is scheduled, administrators, operators and security officers see an amber
+banner with the time, the requester and a countdown; administrators can **Cancel** it there until it starts. When it
+starts, the page waits for the appliance to answer again and reloads by itself.
+
+![Banner of a scheduled reboot with countdown and Cancel](images/power-banner.png)
+
+Only one action can be scheduled at a time. The audit log has `system.reboot` or `system.poweroff` (with the reason,
+the delay and the approver) and `system.power_cancel`. API tokens can neither reboot nor shut down the appliance.
+
+**From a workstation** with `nexusctl` (chapter 9), signed in as an administrator like `update upload` (password and
+TOTP code are asked for):
+
+```sh
+nexusctl --url https://<appliance>:8443 --ca <cert.pem> system reboot --user <administrator> \
+  --reason "kernel update of the host" --delay 120
+nexusctl ... system status --user <administrator>     # scheduled action, approval, last outcome, running jobs
+nexusctl ... system cancel --user <administrator>
+```
+
+`system poweroff` shuts down; `--force` goes ahead while an update is being checked. With approvals enabled the
+request waits for approval in the web interface.
+
+**On the console** (root shell, [14 Disaster recovery](14-disaster-recovery.md#emergency-root-shell-on-the-console)):
+`systemctl reboot` or `systemctl poweroff`, without approval; `shutdown -c` cancels an action scheduled from the web
+interface.
+
+> **Status:** Implemented for #179 (API and approval tests, helper tests with a fake `systemctl`, `nexusctl`
+> tests). Not yet run on an appliance: the reboot through logind from the sandboxed helper is untested there.
+
 ## Change the maintenance window
 
 The default window is in `/etc/nexus/update.conf` (`NEXUS_UPDATE_WINDOW=Sun 03:00 120`, UTC, duration in minutes).

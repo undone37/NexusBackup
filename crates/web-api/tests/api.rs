@@ -3816,6 +3816,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/hardware.rs"),
         include_str!("../src/network.rs"),
         include_str!("../src/timesync.rs"),
+        include_str!("../src/power.rs"),
         include_str!("../src/risk.rs"),
         include_str!("../src/tenants.rs"),
         include_str!("../src/tenancy.rs"),
@@ -3936,6 +3937,10 @@ async fn tenant_admin_routes_classified() {
         ("GET", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),
         ("PUT", "/updates/registry", "/api/v1/updates/registry".into(), Some(json!({"username": "bot", "token": "x"})), 'N'),
         ("DELETE", "/updates/registry", "/api/v1/updates/registry".into(), none(), 'N'),
+        // #179: reboot and shutdown are the provider's
+        ("GET", "/system/power", "/api/v1/system/power".into(), none(), 'N'),
+        ("POST", "/system/power", "/api/v1/system/power".into(), Some(json!({"action": "reboot", "reason": "test"})), 'N'),
+        ("DELETE", "/system/power", "/api/v1/system/power".into(), none(), 'N'),
         ("GET", "/diagnostics", "/api/v1/diagnostics".into(), none(), 'N'),
         ("POST", "/diagnostics/checks", "/api/v1/diagnostics/checks".into(), e(), 'N'),
         ("POST", "/diagnostics/bundle", "/api/v1/diagnostics/bundle".into(), e(), 'N'),

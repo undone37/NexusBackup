@@ -686,7 +686,7 @@ pub async fn retire_ssh_key(State(st): State<St>, ctx: Ctx, Path(name): Path<Str
 
 // ---------------------------------------------------------------- updates
 
-fn update_dir(st: &St) -> std::path::PathBuf {
+pub fn update_dir(st: &St) -> std::path::PathBuf {
     st.update_dir
         .get_or_init(|| {
             std::env::var_os("NEXUS_UPDATE_DIR")

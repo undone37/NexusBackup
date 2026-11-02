@@ -1910,3 +1910,10 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   (blkdiscard -z) and announced `image-zeroed`; the appliance wrote 4220 blocks (17.7 GB) and skipped 6020 zero
   blocks: recovery 1700 s instead of 4114 s; Windows booted, the guest agent answered after 31 s without a manual
   step (P2V VMs get the agent channel now).
+- [x] #179 reboot and shutdown from the web UI (2026-11-02, branch 179-power-actions, the design of NexusStor #86 /
+  undone37/NexusStor#87): top bar > Power (Reboot, Shut down) with reason, delay 0-300 s, running jobs and blockers,
+  countdown banner with Cancel; `GET/POST/DELETE /system/power`, quorum `system.reboot` and `system.poweroff` (both
+  gated, unlike NexusStor: plan.md §2); root helper `nexus-power` (logind `--when`, `CAP_SYS_BOOT` only, own SELinux
+  type for its control dir, policy built in the selinux stage); `nexusctl system`. Tests: web-api `tests/power.rs` (3),
+  unit tests, `test_nexus_power.py` (7), nexusctl unit and integration tests. No lab run: no image of the branch was
+  built, VM 201 was not rebooted; open: the reboot through logind from the sandboxed unit on an enforcing appliance.

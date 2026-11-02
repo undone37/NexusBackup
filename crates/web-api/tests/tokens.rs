@@ -443,6 +443,10 @@ async fn scope_matrix_and_allow_list() {
         (Method::POST, "/api/v1/replication/peers/x/export-keys"),
         (Method::POST, "/api/v1/replication/peers"),
         (Method::POST, "/api/v1/updates/apply"),
+        // reboot and shutdown (#179): people only, like updates
+        (Method::GET, "/api/v1/system/power"),
+        (Method::POST, "/api/v1/system/power"),
+        (Method::DELETE, "/api/v1/system/power"),
         (Method::POST, "/api/v1/ssh-keys/pve/rotate"),
         (Method::POST, "/api/v1/tenants"),
         (Method::DELETE, "/api/v1/snapshots/acme/vm-100/1"),

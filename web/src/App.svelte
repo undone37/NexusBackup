@@ -2,7 +2,7 @@
   import { onMount, type Component } from 'svelte';
   import { session, setSession } from './lib/session.svelte';
   import { route, match, href, navigate } from './lib/router.svelte';
-  import { get, post, act } from './lib/api';
+  import { get, post, del, act } from './lib/api';
   import { can } from './lib/roles';
   import { t } from './lib/i18n';
   import { theme, setTheme, nextTheme } from './lib/theme.svelte';
@@ -81,6 +81,13 @@
   import IconSnowflake from '@lucide/svelte/icons/snowflake';
   import IconStepUp from '@lucide/svelte/icons/user-lock';
   import IconElevate from '@lucide/svelte/icons/shield-plus';
+  import IconPower from '@lucide/svelte/icons/power';
+  import IconReboot from '@lucide/svelte/icons/rotate-cw';
+  import IconPowerOff from '@lucide/svelte/icons/power-off';
+  import Menu from './components/Menu.svelte';
+  import PowerDialog from './components/PowerDialog.svelte';
+  import { power, refreshPower, watchDown } from './lib/power.svelte';
+  import type { PowerAction } from './lib/types';
   import { fmtTime } from './lib/format';
 
   type Allow = (u: User | null) => boolean;
@@ -299,6 +306,7 @@
     }
     // Phase 22b: restore priority (banner for everyone)
     session.priority = await get<RestorePriority>('/restore-priority').catch(() => session.priority);
+    if (viewPower(u)) await refreshPower();
     if (viewApprovals(u))
       pendingApprovals = await get<QuorumRequest[]>('/quorum')
         .then((q) => q.filter((x) => x.state === 'pending').length)
@@ -323,6 +331,31 @@
     const iv = setInterval(count, 10000);
     return () => clearInterval(iv);
   });
+  // Reboot and shutdown (issue #179): admins act from the top bar; staff see a scheduled action with its countdown.
+  const viewPower: Allow = (u) =>
+    !!u && !u.tenant && (u.role === 'admin' || u.role === 'operator' || u.role === 'security_officer');
+  const powerAdmin = $derived(!!session.user && !session.user.tenant && session.user.role === 'admin');
+  let powerAction = $state<PowerAction | null>(null);
+  const powerLabel = (a?: string) => (a === 'poweroff' ? t.power.poweroff : t.power.reboot);
+  const powerPending = $derived(power.status?.pending ?? null);
+  let nowS = $state(Math.floor(Date.now() / 1000));
+  // while something is scheduled: a second-by-second countdown, the state every 5 s (a cancel by someone else)
+  $effect(() => {
+    if (!session.user || (!powerPending && !power.status?.requested) || power.down) return;
+    let n = 0;
+    const iv = setInterval(() => {
+      nowS = Math.floor(Date.now() / 1000);
+      if (++n % 5 === 0) refreshPower();
+    }, 1000);
+    return () => clearInterval(iv);
+  });
+  $effect(() => {
+    if (powerPending && nowS >= powerPending.at) watchDown(powerPending.action);
+  });
+  async function cancelPower() {
+    const a = powerPending?.action ?? power.status?.requested?.action;
+    if (await act(del('/system/power'), t.power.cancelled(powerLabel(a)))) refreshPower();
+  }
   async function ackGlass() {
     if (!glass) return;
     if (await act(post(`/alerts/${glass.id}/ack`), t.alerts.done)) refreshCounts();
@@ -510,6 +543,27 @@
               >{/if}
           </a>
         {/if}
+        {#if powerAdmin}
+          <Menu
+            label={t.power.menu}
+            icon={IconPower}
+            iconOnly
+            items={[
+              {
+                label: t.power.reboot,
+                hint: t.power.rebootHint,
+                icon: IconReboot,
+                onselect: () => (powerAction = 'reboot'),
+              },
+              {
+                label: t.power.poweroff,
+                hint: t.power.poweroffHint,
+                icon: IconPowerOff,
+                onselect: () => (powerAction = 'poweroff'),
+              },
+            ]}
+          />
+        {/if}
         <button
           type="button"
           class="icon-btn theme-toggle"
@@ -547,6 +601,38 @@
         >
       </header>
 
+      {#if power.down}
+        <div class="glass" role="alert">
+          <IconPower aria-hidden="true" />
+          <p>
+            <strong>{t.power.goingDown(power.down.action)}</strong>
+            {power.down.action === 'poweroff' ? t.power.offText : t.power.waiting}
+          </p>
+        </div>
+      {:else if powerPending}
+        <div class="glass priority" role="status">
+          <IconPower aria-hidden="true" />
+          <p>
+            <strong
+              >{t.power.banner(
+                powerLabel(powerPending.action),
+                power.status?.appliance ?? '',
+                fmtTime(powerPending.at),
+                powerPending.requested_by,
+              )}</strong
+            >
+            <span aria-live="off">{t.power.countdown(powerPending.at - nowS)}</span>
+            <span class="visually-hidden">{powerPending.reason}</span>
+          </p>
+          {#if powerAdmin}<button type="button" class="small" onclick={cancelPower}>{t.power.cancel}</button>{/if}
+        </div>
+      {:else if power.status?.requested}
+        <div class="glass priority" role="status">
+          <IconPower aria-hidden="true" />
+          <p><strong>{t.power.requestedBanner(powerLabel(power.status.requested.action))}</strong></p>
+          {#if powerAdmin}<button type="button" class="small" onclick={cancelPower}>{t.power.cancel}</button>{/if}
+        </div>
+      {/if}
       {#if session.impersonating}
         <div class="glass impersonating" role="status">
           <IconTenants aria-hidden="true" />
@@ -656,3 +742,4 @@
 <ConfirmDialog />
 <StepUpDialog />
 <ElevateDialog bind:open={elevateOpen} />
+<PowerDialog bind:action={powerAction} />

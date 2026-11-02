@@ -591,6 +591,10 @@ nexusctl openapi                        # the API description
 certificate or its CA when it is not publicly trusted. A run whose `--keep-until` lies beyond the approval limit
 creates an approval request and says so.
 
+Two commands act as a person instead of a token and ask for an administrator's password and TOTP code (`--user
+NAME`): `nexusctl update upload` (offline update bundle, [13 Updates](13-updates.md#offline-update-appliances-without-internet-access))
+and `nexusctl system status|reboot|poweroff|cancel` ([13 Updates](13-updates.md#reboot-and-shut-down)).
+
 **Several appliances: `nexusctl fleet`.** A service provider that runs one appliance per customer gets a read-only
 overview of all of them on the workstation: for each appliance whether it answers, incident mode, protected objects,
 SLA breaches, open alerts per severity, failed jobs of the last 24 hours and store use, then the open critical and

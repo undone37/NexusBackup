@@ -68,6 +68,8 @@ hidden; open it with the **Menu** button at the top left.
   something runs, a click lists the running jobs (refreshed every 10 seconds, on every page);
 - the **Approvals** button (stamp icon) with the number of pending requests, for roles that see approvals;
 - the **Alerts** button (bell icon) with the number of open alerts, for roles that see alerts;
+- the **Power** menu (power icon), administrators only: **Reboot** and **Shut down** the appliance, see
+  [13 Updates](13-updates.md#reboot-and-shut-down);
 - the **theme** button (see below);
 - your user name and role, and for tenant-scoped accounts your tenant (e.g. "Tenant user · acme"). Click it to
   open **My account** with your sessions and API tokens ([09 Users and access](09-users-and-access.md#your-sessions-my-account),
@@ -493,6 +495,11 @@ restores to production, appliance-wide accounts see a red banner naming what is 
 ([14 Disaster recovery](14-disaster-recovery.md#freezes-during-an-incident)). An account marked by a risk signal sees
 a yellow banner with the reason; its first change in each session opens **Confirm it is you**
 ([09 Users and access](09-users-and-access.md#risk-signals-and-step-up)).
+
+**Reboot and shutdown banner.** While a reboot or shutdown is scheduled, administrators, operators and security
+officers see an amber banner with the time, who requested it and a countdown; administrators can **Cancel** it there.
+When it starts, the banner says the appliance is restarting and the page reloads by itself once the appliance answers
+again. See [13 Updates](13-updates.md#reboot-and-shut-down).
 
 ## Approvals
 

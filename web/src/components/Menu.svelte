@@ -21,7 +21,16 @@
     items,
     small = true,
     icon: Icon,
-  }: { label: string; ariaLabel?: string; items: MenuItem[]; small?: boolean; icon?: Component<any> } = $props();
+    iconOnly = false,
+  }: {
+    label: string;
+    ariaLabel?: string;
+    items: MenuItem[];
+    small?: boolean;
+    icon?: Component<any>;
+    /** a top-bar icon button: the label only as its accessible name and tooltip */
+    iconOnly?: boolean;
+  } = $props();
 
   const id = $props.id();
   let btn: HTMLButtonElement | undefined = $state();
@@ -87,13 +96,15 @@
 <button
   bind:this={btn}
   type="button"
-  class:small
+  class:small={small && !iconOnly}
+  class:icon-btn={iconOnly}
   aria-haspopup="menu"
   aria-expanded={open}
-  aria-label={ariaLabel}
+  aria-label={ariaLabel ?? (iconOnly ? label : undefined)}
+  title={iconOnly ? label : undefined}
   popovertarget="{id}-menu"
 >
-  {#if Icon}<Icon aria-hidden="true" />{/if}{label}<IconChevron aria-hidden="true" />
+  {#if Icon}<Icon aria-hidden="true" />{/if}{#if !iconOnly}{label}<IconChevron aria-hidden="true" />{/if}
 </button>
 <div
   bind:this={pop}
