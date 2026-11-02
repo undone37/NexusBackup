@@ -41,17 +41,40 @@ mod tests {
         for p in crate::tokens::OPERATE {
             assert!(has("post", p), "POST {p} missing in openapi.json");
         }
-        // and nothing documented as token-reachable that the allow-list refuses
+        // nothing documented as token-reachable that the allow-list refuses, and nothing
+        // documented as session only (`x-token: false`, the SDKs refuse it for tokens) that it lets through
         for (k, v) in paths {
             for (m, op) in v.as_object().unwrap() {
-                if op["x-token"] == false {
-                    continue;
-                }
                 let method = axum::http::Method::from_bytes(m.to_uppercase().as_bytes()).unwrap();
+                let reachable = crate::tokens::allowed(true, &method, &k.replace('{', "x").replace('}', ""));
+                if op["x-token"] == false {
+                    assert!(
+                        !reachable,
+                        "{m} {k} is documented as session only but on the token allow-list"
+                    );
+                } else {
+                    assert!(reachable, "{m} {k} is documented but not on the token allow-list");
+                }
+            }
+        }
+    }
+
+    /// Every operation has a unique lowerCamelCase `operationId`: the SDKs in `sdk/` name their methods after it
+    /// (`sdk/codegen.py`), so a new operation without one fails here before it fails the SDK check.
+    #[test]
+    fn every_operation_has_a_unique_operation_id() {
+        let doc: Value = serde_json::from_str(DOCUMENT).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (k, v) in doc["paths"].as_object().unwrap() {
+            for (m, op) in v.as_object().unwrap() {
+                let id = op["operationId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{m} {k}: no operationId"));
                 assert!(
-                    crate::tokens::allowed(true, &method, &k.replace('{', "x").replace('}', "")),
-                    "{m} {k} is documented but not on the token allow-list"
+                    id.starts_with(|c: char| c.is_ascii_lowercase()) && id.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "{m} {k}: operationId {id} is not lowerCamelCase"
                 );
+                assert!(seen.insert(id.to_owned()), "operationId {id} used twice");
             }
         }
     }

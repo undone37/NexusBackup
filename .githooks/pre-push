@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks for the commits being pushed (a few minutes at most): clippy, svelte-check and the
+# Checks for the commits being pushed (a few minutes at most): clippy, svelte-check, the SDK gate and the
 # PVE plugin tests, each only when its part of the tree changed. The full test suite stays in CI.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -21,6 +21,10 @@ done
 if has '(\.rs|Cargo\.(toml|lock))$' "${files[@]}"; then
 	step "cargo clippy"
 	cargo clippy --all-targets --quiet -- -D warnings || fail "clippy found problems"
+fi
+if has '^sdk/|^crates/web-api/openapi\.json$' "${files[@]}"; then
+	step "SDKs: sync with openapi.json, pytest, Pester"
+	sdk/check.sh || fail "sdk/check.sh (after an API change: python3 sdk/codegen.py)"
 fi
 if has '^web/' "${files[@]}"; then
 	step "svelte-check, prettier"

@@ -20,6 +20,7 @@ appliance.
 | **Operators** (daily operation, restores) | 03, 06, 11, 15 |
 | **Tenant users** (restore own data) | 03 (Signing in, Snapshots, Files), 06, 09 (Activating your account) |
 | **Managers** (status at a glance) | 03 (Dashboard: key figures, RPO, charts) |
+| **Integrators** (scripts, monitoring, billing) | 09 (API tokens), 20 |
 
 ## Contents
 
@@ -54,6 +55,8 @@ appliance.
 18. [Edge proxy for roaming laptops](18-edge-proxy.md): the edge VM in a DMZ, enrolling it, assigning laptops,
     "back up now" from anywhere, updates, what a compromised edge can and cannot do
 19. [NexusStor](19-nexusstor.md): pairing with a NexusStor, what a vStor backup contains, incrementals, limits
+20. [SDKs](20-sdks.md): the Python and PowerShell clients of the REST API: signing in, the appliance's certificate,
+    jobs and approvals, what they cover
 
 ## Conventions
 

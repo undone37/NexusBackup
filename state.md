@@ -1927,3 +1927,14 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   No API change. Screenshots: full run against the mock (220 scenes, 0 failures); 123 PNGs differ from a
   baseline run of main's code on the same machine by 350 px or more and were kept, the rest is rendering noise.
   Not checked by eye at phone width (the screenshot tool renders 1440 px only).
+
+## Python and PowerShell SDKs (added 2026-11-02, #181)
+
+- [x] `sdk/`: Python package `nexusbackup` and PowerShell module `NexusBackup`, the port of NexusStor's SDKs
+  (undone37/NexusStor#71) to this API. `openapi.json` got an `operationId` for each of its 42 operations and 5
+  session-only operations (sign-in, sign-out, approve, reject, audit CSV; `x-token: false`), 47 in all;
+  `sdk/codegen.py` generates both operation tables. Tests: 33 pytest (host Python 3.13; 30 of them on Python 3.10
+  in podman with ruff and mypy strict clean), 34 Pester tests and PSScriptAnalyzer clean in CI (job `sdk`). Not run against an
+  appliance yet.
+  - open: a lab run (token: back up a group, wait, audit pull; person: approve a keep-until request, audit CSV) on
+    VM 201; publishing (PyPI, PowerShell Gallery) is a maintainer decision.

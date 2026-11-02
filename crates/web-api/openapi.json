@@ -3,8 +3,8 @@
   "info": {
     "title": "NexusBackup Appliance API",
     "version": "1",
-    "summary": "REST API of the NexusBackup appliance (the part reachable with API tokens, plus the billing export and the restore point simulator).",
-    "description": "Authenticate with an API token: `Authorization: Bearer nxt_<prefix>_<secret>` (created under Account → API tokens; scope `read` = GET only, `operator` = also the operator actions marked below). A token reaches only the endpoints in this document; everything else answers 403. The effective role is the lower of the user's role and the token scope; tenant-scoped users see their own tenant only. Errors are `{\"error\": \"…\"}` with 400 (invalid request), 401 (missing, invalid or expired token), 403 (not allowed), 404, 409 (conflicts with the current state). Requests that need approval answer 202 `{quorum_id}`. Times are unix seconds (UTC). Every state change is audited as `<user> via token <name>`. Hand-maintained; `crates/web-api/src/openapi.rs` checks that it covers every endpoint on the token allow-list.",
+    "summary": "REST API of the NexusBackup appliance (the part reachable with API tokens, plus the billing export, the restore point simulator and what scripts acting as a person need: sign-in, approval decisions, the audit CSV).",
+    "description": "Authenticate with an API token: `Authorization: Bearer nxt_<prefix>_<secret>` (created under Account → API tokens; scope `read` = GET only, `operator` = also the operator actions marked below). A token reaches only the endpoints in this document; everything else answers 403. The effective role is the lower of the user's role and the token scope; tenant-scoped users see their own tenant only. Errors are `{\"error\": \"…\"}` with 400 (invalid request), 401 (missing, invalid or expired token), 403 (not allowed), 404, 409 (conflicts with the current state). Requests that need approval answer 202 `{quorum_id}`. Times are unix seconds (UTC). Every state change is audited as `<user> via token <name>`. Operations marked `x-token: false` need a person's session instead: `POST /auth/login` with name, password and TOTP code sets the `nx_session` cookie and answers `csrf`, sent as `X-CSRF-Token` on every request but GET. Hand-maintained; `crates/web-api/src/openapi.rs` checks that it covers every endpoint on the token allow-list.",
     "license": { "name": "AGPL-3.0-only", "identifier": "AGPL-3.0-only" }
   },
   "servers": [{ "url": "/api/v1" }],
@@ -189,6 +189,7 @@
   "paths": {
     "/files/search": {
       "get": {
+        "operationId": "searchFiles",
         "summary": "Instant file search over the tenant's snapshots (nexus-index; audited as file.search)",
         "tags": [
           "data"
@@ -358,6 +359,7 @@
     },
     "/files/index-status": {
       "get": {
+        "operationId": "getFileIndexStatus",
         "summary": "File search index status per tenant: versions, sealed size, pending snapshots, paused for space",
         "tags": [
           "monitoring"
@@ -376,6 +378,7 @@
     },
     "/files/index/rebuild": {
       "post": {
+        "operationId": "rebuildFileIndex",
         "summary": "Rebuild a tenant's search index from the sealed name indexes (admin, session only; audited file.index_rebuild)",
         "tags": [
           "data"
@@ -411,6 +414,7 @@
     },
     "/groups/{id}/index-rules": {
       "get": {
+        "operationId": "getGroupIndexRules",
         "summary": "Which files of the group's sources go into the search index (session only)",
         "tags": [
           "inventory"
@@ -428,6 +432,7 @@
         }
       },
       "put": {
+        "operationId": "setGroupIndexRules",
         "summary": "Set the group's search scope: absolute rules, `/` separators, `/C/...` one drive, `*` within a component, most specific wins (admin, tenant admin; audited group.index_rules)",
         "tags": [
           "inventory"
@@ -478,11 +483,29 @@
         }
       }
     },
-    "/auth/me": { "get": { "summary": "The signed-in user (role, tenant); `token` = the API token of a token request ({name, scope}), `incident` = incident mode", "tags": ["account"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/dashboard": { "get": { "summary": "Dashboard KPIs (cached up to 60 s)", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/storage": { "get": { "summary": "Storage accounting per tenant and group", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/auth/me": { "get": { "operationId": "getMe", "summary": "The signed-in user (role, tenant); `token` = the API token of a token request ({name, scope}), `incident` = incident mode", "tags": ["account"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Sign in as a person (session only, not for tokens): sets the session cookie `nx_session` (HttpOnly, Secure, SameSite=Strict) and answers the CSRF token that every later non-GET request sends as `X-CSRF-Token`; repeated failures lock the name and the address for a while (429)",
+        "tags": ["account"],
+        "security": [],
+        "x-token": false,
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["name", "password"], "properties": {
+            "name": { "type": "string" }, "password": { "type": "string" },
+            "totp": { "type": "string", "description": "the current code of the account's authenticator (accepted once); accounts under the passkey policy sign in with a passkey in the web UI" } } } } }
+        },
+        "responses": { "200": { "$ref": "#/components/responses/Object" }, "401": { "$ref": "#/components/responses/Error" }, "429": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/auth/logout": { "post": { "operationId": "logout", "summary": "End the session (session only)", "tags": ["account"], "x-token": false, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/dashboard": { "get": { "operationId": "getDashboard", "summary": "Dashboard KPIs (cached up to 60 s)", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/storage": { "get": { "operationId": "getStorage", "summary": "Storage accounting per tenant and group", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/usage": {
       "get": {
+        "operationId": "getUsage",
         "summary": "Monthly usage per tenant (billing)",
         "tags": ["monitoring"],
         "parameters": [
@@ -496,19 +519,20 @@
         }
       }
     },
-    "/stats/trends": { "get": { "summary": "Change-rate trends per source (new bytes, bytes read, duration, changed files of the last 30 runs; the anomaly sensitivity)", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/scans": { "get": { "summary": "Malware scan results of snapshots", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "source", "in": "query", "schema": { "type": "string" } }, { "name": "time", "in": "query", "schema": { "type": "integer" } }, { "name": "limit", "in": "query", "schema": { "type": "integer" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/restore-tests": { "get": { "summary": "Restore test results (Phase 25)", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/recovery-plans": { "get": { "summary": "Recovery plans with their last readiness check (Phase 25)", "tags": ["inventory"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/hardware": { "get": { "summary": "Disks, arrays and sensors", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/tenants": { "get": { "summary": "Tenants", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/sources": { "get": { "summary": "Sources (PVE, agents, NAS, TrueNAS, VMware, plugins); secrets never included", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/sources/{id}/inventory": { "get": { "summary": "Guest inventory of a source", "tags": ["inventory"], "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "404": { "$ref": "#/components/responses/Error" } } } },
-    "/policies": { "get": { "summary": "Policies (schedule, GFS, tier)", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/groups": { "get": { "summary": "Protection groups", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/agents": { "get": { "summary": "Linux / Windows agents", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/stats/trends": { "get": { "operationId": "getTrends", "summary": "Change-rate trends per source (new bytes, bytes read, duration, changed files of the last 30 runs; the anomaly sensitivity)", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/scans": { "get": { "operationId": "listScans", "summary": "Malware scan results of snapshots", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "source", "in": "query", "schema": { "type": "string" } }, { "name": "time", "in": "query", "schema": { "type": "integer" } }, { "name": "limit", "in": "query", "schema": { "type": "integer" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/restore-tests": { "get": { "operationId": "listRestoreTests", "summary": "Restore test results (Phase 25)", "tags": ["monitoring"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/recovery-plans": { "get": { "operationId": "listRecoveryPlans", "summary": "Recovery plans with their last readiness check (Phase 25)", "tags": ["inventory"], "parameters": [{ "$ref": "#/components/parameters/tenant" }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/hardware": { "get": { "operationId": "getHardware", "summary": "Disks, arrays and sensors", "tags": ["monitoring"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/tenants": { "get": { "operationId": "listTenants", "summary": "Tenants", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/sources": { "get": { "operationId": "listSources", "summary": "Sources (PVE, agents, NAS, TrueNAS, VMware, plugins); secrets never included", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/sources/{id}/inventory": { "get": { "operationId": "getSourceInventory", "summary": "Guest inventory of a source", "tags": ["inventory"], "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "404": { "$ref": "#/components/responses/Error" } } } },
+    "/policies": { "get": { "operationId": "listPolicies", "summary": "Policies (schedule, GFS, tier)", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/groups": { "get": { "operationId": "listGroups", "summary": "Protection groups", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/agents": { "get": { "operationId": "listAgents", "summary": "Linux / Windows agents", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/names": {
       "get": {
+        "operationId": "getNames",
         "summary": "Display names of snapshot sources per tenant: PVE guests from the inventory, agents (UI: name first, id muted)",
         "tags": ["data"],
         "parameters": [{ "$ref": "#/components/parameters/tenant" }],
@@ -517,15 +541,17 @@
     },
     "/snapshots": {
       "get": {
+        "operationId": "listSnapshots",
         "summary": "Snapshots (local / offsite, lock, verification, holds)",
         "tags": ["data"],
         "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "source", "in": "query", "schema": { "type": "string" } }, { "name": "held", "in": "query", "schema": { "type": "boolean" } }],
         "responses": { "200": { "$ref": "#/components/responses/List" } }
       }
     },
-    "/holds": { "get": { "summary": "Legal holds", "tags": ["data"], "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["active", "advisory", "released", "withdrawn"] } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/holds": { "get": { "operationId": "listHolds", "summary": "Legal holds", "tags": ["data"], "parameters": [{ "$ref": "#/components/parameters/tenant" }, { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["active", "advisory", "released", "withdrawn"] } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
     "/jobs": {
       "get": {
+        "operationId": "listJobs",
         "summary": "Jobs, newest first",
         "tags": ["jobs"],
         "parameters": [
@@ -535,6 +561,7 @@
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Job" } } } } } }
       },
       "post": {
+        "operationId": "createJob",
         "summary": "Start a job (operator scope), e.g. run a group's backup",
         "tags": ["jobs"],
         "x-token-scope": "operator",
@@ -545,17 +572,20 @@
         }
       }
     },
-    "/jobs/{id}": { "get": { "summary": "One job with its log", "tags": ["jobs"], "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
-    "/jobs/{id}/cancel": { "post": { "summary": "Cancel a queued or running job", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "409": { "$ref": "#/components/responses/Error" } } } },
-    "/groups/{id}/pause": { "post": { "summary": "Pause a group's schedule", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "until": { "type": ["integer", "null"], "description": "unix time; null = indefinitely" } } } } } }, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/groups/{id}/resume": { "post": { "summary": "Resume a paused group", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/sources/{id}/maintenance": { "post": { "summary": "Maintenance mode for a source (no scheduled jobs)", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Object" } } } }, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/sources/{id}/maintenance/end": { "post": { "summary": "End maintenance mode", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/alerts": { "get": { "summary": "Alerts (empty for tenant-scoped users); `tickets` lists the PSA tickets opened for an alert (Phase 33)", "tags": ["monitoring"], "parameters": [{ "name": "acked", "in": "query", "schema": { "type": "boolean" } }, { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["open", "resolved", "all"] } }, { "name": "category", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/alerts/{id}/ack": { "post": { "summary": "Acknowledge an alert (optional body `{note}`)", "tags": ["monitoring"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/quorum": { "get": { "summary": "Approval requests (secrets redacted)", "tags": ["audit"], "parameters": [{ "name": "state", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/jobs/{id}": { "get": { "operationId": "getJob", "summary": "One job with its log", "tags": ["jobs"], "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Job" } } } }, "404": { "$ref": "#/components/responses/Error" } } } },
+    "/jobs/{id}/cancel": { "post": { "operationId": "cancelJob", "summary": "Cancel a queued or running job", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/groups/{id}/pause": { "post": { "operationId": "pauseGroup", "summary": "Pause a group's schedule", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "until": { "type": ["integer", "null"], "description": "unix time; null = indefinitely" } } } } } }, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/groups/{id}/resume": { "post": { "operationId": "resumeGroup", "summary": "Resume a paused group", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/sources/{id}/maintenance": { "post": { "operationId": "startSourceMaintenance", "summary": "Maintenance mode for a source (no scheduled jobs)", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Object" } } } }, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/sources/{id}/maintenance/end": { "post": { "operationId": "endSourceMaintenance", "summary": "End maintenance mode", "tags": ["jobs"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/alerts": { "get": { "operationId": "listAlerts", "summary": "Alerts (empty for tenant-scoped users); `tickets` lists the PSA tickets opened for an alert (Phase 33)", "tags": ["monitoring"], "parameters": [{ "name": "acked", "in": "query", "schema": { "type": "boolean" } }, { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["open", "resolved", "all"] } }, { "name": "category", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/alerts/{id}/ack": { "post": { "operationId": "acknowledgeAlert", "summary": "Acknowledge an alert (optional body `{note}`)", "tags": ["monitoring"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "requestBody": { "content": { "application/json": { "schema": { "type": "object", "properties": { "note": { "type": "string" } } } } } }, "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/quorum": { "get": { "operationId": "listApprovalRequests", "summary": "Approval requests (secrets redacted)", "tags": ["audit"], "parameters": [{ "name": "state", "in": "query", "schema": { "type": "string" } }], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/quorum/{id}/approve": { "post": { "operationId": "approveRequest", "summary": "Approve another person's request (admin, security officer or the tenant's approver; session only): `state` executed, approved, or pending while tenant approvers still decide; a request that starts a job answers its `job_id`", "tags": ["audit"], "x-token": false, "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "403": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" } } } },
+    "/quorum/{id}/reject": { "post": { "operationId": "rejectRequest", "summary": "Reject another person's request (session only)", "tags": ["audit"], "x-token": false, "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "200": { "$ref": "#/components/responses/Object" }, "403": { "$ref": "#/components/responses/Error" } } } },
     "/audit": {
       "get": {
+        "operationId": "listAuditEntries",
         "summary": "Audit log (hash chain); SIEM pull: `?since_seq=<last seen seq>&limit=1000`, oldest first",
         "tags": ["audit"],
         "parameters": [
@@ -571,14 +601,32 @@
         "responses": { "200": { "$ref": "#/components/responses/List" }, "403": { "$ref": "#/components/responses/Error" } }
       }
     },
-    "/audit/verify": { "get": { "summary": "Verify the audit hash chain", "tags": ["audit"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
-    "/replication/peers": { "get": { "summary": "Replication peers (primary)", "tags": ["replication"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/replication/sources": { "get": { "summary": "Replication sources (secondary)", "tags": ["replication"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/replication/sources/{id}/sync": { "post": { "summary": "Sync a replication source now", "tags": ["replication"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "202": { "$ref": "#/components/responses/Object" } } } },
-    "/plugins": { "get": { "summary": "Installed plugins", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
-    "/openapi.json": { "get": { "summary": "This document (also at /api/openapi.json without authentication)", "tags": ["meta"], "security": [], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/audit/verify": { "get": { "operationId": "verifyAudit", "summary": "Verify the audit hash chain", "tags": ["audit"], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
+    "/audit.csv": {
+      "get": {
+        "operationId": "exportAuditCsv",
+        "summary": "Audit log as CSV (session only, audited as audit.export): every matching entry oldest first, with `prev_hash` and `hash`; the filters of GET /audit without order and limit",
+        "tags": ["audit"],
+        "x-token": false,
+        "parameters": [
+          { "name": "since_seq", "in": "query", "schema": { "type": "integer" } }, { "name": "after", "in": "query", "schema": { "type": "integer" } },
+          { "name": "before", "in": "query", "schema": { "type": "integer" } },
+          { "name": "actor", "in": "query", "schema": { "type": "string" } }, { "name": "action", "in": "query", "schema": { "type": "string" }, "description": "prefix" },
+          { "name": "target", "in": "query", "schema": { "type": "string" }, "description": "substring" },
+          { "name": "from", "in": "query", "schema": { "type": "integer" } }, { "name": "to", "in": "query", "schema": { "type": "integer" } },
+          { "$ref": "#/components/parameters/tenant" }
+        ],
+        "responses": { "200": { "description": "CSV", "content": { "text/csv": { "schema": { "type": "string" } } } }, "400": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/replication/peers": { "get": { "operationId": "listReplicationPeers", "summary": "Replication peers (primary)", "tags": ["replication"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/replication/sources": { "get": { "operationId": "listReplicationSources", "summary": "Replication sources (secondary)", "tags": ["replication"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/replication/sources/{id}/sync": { "post": { "operationId": "syncReplicationSource", "summary": "Sync a replication source now", "tags": ["replication"], "x-token-scope": "operator", "parameters": [{ "$ref": "#/components/parameters/id" }], "responses": { "202": { "$ref": "#/components/responses/Object" } } } },
+    "/plugins": { "get": { "operationId": "listPlugins", "summary": "Installed plugins", "tags": ["inventory"], "responses": { "200": { "$ref": "#/components/responses/List" } } } },
+    "/openapi.json": { "get": { "operationId": "getOpenApi", "summary": "This document (also at /api/openapi.json without authentication)", "tags": ["meta"], "security": [], "responses": { "200": { "$ref": "#/components/responses/Object" } } } },
     "/policies/simulate": {
       "post": {
+        "operationId": "simulatePolicy",
         "summary": "Restore point simulator (session only, not for tokens): kept restore points over time and an estimated stored size",
         "tags": ["inventory"],
         "x-token": false,
