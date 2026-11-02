@@ -407,6 +407,8 @@ struct GroupRow {
     vmware: bool,
     /// the source is an XCP-ng one (as `vmware`)
     xcpng: bool,
+    /// #39 M3: the source is a Hyper-V host (as `vmware`; snapshots `hv-<vm id>`)
+    hyperv: bool,
     /// nfs/smb source: the group backs up the share itself (`share-<source>`)
     share: bool,
     /// plugin source: (plugin id, guest ids; empty = the source as a whole, unless `auto`)
@@ -562,8 +564,15 @@ fn guest(source: &str) -> Result<(bool, u32)> {
 }
 
 /// The snapshot source of VM `uuid` of a vmware or xcpng group.
+/// A Hyper-V VM id (GUID, #39).
+pub(crate) fn valid_hyperv_vm(id: &str) -> bool {
+    id.len() == 36 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
 pub(crate) fn vm_source_name(g: &GroupRow, uuid: &str) -> String {
-    if g.xcpng {
+    if g.hyperv {
+        format!("hv-{}", uuid.to_ascii_lowercase())
+    } else if g.xcpng {
         xcpng::names::source_name(uuid)
     } else {
         vmware::names::source_name(uuid)
@@ -1027,6 +1036,7 @@ impl Scheduler {
             let nas = kind == "truenas";
             let vmw = kind == "vmware";
             let xcp = kind == "xcpng";
+            let hv = kind == "hyperv";
             let share = kind == "nfs" || kind == "smb";
             let plugin = kind.strip_prefix("plugin:").map(|k| {
                 (
@@ -1041,7 +1051,7 @@ impl Scheduler {
                         .collect::<Vec<_>>(),
                 )
             });
-            let other = nas || vmw || xcp || share || plugin.is_some();
+            let other = nas || vmw || xcp || hv || share || plugin.is_some();
             Ok(GroupRow {
                 share,
                 plugin,
@@ -1056,11 +1066,14 @@ impl Scheduler {
                 },
                 vmware: vmw,
                 xcpng: xcp,
-                vms: if vmw || xcp {
+                hyperv: hv,
+                vms: if vmw || xcp || hv {
                     let valid = if vmw {
                         vmware::names::valid_uuid
-                    } else {
+                    } else if xcp {
                         xcpng::names::valid_uuid
+                    } else {
+                        valid_hyperv_vm
                     };
                     guests
                         .iter()
@@ -1914,7 +1927,8 @@ impl Scheduler {
             },
             "plugin_validate" | "plugin_guests" | "inventory" => {
                 let out = stdout.unwrap_or_default();
-                match serde_json::from_str::<Value>(out.trim()) {
+                // the JSON object is the output's last line (nexus-agentctl prints `agent-info` lines before it)
+                match serde_json::from_str::<Value>(out.trim().lines().last().unwrap_or_default()) {
                     Ok(v @ Value::Object(_)) => Some(v),
                     _ => {
                         log.push_str("[scheduler] unexpected plugin host output (no JSON object)\n");
@@ -2955,6 +2969,46 @@ impl Scheduler {
         Ok(((name, serde_json::to_vec_pretty(&cfg)?), step))
     }
 
+    /// #39 M3: the VMs of a Hyper-V source's group, one `hv-backup` step each on the host's agent (one at a time:
+    /// the agent serves one checkpoint per job id; lock per source).
+    fn plan_hyperv_group(&self, job: &Job, mut plan: Plan, source_id: i64, vms: &[String]) -> Result<Plan> {
+        let src = self.source_of(&job.tenant, source_id, "hyperv")?;
+        let agent_id = src["agent_id"].as_str().context("hyperv source without agent_id")?;
+        let a = self.agent(&job.tenant, agent_id)?;
+        if a.cert_sha256.is_none() {
+            bail!("agent {} ({}) is not enrolled", a.name, a.id);
+        }
+        if vms.is_empty() {
+            bail!("nothing to back up: no VMs selected");
+        }
+        plan.key = format!("source:{source_id}");
+        for (n, vm) in vms.iter().enumerate() {
+            let (mut f, step) = self.agentctl(&plan.dir, job, &a, "hv-backup", json!({"hyperv": {"vm": vm}}))?;
+            // one config per VM: agent-<id>-<n>.json
+            f.0 = format!("agent-{}-{n}.json", a.id);
+            let step = match step {
+                Step::Cli {
+                    bin,
+                    mut args,
+                    alert,
+                    capture,
+                } => {
+                    args[0] = plan.dir.join(&f.0).to_string_lossy().into_owned();
+                    Step::Cli {
+                        bin,
+                        args,
+                        alert,
+                        capture,
+                    }
+                }
+                s => s,
+            };
+            plan.files.push(f);
+            plan.steps.push(step);
+        }
+        Ok(plan)
+    }
+
     /// #39 M1: one VM of the Hyper-V host behind agent `agent_id` (`nexus-agentctl hv-backup`, snapshot
     /// `hv-<vm id>`). ponytail: a manual job only; source kind, groups and inventory come with M3.
     fn plan_hyperv_backup(&self, job: &Job, mut plan: Plan, agent_id: &str, vm: &str) -> Result<Plan> {
@@ -3177,6 +3231,9 @@ impl Scheduler {
                         }
                         if g.xcpng {
                             return self.plan_xcpng_backup(job, plan, g.source_id, &g.vms);
+                        }
+                        if g.hyperv {
+                            return self.plan_hyperv_group(job, plan, g.source_id, &g.vms);
                         }
                         if g.share {
                             return self.plan_share_backup(plan, g.source_id, &g.file_filters);

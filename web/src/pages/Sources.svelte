@@ -118,6 +118,7 @@
     x.kind === 'truenas' ||
     x.kind === 'vmware' ||
     x.kind === 'xcpng' ||
+    x.kind === 'hyperv' ||
     (isPlugin(x) && !!kindsAll.get(x.kind)?.kind.guests?.list);
   let invOf: Source | null = $state(null);
   let invOpen = $state(false);
@@ -230,7 +231,7 @@
   const tenantAgents = $derived(agents.filter((a) => a.tenant === f.tenant));
   // Keep the agent selection valid when the tenant changes.
   $effect(() => {
-    if (open && f.kind === 'linux' && !tenantAgents.some((a) => a.id === f.agent_id))
+    if (open && (f.kind === 'linux' || f.kind === 'hyperv') && !tenantAgents.some((a) => a.id === f.agent_id))
       f.agent_id = tenantAgents[0]?.id ?? '';
   });
   const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
@@ -269,7 +270,7 @@
       fl_min_pct: c?.fleecing_guard?.min_free_pct ?? 15,
       fl_min_gib: c?.fleecing_guard?.min_free_gib ?? 20,
       fl_cancel_pct: c?.fleecing_guard?.cancel_free_pct ?? 5,
-      agent_id: l?.agent_id ?? '',
+      agent_id: l?.agent_id ?? (x?.kind === 'hyperv' ? x.config?.agent_id : undefined) ?? '',
       paths: (l?.paths ?? []).join('\n'),
       excludes: (l?.excludes ?? sh?.excludes ?? []).join('\n'),
       hooks: l?.hooks ?? false,
@@ -608,15 +609,17 @@
       ? pluginConfig()
       : f.kind === 'linux'
         ? linuxConfig()
-        : f.kind === 'truenas'
-          ? truenasConfig()
-          : f.kind === 'vmware'
-            ? vmwareConfig()
-            : f.kind === 'xcpng'
-              ? xcpngConfig()
-              : f.kind === 'nfs' || f.kind === 'smb'
-                ? shareConfig()
-                : pveConfig();
+        : f.kind === 'hyperv'
+          ? { agent_id: f.agent_id }
+          : f.kind === 'truenas'
+            ? truenasConfig()
+            : f.kind === 'vmware'
+              ? vmwareConfig()
+              : f.kind === 'xcpng'
+                ? xcpngConfig()
+                : f.kind === 'nfs' || f.kind === 'smb'
+                  ? shareConfig()
+                  : pveConfig();
     if (!config) return;
     const r = editing
       ? await act(put<Source>(`/sources/${editing.id}`, { name: f.name, config }), t.saved)
@@ -789,6 +792,9 @@
                     </div>
                   {/if}
                 </td>
+              {:else if x.kind === 'hyperv'}
+                <td>{t.sources.agent} <strong>{agentName(x.config?.agent_id)}</strong></td>
+                <td class="muted">{t.sources.hypervHint}</td>
               {:else if x.kind === 'linux'}
                 <td>{t.sources.agent} <strong>{agentName(x.config?.agent_id)}</strong></td>
                 <td
@@ -848,6 +854,7 @@
           <option value="truenas">{t.sources.kinds.truenas}</option>
           <option value="vmware">{t.sources.kinds.vmware}</option>
           <option value="xcpng">{t.sources.kinds.xcpng}</option>
+          <option value="hyperv">{t.sources.kinds.hyperv}</option>
           <option value="nfs">{t.sources.kinds.nfs}</option>
           <option value="smb">{t.sources.kinds.smb}</option>
           {#if kindsEnabled.length || (editing && isPlugin(editing))}
@@ -872,7 +879,7 @@
       </div>
       {#if isPluginKind(f.kind)}
         <!-- plugin settings follow below the grid -->
-      {:else if f.kind === 'linux'}
+      {:else if f.kind === 'linux' || f.kind === 'hyperv'}
         <div class="field">
           <label for="s-agent">{t.sources.agent}</label>
           <select
@@ -1475,7 +1482,7 @@
       <button
         type="submit"
         class="primary"
-        disabled={(f.kind === 'linux' && !f.agent_id) || (isPluginKind(f.kind) && !pk)}
+        disabled={((f.kind === 'linux' || f.kind === 'hyperv') && !f.agent_id) || (isPluginKind(f.kind) && !pk)}
         >{editing ? t.save : t.create}</button
       >
     </div>

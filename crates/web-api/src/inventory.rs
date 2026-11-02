@@ -20,7 +20,7 @@ const MAX_SELECTOR: usize = 50;
 /// Whether sources of `kind` have an inventory (PVE, TrueNAS, VMware, XCP-ng, plugin kinds that list guests).
 pub fn has_inventory(c: &Connection, kind: &str) -> bool {
     match kind.strip_prefix("plugin:") {
-        None => matches!(kind, "pve" | "truenas" | "vmware" | "xcpng"),
+        None => matches!(kind, "pve" | "truenas" | "vmware" | "xcpng" | "hyperv"),
         Some(k) => plugin_manager::current_for_kind(c, k)
             .ok()
             .flatten()
@@ -37,6 +37,7 @@ fn valid_guest(kind: &str, id: &str) -> bool {
         "truenas" => truenas::valid_dataset(id),
         "vmware" => vmware::names::valid_uuid(id),
         "xcpng" => xcpng::names::valid_uuid(id),
+        "hyperv" => crate::resources::valid_hyperv_vm(id),
         _ => plugin_proto::valid_guest_id(id),
     }
 }

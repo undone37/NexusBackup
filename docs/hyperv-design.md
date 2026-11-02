@@ -77,6 +77,17 @@ checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM o
   A manual backup job `{agent_id, hyperv_vm}` runs it (scheduler `plan_hyperv_backup`); source kind, groups,
   inventory and restore follow in M3.
 
+## Implementation (M2, M3 part 1)
+
+- M2: each snapshot's `hyperv.json` records its reference point (`reference.rct`); the next run sends
+  `HvPrepareBase` and the agent returns each disk's changed ranges (QueryChangesVirtualDisk on the frozen parent),
+  the appliance reads those blocks on top of the previous index. The checkpoint becomes the reference point before
+  the commit.
+- M3 part 1: source kind `hyperv` (catalog v53, config `{agent_id}`), inventory through the agent (`nexus-agentctl
+  hv-inventory`, the VM id as guest id), groups of VM ids with one `hv-backup` step per VM (lock per source), the
+  Sources and Groups pages. Still open: restore to PVE (the converter of VMware / XCP-ng snapshots), restore to
+  Hyper-V (M4), clusters.
+
 ## Open questions
 
 - The cost of the change query on large disks, and RCT after a live migration within a cluster.

@@ -1823,3 +1823,7 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   ISO's own shim/GRUB (edited entry, `inst.ks=hd:LABEL=OEMDRV:/ks.cfg`), the appliance boots unattended to the
   first-boot wizard. A direct-kernel install boot (no shim measurement) leaves PCR 7 different: passphrase prompt.
   Details in docs/disk-encryption-design.md "M3 spike". VM 204 stopped.
+- [x] Hyper-V M3 part 1 lab (2026-11-02, VM 201 on 0.0.64-dev from the branch, `hyperv-e2e.sh group`): source
+  `hv-host` of kind hyperv (the agent on VM 296), inventory job listed nx-rct with its VM id, group `hv-vms` with
+  it, a group backup through the scheduler: incremental on the previous base, nothing written since, 0 blocks read
+  in 18 s, the next reference point recorded.

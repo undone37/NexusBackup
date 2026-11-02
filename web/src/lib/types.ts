@@ -368,6 +368,8 @@ export type LinuxSource = SourceBase & { kind: 'linux'; config: LinuxSourceConfi
 export type TrueNasSource = SourceBase & { kind: 'truenas'; config: TrueNasSourceConfig };
 export type VmwareSource = SourceBase & { kind: 'vmware'; config: VmwareSourceConfig };
 export type XcpngSource = SourceBase & { kind: 'xcpng'; config: XcpngSourceConfig };
+/** #39 M3: a Hyper-V host behind its Windows agent; the VMs are the guests (snapshots `hv-<vm id>`) */
+export type HypervSource = SourceBase & { kind: 'hyperv'; config: { agent_id: string } };
 export type NfsSource = SourceBase & { kind: 'nfs'; config: ShareSourceConfig };
 export type SmbSource = SourceBase & { kind: 'smb'; config: ShareSourceConfig };
 export type ShareSource = NfsSource | SmbSource;
@@ -391,7 +393,15 @@ export interface NexusStorConfig {
   client_key_set?: boolean;
 }
 export type Source =
-  PveSource | LinuxSource | TrueNasSource | VmwareSource | XcpngSource | NfsSource | SmbSource | PluginSource;
+  | PveSource
+  | LinuxSource
+  | TrueNasSource
+  | VmwareSource
+  | XcpngSource
+  | HypervSource
+  | NfsSource
+  | SmbSource
+  | PluginSource;
 export type SourceKind = Source['kind'];
 
 /** Linux backup agent (docs/agent-protocol.md). `id` is 16 hex chars. */
