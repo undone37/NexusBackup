@@ -716,6 +716,10 @@ pub struct LinuxConfig {
     cross_mounts: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     skip_fstypes: Vec<String>,
+    /// #19: every backup also stores the partitions as volume images (bare-metal recovery; agents with
+    /// CAP_VOLUME_IMAGE: Windows). Reads the whole partitions each time (no change tracking yet).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    images: bool,
 }
 
 impl LinuxConfig {

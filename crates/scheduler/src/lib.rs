@@ -3056,9 +3056,9 @@ impl Scheduler {
             let mut backup = json!({"paths": src["paths"], "excludes": excludes,
                                 "hooks": src["hooks"].as_bool().unwrap_or(false),
                                 "filters": filters, "limits": selection::agent_limits(&a.limits)});
-            // #19: volume images for bare-metal recovery (agents with CAP_VOLUME_IMAGE: Windows); a job parameter
-            // for now. ponytail: a source / group option once the full read per run is acceptable (no CBT yet)
-            if job.params["images"] == true {
+            // #19: volume images for bare-metal recovery (agents with CAP_VOLUME_IMAGE: Windows): the source's
+            // option, or a job parameter for one run
+            if job.params["images"] == true || src["images"] == true {
                 backup["images"] = json!(true);
             }
             let (f, step) = self.agentctl(&plan.dir, job, &a, "backup", json!({"backup": backup}))?;
