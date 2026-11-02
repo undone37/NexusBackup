@@ -145,6 +145,25 @@ now** (an administrator can hide it per agent). Users cannot restore or change a
 Restores are started by the appliance administrator only. The agent restores below the confirmed target path, with
 ACLs (and SACLs), owners, alternate data streams and timestamps.
 
+## Bare-metal recovery (preview)
+
+A backup job with **volume images** (`images: true` in the job parameters, for now through the API: `POST /jobs`
+`{"kind": "backup", "params": {"agent_id": ..., "images": true}}`; agent 0.4 or newer) also stores every
+partition of the boot and system disks as an image: NTFS and ReFS volumes from a VSS snapshot, the EFI system
+partition and the MSR read raw, plus the disk layout with the MBR boot code. Such a snapshot restores the whole
+machine:
+
+- **As a Proxmox VE VM (P2V)**: **Restore host as PVE VM** on the host's snapshot. The VM gets SATA disks
+  and an e1000e NIC (drivers every Windows has), the firmware of the original (SeaBIOS for MBR, OVMF for UEFI);
+  install the VirtIO drivers in the running system and switch later if wanted.
+- **On the same or identical hardware**: boot the **rescue ISO**; it recreates the partition table with the
+  original disk signature and GUIDs, writes the boot code and the images; Windows starts as before.
+
+Not yet: other hardware (a different disk controller needs its driver injected first: docs/bmr.md "Windows"),
+BitLocker volumes (restore them unlocked), dynamic disks and Storage Spaces, a smaller target disk. Every image run
+reads the whole partitions (unchanged blocks are hashed, not sent); schedule image backups less often than file
+backups.
+
 ## Updates
 
 Updates normally come from the appliance (single agents or rollouts, see
