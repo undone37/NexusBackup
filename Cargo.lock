@@ -191,13 +191,14 @@ dependencies = [
 
 [[package]]
 name = "agent-windows"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "agent-core",
  "agent-proto",
  "agent-ui-proto",
  "base64 0.22.1",
  "blake3",
+ "serde",
  "serde_json",
  "tempfile",
  "windows",

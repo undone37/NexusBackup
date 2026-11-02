@@ -74,6 +74,60 @@ fn answer(s: &mut Session, what: &str, job: u64, log: &mut dyn FnMut(&str)) -> R
     }
 }
 
+/// #19: every image of the snapshot written to its partition on the rescue agent (`BlockWrite` to target n of
+/// [`Layout::image_order`]). Every block is sent, zero blocks too: the target partition may hold old data (a
+/// reused disk) and NTFS metadata areas can be zero in the image.
+fn write_images(
+    store: &Store,
+    s: &mut Session,
+    spec: &Spec,
+    l: &agent_proto::layout::Layout,
+    log: &mut dyn FnMut(&str),
+) -> Result<()> {
+    use agent_proto::{BLOCK_SIZE, MAX_BLOCK_TARGET};
+    use chunkstore::Index;
+    let m = store.load_manifest(&source_name(&spec.agent), spec.time)?;
+    for (k, (_, p)) in l.image_order().into_iter().enumerate() {
+        let target = u32::try_from(k + 1).unwrap_or(u32::MAX);
+        if target > MAX_BLOCK_TARGET {
+            bail!("more than {MAX_BLOCK_TARGET} images");
+        }
+        let Index::Fixed { size, chunks, .. } = store
+            .load_index(&m, &p.image)
+            .with_context(|| format!("image {} is not in the snapshot", p.image))?
+        else {
+            bail!("{} is not an image", p.image);
+        };
+        let bjob = spec.job * 16 + u64::from(target);
+        let mut sent = 0u64;
+        for (i, id) in chunks.iter().enumerate() {
+            let mut block = store.read_chunk(id)?;
+            // the last block: no further than the image
+            let end = size.saturating_sub(i as u64 * BLOCK_SIZE).min(BLOCK_SIZE) as usize;
+            block.truncate(end);
+            s.send(&Message::BlockWrite {
+                job: bjob,
+                target,
+                offset: i as u64 * BLOCK_SIZE,
+                data: block,
+            })?;
+            sent += 1;
+        }
+        s.send(&Message::BlockWriteEnd { job: bjob, target })?;
+        match s.recv()? {
+            Message::BlockWritten { job: j, bytes } if j == bjob => {
+                log(&format!(
+                    "image {}: {sent} blocks written ({bytes} bytes) to partition {}",
+                    p.image, p.number
+                ));
+            }
+            Message::Error { message, .. } => bail!("image {}: {message}", p.image),
+            m => bail!("unexpected answer to BlockWriteEnd: {}", name(&m)),
+        }
+    }
+    Ok(())
+}
+
 /// Runs the recovery on a connected rescue agent. `step` gets `apply`, `restore`,
 /// `finish` as they begin (the scheduler shows them as progress).
 pub fn recover(
@@ -88,10 +142,25 @@ pub fn recover(
         bail!("the agent is not a rescue agent (boot the machine from the rescue ISO)");
     }
     let layout = load_layout(store, &spec.agent, spec.time)?;
+    let parsed: agent_proto::layout::Layout = serde_json::from_str(&layout).context("the snapshot's layout")?;
+    let imaged = !parsed.image_order().is_empty();
+    if imaged && !s.has_cap(agent_proto::CAP_VOLUME_IMAGE) {
+        bail!("this snapshot restores from volume images (Windows): boot a rescue ISO from this release or newer");
+    }
     step("apply");
     s.send(&Message::RescueApply { job: spec.job, layout })?;
     let target = answer(s, "RescueApply", spec.job, log)?;
     step("restore");
+    if imaged {
+        write_images(store, s, spec, &parsed, log)?;
+        step("finish");
+        s.send(&Message::RescueFinish {
+            job: spec.job,
+            reboot: spec.reboot,
+        })?;
+        answer(s, "RescueFinish", spec.job, log)?;
+        return Ok(ScanStats::default());
+    }
     let st = restore::restore(
         store,
         map,

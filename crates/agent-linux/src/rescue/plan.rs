@@ -54,6 +54,23 @@ pub struct Plan {
     /// (file system device on the target, UUID it must have)
     pub uuids: Vec<(String, String)>,
     pub warnings: Vec<String>,
+    /// #19: (target disk, MBR boot code: the first 440 bytes) written after the partition table
+    pub boot_codes: Vec<(String, Vec<u8>)>,
+    /// #19: the partitions restored from images, in `BlockWrite` target order (1 = the first): (image name,
+    /// target partition device, image bytes); a plan with images has no file systems to create or mount
+    pub images: Vec<(String, String, u64)>,
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    s.len()
+        .is_multiple_of(2)
+        .then(|| {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+                .collect()
+        })
+        .flatten()
 }
 
 /// `/dev/sda` + 2 → `/dev/sda2`; `/dev/nvme0n1` + 2 → `/dev/nvme0n1p2`.
@@ -253,6 +270,40 @@ pub fn plan(l: &Layout, targets: &[TargetDisk]) -> Result<Plan, String> {
             });
         }
     }
+    // #19: a machine restored from volume images (Windows): table, boot code, the images; nothing else to create
+    let order = l.image_order();
+    if !order.is_empty() {
+        for (d, t) in l.disks.iter().zip(targets) {
+            if !d.boot_code.is_empty() {
+                let code = unhex(&d.boot_code)
+                    .filter(|c| c.len() == 440)
+                    .ok_or_else(|| format!("disk {}: the recorded boot code is not 440 bytes of hex", d.name))?;
+                p.boot_codes.push((t.path.clone(), code));
+            }
+        }
+        for (i, part) in &order {
+            let sector = u64::from(l.disks[*i].sector_size.max(512));
+            if part.image_size > part.size * sector {
+                return Err(format!(
+                    "image {}: {} bytes do not fit its partition ({} bytes)",
+                    part.image,
+                    part.image_size,
+                    part.size * sector
+                ));
+            }
+            p.images.push((
+                part.image.clone(),
+                part_node(&p.disks[*i].1, part.number),
+                part.image_size,
+            ));
+        }
+        if !l.vgs.is_empty() || !l.md.is_empty() || !l.luks.is_empty() {
+            p.warnings
+                .push("LVM, md and LUKS of a machine restored from images are not recreated".into());
+        }
+        p.cmds = cmds;
+        return Ok(p);
+    }
     for vg in &l.vgs {
         let mut devs = vec![];
         for pv in &vg.pvs {
@@ -433,6 +484,62 @@ mod tests {
 
     fn deb() -> Layout {
         crate::layout::build(&crate::layout::tests::sources("deb-lvm"))
+    }
+
+    /// #19: a Windows layout with images: the partition table, the boot code, the image targets in layout order;
+    /// no file systems, no mounts; an image larger than its partition is refused.
+    #[test]
+    fn windows_images() {
+        use agent_proto::layout::{Disk, Partition};
+        let part = |n: u32, start: u64, size: u64| Partition {
+            path: format!("\\\\?\\GLOBALROOT\\Device\\Harddisk0\\Partition{n}"),
+            number: n,
+            start,
+            size,
+            ptype: "7".into(),
+            image: format!("disk0-p{n}"),
+            image_size: size * 512,
+            ..Default::default()
+        };
+        let mut l = Layout {
+            os_id: "windows".into(),
+            disks: vec![Disk {
+                name: "disk0".into(),
+                path: "\\\\.\\PhysicalDrive0".into(),
+                size: 40 << 30,
+                sector_size: 512,
+                table: "dos".into(),
+                id: "0xdeadbeef".into(),
+                partitions: vec![part(1, 2048, 204_800), part(2, 206_848, 83_677_184)],
+                boot_code: "ab".repeat(440),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let p = plan(&l, &[t("/dev/sda", 40)]).unwrap();
+        assert!(p.cmds.iter().any(|c| c.argv[0] == "sfdisk"), "the table");
+        assert!(p.mounts.is_empty() && p.uuids.is_empty());
+        assert_eq!(p.boot_codes, vec![("/dev/sda".to_string(), vec![0xab; 440])]);
+        assert_eq!(
+            p.images,
+            vec![
+                ("disk0-p1".to_string(), "/dev/sda1".to_string(), 204_800 * 512),
+                ("disk0-p2".to_string(), "/dev/sda2".to_string(), 83_677_184 * 512)
+            ]
+        );
+        let sf = p
+            .cmds
+            .iter()
+            .find(|c| c.argv[0] == "sfdisk")
+            .unwrap()
+            .stdin
+            .clone()
+            .unwrap();
+        assert!(sf.contains("label-id: 0xdeadbeef"), "{sf}");
+        l.disks[0].partitions[1].image_size += 1;
+        assert!(plan(&l, &[t("/dev/sda", 40)]).unwrap_err().contains("do not fit"));
+        l.disks[0].boot_code = "zz".into();
+        assert!(plan(&l, &[t("/dev/sda", 40)]).is_err());
     }
 
     fn t(path: &str, gib: u64) -> TargetDisk {

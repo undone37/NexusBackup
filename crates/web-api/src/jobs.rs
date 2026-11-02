@@ -71,6 +71,10 @@ struct BackupP {
     /// Phase 23a: lock the new snapshots until then (crate::keep)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keep_until: Option<i64>,
+    /// #19: agent backups also store the partitions as volume images (agents with CAP_VOLUME_IMAGE: Windows
+    /// bare-metal recovery)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    images: bool,
 }
 
 #[derive(Deserialize, Serialize)]

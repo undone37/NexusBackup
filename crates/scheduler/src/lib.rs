@@ -3053,9 +3053,14 @@ impl Scheduler {
                 bail!("agent {} ({}) is not enrolled", a.name, a.id);
             }
             let (excludes, filters) = selection::agent_filters(&src, policy_filters);
-            let backup = json!({"paths": src["paths"], "excludes": excludes,
+            let mut backup = json!({"paths": src["paths"], "excludes": excludes,
                                 "hooks": src["hooks"].as_bool().unwrap_or(false),
                                 "filters": filters, "limits": selection::agent_limits(&a.limits)});
+            // #19: volume images for bare-metal recovery (agents with CAP_VOLUME_IMAGE: Windows); a job parameter
+            // for now. ponytail: a source / group option once the full read per run is acceptable (no CBT yet)
+            if job.params["images"] == true {
+                backup["images"] = json!(true);
+            }
             let (f, step) = self.agentctl(&plan.dir, job, &a, "backup", json!({"backup": backup}))?;
             plan.files.push(f);
             plan.steps.push(step);

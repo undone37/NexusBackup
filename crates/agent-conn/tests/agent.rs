@@ -152,6 +152,7 @@ impl Env {
                 limits: Default::default(),
                 file_hashes,
                 full_read,
+                images: false,
             },
             log,
         );

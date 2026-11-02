@@ -759,6 +759,29 @@ pub enum Message {
         /// all disks were written
         keep: bool,
     },
+    /// #19 (CAP_VOLUME_IMAGE) Appliance → agent: snapshot the machine's partitions for images (VSS on Windows) and
+    /// answer `ImgPrepared`; each image is then read with `BlockScan { job: job * 16 + target, target, .. }`.
+    ImgPrepare {
+        /// job id
+        job: u64,
+    },
+    /// Answer to `ImgPrepare`: JSON array `[{"disk", "partition", "target", "size", "name"}]` (target 1..=15).
+    ImgPrepared {
+        /// job id
+        job: u64,
+        /// the images
+        json: String,
+    },
+    /// Appliance → agent: the images were read (or the backup failed): release the snapshots.
+    ImgFinish {
+        /// job id
+        job: u64,
+    },
+    /// Answer to `ImgFinish`.
+    ImgFinished {
+        /// job id
+        job: u64,
+    },
 }
 
 /// Capability (v1.10): the agent backs up the VMs of its Hyper-V host (`HvList`, `HvPrepare`, `HvFinish`).
@@ -769,6 +792,11 @@ pub const CAP_HYPERV_RCT: &str = "hyperv-rct";
 pub const CAP_HYPERV_RESTORE: &str = "hyperv-restore";
 /// Largest JSON text in the Hyper-V messages, bytes.
 pub const MAX_HV_JSON: usize = 256 << 10;
+
+/// Capability (#19): the agent backs up its partitions as volume images (`ImgPrepare`) and records the MBR boot
+/// code in its layout: bare-metal recovery of machines whose file systems the rescue system cannot recreate from
+/// files (Windows). A rescue agent with this capability writes the images back (`BlockWrite` after `RescueApply`).
+pub const CAP_VOLUME_IMAGE: &str = "volume-image";
 
 /// Capability (v1.9): the agent reads hot-added disks for the VMware connector (`BlockScan`).
 /// Announced only with `proxy = on` in `agent.conf`.
@@ -1444,6 +1472,13 @@ mod tests {
             Message::BlockWriteEnd { job: 17, target: 1 },
             Message::BlockWritten { job: 17, bytes: 4096 },
             Message::HvRestoreFinish { job: 1, keep: true },
+            Message::ImgPrepare { job: 2 },
+            Message::ImgPrepared {
+                job: 2,
+                json: "[]".into(),
+            },
+            Message::ImgFinish { job: 2 },
+            Message::ImgFinished { job: 2 },
         ];
         for (i, m) in ms.into_iter().enumerate() {
             assert_eq!(postcard::to_stdvec(&m).unwrap()[0], first + 1 + i as u8);

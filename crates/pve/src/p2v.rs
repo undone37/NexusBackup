@@ -67,21 +67,38 @@ pub fn vm_params(req: &Req, l: &Layout, vmid: u32, config_volid: &str) -> Result
     if l.disks.is_empty() {
         bail!("the snapshot's layout records no disks");
     }
+    // #19: Windows restored from images keeps its drivers: SATA disks and an e1000e NIC, which every Windows has a
+    // driver for (on VirtIO SCSI it stops with INACCESSIBLE_BOOT_DEVICE, docs/bmr.md "Windows"); VirtIO afterwards
+    let windows = l.os_id == "windows";
+    if windows && l.disks.len() > 6 {
+        bail!("{} disks: more than a VM's SATA controller takes (6)", l.disks.len());
+    }
     if l.disks.len() > 30 {
         bail!("{} disks: more than a VM's SCSI bus takes", l.disks.len());
     }
+    let ostype = match (windows, l.os.as_str()) {
+        (false, _) => "l26",
+        (true, os) if ["Windows 11", "2022", "2025"].iter().any(|x| os.contains(x)) => "win11",
+        (true, _) => "win10",
+    };
+    let bus = if windows { "sata" } else { "scsi" };
     let mut p: Vec<(String, String)> = vec![
         ("vmid".into(), vmid.to_string()),
         ("name".into(), vm_name(req, l)),
         ("memory".into(), req.memory.to_string()),
         ("cores".into(), req.cores.to_string()),
         ("machine".into(), "q35".into()),
-        ("ostype".into(), "l26".into()),
+        ("ostype".into(), ostype.into()),
         ("scsihw".into(), "virtio-scsi-single".into()),
-        ("net0".into(), format!("virtio,bridge={}", req.bridge)),
+        (
+            "net0".into(),
+            format!("{},bridge={}", if windows { "e1000e" } else { "virtio" }, req.bridge),
+        ),
         ("ide2".into(), format!("{},media=cdrom", req.iso)),
         ("ide3".into(), format!("{config_volid},media=cdrom")),
-        ("boot".into(), "order=scsi0;ide2".into()),
+        ("boot".into(), format!("order={bus}0;ide2")),
+        // the restored system's QEMU guest agent (lab 2026-11-02: the restored Windows had one, the VM no channel)
+        ("agent".into(), "enabled=1".into()),
         (
             "description".into(),
             format!("NexusBackup P2V of {} (rescue session {})", l.hostname, req.session),
@@ -89,7 +106,7 @@ pub fn vm_params(req: &Req, l: &Layout, vmid: u32, config_volid: &str) -> Result
     ];
     for (i, d) in l.disks.iter().enumerate() {
         let gib = d.size.div_ceil(1 << 30).max(1);
-        p.push((format!("scsi{i}"), format!("{}:{gib}", req.storage)));
+        p.push((format!("{bus}{i}"), format!("{}:{gib}", req.storage)));
     }
     if l.firmware == "uefi" {
         p.push(("bios".into(), "ovmf".into()));
@@ -321,6 +338,36 @@ mod tests {
             .iter()
             .all(|(k, _)| k != "bios"));
         assert!(vm_params(&req(), &Layout::default(), 1, "v").is_err());
+    }
+
+    /// #19: a Windows layout gets SATA disks, e1000e, a Windows ostype and SeaBIOS / OVMF from its firmware.
+    #[test]
+    fn windows_vm_parameters() {
+        let l = Layout {
+            hostname: "WINSRV".into(),
+            os: "Microsoft Windows Server 2022 Standard 10.0.20348".into(),
+            os_id: "windows".into(),
+            firmware: "bios".into(),
+            disks: vec![agent_proto::layout::Disk {
+                size: 40 << 30,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let req: Req = serde_json::from_value(serde_json::json!({"node": "pve", "storage": "local-lvm", "bridge": "vmbr0",
+            "iso": "local:iso/r.iso", "iso_storage": "local", "memory": 4096, "cores": 2, "session": "s1", "rescue": {}}))
+        .unwrap();
+        let p: std::collections::BTreeMap<String, String> = vm_params(&req, &l, 300, "local:iso/c.iso")
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(p["ostype"], "win11");
+        assert_eq!(p["sata0"], "local-lvm:40");
+        assert!(!p.contains_key("scsi0"));
+        assert_eq!(p["net0"], "e1000e,bridge=vmbr0");
+        assert_eq!(p["boot"], "order=sata0;ide2");
+        assert!(!p.contains_key("bios"), "SeaBIOS for an MBR machine");
+        assert_eq!(p["agent"], "enabled=1");
     }
 
     #[test]

@@ -15,7 +15,7 @@ pub fn available() -> bool {
     system32().join("vmms.exe").is_file()
 }
 
-fn system32() -> PathBuf {
+pub(crate) fn system32() -> PathBuf {
     let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
     PathBuf::from(root).join("System32")
 }

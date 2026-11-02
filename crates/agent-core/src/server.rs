@@ -174,6 +174,29 @@ pub trait Platform: Send + Sync + 'static {
     }
     /// After `RescueDone` of a `RescueFinish { reboot: true }` was sent.
     fn reboot(&self) {}
+    /// #19 (CAP_VOLUME_IMAGE): this agent backs up its partitions as images (`ImgPrepare`).
+    fn volume_images(&self) -> bool {
+        false
+    }
+    /// `ImgPrepare`: snapshot the machine's partitions; (the `ImgPrepared` JSON, the devices to read in target
+    /// order: `BlockScan` target 1 is the first).
+    fn img_prepare(&self) -> Result<(String, Vec<PathBuf>), String> {
+        Err("this agent does not back up volume images".into())
+    }
+    /// `ImgFinish` (or a dropped connection): release what `img_prepare` took.
+    fn img_finish(&self, _prepared: &str) -> Result<(), String> {
+        Ok(())
+    }
+    /// #19: the byte ranges of an image device that hold no data (the free clusters of an NTFS volume), sorted; they
+    /// are read as zeros. Empty: everything is read.
+    fn image_free_ranges(&self, _path: &std::path::Path) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
+    /// #19, rescue agents: after a successful `RescueApply` of a layout with images, the devices the images are
+    /// written to (`BlockWrite` target order); empty: the restore goes through files.
+    fn rescue_images(&self, _job: u64) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// Battery / metered network state for `PollReply` (laptop policies); unknown by default.
     fn power_state(&self) -> agent_proto::PowerState {
         agent_proto::PowerState::default()
@@ -547,6 +570,7 @@ impl<P: Platform> Agent<P> {
                     blocks: HashMap::new(),
                     hv: HashMap::new(),
                     hvr: HashMap::new(),
+                    img: Default::default(),
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -689,9 +713,15 @@ struct Session<'a, P: Platform> {
     blocks: HashMap<u64, Locator>,
     /// v1.10 Hyper-V jobs: job → (`HvPrepared` JSON, the frozen disks in target order)
     hv: HashMap<u64, (String, Vec<PathBuf>)>,
-    /// #39 M4 restore jobs: job → (`HvRestoreReady` JSON, per target: the new disk, its open file, bytes written)
+    /// #39 M4 restore jobs: job → (`HvRestoreReady` JSON, per target: the new disk, its open file, bytes written);
+    /// also the partitions a rescue agent writes images into (#19, JSON [`RESCUE_IMAGES`])
     hvr: HashMap<u64, (String, Vec<RestoreDisk>)>,
+    /// #19: the jobs of `hv` that are volume images (`ImgPrepare`), not Hyper-V checkpoints
+    img: std::collections::HashSet<u64>,
 }
+
+/// The `hvr` JSON of a rescue agent's image targets (nothing to undo when the connection drops).
+const RESCUE_IMAGES: &str = "rescue-images";
 
 impl<P: Platform> Session<'_, P> {
     fn run(&mut self, s: &mut Stream) -> io::Result<()> {
@@ -740,6 +770,10 @@ impl<P: Platform> Session<'_, P> {
                         c.push(agent_proto::CAP_HYPERV.into());
                         c.push(agent_proto::CAP_HYPERV_RCT.into());
                         c.push(agent_proto::CAP_HYPERV_RESTORE.into());
+                    }
+                    // #19: partitions as images (Windows bare metal; a rescue agent writes them back)
+                    if self.agent.platform.volume_images() {
+                        c.push(agent_proto::CAP_VOLUME_IMAGE.into());
                     }
                     // v1.8: chunked updates with the install's own package type
                     if let Some(f) = self.agent.platform.host_facts() {
@@ -854,7 +888,40 @@ impl<P: Platform> Session<'_, P> {
                         Err(e) => error(s, E_INTERNAL, e)?,
                     }
                 }
-                Message::HvFinish { job, keep } => match self.hv.remove(&job) {
+                Message::ImgPrepare { job } if self.agent.platform.volume_images() => {
+                    if self.hv.contains_key(&job) || self.jobs.contains_key(&job) {
+                        error(s, E_BUSY, format!("job {job} is already running"))?;
+                        continue;
+                    }
+                    log(format!("job {job}: volume images: snapshot of the partitions"));
+                    match self.agent.platform.img_prepare() {
+                        Ok((json, disks)) if disks.len() <= agent_proto::MAX_BLOCK_TARGET as usize => {
+                            self.hv.insert(job, (json.clone(), disks));
+                            self.img.insert(job);
+                            write_msg(s, &Message::ImgPrepared { job, json })?;
+                        }
+                        Ok((json, _)) => {
+                            let _ = self.agent.platform.img_finish(&json);
+                            error(
+                                s,
+                                E_INTERNAL,
+                                format!("more than {} partitions to image", agent_proto::MAX_BLOCK_TARGET),
+                            )?;
+                        }
+                        Err(e) => error(s, E_INTERNAL, e)?,
+                    }
+                }
+                Message::ImgPrepare { .. } => error(s, E_REFUSED, "this agent does not back up volume images")?,
+                Message::ImgFinish { job } if self.img.remove(&job) => {
+                    let (prepared, _) = self.hv.remove(&job).unwrap_or_default();
+                    self.blocks.retain(|b, _| b / 16 != job);
+                    match self.agent.platform.img_finish(&prepared) {
+                        Ok(()) => write_msg(s, &Message::ImgFinished { job })?,
+                        Err(e) => error(s, E_INTERNAL, e)?,
+                    }
+                }
+                Message::ImgFinish { job } => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
+                Message::HvFinish { job, keep } if !self.img.contains(&job) => match self.hv.remove(&job) {
                     Some((prepared, _)) => {
                         self.blocks.retain(|b, _| b / 16 != job);
                         match self.agent.platform.hv_finish(&prepared, keep) {
@@ -1072,9 +1139,21 @@ impl<P: Platform> Session<'_, P> {
                 },
                 Message::RescueApply { job, layout } => {
                     let r = self.agent.platform.rescue_apply(self.agent.ctx(), job, &layout);
+                    if r.is_ok() {
+                        // #19: a layout with images: its partitions take BlockWrite (target 1 = the first)
+                        let devs = self.agent.platform.rescue_images(job);
+                        if !devs.is_empty() {
+                            self.hvr.insert(
+                                job,
+                                (RESCUE_IMAGES.into(), devs.into_iter().map(|p| (p, None, 0)).collect()),
+                            );
+                        }
+                    }
                     self.rescue_reply(s, job, r)?;
                 }
                 Message::RescueFinish { job, reboot } => {
+                    // the image writes are done (each BlockWriteEnd synced its device)
+                    self.hvr.remove(&job);
                     let r = self.agent.platform.rescue_finish(self.agent.ctx(), job);
                     let ok = r.is_ok();
                     self.rescue_reply(s, job, r)?;
@@ -1304,8 +1383,28 @@ impl<P: Platform> Session<'_, P> {
                 format!("a range goes beyond the disk's {total} blocks"),
             );
         }
-        let mut loc = Locator::new(None, 0)?;
-        let idx = loc.add_file(path.clone());
+        // #19: a volume image may end before its partition (a shadow copy device is its volume; lab 2026-11-02:
+        // 4 MiB short of a 40 GiB partition while both report the partition's length): the rest reads as zeros,
+        // spooled, as the device cannot be read there again when the appliance asks for the block
+        let image = self.img.contains(&(job / 16));
+        let mut loc = if image {
+            Locator::new(Some(&self.agent.paths.state), 64 << 20)?
+        } else {
+            Locator::new(None, 0)?
+        };
+        let mask = if image {
+            self.agent.platform.image_free_ranges(&path)
+        } else {
+            Vec::new()
+        };
+        if !mask.is_empty() {
+            log(format!(
+                "job {job}: {}: {} bytes free (read as zeros)",
+                path.display(),
+                mask.iter().map(|(a, b)| b - a).sum::<u64>()
+            ));
+        }
+        let idx = loc.add_file_masked(path.clone(), mask.clone());
         let (mut blocks, mut bytes) = (0u64, 0u64);
         let mut buf = vec![0u8; BLOCK_SIZE as usize];
         for &(first, n) in ranges {
@@ -1314,11 +1413,24 @@ impl<P: Platform> Session<'_, P> {
             for b in first..first + n {
                 let off = b * BLOCK_SIZE;
                 let len = (size - off).min(BLOCK_SIZE) as usize;
-                if let Err(e) = crate::chunk::read_exact_at(&f, &mut buf[..len], off) {
-                    return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display()));
-                }
+                let short = if image {
+                    match crate::chunk::read_at_most(&f, &mut buf[..len], off) {
+                        Ok(n) if n < len => {
+                            buf[n..len].fill(0);
+                            true
+                        }
+                        Ok(_) => false,
+                        Err(e) => return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display())),
+                    }
+                } else {
+                    if let Err(e) = crate::chunk::read_exact_at(&f, &mut buf[..len], off) {
+                        return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display()));
+                    }
+                    false
+                };
+                crate::chunk::apply_mask(&mut buf[..len], off, &mask);
                 let h: Hash = *blake3::hash(&buf[..len]).as_bytes();
-                loc.add(&h, idx, off, len as u32, None)?;
+                loc.add(&h, idx, off, len as u32, short.then_some(&buf[..len]))?;
                 batch.push(h);
                 blocks += 1;
                 bytes += len as u64;
@@ -1517,6 +1629,9 @@ impl<P: Platform> Session<'_, P> {
             r.end();
         }
         for (job, (begun, _)) in std::mem::take(&mut self.hvr) {
+            if begun == RESCUE_IMAGES {
+                continue;
+            }
             log(format!(
                 "job {job}: connection closed during a Hyper-V restore, removing the new disks"
             ));
@@ -1525,6 +1640,15 @@ impl<P: Platform> Session<'_, P> {
             }
         }
         for (job, (prepared, _)) in std::mem::take(&mut self.hv) {
+            if self.img.remove(&job) {
+                log(format!(
+                    "job {job}: connection closed during volume images, releasing the snapshots"
+                ));
+                if let Err(e) = self.agent.platform.img_finish(&prepared) {
+                    log(format!("job {job}: {e}"));
+                }
+                continue;
+            }
             log(format!(
                 "job {job}: connection closed during a Hyper-V backup, removing the checkpoint"
             ));

@@ -112,6 +112,30 @@ pub fn apply(l: &Layout, targets: &[TargetDisk], log: &mut Log) -> Result<Plan, 
             wait_nodes(cmd.stdin.as_deref().unwrap_or_default());
         }
     }
+    // #19: the MBR boot code (sfdisk writes the table and the disk signature, not the code a BIOS boots)
+    for (disk, code) in &plan.boot_codes {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .open(disk)
+            .map_err(|e| format!("{disk}: {e}"))?;
+        f.write_all(code)
+            .and_then(|()| f.sync_all())
+            .map_err(|e| format!("{disk}: boot code: {e}"))?;
+        log.line(format!("{disk}: MBR boot code written (440 bytes)"));
+    }
+    if !plan.images.is_empty() {
+        log.line(format!(
+            "{} partition(s) ready for their images: {}",
+            plan.images.len(),
+            plan.images
+                .iter()
+                .map(|(n, d, _)| format!("{n} -> {d}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return Ok(plan);
+    }
     mount_all(&plan, log)?;
     Ok(plan)
 }

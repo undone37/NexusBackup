@@ -73,6 +73,9 @@ pub struct Disk {
     pub id: String,
     /// partitions in table order
     pub partitions: Vec<Partition>,
+    /// #19 (Windows): the MBR boot code (the first 440 bytes of sector 0), hex; sfdisk restores the table and
+    /// the disk signature but not the code a BIOS machine boots from. "" when not recorded.
+    pub boot_code: String,
 }
 
 /// One partition of a [`Disk`].
@@ -97,6 +100,11 @@ pub struct Partition {
     pub bootable: bool,
     /// GPT attribute bits as sfdisk prints them
     pub attrs: String,
+    /// #19 (Windows, CAP_VOLUME_IMAGE): the name of the partition's image in the snapshot (an `Index::Fixed`, e.g.
+    /// `disk0-p2`); "" when the partition is restored from the file tree (Linux) or not at all
+    pub image: String,
+    /// bytes of that image (the partition's device as read; at most `size` sectors)
+    pub image_size: u64,
 }
 
 /// One LVM volume group.
@@ -235,6 +243,16 @@ pub struct NetIf {
 }
 
 impl Layout {
+    /// #19: the partitions restored from images, in the order both sides number their `BlockWrite` targets
+    /// (1 = the first): every partition with an image, disk by disk in table order. (disk index, partition)
+    pub fn image_order(&self) -> Vec<(usize, &Partition)> {
+        self.disks
+            .iter()
+            .enumerate()
+            .flat_map(|(i, d)| d.partitions.iter().filter(|p| !p.image.is_empty()).map(move |p| (i, p)))
+            .collect()
+    }
+
     /// The boot loader target: the disk with the EFI system partition (UEFI) or a
     /// BIOS boot partition / bootable MBR partition (BIOS), else the disk holding
     /// `/boot` or `/` (or the first disk).

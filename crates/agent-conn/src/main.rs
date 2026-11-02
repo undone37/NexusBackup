@@ -249,6 +249,9 @@ struct BackupCfg {
     /// Phase 29: scheduled full read (set by the scheduler when due)
     #[serde(default)]
     full_read: bool,
+    /// #19: also the partitions as volume images (agents with CAP_VOLUME_IMAGE)
+    #[serde(default)]
+    images: bool,
 }
 
 #[derive(Deserialize)]
@@ -505,6 +508,7 @@ fn main() -> Result<()> {
                 limits: b.limits,
                 file_hashes: b.file_hashes,
                 full_read: b.full_read.then_some(tracker),
+                images: b.images,
             };
             let written = store.written();
             let agent = cfg.agent()?;

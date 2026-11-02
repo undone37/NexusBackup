@@ -214,3 +214,29 @@ Findings for the design:
 - Proposed decision (for Phase 37c): **A** (the existing rescue ISO) for same hardware and P2V; dissimilar hardware
   through offline injection from the rescue system once its first-boot restart is understood; **B** (WinPE) only if
   that fails on real hardware.
+
+### Implemented: milestone 1 (#19, 2026-11-02)
+
+Case A as above, through the existing rescue ISO and P2V:
+
+- **Backup**: protocol `ImgPrepare` / `ImgPrepared` / `ImgFinish` (`CAP_VOLUME_IMAGE`). The Windows agent's
+  `GetLayout` comes from Get-Disk / Get-Partition / Get-Volume (`crates/agent-windows/src/winlayout.rs`) plus the
+  first 440 bytes of each disk (`Disk.boot_code`); every partition of the boot / system disks (and disks with a
+  lettered volume) gets an image `disk<N>-p<M>` (`Partition.image`, `image_size`). `ImgPrepare` takes a VSS set over
+  the NTFS / ReFS partitions and reads them from the shadow copy devices, the rest (ESP, MSR) raw from
+  `\\?\GLOBALROOT\Device\Harddisk<N>\Partition<M>`; the appliance reads them with `BlockScan` (the job-disk table of
+  the Hyper-V backups) into `Index::Fixed` indexes of the host snapshot, before the file scan, the previous image
+  as the dedup base. Opt-in per job (`images: true`): every image run reads the whole partitions.
+- **Restore**: the rescue planner (`Layout::image_order`) writes the partition table (`sfdisk`, disk signature /
+  GUIDs kept), then the boot code, then each image through `BlockWrite` to its partition (every block: the target may
+  hold old data); no mkfs, mounts or boot loader changes (the BCD refers to the kept signature). P2V creates Windows
+  VMs on SATA with e1000e and a Windows ostype.
+- **Free space**: VSS keeps only allocated clusters of a shadow copy, free ones can read differently between the
+  scan and the fetch; the agent reads the NTFS cluster bitmap (`FSCTL_GET_VOLUME_BITMAP`) and free clusters read as
+  zeros (also in the store). A volume that ends before its partition reads as zeros past its end.
+- **Lab 2026-11-02** (state.md): Windows Server 2022 (SeaBIOS, MBR, one 40 GiB C:), backup 537 s, P2V as a PVE VM on
+  SATA, recovery 4114 s, Windows boots, guest agent after 31 s.
+- **Not yet**: change tracking (every image run reads the partitions), zero-block skipping on a discarded target
+  (the restore sends every block), NTFS resize onto larger disks,
+  dissimilar hardware (offline driver injection), BitLocker, dynamic disks / Storage Spaces, a group option.
+

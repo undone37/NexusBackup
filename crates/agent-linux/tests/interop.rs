@@ -120,6 +120,7 @@ fn real_agent_with_agent_conn() {
         limits: Default::default(),
         file_hashes: true,
         full_read: None,
+        images: false,
     };
     let run = |job: u64| {
         let mut map = MapDb::open(&store_dir).unwrap();
@@ -343,6 +344,7 @@ fn filters_limits_and_certificate_renewal() {
         },
         file_hashes: false,
         full_read: None,
+        images: false,
     };
     let t = std::time::Instant::now();
     let r = backup::backup(&store, &mut map, &mut s, ID, &spec, &mut |l| eprintln!("{l}")).unwrap();

@@ -165,7 +165,7 @@ pub fn read_disk(
     log: &mut dyn FnMut(&str),
 ) -> Result<(Index, BlockReport)> {
     // Hyper-V hosts (v1.10) read the disks of their own checkpoints with the same messages
-    if !s.has_cap(CAP_BLOCK_READ) && !s.has_cap(CAP_HYPERV) {
+    if !s.has_cap(CAP_BLOCK_READ) && !s.has_cap(CAP_HYPERV) && !s.has_cap(agent_proto::CAP_VOLUME_IMAGE) {
         bail!("the proxy does not offer block reads (proxy = on in its agent.conf, agent 1.9 or newer)");
     }
     let blocks = size.div_ceil(BLOCK_SIZE) as usize;
