@@ -17,6 +17,41 @@ pub const VMX_FILE: &str = "vm.vmx";
 pub const STATE_FILE: &str = "vmware.json";
 /// Config index entry of an XCP-ng snapshot (crates/xcpng backup.rs).
 pub const XCPNG_FILE: &str = "xcpng.json";
+/// Config index entry of a Hyper-V snapshot (crates/agent-conn hyperv.rs, #39).
+pub const HYPERV_FILE: &str = "hyperv.json";
+
+/// The `.vmx` keys [`convert`] reads, from a Hyper-V snapshot's `hyperv.json` (#39 M3): name, memory, vCPUs,
+/// generation 2 = UEFI (Secure Boot as recorded), the NICs with their MACs. Hyper-V does not record the guest OS,
+/// so the guest counts as "other": SATA disks and e1000e NICs, which every OS drives (the restore notes say so).
+pub fn vmx_from_hyperv(cfg: &Value) -> String {
+    let clean = |s: &str| s.replace(|c: char| c.is_control() || c == '"', " ");
+    let c = &cfg["config"];
+    let mut keys = vec![("displayName".to_owned(), clean(c["name"].as_str().unwrap_or_default()))];
+    if let Some(n) = c["cpus"].as_u64() {
+        keys.push(("numvcpus".into(), n.to_string()));
+    }
+    if let Some(m) = c["memory_mb"].as_u64() {
+        keys.push(("memSize".into(), m.to_string()));
+    }
+    if c["generation"].as_u64() == Some(2) {
+        keys.push(("firmware".into(), "efi".into()));
+        if c["firmware"]["secure_boot"].as_str() == Some("On") {
+            keys.push(("uefi.secureBoot.enabled".into(), "TRUE".into()));
+        }
+    }
+    for (n, nic) in c["nics"].as_array().into_iter().flatten().enumerate() {
+        keys.push((format!("ethernet{n}.present"), "TRUE".into()));
+        // Hyper-V writes 00155D226100
+        if let Some(m) = nic["mac"]
+            .as_str()
+            .filter(|m| m.len() == 12 && m.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            let pairs: Vec<&str> = (0..6).map(|i| &m[i * 2..i * 2 + 2]).collect();
+            keys.push((format!("ethernet{n}.address"), pairs.join(":")));
+        }
+    }
+    keys.iter().map(|(k, v)| format!("{k} = \"{v}\"\n")).collect()
+}
 
 /// The `.vmx` keys [`convert`] reads, from an XCP-ng snapshot's `xcpng.json`: name, the template the VM was made
 /// from as the guest OS ("Debian Bookworm 12", "Windows Server 2022 (64-bit)"), memory, vCPUs, firmware, the NICs
@@ -481,5 +516,43 @@ ctkEnabled = "TRUE"
         w["vm"]["other_config"]["base_template_name"] = "Windows Server 2022 (64-bit)".into();
         let c = convert(&vmx_from_xcpng(&w), &disks, 231, "local-lvm", "vmbr0").unwrap();
         assert!(c.conf.contains("ostype: win11\n") && c.conf.contains("sata0: ") && c.conf.contains("net0: e1000e="));
+    }
+
+    #[test]
+    fn from_hyperv() {
+        // the agent's HvPrepared answer as stored in hyperv.json (lab VM 296)
+        let cfg = serde_json::json!({"vm": "F321088D-684D-4BC4-A7DE-2DBEAC404192", "name": "nx-rct",
+            "config": {"name": "nx-rct", "generation": 2, "version": "10.0", "cpus": 2, "memory_mb": 2048,
+                       "dynamic_memory": false, "firmware": {"secure_boot": "On", "template": "MicrosoftWindows"},
+                       "nics": [{"name": "Network Adapter", "switch": null, "mac": "00155D226100"}, {"mac": "bad"}]},
+            "disks": [{"name": "scsi0-0", "target": 1, "size": 1073741824}],
+            "reference": {"rct": ["rctX:x"]}});
+        let disks = [VmDisk {
+            index: "scsi0-0".into(),
+            size: 1 << 30,
+        }];
+        let c = convert(&vmx_from_hyperv(&cfg), &disks, 240, "local-lvm", "vmbr0").unwrap();
+        assert_eq!(c.name, "nx-rct");
+        for l in [
+            "memory: 2048\n",
+            "bios: ovmf\n",
+            "sata0: local-lvm:vm-240-disk-0,size=1G\n",
+            "net0: e1000e=00:15:5D:22:61:00,bridge=vmbr0\n",
+        ] {
+            assert!(c.conf.contains(l), "{l}: {}", c.conf);
+        }
+        assert!(
+            c.conf.contains("net1: e1000e,bridge=vmbr0\n"),
+            "a NIC without a usable MAC: PVE makes one: {}",
+            c.conf
+        );
+        assert!(c.notes.iter().any(|n| n.contains("Secure Boot")));
+        // generation 1: BIOS
+        let mut g1 = cfg.clone();
+        g1["config"]["generation"] = 1.into();
+        assert!(!convert(&vmx_from_hyperv(&g1), &disks, 241, "s", "b")
+            .unwrap()
+            .conf
+            .contains("bios: ovmf"));
     }
 }

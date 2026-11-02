@@ -291,13 +291,20 @@ fn main() -> Result<()> {
             )?;
             println!("restored {}", serde_json::to_string(&r)?);
         }
-        (cmd @ ("restore-vmware" | "restore-xcpng"), [uuid, time, node, target, storage, bridge, opts @ ..]) => {
+        (
+            cmd @ ("restore-vmware" | "restore-xcpng" | "restore-hyperv"),
+            [uuid, time, node, target, storage, bridge, opts @ ..],
+        ) => {
             // a VMware (vmw-<uuid>/<time>) or XCP-ng (xcp-<uuid>/<time>) VM snapshot as a new PVE VM
             // (crate::fromvmware)
             if !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || uuid.len() > 36 {
                 bail!("invalid VM UUID {uuid:?}");
             }
-            let prefix = if cmd == "restore-vmware" { "vmw-" } else { "xcp-" };
+            let prefix = match cmd {
+                "restore-vmware" => "vmw-",
+                "restore-xcpng" => "xcp-",
+                _ => "hv-",
+            };
             if !pve::restore::valid_name(bridge) {
                 bail!("invalid bridge {bridge:?}");
             }

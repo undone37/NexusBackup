@@ -608,13 +608,15 @@ impl Cluster {
         bridge: &str,
         opts: &crate::restore::RestoreOpts,
     ) -> Result<crate::restore::Restored> {
-        use crate::fromvmware::{vmx_from_xcpng, VMX_FILE, XCPNG_FILE};
+        use crate::fromvmware::{vmx_from_hyperv, vmx_from_xcpng, HYPERV_FILE, VMX_FILE, XCPNG_FILE};
         if opts.replace || opts.rollback {
             bail!("replace / rollback: a VMware or XCP-ng snapshot has no Proxmox VE original to replace");
         }
         let m = store.load_manifest(source, time)?;
         let file = if source.starts_with("xcp-") {
             XCPNG_FILE
+        } else if source.starts_with("hv-") {
+            HYPERV_FILE
         } else {
             VMX_FILE
         };
@@ -622,6 +624,8 @@ impl Cluster {
             read_config(store, &m, file)?.with_context(|| format!("{source}/{time}: no {file} in the snapshot"))?;
         let vmx = if file == XCPNG_FILE {
             vmx_from_xcpng(&serde_json::from_str(&cfg).context(XCPNG_FILE)?)
+        } else if file == HYPERV_FILE {
+            vmx_from_hyperv(&serde_json::from_str(&cfg).context(HYPERV_FILE)?)
         } else {
             cfg
         };

@@ -1827,3 +1827,7 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   `hv-host` of kind hyperv (the agent on VM 296), inventory job listed nx-rct with its VM id, group `hv-vms` with
   it, a group backup through the scheduler: incremental on the previous base, nothing written since, 0 blocks read
   in 18 s, the next reference point recorded.
+- [x] Hyper-V restore to PVE (2026-11-02, VM 201 on 0.0.65-dev from the branch, `hyperv-e2e.sh restore`): the newest
+  hv- snapshot of nx-rct restored as VM 245 on pve-test in about 30 s: name `nx-rct-restore`, OVMF (generation 2),
+  memory and vCPUs from the snapshot, the disk on SATA (1 GiB), one e1000e NIC with link down (PVE gave it a new MAC
+  as for other restores to a new VMID); VM 245 removed again.

@@ -55,7 +55,12 @@ pub async fn names(State(st): State<St>, ctx: Ctx, Q(q): Q<NamesQ>) -> ApiResult
              -- XCP-ng VMs (xcpng::names::source_name): the guest id is the VM UUID
              SELECT so.tenant, 'xcp-' || i.guest, replace(replace(i.name, ', ', ' '), ',', ' ')
              FROM inventory i JOIN sources so ON so.id = i.source_id
-             WHERE so.kind = 'xcpng' AND i.name != '' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)",
+             WHERE so.kind = 'xcpng' AND i.name != '' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)
+             UNION ALL
+             -- Hyper-V VMs (#39): the guest id is the VM id
+             SELECT so.tenant, 'hv-' || i.guest, replace(replace(i.name, ', ', ' '), ',', ' ')
+             FROM inventory i JOIN sources so ON so.id = i.source_id
+             WHERE so.kind = 'hyperv' AND i.name != '' AND (?1 IS NULL OR so.tenant = ?1) AND (?2 IS NULL OR so.tenant = ?2)",
         )?
         .query_map(params![q.tenant, ctx.scope()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<Result<_, _>>()?;

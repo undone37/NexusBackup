@@ -20,6 +20,7 @@ export PORT=${PORT:-28444}
 VMID=${VMID:-296}
 VM=${VM:-nx-rct}
 AGENT=${AGENT:-nx-hyperv}
+TARGET=${TARGET:-245}
 EXE=${EXE:-$repo/target/agent-dist/windows/nexus-agent.exe}
 ROOT=$LAB/appliance/root
 S=$ROOT/run/api
@@ -115,8 +116,31 @@ step_group() {
 	log "group backup of $VM ok"
 }
 
+# #39 M3: the newest hv- snapshot of $VM as PVE VM $TARGET (NICs link_down, not started), its config, removed again
+step_restore() {
+	local vm src time pve_src j
+	pve() { ssh -n -i "${SSH_KEY:-$HOME/nexus-lab/pve-lab-key}" -o BatchMode=yes "root@${PVE_HOST:-10.2.34.200}" "$@"; }
+	[ "$TARGET" -ge 200 ] || die "TARGET $TARGET: only VMs from 200 are ours"
+	pve "qm status $TARGET" >/dev/null 2>&1 && die "VM $TARGET exists"
+	vm=$(win "(Get-VM $VM).Id.ToString().ToLower()" | tr -d '\r')
+	src="hv-$vm"
+	time=$(api admin GET "/snapshots?tenant=lab" | jq -r --arg s "$src" '[.[] | select(.source == $s) | .time] | max // empty')
+	[ -n "$time" ] || die "no snapshot of $src"
+	pve_src=$(api admin GET /sources | jq -r '.[] | select(.kind == "pve" and .name == "pve-test") | .id')
+	j=$(api admin POST /jobs "$(jq -nc --arg s "$src" --argjson t "$time" --argjson p "$pve_src" --argjson v "$TARGET" \
+		'{kind:"restore", tenant:"lab", params:{source:$s, time:$t, source_id:$p, node:"pve-test", target:$v,
+		  storage:"vmpool", bridge:"vmbr0", link_down:true}}')")
+	expect 202 "restore"
+	j=$(wait_job admin "$(jq -r .id <<<"$j")" 3600)
+	jq -r ".log // \"\"" <<<"$j" | grep -E "note:|restored|error" | tail -6 >&2 || true
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "restore: $(jq -c '{state, error}' <<<"$j")"
+	pve "qm config $TARGET" | grep -E "^(name|memory|cores|bios|efidisk|sata|net|boot)" >&2
+	pve "qm destroy $TARGET --purge 1 >/dev/null" && log "VM $TARGET restored and removed again"
+}
+
 case ${1:?step} in
 agent) step_agent ;;
+restore) step_restore ;;
 backup) step_backup ;;
 group) step_group ;;
 *) die "unknown step $1" ;;

@@ -411,6 +411,8 @@ export const en = {
     fullRestoreHint: 'Restore onto a Proxmox VE node',
     vmwRestore: 'Restore as Proxmox VE VM',
     vmwRestoreHint: 'A new VM on a Proxmox VE cluster, converted from the VMware configuration',
+    hvRestoreHint:
+      'A Hyper-V VM as a new Proxmox VE VM: generation 2 VMs get UEFI; disks on SATA and NICs as e1000e, which every guest drives; install the VirtIO drivers afterwards.',
     xcpRestoreHint: 'A new VM on a Proxmox VE cluster, converted from the XCP-ng VM record',
     xcpPoolRestore: 'Restore into the XCP-ng pool',
     xcpPoolRestoreHint: 'A new VM in an XCP-ng pool, created powered off; the original stays untouched',
