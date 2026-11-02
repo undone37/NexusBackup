@@ -1811,3 +1811,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
 - [x] Grow on the encrypted array (VM 203, 2026-11-02, new `disks.sh grow`): NXLAB-D3 wiped and grown in
   (approval), RAID6 reshaped from 4 to 5 devices (about 4 minutes for 16 GB members), then the helper's growfs
   step resized the LUKS2 mapping and XFS: 34.2 GB -> 51.4 GB, the bitmap back, the store mounted throughout.
+- [x] Hyper-V M2 lab (2026-11-02, appliance VM 201 on 0.0.63-dev from the M2 branch, the new agent on VM 296):
+  the script's change query alone returned exactly `[[268435456, 4194304]]` after a 4 MiB guest write; through
+  the appliance the first backup read in full (no base in the M1 snapshot; 1 GiB, 25 s, 1 block on the wire after
+  dedup) and stored its reference point (`...:00000008`) in `hyperv.json`; after another 4 MiB guest write the
+  second backup read 1 block (4 MiB, "changed blocks (RCT)") in 18 s, the rest from the previous index, and
+  stored the next base (`...:00000009`).
