@@ -14,6 +14,9 @@
 #                       alert raised by the scheduler
 #   disks.sh replace    replace the failed member with NXLAB-D5 (approval): rebuild runs and ends,
 #                       the alerts resolve, hardware.op audited
+#   disks.sh grow       (after replace) the failed member wiped on the console and grown in (approval): the
+#                       reshape ends, the follow-up growfs (with an encrypted array: `cryptsetup resize` first)
+#                       makes the file system bigger
 #   disks.sh all        inventory selftest create fail replace
 # Afterwards: lab/appliance/e2e.sh check (0 nexus AVCs; nexus-disks runs as nexus_disks_t).
 # env: ROOT (installed root with secrets.env + etc/nexus/tls/cert.pem; default $LAB/appliance/root),
@@ -215,8 +218,39 @@ replace() {
 	log "failed member replaced, rebuilt, alerts resolved"
 }
 
+grow() {
+	apienv
+	local a name dev size0 q o g
+	a=$(array)
+	name=$(jq -r .name <<<"$a")
+	size0=$(jq -r '.fs.size' <<<"$a")
+	dev=$(hw | jq -r '.disks[] | select(.serial == "NXLAB-D3") | .name')
+	con run "mdadm --zero-superblock /dev/$dev; wipefs -qa /dev/$dev; echo wiped"
+	rescan
+	api admin POST "/hardware/arrays/$name/grow" '{"disk": "NXLAB-D3", "confirm": "NXLAB-D3"}' >/dev/null
+	expect 202 "POST /hardware/arrays/$name/grow"
+	q=$(approve)
+	o=$(wait_op "$q" 300)
+	[ "$(jq -r .state <<<"$o")" = "done" ] || die "grow: $o"
+	log "grow: $(jq -r .detail <<<"$o")"
+	wait_clean
+	for _ in $(seq 60); do
+		g=$(hw | jq -c '[.ops[] | select(.op == "growfs")] | last // empty')
+		case $(jq -r '.state // empty' <<<"$g" 2>/dev/null) in
+		done) break ;;
+		error) die "growfs: $g" ;;
+		esac
+		sleep 10
+		rescan
+	done
+	rescan # the scan that saw growfs done may predate the file system's new size
+	a=$(array)
+	[ "$(jq -r '.fs.size' <<<"$a")" -gt "$size0" ] || die "file system did not grow: $a"
+	log "grown: $(jq -r '"\(.raid_devices) devices, file system \(.fs.size) bytes (was '"$size0"'), encrypted \(.fs.encrypted)"' <<<"$a")"
+}
+
 case ${1:-} in
-inventory | selftest | create | fail | replace) "$1" ;;
+inventory | selftest | create | fail | replace | grow) "$1" ;;
 all) inventory && selftest && create && fail && replace ;;
 *) sed -n '2,20p' "$0" >&2; exit 2 ;;
 esac

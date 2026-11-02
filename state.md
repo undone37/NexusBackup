@@ -1808,3 +1808,6 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
 - [x] Member failure on the encrypted array (VM 203, 2026-11-02): `disks.sh fail` (mdadm --fail NXLAB-D3: degraded,
   critical `disk` alert) and `replace` with NXLAB-D5 (approval; rebuild below LUKS in about 100 s, alerts
   resolved, the store stayed mounted on /dev/mapper/nexus-data); 0 AVCs of the disk helper.
+- [x] Grow on the encrypted array (VM 203, 2026-11-02, new `disks.sh grow`): NXLAB-D3 wiped and grown in
+  (approval), RAID6 reshaped from 4 to 5 devices (about 4 minutes for 16 GB members), then the helper's growfs
+  step resized the LUKS2 mapping and XFS: 34.2 GB -> 51.4 GB, the bitmap back, the store mounted throughout.
