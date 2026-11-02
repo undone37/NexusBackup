@@ -205,6 +205,13 @@ impl Host {
         ops::validate(p.as_mut(), &self.ops_params(&cfg), &mut self.out())
     }
 
+    /// Runs `Report` (v1.11): how a backup of `report["guest"]` ended (`{guest, state, time, snapshot, message}`).
+    pub fn report(&self, config: &Value, report: Value) -> Result<()> {
+        let cfg = config.to_string();
+        let mut p = self.peer(self.timeout, config)?;
+        ops::report(p.as_mut(), &self.ops_params(&cfg), report, &mut self.out())
+    }
+
     /// Runs `ListGuests`: `{"guests": [{"id", "title", "size", "tags"}]}` (invalid
     /// ids dropped, as on the appliance).
     pub fn guests(&self, config: &Value) -> Result<Value> {

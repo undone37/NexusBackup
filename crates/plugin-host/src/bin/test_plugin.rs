@@ -150,6 +150,15 @@ fn main() {
             );
             send(&mut w, &Message::Valid);
         }
+        // v1.11: a report is acknowledged, unless the source "refuses" it
+        (Op::Report, _) if params.contains("\"refuse\"") => send(
+            &mut w,
+            &Message::Error {
+                code: 13,
+                message: "refused".into(),
+            },
+        ),
+        (Op::Report, _) => send(&mut w, &Message::Valid),
         (Op::ListGuests, _) => send(
             &mut w,
             &Message::Guests {

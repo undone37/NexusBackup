@@ -2,7 +2,7 @@
 
 Status: v1 (2026-10-10), implementation notes v1.1 (2026-10-10, see "Implementation (v1.1)" at the end), additive
 v1.2 (2026-10-10, TrueNAS + PostgreSQL plugins, see "v1.2" at the end), additive v1.3 (2026-10-11, Microsoft 365
-plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"), additive v1.9 (2026-10-13, download with conversion, see "v1.9"), additive v1.10 (2026-10-22, item metadata, see "v1.10"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
+plugin, see "v1.3" at the end), additive v1.4 (2026-10-11, restores per snapshot kind, see "v1.4" at the end), additive v1.5 (2026-10-12, tagged guests, see "v1.5"), additive v1.6 (2026-10-12, restore into another source and lists of objects, see "v1.6"), additive v1.7 (2026-10-12, skipped items as warnings, see "v1.7"), additive v1.8 (2026-10-12, snapshot metadata and endpoint host lists, see "v1.8"), additive v1.9 (2026-10-13, download with conversion, see "v1.9"), additive v1.10 (2026-10-22, item metadata, see "v1.10"), additive v1.11 (2026-11-02, backup reports, see "v1.11"). Decisions (plan.md §2): plugins are **signed executables run as sandboxed processes**
 speaking a **versioned protocol**, with a **Rust SDK**; trust = **project release key + publisher keys an admin adds
 with quorum**; reference plugin **PostgreSQL**; the **TrueNAS** connector is ported to the SDK; the restore API covers
 **download, restore to original/alternate target, application-specific restore and mount/instant access**.
@@ -361,3 +361,16 @@ Additive; `api: 1` unchanged.
 - Tested: `crates/plugin-proto` (wire index, limits), `plugins/m365/tests/m365.rs` (records after a full backup,
   carried over in the incremental, one per mail), `crates/scheduler` (search by sender and recipient),
   `crates/web-api/tests/phase33.rs` (case criteria).
+
+## v1.11 — backup reports (2026-11-02, #137, NexusStor contract step 3)
+Additive; `api: 1` unchanged.
+- **`Op::Report`** (appended after `Export`): after each guest's backup the host starts the plugin once more with
+  `params` `{guest, state: "ok" | "warning" | "failed", time, snapshot: "<source>/<time>" | null, message}`
+  (`warning`: committed but not consistent or with skipped items); the plugin answers `Valid` or `Error`. Only for
+  kinds whose manifest says **`backup.reports: true`**, so other plugins never see the op. A report that fails is a
+  warning line in the job log; the backup's result stays as it was. 60 s limit.
+- SDK: `Plugin::report` (default: nothing); testing `Host::report`.
+- Used by: NexusStor (1.1.0): `POST /nexusbackup/v1/vstors/<v>/report`; NexusStor shows the newest report on the
+  vStor and raises `backup_overdue` after 26 h without an `ok` one.
+- Tested: `crates/plugin-host/tests/host.rs` (acknowledged, the plugin's error), `plugins/nexusstor/tests/plugin.rs`
+  (the request NexusStor gets, the message cut to 500 characters, a refused vStor).

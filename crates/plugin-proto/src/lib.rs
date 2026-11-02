@@ -42,6 +42,11 @@ pub enum Op {
     /// restore with a `params_schema`); the plugin lists (`BaseList`) and reads
     /// (`ReadFile`) the snapshot and writes the download's files with `Output`.
     Export,
+    /// v1.11 (appended, #137): after each guest's backup job the host tells the plugin how it ended
+    /// (`params`: `{guest, state: "ok" | "warning" | "failed", time, snapshot: "<source>/<time>" | null,
+    /// message}`), for sources that show the backup state themselves (NexusStor). Answered with `Valid`
+    /// (delivered) or `Error`; only sent for kinds whose manifest says `backup.reports: true`.
+    Report,
 }
 
 /// Entry type in [`Meta::kind`].

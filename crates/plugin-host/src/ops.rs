@@ -58,6 +58,26 @@ pub fn validate(peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> R
     }
 }
 
+/// v1.11 (#137): tells the plugin how a backup of a guest ended (`report`: the `Op::Report` params).
+pub fn report(peer: &mut dyn Peer, p: &Params, report: Value, out: &mut dyn FnMut(&str)) -> Result<()> {
+    peer.send(&init(p, Op::Report, report, None, None))?;
+    loop {
+        match peer.recv()? {
+            Message::Log { level, text } => out(&format!("plugin[{}]: {}", level_name(level), escape(&text, 4000))),
+            Message::Progress { .. } => {}
+            Message::Valid => {
+                peer.finish();
+                return Ok(());
+            }
+            Message::Error { code, message } => {
+                peer.finish();
+                bail!("plugin reported an error ({code}): {}", escape(&message, 2000));
+            }
+            other => return Err(peer.violation(&format!("unexpected message {} during report", msg_name(&other)))),
+        }
+    }
+}
+
 /// Guests (e.g. databases). Invalid ids are dropped with a log line. Result: `{"guests": [...]}`.
 pub fn guests(peer: &mut dyn Peer, p: &Params, out: &mut dyn FnMut(&str)) -> Result<Value> {
     peer.send(&init(p, Op::ListGuests, json!({}), None, None))?;

@@ -247,6 +247,11 @@ pub trait Plugin {
     fn export(&mut self, _ctx: &Ctx, _ex: &mut Export) -> Result<String> {
         Err(error(95, "export is not supported by this plugin"))
     }
+    /// How a backup job of `ctx.guest()` ended (contract v1.11, manifest `backup.reports: true`;
+    /// `ctx.params`: `state`, `time`, `snapshot`, `message`). Default: nothing to tell.
+    fn report(&mut self, _ctx: &Ctx) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Runs the plugin on stdin/stdout and exits (status 0 = Done sent).
@@ -355,6 +360,7 @@ pub fn run_with<P: Plugin>(mut p: P, r: Box<dyn Read + Send>, w: Box<dyn Write +
                 summary,
             })
         }
+        Op::Report => p.report(&ctx).map(|()| Message::Valid),
         Op::Mount => {
             let mut m = Mount::new(chan.clone());
             p.mount(&ctx, &mut m).map(|summary| Message::Done {

@@ -74,7 +74,7 @@ pub struct Timeouts {
 
 impl Timeouts {
     /// Limits per operation: validate/guests 300 s (idle 120 s), backup/restore/export
-    /// 24 h (idle 900 s), mount 24 h + 10 min (idle 900 s).
+    /// 24 h (idle 900 s), mount 24 h + 10 min (idle 900 s), report 60 s.
     pub fn for_op(op: plugin_proto::Op) -> Timeouts {
         use plugin_proto::Op::*;
         match op {
@@ -89,6 +89,10 @@ impl Timeouts {
             Mount => Timeouts {
                 op: Duration::from_secs(24 * 3600 + 600),
                 idle: Duration::from_secs(900),
+            },
+            Report => Timeouts {
+                op: Duration::from_secs(60),
+                idle: Duration::from_secs(60),
             },
         }
     }

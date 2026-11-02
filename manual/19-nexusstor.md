@@ -84,6 +84,14 @@ UTF-8 cannot be transferred by the protocol: such files are skipped and listed a
   of another paired NexusBackup, or left by a run the appliance could not commit) are never deleted; the job log
   lists them, delete them on NexusStor if nothing uses them.
 
+## Backup state on NexusStor
+
+After each backup of a vStor, NexusBackup reports the result to NexusStor (plugin 1.1.0 or newer, NexusStor with
+the report endpoint): ok, warning (committed, but not consistent or with skipped files) or failed, with the snapshot
+and a short summary. NexusStor shows the newest report on the vStor page (**Last backup by NexusBackup**) and raises
+`backup_overdue` when a vStor gets no successful report for 26 hours. A report that does not arrive (an older
+NexusStor, the appliance unreachable) is a warning line in the job log; the backup itself is not affected.
+
 ## Ransomware signal from NexusStor
 
 NexusStor watches how much each scheduled snapshot of a vStor wrote; a run far above the usual (a typical sign of
