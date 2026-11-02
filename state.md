@@ -1891,3 +1891,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   free, the disk on SATA). The P2V VM had no guest agent channel: P2V VMs get `agent: enabled=1` now. Not covered:
   UEFI/GPT, more than one partition (System Reserved + C:), a reused disk on bare metal, the speed (skip zero blocks
   on a discarded target).
+- [x] #19 zero-block skipping on the restore (2026-11-02, VM 201 on 0.0.70-dev, the rescue ISO of branch
+  19-zero-skip, the same Windows Server 2022 snapshot as above): the rescue agent zeroed the image partition
+  (blkdiscard -z) and announced `image-zeroed`; the appliance wrote 4220 blocks (17.7 GB) and skipped 6020 zero
+  blocks: recovery 1700 s instead of 4114 s; Windows booted, the guest agent answered after 31 s without a manual
+  step (P2V VMs get the agent channel now).
