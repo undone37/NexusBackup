@@ -116,9 +116,13 @@ fn main() -> Result<()> {
                 .map_err(Into::into);
         }
         ("files", [vmid, time, args @ ..]) => {
-            // a PVE VM (`<vmid>`) or a VMware / XCP-ng VM snapshot (`vmw-<uuid>`, #83, `xcp-<uuid>`): all hold
-            // fixed disk images
-            let source = match vmid.strip_prefix("vmw-").or_else(|| vmid.strip_prefix("xcp-")) {
+            // a PVE VM (`<vmid>`) or a VMware / XCP-ng / Hyper-V VM snapshot (`vmw-<uuid>`, #83, `xcp-<uuid>`,
+            // `hv-<id>`, #39): all hold fixed disk images
+            let source = match vmid
+                .strip_prefix("vmw-")
+                .or_else(|| vmid.strip_prefix("xcp-"))
+                .or_else(|| vmid.strip_prefix("hv-"))
+            {
                 Some(u) if !u.is_empty() && u.len() <= 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-') => {
                     vmid.clone()
                 }

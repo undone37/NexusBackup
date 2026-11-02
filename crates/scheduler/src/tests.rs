@@ -3053,6 +3053,8 @@ fn hyperv_source_groups_and_inventory() {
     );
     let g = s.groups().unwrap().into_iter().find(|g| g.id == 9).unwrap();
     assert_eq!(crate::group_sources(&g), [format!("hv-{u1}"), format!("hv-{u2}")]);
+    // VM disks: the file index follows the group's index_files switch, files are browsed in the restore micro-VM
+    assert!(crate::guest_disks(&format!("hv-{u1}")) && !crate::guest_disks("hv-not-a-vm"));
     let inv = s.plan(&job(51, "inventory", json!({"source_id": 9}))).unwrap();
     match &inv.steps[..] {
         [Step::Cli { args, capture, .. }] => assert_eq!((args[1].as_str(), *capture), ("hv-inventory", true)),

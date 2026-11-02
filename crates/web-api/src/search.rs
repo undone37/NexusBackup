@@ -111,9 +111,9 @@ pub async fn put_index_files(
         )
         .optional()?
         .ok_or_else(ApiError::not_found)?;
-    if !matches!(kind.as_str(), "pve" | "vmware" | "xcpng") {
+    if !matches!(kind.as_str(), "pve" | "vmware" | "xcpng" | "hyperv") {
         return Err(ApiError::bad(
-            "index_files applies to Proxmox VE, VMware and XCP-ng groups (VM/CT disks); other snapshots are always indexed",
+            "index_files applies to Proxmox VE, VMware, XCP-ng and Hyper-V groups (VM/CT disks); other snapshots are always indexed",
         ));
     }
     st.cat.conn().execute(
