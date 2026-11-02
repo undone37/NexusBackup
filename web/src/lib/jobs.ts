@@ -23,6 +23,7 @@ export const JOB_KINDS: JobKind[] = [
   'agent_renew',
   'plugin_validate',
   'plugin_guests',
+  'plugin_finding',
   'plugin_backup',
   'plugin_restore',
   'plugin_mount',

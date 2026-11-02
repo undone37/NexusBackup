@@ -3090,3 +3090,96 @@ fn hyperv_source_groups_and_inventory() {
         p.steps
     );
 }
+
+/// #137: a finding on a NexusStor vStor's snapshot goes to that NexusStor as a `plugin_finding` job (the plugin's
+/// report operation with the finding) when the plugin's manifest says `backup.findings`; other sources and older
+/// NexusStor plugins get nothing. The job runs `nexus-pluginhost <cfg> finding` with the finding in its config.
+#[test]
+fn findings_go_to_nexusstor() {
+    let e = env(4);
+    let manifest = |findings: bool| {
+        format!(
+            r#"{{"id":"nexusstor","name":"NexusStor","version":"1.2.0","publisher":"nexusbackup","api":1,
+             "kinds":[{{"kind":"nexusstor","title":"NexusStor","config_schema":{{"type":"object","properties":{{"host":{{"type":"string"}}}}}},
+              "secret_fields":[],"endpoints":[{{"host":"/host","default_port":8443,"proto":"tcp"}}],
+              "guests":{{"title":"vStors","list":true}},
+              "backup":{{"incremental":true,"reports":true,"findings":{findings}}},
+              "restores":[{{"id":"download","title":"Download"}}]}}]}}"#
+        )
+    };
+    e.db.conn()
+        .execute(
+            "INSERT INTO plugins (id, version, name, publisher, sha256, bin_sha256, size, manifest, signer, state, current, enabled, uploaded_by, uploaded_at) \
+             VALUES ('nexusstor', '1.2.0', 'NexusStor', 'nexusbackup', 'aa', 'bb', 1, ?1, 'k', 'installed', 1, 1, 'a', 1)",
+            [manifest(true)],
+        )
+        .unwrap();
+    let s = sched(&e);
+    s.db.conn()
+        .execute_batch(
+            "INSERT INTO sources (id, tenant, kind, name, config) VALUES (7,'t1','plugin:nexusstor','nst','{}');",
+        )
+        .unwrap();
+    let jobs = || -> Vec<(String, Value)> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare("SELECT kind, params FROM jobs WHERE kind = 'plugin_finding' ORDER BY id")
+            .unwrap();
+        q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .map(|r| {
+                let (k, p) = r.unwrap();
+                (k, serde_json::from_str(&p).unwrap())
+            })
+            .collect()
+    };
+    assert_eq!(
+        crate::plugins::nexusstor_guest("plugin-nexusstor-7-acme"),
+        Some((7, "acme".into()))
+    );
+    assert_eq!(crate::plugins::nexusstor_guest("plugin-nexusstor-7"), None);
+    assert_eq!(crate::plugins::nexusstor_guest("plugin-pgx-7-acme"), None);
+    s.finding_to_source("t1", "plugin-pgx-9-db1", 5, "malware", "critical", "x")
+        .unwrap();
+    s.finding_to_source("t2", "plugin-nexusstor-7-acme", 5, "malware", "critical", "x")
+        .unwrap();
+    assert!(jobs().is_empty(), "other sources and other tenants' ids get nothing");
+    s.finding_to_source(
+        "t1",
+        "plugin-nexusstor-7-acme",
+        1700000000,
+        "malware",
+        "critical",
+        "YARA: 2 matches",
+    )
+    .unwrap();
+    let j = jobs();
+    assert_eq!(j.len(), 1);
+    assert_eq!(
+        j[0].1,
+        json!({"source_id": 7, "finding": {"guest": "acme", "kind": "malware", "severity": "critical",
+            "snapshot": "plugin-nexusstor-7-acme/1700000000", "message": "YARA: 2 matches"}})
+    );
+    let p = s
+        .plan(&Job {
+            id: 40,
+            kind: "plugin_finding".into(),
+            tenant: "t1".into(),
+            params: j[0].1.clone(),
+        })
+        .unwrap();
+    let c: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(c["finding"]["guest"], "acme");
+    assert!(
+        matches!(&p.steps[..], [Step::Cli { args, .. }] if args.iter().any(|a| a == "finding")),
+        "{:?}",
+        p.steps
+    );
+    // an older NexusStor plugin without backup.findings: nothing
+    e.db.conn()
+        .execute("UPDATE plugins SET manifest = ?1", [manifest(false)])
+        .unwrap();
+    s.finding_to_source("t1", "plugin-nexusstor-7-acme", 6, "anomaly", "warning", "y")
+        .unwrap();
+    assert_eq!(jobs().len(), 1);
+}

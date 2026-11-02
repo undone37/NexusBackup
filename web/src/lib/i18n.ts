@@ -725,6 +725,7 @@ export const en = {
       agent_renew: 'Renew agent certificate',
       plugin_validate: 'Validate plugin source',
       plugin_guests: 'List plugin guests',
+      plugin_finding: 'Report a finding to the source',
       plugin_backup: 'Plugin backup',
       plugin_restore: 'Plugin restore',
       plugin_mount: 'Plugin mount',

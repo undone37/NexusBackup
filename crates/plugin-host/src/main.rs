@@ -123,6 +123,11 @@ struct JobConfig {
     /// log-only run); absent = the plugin decides as before
     #[serde(default)]
     mode: Option<String>,
+    /// #137: `finding`: a finding on one of the source's snapshots for the source (`{guest, kind, severity,
+    /// snapshot, message}`), sent through the plugin's report operation (plugins whose manifest says
+    /// `backup.findings`)
+    #[serde(default)]
+    finding: Option<Value>,
 }
 
 fn one() -> usize {
@@ -253,7 +258,7 @@ fn out_line(l: &str) {
 fn main() -> Result<()> {
     keyd::deny_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "usage: nexus-pluginhost <job.json> validate | guests | backup | restore | mount | files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>... | export <out.tar|out.zip> <path>...";
+    let usage = "usage: nexus-pluginhost <job.json> validate | guests | finding | backup | restore | mount | files <source> <time> ls <dir> | files <source> <time> get <out.tar|out.zip> <path>... | export <out.tar|out.zip> <path>...";
     let [cfg_path, cmd, rest @ ..] = args.as_slice() else {
         bail!("{usage}");
     };
@@ -275,6 +280,28 @@ fn main() -> Result<()> {
                 ops::guests(&mut p, &run.ops_params(), &mut |l| eprintln!("{l}"))?
             };
             println!("{r}");
+        }
+        ("finding", []) => {
+            set_log_stderr(true);
+            let run = Run::new(cfg)?;
+            let takes = run
+                .manifest
+                .kinds
+                .iter()
+                .find(|k| k.kind == run.kind)
+                .and_then(|k| k.backup.as_ref())
+                .is_some_and(|b| b["findings"] == true);
+            if !takes {
+                bail!(
+                    "plugin {} does not take findings (manifest backup.findings)",
+                    run.plugin.id
+                );
+            }
+            let f = run.cfg.finding.clone().context("config: finding missing")?;
+            let params = json!({"guest": f["guest"], "finding": f});
+            let mut p = run.spawn(Op::Report, run.timeouts(Op::Report))?;
+            ops::report(&mut p, &run.ops_params(), params, &mut |l| eprintln!("{l}"))?;
+            println!("{}", json!({"sent": true}));
         }
         ("backup", []) => {
             let run = Run::new(cfg)?;
