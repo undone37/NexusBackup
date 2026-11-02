@@ -82,6 +82,25 @@ pub fn prepare(vm: &str, base: Option<&serde_json::Value>) -> Result<(String, Ve
     Ok((json, disks.into_iter().map(|(_, p)| p).collect()))
 }
 
+/// #39 M4: the `HvRestoreReady` JSON and the device of each new disk in target order.
+pub fn restore_begin(spec: &serde_json::Value) -> Result<(String, Vec<PathBuf>), String> {
+    let json = run(&serde_json::json!({"action": "restore_begin", "spec": spec}))?;
+    let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("Hyper-V restore: {e}"))?;
+    let mut disks: Vec<(u64, PathBuf)> = v["disks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| Some((d["target"].as_u64()?, PathBuf::from(d["device"].as_str()?))))
+        .collect();
+    disks.sort_by_key(|(t, _)| *t);
+    Ok((json, disks.into_iter().map(|(_, p)| p).collect()))
+}
+
+pub fn restore_finish(begun: &str, keep: bool) -> Result<String, String> {
+    let b: serde_json::Value = serde_json::from_str(begun).map_err(|e| format!("Hyper-V restore: {e}"))?;
+    run(&serde_json::json!({"action": "restore_finish", "begun": b, "keep": keep}))
+}
+
 pub fn finish(prepared: &str, keep: bool) -> Result<String, String> {
     let p: serde_json::Value = serde_json::from_str(prepared).map_err(|e| format!("Hyper-V finish: {e}"))?;
     run(&serde_json::json!({"action": "finish", "prepared": p, "keep": keep}))

@@ -7,6 +7,7 @@
 use crate::blocks::{block_ranges, read_disk, valid_index_name, BlockReport};
 use crate::map::MapDb;
 use crate::name;
+use crate::name as name_of;
 use crate::tls::Session;
 use agent_proto::{Message, BLOCK_SIZE, CAP_HYPERV, CAP_HYPERV_RCT, MAX_BLOCK_TARGET};
 use anyhow::{bail, Context, Result};
@@ -278,6 +279,113 @@ fn commit(
     let refs: Vec<(&str, Index)> = names.iter().map(String::as_str).zip(indexes).collect();
     let m = store.commit_snapshot(source, time, &refs)?;
     Ok((source.to_owned(), m.time))
+}
+
+/// #39 M4: snapshot `source`/`time` (an `hv-` snapshot) back onto the Hyper-V host behind `s` as a new VM `name`
+/// (powered off, NICs not connected): the agent creates the disks, the appliance writes every block that is not
+/// all zeros, then the agent defines the VM from the snapshot's settings. On any error the new disks are deleted.
+/// Returns the agent's answer (`{vm}`, the new VM's id).
+pub fn restore(
+    store: &Store,
+    s: &mut Session,
+    job: u64,
+    source: &str,
+    time: u64,
+    name: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<Value> {
+    if !s.has_cap(agent_proto::CAP_HYPERV_RESTORE) {
+        bail!("the agent cannot restore Hyper-V VMs (agent older than this feature, or not a Hyper-V host)");
+    }
+    if name.is_empty() || name.len() > 100 || name.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c)) {
+        bail!("invalid VM name {name:?}");
+    }
+    let m = store.load_manifest(source, time)?;
+    let Index::Dynamic { entries } = store.load_index(&m, "config")? else {
+        bail!("{source}/{time}: no config index");
+    };
+    let e = entries
+        .iter()
+        .find(|e| e.path == CONFIG_FILE)
+        .with_context(|| format!("{source}/{time}: no {CONFIG_FILE}"))?;
+    let mut data = Vec::new();
+    for id in &e.chunks {
+        data.extend(store.read_chunk(id)?);
+    }
+    let cfg: Value = serde_json::from_slice(&data).context(CONFIG_FILE)?;
+    let mut disks = Vec::new();
+    for d in cfg["disks"].as_array().into_iter().flatten() {
+        let n = d["name"]
+            .as_str()
+            .filter(|n| valid_index_name(n))
+            .context("hyperv.json: disk name")?;
+        let Index::Fixed { size, chunks, .. } = store.load_index(&m, n)? else {
+            bail!("{source}/{time}: disk {n} is not a disk image");
+        };
+        disks.push((n.to_owned(), size, chunks));
+    }
+    if disks.is_empty() {
+        bail!("{source}/{time}: no disks");
+    }
+    let spec = serde_json::json!({"name": name, "config": cfg["config"],
+        "disks": disks.iter().map(|(n, size, _)| serde_json::json!({"name": n, "size": size})).collect::<Vec<_>>()});
+    s.send(&Message::HvRestoreBegin {
+        job,
+        json: spec.to_string(),
+    })?;
+    let ready: Value = match s.recv()? {
+        Message::HvRestoreReady { job: j, json } if j == job => {
+            serde_json::from_str(&json).context("HvRestoreReady")?
+        }
+        m => bail!("unexpected answer to HvRestoreBegin: {}", name_of(&m)),
+    };
+    let r = (|| -> Result<()> {
+        for (n, size, chunks) in &disks {
+            let target = ready["disks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|d| d["name"] == n.as_str())
+                .and_then(|d| d["target"].as_u64())
+                .and_then(|t| u32::try_from(t).ok())
+                .filter(|t| (1..=MAX_BLOCK_TARGET).contains(t))
+                .with_context(|| format!("agent: no target for disk {n}"))?;
+            let bjob = job * 16 + u64::from(target);
+            let (mut sent, mut skipped) = (0u64, 0u64);
+            for (i, id) in chunks.iter().enumerate() {
+                let block = store.read_chunk(id)?;
+                if block.iter().all(|b| *b == 0) {
+                    skipped += 1;
+                    continue;
+                }
+                s.send(&Message::BlockWrite {
+                    job: bjob,
+                    target,
+                    offset: i as u64 * BLOCK_SIZE,
+                    data: block,
+                })?;
+                sent += 1;
+            }
+            s.send(&Message::BlockWriteEnd { job: bjob, target })?;
+            match s.recv()? {
+                Message::BlockWritten { job: j, bytes } if j == bjob => {
+                    log(&format!(
+                        "{n}: {sent} blocks written ({bytes} bytes), {skipped} zero blocks skipped, {size} bytes"
+                    ));
+                }
+                m => bail!("unexpected answer to BlockWriteEnd: {}", name_of(&m)),
+            }
+        }
+        Ok(())
+    })();
+    s.send(&Message::HvRestoreFinish { job, keep: r.is_ok() })?;
+    let fin = match s.recv() {
+        Ok(Message::HvFinished { job: j, json }) if j == job => serde_json::from_str(&json).unwrap_or(Value::Null),
+        Ok(m) => bail!("unexpected answer to HvRestoreFinish: {}", name_of(&m)),
+        Err(e) => return Err(r.err().unwrap_or(e)),
+    };
+    r?;
+    Ok(fin)
 }
 
 #[cfg(test)]

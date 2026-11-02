@@ -84,7 +84,19 @@ struct Config {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HyperVCfg {
+    #[serde(default)]
     vm: String,
+    /// #39 M4 `hv-restore`: snapshot `source`/`time` as the new VM `name`
+    #[serde(default)]
+    restore: Option<HyperVRestoreCfg>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperVRestoreCfg {
+    source: String,
+    time: u64,
+    name: String,
 }
 
 /// `block-read`: the plan nexus-vmware wrote, and where the disk indexes go.
@@ -573,6 +585,22 @@ fn main() -> Result<()> {
             }
         }
         ("synthetic", []) => synthetic(&cfg)?,
+        ("hv-restore", []) => {
+            // #39 M4: an hv- snapshot back onto the Hyper-V host as a new VM
+            let r = cfg
+                .hyperv
+                .as_ref()
+                .and_then(|h| h.restore.as_ref())
+                .context("config: hyperv.restore missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let store = cfg.store()?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let out = agent_conn::hyperv::restore(&store, &mut s, cfg.job, &r.source, r.time, &r.name, &mut |l| {
+                println!("{l}");
+            })?;
+            s.close();
+            println!("restored {}", json!({"vm": out["vm"], "name": out["name"]}));
+        }
         ("hv-inventory", []) => {
             // #39 M3: the scheduler's inventory of a Hyper-V source, `{"guests": [{id, title, kind, tags}]}` last
             let ca = Ca::load_or_create(&cfg.ca_dir)?;

@@ -3058,6 +3058,21 @@ fn hyperv_source_groups_and_inventory() {
         [Step::Cli { args, capture, .. }] => assert_eq!((args[1].as_str(), *capture), ("hv-inventory", true)),
         st => panic!("{st:?}"),
     }
+    // #39 M4: an hv- snapshot onto the Hyper-V source: nexus-agentctl hv-restore on the host's agent
+    let p = s
+        .plan(&job(
+            53,
+            "restore",
+            json!({"source": format!("hv-{u1}"), "time": 1000, "source_id": 9, "name": "web-restored"}),
+        ))
+        .unwrap();
+    assert_eq!(p.key, "agent:0123456789abcdef");
+    let cfg: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(
+        cfg["hyperv"]["restore"],
+        json!({"source": format!("hv-{u1}"), "time": 1000, "name": "web-restored"})
+    );
+    assert!(matches!(&p.steps[..], [Step::Cli { args, .. }] if args[1] == "hv-restore"));
     // an hv- snapshot as a new Proxmox VE VM (#39 M3): nexus-pve restore-hyperv
     let p = s
         .plan(&job(

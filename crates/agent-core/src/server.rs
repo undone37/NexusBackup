@@ -212,6 +212,16 @@ pub trait Platform: Send + Sync + 'static {
     fn hv_prepare(&self, _vm: &str, _base: Option<&serde_json::Value>) -> Result<(String, Vec<PathBuf>), String> {
         Err("this agent has no Hyper-V support".into())
     }
+    /// #39 M4 `HvRestoreBegin`: create the disks of a new VM (`spec`: `{name, config, disks: [{name, size}]}`) and
+    /// open them for writing. Returns the `HvRestoreReady` JSON and the device of each disk in target order.
+    fn hv_restore_begin(&self, _spec: &serde_json::Value) -> Result<(String, Vec<PathBuf>), String> {
+        Err("this agent cannot restore Hyper-V VMs".into())
+    }
+    /// `HvRestoreFinish`: close the disks of the restore job (`begun` = its `HvRestoreReady` JSON), then define the VM
+    /// with them (`keep`) or delete them. Returns the `HvFinished` JSON.
+    fn hv_restore_finish(&self, _begun: &str, _keep: bool) -> Result<String, String> {
+        Err("this agent cannot restore Hyper-V VMs".into())
+    }
     /// `HvFinish`: close the disks of the prepared job (`prepared` = its `HvPrepared` JSON), then convert the
     /// checkpoint to a reference point (`keep`) or remove it. Returns the `HvFinished` JSON.
     fn hv_finish(&self, _prepared: &str, _keep: bool) -> Result<String, String> {
@@ -536,6 +546,7 @@ impl<P: Platform> Agent<P> {
                     staged_rollback: false,
                     blocks: HashMap::new(),
                     hv: HashMap::new(),
+                    hvr: HashMap::new(),
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -656,6 +667,9 @@ struct Job<J> {
     bucket: Option<Bucket>,
 }
 
+/// #39 M4: a new disk of a Hyper-V restore: its device, the open file while blocks arrive, bytes written.
+type RestoreDisk = (PathBuf, Option<std::fs::File>, u64);
+
 struct Session<'a, P: Platform> {
     agent: &'a Agent<P>,
     agent_id: String,
@@ -675,6 +689,8 @@ struct Session<'a, P: Platform> {
     blocks: HashMap<u64, Locator>,
     /// v1.10 Hyper-V jobs: job → (`HvPrepared` JSON, the frozen disks in target order)
     hv: HashMap<u64, (String, Vec<PathBuf>)>,
+    /// #39 M4 restore jobs: job → (`HvRestoreReady` JSON, per target: the new disk, its open file, bytes written)
+    hvr: HashMap<u64, (String, Vec<RestoreDisk>)>,
 }
 
 impl<P: Platform> Session<'_, P> {
@@ -723,6 +739,7 @@ impl<P: Platform> Session<'_, P> {
                     if self.agent.platform.hyperv() {
                         c.push(agent_proto::CAP_HYPERV.into());
                         c.push(agent_proto::CAP_HYPERV_RCT.into());
+                        c.push(agent_proto::CAP_HYPERV_RESTORE.into());
                     }
                     // v1.8: chunked updates with the install's own package type
                     if let Some(f) = self.agent.platform.host_facts() {
@@ -847,7 +864,91 @@ impl<P: Platform> Session<'_, P> {
                     }
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
                 },
-                Message::HvList | Message::HvPrepare { .. } | Message::HvPrepareBase { .. } => {
+                Message::HvRestoreBegin { job, json } if self.agent.platform.hyperv() => {
+                    if self.hvr.contains_key(&job) || self.hv.contains_key(&job) || self.jobs.contains_key(&job) {
+                        error(s, E_BUSY, format!("job {job} is already running"))?;
+                        continue;
+                    }
+                    let spec: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+                    log(format!(
+                        "job {job}: Hyper-V restore of {}",
+                        spec["name"].as_str().unwrap_or("?")
+                    ));
+                    match self.agent.platform.hv_restore_begin(&spec) {
+                        Ok((json, disks)) => {
+                            self.hvr
+                                .insert(job, (json.clone(), disks.into_iter().map(|p| (p, None, 0)).collect()));
+                            write_msg(s, &Message::HvRestoreReady { job, json })?;
+                        }
+                        Err(e) => error(s, E_INTERNAL, e)?,
+                    }
+                }
+                Message::BlockWrite {
+                    job,
+                    target,
+                    offset,
+                    data,
+                } => {
+                    let Some(d) = self
+                        .hvr
+                        .get_mut(&(job / 16))
+                        .filter(|_| job % 16 == u64::from(target))
+                        .and_then(|(_, ds)| (target as usize).checked_sub(1).and_then(|i| ds.get_mut(i)))
+                    else {
+                        error(
+                            s,
+                            E_BAD_REQUEST,
+                            format!("no restore disk for job {job} at target {target}"),
+                        )?;
+                        continue;
+                    };
+                    if d.1.is_none() {
+                        match std::fs::OpenOptions::new().write(true).open(&d.0) {
+                            Ok(f) => d.1 = Some(f),
+                            Err(e) => {
+                                error(s, E_INTERNAL, format!("{}: {e}", d.0.display()))?;
+                                continue;
+                            }
+                        }
+                    }
+                    if let Err(e) = crate::chunk::write_all_at(d.1.as_ref().unwrap(), &data, offset) {
+                        error(s, E_INTERNAL, format!("{} at {offset}: {e}", d.0.display()))?;
+                        continue;
+                    }
+                    d.2 += data.len() as u64;
+                }
+                Message::BlockWriteEnd { job, target } => {
+                    let d = self
+                        .hvr
+                        .get_mut(&(job / 16))
+                        .filter(|_| job % 16 == u64::from(target))
+                        .and_then(|(_, ds)| (target as usize).checked_sub(1).and_then(|i| ds.get_mut(i)));
+                    match d {
+                        Some(d) => {
+                            let synced = d.1.take().map_or(Ok(()), |f| f.sync_all());
+                            match synced {
+                                Ok(()) => write_msg(s, &Message::BlockWritten { job, bytes: d.2 })?,
+                                Err(e) => error(s, E_INTERNAL, format!("{}: {e}", d.0.display()))?,
+                            }
+                        }
+                        None => error(
+                            s,
+                            E_BAD_REQUEST,
+                            format!("no restore disk for job {job} at target {target}"),
+                        )?,
+                    }
+                }
+                Message::HvRestoreFinish { job, keep } => match self.hvr.remove(&job) {
+                    Some((begun, _files)) => match self.agent.platform.hv_restore_finish(&begun, keep) {
+                        Ok(json) => write_msg(s, &Message::HvFinished { job, json })?,
+                        Err(e) => error(s, E_INTERNAL, e)?,
+                    },
+                    None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
+                },
+                Message::HvList
+                | Message::HvPrepare { .. }
+                | Message::HvPrepareBase { .. }
+                | Message::HvRestoreBegin { .. } => {
                     error(
                         s,
                         E_REFUSED,
@@ -1414,6 +1515,14 @@ impl<P: Platform> Session<'_, P> {
         if let Some(r) = self.restore.take() {
             log("restore aborted by disconnect");
             r.end();
+        }
+        for (job, (begun, _)) in std::mem::take(&mut self.hvr) {
+            log(format!(
+                "job {job}: connection closed during a Hyper-V restore, removing the new disks"
+            ));
+            if let Err(e) = self.agent.platform.hv_restore_finish(&begun, false) {
+                log(format!("job {job}: {e}"));
+            }
         }
         for (job, (prepared, _)) in std::mem::take(&mut self.hv) {
             log(format!(
