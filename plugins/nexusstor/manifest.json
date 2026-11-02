@@ -1,7 +1,7 @@
 {
   "id": "nexusstor",
   "name": "NexusStor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -48,7 +48,7 @@
       "secret_fields": ["token", "client_key"],
       "endpoints": [{ "host": "/host", "port": "/port", "default_port": 8443, "proto": "tcp" }],
       "guests": { "title": "vStors", "list": true },
-      "backup": { "incremental": true, "consistent": "snapshot", "reports": true },
+      "backup": { "incremental": true, "consistent": "snapshot", "reports": true, "findings": true },
       "restores": [{ "id": "download", "title": "Download (tar/zip)" }]
     }
   ],

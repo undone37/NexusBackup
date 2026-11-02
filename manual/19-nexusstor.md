@@ -105,6 +105,17 @@ sees an open finding for the vStor:
 
 Later backups are flagged too while NexusStor's finding is open; clear it on NexusStor once the cause is resolved.
 
+## Findings sent to NexusStor
+
+The other direction: when NexusBackup finds something in its backup of a vStor (a YARA scan hit, a manual malware
+scan, a change-rate or size anomaly), a short job **Report a finding to the source** tells the NexusStor (plugin
+1.2.0 and a NexusStor that serves findings). NexusStor raises **NexusBackup finding** there and, for a critical
+finding, locks its newest snapshot from before that backup for 14 days, so the state before the infection survives
+on the storage too. At most 10 findings per hour and vStor are accepted; a failed delivery is in that job's log.
+
+The pairing's **permissions** on NexusStor (Settings, NexusBackup, Edit) decide what else NexusBackup may do there
+(restores into vStors, a vStor from a backup, an S3 target); until those restores arrive here, backup-only is enough.
+
 ## Limits
 
 | Limit | Value |

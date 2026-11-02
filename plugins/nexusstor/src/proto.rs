@@ -592,6 +592,20 @@ impl Nst {
         Ok(())
     }
 
+    /// Contract step 3 (#137): a finding on NexusBackup's backup of vStor `v` (`POST .../finding`): NexusStor
+    /// raises an alert and, for a critical one, locks its newest snapshot from before that backup.
+    /// Ok(false): this NexusStor has no finding endpoint yet (404), nothing to do.
+    pub fn finding(&self, v: &str, finding: &serde_json::Value) -> Result<bool> {
+        let r = self
+            .client
+            .request("POST", &format!("/vstors/{v}/finding"), Some(finding))?;
+        if r.status == 404 {
+            return Ok(false);
+        }
+        r.ok()?.bytes(64 << 10)?;
+        Ok(true)
+    }
+
     pub fn release(&self, v: &str, s: &str) -> Result<()> {
         ensure!(valid_snap(s), "not a nexusbackup snapshot");
         self.client

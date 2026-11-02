@@ -1927,7 +1927,7 @@ impl Scheduler {
                     None
                 }
             },
-            "plugin_validate" | "plugin_guests" | "inventory" => {
+            "plugin_validate" | "plugin_guests" | "plugin_finding" | "inventory" => {
                 let out = stdout.unwrap_or_default();
                 // the JSON object is the output's last line (nexus-agentctl prints `agent-info` lines before it)
                 match serde_json::from_str::<Value>(out.trim().lines().last().unwrap_or_default()) {
@@ -3339,7 +3339,8 @@ impl Scheduler {
                     gfs,
                 });
             }
-            "plugin_validate" | "plugin_guests" | "plugin_backup" | "plugin_restore" | "plugin_mount" => {
+            "plugin_validate" | "plugin_guests" | "plugin_finding" | "plugin_backup" | "plugin_restore"
+            | "plugin_mount" => {
                 return self.plan_plugin(job, plan);
             }
             "files_list" | "files_get" if p["source"].as_str().is_some_and(|s| s.starts_with("plugin-")) => {

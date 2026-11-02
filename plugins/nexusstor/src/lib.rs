@@ -266,6 +266,17 @@ mod plugin {
             let Some(guest) = ctx.guest() else { return Ok(()) };
             crate::backup::check_guest(guest)?;
             let p = &ctx.params;
+            if let Some(f) = p["finding"].as_object() {
+                // #137: NexusBackup found something in its backup of the vStor
+                let body = serde_json::json!({
+                    "kind": f.get("kind"), "severity": f.get("severity"), "snapshot": f.get("snapshot"),
+                    "message": f.get("message").and_then(|m| m.as_str()).unwrap_or("").chars().take(500).collect::<String>(),
+                });
+                if !c.nst()?.finding(guest, &body)? {
+                    ctx.warn("this NexusStor does not take findings yet (no finding endpoint): nothing sent");
+                }
+                return Ok(());
+            }
             let body = serde_json::json!({
                 "time": p["time"], "state": p["state"], "snapshot": p["snapshot"],
                 "message": p["message"].as_str().unwrap_or("").chars().take(500).collect::<String>(),

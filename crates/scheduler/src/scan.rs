@@ -221,6 +221,10 @@ impl Scheduler {
                         ),
                         Some(&job.tenant),
                     )?;
+                    // #137: a NexusStor vStor's backup: NexusStor raises its own alert and locks a snapshot
+                    if let Err(e) = self.finding_to_source(&job.tenant, &source, time, kind, "critical", &why) {
+                        eprintln!("scheduler: finding for {source} not queued: {e:#}");
+                    }
                 }
             }
         }

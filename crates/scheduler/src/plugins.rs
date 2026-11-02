@@ -162,6 +162,41 @@ impl Scheduler {
         Ok(json!({"source_id": tid, "config": tcfg}))
     }
 
+    /// #137: a finding (malware, a scan hit, an anomaly) on a snapshot of a NexusStor vStor goes to that NexusStor
+    /// (`plugin_finding`: the plugin's report operation with the finding; plugins whose manifest says
+    /// `backup.findings`). Other sources, and NexusStor plugins without it, get nothing.
+    pub(crate) fn finding_to_source(
+        &self,
+        tenant: &str,
+        source: &str,
+        time: i64,
+        kind: &str,
+        severity: &str,
+        message: &str,
+    ) -> Result<()> {
+        let Some((sid, guest)) = nexusstor_guest(source) else {
+            return Ok(());
+        };
+        let Ok((cur, _, _)) = self.plugin_source(tenant, sid) else {
+            return Ok(());
+        };
+        let takes = cur
+            .manifest
+            .kinds
+            .iter()
+            .any(|k| k.backup.as_ref().is_some_and(|b| b["findings"] == true));
+        if takes {
+            let message: String = message.chars().take(500).collect();
+            self.insert_job(
+                "plugin_finding",
+                tenant,
+                &json!({"source_id": sid, "finding": {"guest": guest, "kind": kind, "severity": severity,
+                    "snapshot": format!("{source}/{time}"), "message": message}}),
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn plan_plugin(&self, job: &Job, mut plan: Plan) -> Result<Plan> {
         let p = &job.params;
         match job.kind.as_str() {
@@ -176,6 +211,13 @@ impl Scheduler {
                     "guests"
                 };
                 plan.steps.push(self.host_step(&plan, &[op.into()], true));
+            }
+            "plugin_finding" => {
+                let sid = p["source_id"].as_i64().context("missing parameter source_id")?;
+                let (cur, kind, config) = self.plugin_source(&job.tenant, sid)?;
+                plan.key = format!("source:{sid}");
+                plan.files = self.plugin_cfg(job, &cur, &kind, sid, config, json!({"finding": p["finding"]}))?;
+                plan.steps.push(self.host_step(&plan, &["finding".into()], true));
             }
             "plugin_backup" => {
                 let sid = p["source_id"].as_i64().context("missing parameter source_id")?;
@@ -314,4 +356,11 @@ impl Scheduler {
         }
         Ok(out)
     }
+}
+
+/// `plugin-nexusstor-<source id>-<vStor>` -> (source id, vStor).
+pub(crate) fn nexusstor_guest(source: &str) -> Option<(i64, String)> {
+    let (sid, g) = source.strip_prefix("plugin-nexusstor-")?.split_once('-')?;
+    (!g.is_empty()).then_some(())?;
+    Some((sid.parse().ok()?, g.to_owned()))
 }
