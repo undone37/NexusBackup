@@ -536,7 +536,7 @@ fn server_backup_and_point_in_time_restore() {
             log.summary,
             h.log()
         );
-        assert_eq!(log.base, Some(full.time));
+        assert_eq!(log.base, Some(idle.time), "{flavor}: onto the previous snapshot");
         b.sh("rm -rf /home/mysql/r1 /home/mysql/r2 /home/mysql/r3 /home/mysql/r4");
         b.sql("", "DROP DATABASE pitr");
     }
