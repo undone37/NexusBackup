@@ -108,7 +108,9 @@ follows that risk.
 - Implementation plan: the ISO kickstart (`release/iso/config.toml`) gets `%pre` writing an `autopart --encrypted`
   include with a random passphrase, the karg and the `%post` enrolment; the first-boot setup adds a keyslot from
   the KEK (keyd, like `luks-data`) and wipes the install passphrase (`systemd-cryptenroll --wipe-slot=password`).
-  Open: whether `autopart` in the ISO kickstart keeps the disk selection interactive (as the ISO does today).
+  Open: the disk selection. `autopart` without `clearpart` on a used disk leaves "Kickstart insufficient" in the
+  graphical installer (2026-11-02, inconclusive whether the edited boot entry took effect); whether a pre-set
+  "Encrypt my data" survives the interactive selection needs a check by hand in the GUI.
 
 ## Open questions
 
