@@ -7,6 +7,8 @@
 #
 #   patroni.sh vms        clone and start the VMs, set host names, new machine ids and ssh host keys
 #   patroni.sh ip         the VMs' addresses (guest agent), kept in $LAB/hosts
+#   patroni.sh static     fixed addresses in the guests ($STATIC, #158: etcd and Patroni are configured with the
+#                         addresses, a DHCP lease that moved while the VMs were off broke the cluster), then ip
 #   patroni.sh control    Ansible (pip, in a venv) and autobase $AUTOBASE_REF on the control VM
 #   patroni.sh deploy     inventory + vars (passwords in $LAB/secrets.env), autobase's deploy_pgcluster playbook;
 #                         database labdb, role nexus_backup (pg_read_all_data, REPLICATION, CREATEDB: dump restores into the cluster) for the appliance
@@ -92,6 +94,37 @@ step_ip() {
 	done <<<"$VMS"
 	mv "$LAB/hosts.tmp" "$LAB/hosts"
 	cat "$LAB/hosts"
+}
+
+# name=address of every VM (outside the DHCP pool of the lab network)
+STATIC=${STATIC:-"pg-ctl=10.2.34.241 pg1=10.2.34.242 pg2=10.2.34.243 pg3=10.2.34.244"}
+step_static() {
+	local id n want cur ifc
+	while read -r id n _; do
+		[ -n "$id" ] || continue
+		want=$(tr ' ' '\n' <<<"$STATIC" | sed -n "s/^$n=//p")
+		[ -n "$want" ] || continue
+		cur=$(guest_ip "$id")
+		[ -n "$cur" ] || die "VM $id ($n): no address from the guest agent"
+		if [ "$cur" = "$want" ]; then
+			log "$n has $want"
+			continue
+		fi
+		ifc=$(ssh -n -i "$VM_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+			-o LogLevel=ERROR "root@$cur" "ip -o -4 route show default | awk '{print \$5}'")
+		[ -n "$ifc" ] || die "$n: no default route interface"
+		# the session dies with the old address (keepalive ends it); the address check below decides
+		ssh -n -i "$VM_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+			-o LogLevel=ERROR -o ServerAliveInterval=5 -o ServerAliveCountMax=3 "root@$cur" "sed -i 's/^iface $ifc inet dhcp\$/iface $ifc inet static\\n\\taddress $want\\/24\\n\\tgateway ${GW:-10.2.34.254}/' /etc/network/interfaces &&
+			grep -q 'address $want' /etc/network/interfaces && nohup sh -c 'sleep 1; ip addr flush dev $ifc; ifdown $ifc; ifup $ifc' >/dev/null 2>&1 &" || true
+		for _ in $(seq 30); do
+			[ "$(guest_ip "$id")" = "$want" ] && break
+			sleep 2
+		done
+		[ "$(guest_ip "$id")" = "$want" ] || die "$n did not come up with $want"
+		log "$n: $cur -> $want"
+	done <<<"$VMS"
+	step_ip
 }
 
 step_vms() {

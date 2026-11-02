@@ -1836,3 +1836,10 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   20 blocks written (80 MB), 236 zero blocks skipped; generation 2, 512 MB, 1 vCPU, the 1 GiB disk on SCSI, off;
   removed again. Found: gexec's file upload stalled on one part file of the agent binary (a lock on the Windows
   side, probably the virus scanner); the same file uploaded under another name.
+- [x] #158 Patroni lab on fixed addresses (2026-11-02, `patroni.sh static`): the nightly patroni step had failed
+  because the nodes' DHCP leases moved while the VMs were off (etcd and Patroni are configured with addresses).
+  New step `static` writes a fixed address into each guest (Debian ifupdown, outside the DHCP pool: pg-ctl, pg1-pg3
+  on .241-.244), then the nodes were recreated and deployed on them (`destroy vms static control deploy slot
+  source`, PostgreSQL 17, autobase 2.11.0; deploy 863 s, all three nodes ok), the slot on every node, the new
+  source validated. Found: the session to the old address never ends after the switch (ssh now with keepalives,
+  the address check decides); after recreating the nodes, `control` must run again (it puts pg-ctl's key on them).
