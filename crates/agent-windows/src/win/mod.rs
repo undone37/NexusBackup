@@ -390,8 +390,8 @@ impl Platform for Windows {
         hyperv::list()
     }
 
-    fn hv_prepare(&self, vm: &str) -> Result<(String, Vec<PathBuf>), String> {
-        hyperv::prepare(vm)
+    fn hv_prepare(&self, vm: &str, base: Option<&serde_json::Value>) -> Result<(String, Vec<PathBuf>), String> {
+        hyperv::prepare(vm, base)
     }
 
     fn hv_finish(&self, prepared: &str, keep: bool) -> Result<String, String> {

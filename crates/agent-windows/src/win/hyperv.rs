@@ -58,11 +58,19 @@ pub fn list() -> Result<String, String> {
 }
 
 /// The `HvPrepared` JSON and the device of each disk in target order.
-pub fn prepare(vm: &str) -> Result<(String, Vec<PathBuf>), String> {
+pub fn prepare(vm: &str, base: Option<&serde_json::Value>) -> Result<(String, Vec<PathBuf>), String> {
     if vm.len() != 36 || !vm.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
         return Err(format!("invalid VM id {vm:?}"));
     }
-    let json = run(&serde_json::json!({"action": "prepare", "vm": vm}))?;
+    // #39 M2: the base reference point's RCT ids, one per disk (strings only; the script checks their form)
+    let rct: Vec<&str> = base
+        .and_then(|b| b["rct"].as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .filter(|s| s.len() <= 200 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'-'))
+        .collect();
+    let json = run(&serde_json::json!({"action": "prepare", "vm": vm, "rct": rct}))?;
     let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("Hyper-V prepare: {e}"))?;
     let mut disks: Vec<(u64, PathBuf)> = v["disks"]
         .as_array()

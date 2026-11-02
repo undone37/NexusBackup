@@ -697,10 +697,22 @@ pub enum Message {
         /// JSON text
         json: String,
     },
+    // --- appended (CAP_HYPERV_RCT, #39 M2): incrementals by Resilient Change Tracking ---
+    /// Like `HvPrepare`, with the previous backup's reference point: `json` = `{vm, base: {rct: [<id per disk>]}}`.
+    /// The answer (`HvPrepared`) gives each disk `changed`: `[[offset, length], ...]` since its base id, or null
+    /// (no valid base for it: read in full).
+    HvPrepareBase {
+        /// job id chosen by the appliance
+        job: u64,
+        /// JSON text, at most [`MAX_HV_JSON`] bytes
+        json: String,
+    },
 }
 
 /// Capability (v1.10): the agent backs up the VMs of its Hyper-V host (`HvList`, `HvPrepare`, `HvFinish`).
 pub const CAP_HYPERV: &str = "hyperv";
+/// Capability (#39 M2): the agent answers `HvPrepareBase` (the changed ranges of each disk since a reference point).
+pub const CAP_HYPERV_RCT: &str = "hyperv-rct";
 /// Largest JSON text in the Hyper-V messages, bytes.
 pub const MAX_HV_JSON: usize = 256 << 10;
 
@@ -970,7 +982,10 @@ pub fn check(m: &Message) -> io::Result<()> {
         Message::Layout { json } | Message::RescueApply { layout: json, .. } if json.len() > MAX_LAYOUT => {
             return Err(bad("layout too large"))
         }
-        Message::HvVms { json } | Message::HvPrepared { json, .. } | Message::HvFinished { json, .. }
+        Message::HvVms { json }
+        | Message::HvPrepared { json, .. }
+        | Message::HvFinished { json, .. }
+        | Message::HvPrepareBase { json, .. }
             if json.len() > MAX_HV_JSON =>
         {
             return Err(bad("Hyper-V answer too large"))
@@ -1339,6 +1354,10 @@ mod tests {
             },
             Message::HvFinish { job: 1, keep: true },
             Message::HvFinished {
+                job: 1,
+                json: "{}".into(),
+            },
+            Message::HvPrepareBase {
                 job: 1,
                 json: "{}".into(),
             },

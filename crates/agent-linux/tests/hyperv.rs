@@ -89,15 +89,26 @@ impl Platform for FakeHv {
             r#"[{{"id":"{VM}","name":"web","state":"Running","generation":2}}]"#
         ))
     }
-    fn hv_prepare(&self, vm: &str) -> Result<(String, Vec<PathBuf>), String> {
+    fn hv_prepare(&self, vm: &str, base: Option<&serde_json::Value>) -> Result<(String, Vec<PathBuf>), String> {
         if vm != VM {
             return Err(format!("no VM {vm}"));
         }
+        // with the base "rct:1": disk 0 changed in its second block, disk 1 has no valid base
+        let changed = |i: usize| match (base.and_then(|b| b["rct"][i].as_str()), i) {
+            (Some("rct:1"), 0) => format!("[[{},100]]", BLOCK_SIZE + 10),
+            _ => "null".into(),
+        };
         let disks: Vec<String> = self
             .disks
             .iter()
             .enumerate()
-            .map(|(i, (_, size))| format!(r#"{{"name":"scsi0-{i}","target":{},"size":{size}}}"#, i + 1))
+            .map(|(i, (_, size))| {
+                format!(
+                    r#"{{"name":"scsi0-{i}","target":{},"size":{size},"changed":{}}}"#,
+                    i + 1,
+                    changed(i)
+                )
+            })
             .collect();
         let json = format!(
             r#"{{"vm":"{VM}","name":"web","consistency":"crash","disks":[{}]}}"#,
@@ -108,7 +119,7 @@ impl Platform for FakeHv {
     fn hv_finish(&self, _prepared: &str, keep: bool) -> Result<String, String> {
         self.finished.lock().unwrap().push(keep);
         Ok(if keep {
-            r#"{"reference_point":"rp1"}"#.into()
+            r#"{"reference_point":"rp1","rct":["rct:1","rct:1b"]}"#.into()
         } else {
             "{}".into()
         })
@@ -197,9 +208,32 @@ fn hyperv_vm_backup() {
         panic!("config is not a file index")
     };
     assert_eq!(entries[0].path, hyperv::CONFIG_FILE);
-    // a second run commits a later snapshot
+    let Index::Dynamic { entries } = store.load_index(&m, "config").unwrap() else {
+        unreachable!()
+    };
+    let mut cfg = Vec::new();
+    for id in &entries[0].chunks {
+        cfg.extend(store.read_chunk(id).unwrap());
+    }
+    let cfg: serde_json::Value = serde_json::from_slice(&cfg).unwrap();
+    assert_eq!(
+        cfg["reference"]["rct"][0], "rct:1",
+        "the next run's base is in the snapshot"
+    );
+    // #39 M2: a second run with that base reads only disk 0's changed block (disk 1: no valid base, in full)
+    data[0][BLOCK_SIZE as usize + 20] ^= 0xff;
+    fs::write(&disks[0].0, &data[0]).unwrap();
     let r2 = hyperv::backup(&store, &mut map, &mut s, 6, VM, &mut |_| {}).unwrap();
     assert!(r2.time > r.time);
+    assert_eq!((r2.disks[0].1.blocks, r2.disks[1].1.blocks), (1, 1));
+    let m2 = store.load_manifest(&r2.source, r2.time).unwrap();
+    for (i, want) in data.iter().enumerate() {
+        let idx = store.load_index(&m2, &format!("scsi0-{i}")).unwrap();
+        let mut rd = store.image_reader(&idx).unwrap();
+        let mut buf = vec![0; rd.size() as usize];
+        rd.read_at(0, &mut buf).unwrap();
+        assert!(buf == *want, "incremental disk {i} differs");
+    }
     // only the prepared job's disks are readable, at their own job ids
     let e = hyperv::backup(
         &store,
