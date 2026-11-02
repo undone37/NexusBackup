@@ -14,7 +14,8 @@ ExecStart=/usr/libexec/nexus/nexus-disks tick
 # xfs_growfs), DAC_READ_SEARCH (list the store, 0700 nexus-chunkstore, to see that it holds no
 # files; the policy allows directory listing only). No DAC override: request files are read
 # through the group.
-SupplementaryGroups=nexus-webapi
+# nexus-keyd: the keyd socket (0660 in a 0750 dir) for the data array's passphrase (#22 M2)
+SupplementaryGroups=nexus-webapi nexus-keyd
 # CAP_MKNOD: mdadm --create always makes a temporary node for the new md device; CAP_IPC_LOCK: cryptsetup keeps
 # the data array's key in locked memory (#22 M2)
 CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_MKNOD CAP_IPC_LOCK
