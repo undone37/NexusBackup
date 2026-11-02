@@ -8,8 +8,8 @@ present at the console during first boot.
 > installation on physical hardware** yet. Of the disk layout of plan §12.2, the **data array** (RAID over the data
 > disks, created in the web UI, see [Data disks](#data-disks)) is implemented and tested against fake tools; its run
 > in the lab VM (`lab/appliance/disks.sh`) is pending. Mirrored system disks are set up by the installer only as far
-> as the installer supports it, the NVMe metadata tier is a follow-up, and full-disk encryption with LUKS2 and TPM is
-> **not implemented yet**. Treat this chapter as the procedure for test installations.
+> as the installer supports it, the NVMe metadata tier is a follow-up. The system disk
+> (installer ISO from the next release on) and new data arrays are encrypted with LUKS2 and unlocked by the TPM. Treat this chapter as the procedure for test installations.
 
 ## Before you start
 
@@ -75,8 +75,14 @@ it. It contains the signed appliance image, so installation needs no network.
 1. Check the download: `sha256sum -c nexusbackup-<version>-x86_64.iso.sha256`.
 2. Write it to a USB stick (`dd if=nexusbackup-….iso of=/dev/sdX bs=4M conv=fsync`, or any image writer), or attach
    it as virtual media (iDRAC/iLO, or a VM's CD drive). Boot in UEFI mode (legacy BIOS boot is untested).
-3. Boot from it. The installer (Anaconda) asks only for the **installation destination**: pick the system disk.
-   **Everything on that disk is erased.** Language, keyboard, time zone (UTC) and the locked root account are preset;
+3. Boot from it. Without a TPM 2.0 the installer stops at once ("NexusBackup requires a TPM 2.0"). The installer
+   (Anaconda) asks only for the **installation destination**: pick the system disk; on a used disk choose **Reclaim
+   space**, **Delete all**. **Everything on that disk is erased.** **Encrypt my data** is preset: the next dialog
+   shows a generated passphrase, keep it and choose **Save Passphrase**. The installer enrols the TPM for it (PCR 7),
+   so the appliance starts without a passphrase prompt; the generated passphrase is not stored anywhere. If the TPM
+   is cleared or the board replaced, the system disk cannot be opened: reinstall and restore the configuration backup
+   ([14 Disaster recovery](14-disaster-recovery.md)). A passphrase you type instead is used as given, without the
+   TPM: you type it at every start. Language, keyboard, time zone (UTC) and the locked root account are preset;
    accounts and the network are set up later by the first-boot wizard.
 4. Start the installation (about 1–5 minutes), then reboot and remove the medium. The console shows the setup
    wizard (next section).

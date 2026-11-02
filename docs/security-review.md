@@ -435,6 +435,16 @@ Reviewed with the implementation (2026-10-10):
 
 ---
 
+### 3.17 Encrypted system disk from the installer (#22 M3)
+
+- The installer ISO's kickstart (`release/iso/config.toml`) refuses to install without a TPM and partitions the
+  chosen disk as LUKS2 (root and swap; /boot and the ESP clear) with a random passphrase that exists only in the
+  installer's RAM; `%post` enrols a TPM2 token (PCR 7) and the initrd tries it (`rd.luks.options=tpm2-device=auto`).
+  So /var (catalog, credentials, `kek.cred`) is encrypted at rest. Test `release/tests/test_iso_kickstart.py`; lab
+  on pve-test VM 204 through the ISO's own shim/GRUB (state.md).
+- Remaining: installs from `bootc install to-disk` and the OVA stay clear; no keyslot besides the TPM's (a cleared
+  TPM means a reinstall plus the configuration backup); a passphrase typed in the installer replaces the TPM unlock.
+
 ## 4. Findings
 
 ### Fixed in this review
@@ -467,7 +477,7 @@ Reviewed with the implementation (2026-10-10):
 
 | ID | Sev | Finding | Recommendation |
 |---|---|---|---|
-| H-1 | high | KEK stored as a plain 0600 file (`keyd::seal`); no LUKS. Disk theft = all data. *Accepted deferral (user decision 2026-10-08/09).* **Partly closed (#22 M1, §3.14): the KEK is sealed to the TPM (required since 2026-11-01).** | LUKS2 on the data array (M2, §3.15) for new arrays; /var (M3). Appliances installed before the TPM requirement without a TPM keep the old exposure until a TPM is added. |
+| H-1 | high | KEK stored as a plain 0600 file (`keyd::seal`); no LUKS. Disk theft = all data. *Accepted deferral (user decision 2026-10-08/09).* **Partly closed (#22 M1, §3.14): the KEK is sealed to the TPM (required since 2026-11-01).** | LUKS2 on the data array (M2, §3.15) for new arrays; the system disk with /var from the installer ISO (M3, §3.17). Appliances installed before the TPM requirement without a TPM keep the old exposure until a TPM is added. |
 | H-3 | high | scheduler, nexus-pve, nexus-offsite and restore-VM QEMU share uid `nexus-chunkstore` and have no SELinux domain. keyd hands DEKs to that uid. Narrowed 2026-10-21 (Phase 39 S4): nexus-index only fetches keyrings; since 2026-10-25 (#51) it runs as its own uid `nexus-index` (reads the stores through the group `nexus-chunkstore`, 0750/0640), and keyd refuses that uid everything that creates, exports, imports or changes keys (test `read_only_uid_only_fetches_keyrings`). | Separate users (`nexus-scheduler`, `nexus-pve`, `nexus-offsite`, `nexus-restorevm`). QEMU in a transient unit (PrivateNetwork, DeviceAllow=/dev/kvm) with its own domain. keyd ACL per uid. Domain transitions in `os/selinux`. |
 | M-1 | medium | Audit chain unkeyed and not anchored off-box. The journal echo lacks details. No log forwarding config. | HMAC chain with a keyd key or signed checkpoints. Journal/rsyslog TLS forwarding in the image. Single audit writer. Include the head hash in each offsite upload. |
 | M-2 | medium | nftables egress sets are never populated (no code writes them). The firewall blocks DNS/NTS/PVE/SFTP, which invites flushing it. | Root helper or setup generates the sets from the catalog and chrony config (Phase 6 "nftables automation"). |
