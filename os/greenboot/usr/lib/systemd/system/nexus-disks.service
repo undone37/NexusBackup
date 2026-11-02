@@ -15,8 +15,9 @@ ExecStart=/usr/libexec/nexus/nexus-disks tick
 # files; the policy allows directory listing only). No DAC override: request files are read
 # through the group.
 SupplementaryGroups=nexus-webapi
-# CAP_MKNOD: mdadm --create always makes a temporary node for the new md device
-CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_MKNOD
+# CAP_MKNOD: mdadm --create always makes a temporary node for the new md device; CAP_IPC_LOCK: cryptsetup keeps
+# the data array's key in locked memory (#22 M2)
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_MKNOD CAP_IPC_LOCK
 AmbientCapabilities=
 UMask=0022
 TimeoutStartSec=30min
@@ -26,15 +27,16 @@ KillMode=process
 ProtectSystem=strict
 # its control dir, and the store's mount unit (bootc keeps /etc across updates)
 ReadWritePaths=/var/lib/nexus/disks /etc/systemd/system
-# mdadm's map of assembled arrays
-ReadWritePaths=-/run/mdadm
+# mdadm's map of assembled arrays; cryptsetup's LUKS2 locks (tmpfiles.d/nexus-disks.conf)
+ReadWritePaths=-/run/mdadm -/run/cryptsetup
 # xfs_growfs needs the mounted store writable in this namespace (it only issues the grow
 # ioctl; DAC 0700 nexus-chunkstore and SELinux keep the store's contents closed)
 ReadWritePaths=-/var/lib/nexus/chunkstore
-# key material, credentials, the catalog and job state are not even visible
+# key material, credentials, the catalog and job state are not even visible; the keyd socket is (#22 M2: keyd
+# answers root's `luks-data` and nothing else, the KEK files stay hidden)
 InaccessiblePaths=-/var/lib/nexus/keyd -/var/lib/nexus/escrow -/var/lib/nexus/offsite -/var/lib/nexus/catalog
 InaccessiblePaths=-/var/lib/nexus/scheduler -/var/lib/nexus/replicad -/var/lib/nexus/webapi -/etc/nexus
-InaccessiblePaths=-/run/nexus-keyd -/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
+InaccessiblePaths=-/run/nexus-scheduler -/var/lib/nexus/downloads -/var/lib/nexus/plugins-staging
 InaccessiblePaths=-/var/lib/nexus/diag -/var/lib/nexus/tls -/var/lib/nexus/console-unlock
 
 # No network (systemctl and udev queries use unix sockets).
@@ -47,7 +49,7 @@ IPAddressDeny=any
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
-PrivateIPC=yes
+# not PrivateIPC=: device-mapper waits for udev through SysV semaphores of the host's IPC namespace (cryptsetup)
 ProtectHostname=yes
 ProtectClock=yes
 ProtectKernelModules=yes

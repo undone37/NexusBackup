@@ -41,7 +41,31 @@ rc, out = answers[best] if best else (0, "")
 sys.stdout.write(out)
 sys.exit(rc)
 '''
-TOOLS = ("lsblk", "smartctl", "mdadm", "wipefs", "blkid", "mkfs.xfs", "xfs_growfs", "systemctl")
+TOOLS = ("lsblk", "smartctl", "mdadm", "wipefs", "blkid", "mkfs.xfs", "xfs_growfs", "systemctl", "cryptsetup",
+         "systemd-cryptenroll")
+LUKS_KEY = bytes(range(32))
+LUKS_UUID = "11111111-2222-4333-8444-555555555555"
+
+
+def fake_keyd(path, key=LUKS_KEY):
+    """keyd's `luks-data` answer (root only on the appliance; here any peer). Returns the listening socket."""
+    import socket
+    import threading
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.bind(str(path))
+    s.listen(4)
+
+    def serve():
+        while True:
+            try:
+                c, _ = s.accept()
+            except OSError:
+                return
+            with c:
+                if c.recv(64) == b"luks-data\n":
+                    c.sendall(key)
+    threading.Thread(target=serve, daemon=True).start()
+    return s
 
 
 def load():
@@ -103,6 +127,17 @@ class Parsers(unittest.TestCase):
         self.assertEqual(m["md2"]["status"], "UUU_")
         self.assertFalse(m["md0"]["active"])
         self.assertEqual(m["md0"]["members"], [{"dev": "sdx", "slot": 0, "flag": "S"}])
+
+    def test_encrypted_array_shows_the_inner_file_system(self):
+        # #22 M2: md126 holds LUKS2, the XFS sits on the nexus-data mapping
+        node = {"name": "md126", "type": "raid6", "fstype": "crypto_LUKS", "uuid": "luks", "size": "100",
+                "children": [{"name": "nexus-data", "type": "crypt", "fstype": "xfs", "uuid": "fs-uuid",
+                              "fssize": "90", "fsused": "1", "mountpoints": ["/store"]}]}
+        disk = {"name": "sdc", "type": "disk", "children": [node]}
+        mdstat = {"md126": {"active": True, "level": "raid6", "members": [], "action": None, "status": "UUUU"}}
+        a = self.m.build_arrays(mdstat, {}, [disk], "/store")[0]
+        self.assertEqual(a["fs"], {"type": "xfs", "uuid": "fs-uuid", "size": 90, "used": 1, "encrypted": True})
+        self.assertEqual(a["mounts"], ["/store"])
 
     def test_mdadm_detail(self):
         d = self.m.parse_mdadm_detail(fixture("mdadm-detail-md126"))
@@ -189,13 +224,18 @@ class Host(unittest.TestCase):
             "NEXUS_DISKS_DIR": str(self.dir), "NEXUS_DISKS_DEV": str(self.dev), "NEXUS_DISKS_MDSTAT": str(self.mdstat),
             "NEXUS_DISKS_UNIT_DIR": str(self.units), "NEXUS_DISKS_STORE": str(self.store),
             "NEXUS_DISKS_STORE_USER": "root", "FAKE_DIR": str(self.fake),
+            "NEXUS_DISKS_KEYD_SOCKET": str(t / "keyd.sock"),
+            "NEXUS_DISKS_TPM": str(t / "tpmrm0"),
         })
+        (t / "tpmrm0").write_text("")
+        self.keyd = fake_keyd(t / "keyd.sock")
         self.old_env = dict(os.environ)
         os.environ.update(self.env)
         # the fixture mounts the data array at the appliance path
         self.lsblk(fixture("lsblk.json"))
 
     def tearDown(self):
+        self.keyd.close()
         os.environ.clear()
         os.environ.update(self.old_env)
         self.tmp.cleanup()
@@ -328,7 +368,10 @@ class Host(unittest.TestCase):
         self.lsblk(empty_lsblk())
         self.mdstat.write_text(MDSTAT_NO_DATA)
         (self.dev / "md" / "nexus-data").write_text("")
+        (self.dev / "mapper").mkdir(exist_ok=True)
+        (self.dev / "mapper" / "nexus-data").write_text("")
         self.answers["systemctl is-active --quiet nexus-scheduler.service"] = [0, ""]
+        self.answers["cryptsetup luksUUID"] = [0, LUKS_UUID + "\n"]
         self.save()
 
     HDDS = ["WD-WX12D3456701", "WD-WX12D3456702", "WD-WX12D3456703", "WD-WX12D3456704"]
@@ -346,10 +389,27 @@ class Host(unittest.TestCase):
         self.assertEqual(create, f"mdadm --create {self.dev}/md/nexus-data --run --name=nexus-data --metadata=1.2 --level=raid6 "
                                  "--raid-devices=4 --bitmap=internal /dev/sdc /dev/sdd /dev/sde /dev/sdf")
         self.assertIn("PROTO nexus-store|0 0|d--750 0 0|$|", calls)
-        self.assertTrue(any(c.startswith("mkfs.xfs -q -L nexus-data -p ") for c in calls))
+        # #22 M2: md -> LUKS2 (TPM2 token, PCR 7; the keyd key on stdin, never in an argument) -> XFS on the mapping
+        md = f"{self.dev}/md/nexus-data"
+        luks = [c for c in calls if c.startswith(("cryptsetup", "systemd-cryptenroll", "mkfs.xfs"))]
+        self.assertEqual([c.split(" -p ")[0] for c in luks], [
+            f"cryptsetup luksFormat --batch-mode --type luks2 --label nexus-data --key-file=- {md}",
+            f"cryptsetup luksUUID {md}",
+            f"systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 --unlock-key-file=/dev/stdin {md}",
+            f"cryptsetup open --allow-discards --key-file=- {md} nexus-data",
+            "mkfs.xfs -q -L nexus-data",
+        ])
+        self.assertTrue(any(c.startswith("mkfs.xfs ") and c.endswith(f"{self.dev}/mapper/nexus-data") for c in calls))
+        self.assertFalse(any(LUKS_KEY.hex() in c for c in calls), "the key is never an argument")
+        unlock = (self.units / "nexus-data-unlock.service").read_text()
+        self.assertIn(f"ExecStart=/usr/lib/systemd/systemd-cryptsetup attach nexus-data /dev/disk/by-uuid/{LUKS_UUID} none "
+                      "tpm2-device=auto,discard,headless=true\n", unlock)
+        self.assertIn("BindsTo=dev-disk-by\\x2duuid-11111111\\x2d2222\\x2d4333\\x2d8444\\x2d555555555555.device\n", unlock)
+        self.assertIn("Before=cryptsetup.target var-lib-nexus-chunkstore.mount\n", unlock)
         order = [c for c in calls if c.startswith("systemctl") and "is-active --quiet nexus" not in c]
         self.assertEqual(order, ["systemctl --no-ask-password stop nexus-scheduler.service",
                                  "systemctl --no-ask-password daemon-reload",
+                                 "systemctl --no-ask-password enable nexus-data-unlock.service",
                                  "systemctl --no-ask-password enable --now var-lib-nexus-chunkstore.mount",
                                  "systemctl is-active --quiet var-lib-nexus-chunkstore.mount",
                                  "systemctl --no-ask-password start nexus-scheduler.service"])
@@ -358,6 +418,7 @@ class Host(unittest.TestCase):
         self.assertIn(f"Where={self.store}\n", unit)
         self.assertIn("context=system_u:object_r:nexus_store_t:s0", unit)
         self.assertIn("RequiredBy=nexus-scheduler.service nexus-replicad.service", unit)
+        self.assertIn("Requires=nexus-data-unlock.service\nAfter=nexus-data-unlock.service\n", unit)
         self.assertFalse((self.dir / ".mkfs-proto").exists())
 
     def assert_refused(self, rid, text):
@@ -365,6 +426,19 @@ class Host(unittest.TestCase):
         self.assertEqual(ops[rid]["state"], "refused", ops[rid])
         self.assertIn(text, ops[rid]["error"])
         self.assertFalse(any(c.startswith(("mdadm --create", "mkfs", "systemctl --no-ask-password stop")) for c in self.calls()))
+
+    def test_create_needs_tpm_and_key_service(self):
+        self.fresh()
+        os.unlink(os.environ["NEXUS_DISKS_TPM"])
+        self.assert_refused(self.create(), "a TPM 2.0 is required")
+        (Path(os.environ["NEXUS_DISKS_TPM"])).write_text("")
+        self.keyd.close()
+        os.unlink(os.environ["NEXUS_DISKS_KEYD_SOCKET"])
+        rid = self.create()
+        ops = self.tick()
+        self.assertEqual(ops[rid]["state"], "error", ops[rid])
+        self.assertIn("the key service did not answer", ops[rid]["error"])
+        self.assertFalse(any(c.startswith("mdadm --create") for c in self.calls()), "nothing created without the key")
 
     def test_create_refuses_system_disk(self):
         self.fresh()

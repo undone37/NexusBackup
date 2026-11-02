@@ -58,6 +58,11 @@ It asks for the recovery key, seals the key to the TPM's current state and resta
 `setup.keys_reseal`). Plan firmware updates with the recovery key at hand. A system disk moved to new hardware works
 the same way.
 
+The **data array** created on the appliance is encrypted (LUKS2) with two keys: the TPM unlocks it at boot (bound
+to the same Secure Boot state), and a second key derived from the master key opens it on new hardware once the
+master key is resealed. Data disks taken out of the appliance reveal nothing. Arrays created before this release
+stay unencrypted (an existing store is never re-encrypted in place).
+
 ### Boot menu password
 
 The boot menu (GRUB) boots the appliance without any input. Changing a boot entry (key `e`) or opening the GRUB

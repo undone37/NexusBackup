@@ -233,8 +233,9 @@ files_search_var_lib(nexus_domain)
 files_search_pids(nexus_domain)
 allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
 
-# Only keyd may ever touch the TPM (TPM sealing is deferred, the rule stays).
-neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
+# The TPM: keyd's credential is unsealed by PID 1 (#22 M1), so no Nexus domain needs it, except the disk helper
+# that enrols the data array's TPM2 token (systemd-cryptenroll, #22 M2); it cannot read the sealed KEK (below).
+neverallow { nexus_domain -nexus_keyd_t -nexus_disks_t } tpm_device_t:chr_file *;
 # Key material: only keyd (and setup, which runs `keyd init` once) see it; the
 # console gate reads it to check the recovery key (as recover-admin does).
 neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t -nexus_consolegate_t } nexus_keyd_var_lib_t:file { read open };
@@ -1190,6 +1191,9 @@ gen_require(`
 	type systemd_unit_file_t;
 	type mount_t;
 	type fs_t;
+	type lvm_exec_t;
+	type lvm_var_run_t;
+	type var_run_t;
 ')
 
 # python3 with the standard library; lsblk (bin_t), smartctl, wipefs / blkid / mkfs.xfs /
@@ -1262,6 +1266,25 @@ allow nexus_disks_t systemd_unit_file_t:dir rw_dir_perms;
 allow nexus_disks_t nexus_unit_file_t:file { create_file_perms write_file_perms rename unlink setattr };
 filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount")
 filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount.tmp")
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "nexus-data-unlock.service")
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "nexus-data-unlock.service.tmp")
+
+# #22 M2: LUKS2 on the data array. The array's passphrase from keyd (`luks-data`, root only, derived from the KEK);
+# cryptsetup (lvm_exec_t) in this domain: device-mapper control, the kernel keyring (LUKS2 keeps the volume key
+# there), udev synchronisation (semaphores, uevent socket), its lock directory /run/cryptsetup; mlock'd key
+# buffers. systemd-cryptenroll (bin_t) talks to the TPM to enrol the TPM2 token.
+stream_connect_pattern(nexus_disks_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+can_exec(nexus_disks_t, lvm_exec_t)
+dev_rw_lvm_control(nexus_disks_t)
+dev_rw_tpm(nexus_disks_t)
+allow nexus_disks_t self:key { create write search read view link setattr };
+allow nexus_disks_t self:capability ipc_lock;
+allow nexus_disks_t self:sem create_sem_perms;
+allow nexus_disks_t self:netlink_kobject_uevent_socket create_socket_perms;
+allow nexus_disks_t var_run_t:dir { add_name write };
+filetrans_pattern(nexus_disks_t, var_run_t, lvm_var_run_t, dir, "cryptsetup")
+manage_dirs_pattern(nexus_disks_t, lvm_var_run_t, lvm_var_run_t)
+manage_files_pattern(nexus_disks_t, lvm_var_run_t, lvm_var_run_t)
 # systemctl: daemon-reload, enable --now the mount unit, stop/start the scheduler and
 # replicad around the mount, is-active (private socket of PID 1, as root)
 systemd_exec_systemctl(nexus_disks_t)

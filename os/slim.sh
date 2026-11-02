@@ -42,9 +42,10 @@ remove=(
 	# Samba client libraries (SMB shares are kernel CIFS mounts, crate nas)
 	samba-client-libs samba-common samba-common-libs libsmbclient libwbclient libldb libtalloc libtdb libtevent
 	# TPM and LUKS tooling we do not use: systemd-creds seals the KEK with the base tpm2-tss libraries (#22), the FAPI,
-	# tpm2-tools and clevis are not needed; cryptsetup comes back with LUKS2 on the data array (M2)
+	# tpm2-tools and clevis are not needed; cryptsetup stays (LUKS2 on the data array, #22 M2: nexus-disks formats
+	# it, systemd-cryptenroll and the crypttab generator of systemd-udev do the TPM2 token and the unlock)
 	tpm2-tools tpm2-tss-fapi clevis clevis-dracut clevis-luks clevis-pin-tpm2 clevis-systemd jose libjose
-	luksmeta libluksmeta cryptsetup
+	luksmeta libluksmeta
 	# file systems and volume managers the appliance does not create (data array: mdadm + XFS)
 	exfatprogs btrfs-progs lvm2 lvm2-libs device-mapper-persistent-data device-mapper-event
 	device-mapper-event-libs
