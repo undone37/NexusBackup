@@ -286,6 +286,13 @@ fn main() -> Result<()> {
             } else {
                 None
             };
+            let reports = run
+                .manifest
+                .kinds
+                .iter()
+                .find(|k| k.kind == run.kind)
+                .and_then(|k| k.backup.as_ref())
+                .is_some_and(|b| b["reports"] == true);
             let guests: Vec<Option<String>> = if run.cfg.guests.is_empty() {
                 vec![None]
             } else {
@@ -319,6 +326,23 @@ fn main() -> Result<()> {
                     Some(s) => into(s),
                     None => open_store(&run.cfg).and_then(|s| into(&s)),
                 };
+                if reports {
+                    // #137: the source shows how its last backup ended; a report that does not arrive is a log line
+                    let rep = match &r {
+                        Ok(r) => json!({"guest": g, "time": r.time,
+                            "state": if r.consistent && r.warnings == 0 { "ok" } else { "warning" },
+                            "snapshot": format!("{}/{}", r.source, r.time),
+                            "message": format!("{} files, {} bytes read, {} new", r.files, r.bytes, r.new_bytes)}),
+                        Err(e) => json!({"guest": g, "time": now_secs(), "state": "failed", "snapshot": null,
+                            "message": plugin_host::escape(&format!("{e:#}"), 400)}),
+                    };
+                    let sent = run
+                        .spawn(Op::Report, run.timeouts(Op::Report))
+                        .and_then(|mut p| ops::report(&mut p, &run.ops_params(), rep, &mut |l| out_line(l)));
+                    if let Err(e) = sent {
+                        out_line(&format!("warning: backup report to {source} not delivered: {e:#}"));
+                    }
+                }
                 match r {
                     Ok(r) => Ok(json!({
                         "source": r.source, "time": r.time, "base": r.base, "entries": r.entries, "files": r.files,
@@ -496,6 +520,12 @@ fn main() -> Result<()> {
         _ => bail!("{usage}"),
     }
     Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]

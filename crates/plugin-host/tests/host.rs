@@ -206,6 +206,21 @@ fn validate_guests_mount() {
     let mut log = Vec::new();
     let r = ops::validate(&mut e.proc(30, 10), &p, &mut |l| log.push(l.to_owned())).unwrap();
     assert_eq!(r, json!({"valid": true}));
+    // v1.11 report (#137): acknowledged, or the plugin's error
+    ops::report(
+        &mut e.proc(30, 10),
+        &p,
+        json!({"guest": "g", "state": "ok"}),
+        &mut |_| {},
+    )
+    .unwrap();
+    let err = ops::report(
+        &mut e.proc(30, 10),
+        &p,
+        json!({"guest": "g", "state": "refuse"}),
+        &mut |_| {},
+    );
+    assert!(format!("{:#}", err.unwrap_err()).contains("refused"));
     let r = ops::validate(
         &mut e.proc(30, 10),
         &ops::Params {

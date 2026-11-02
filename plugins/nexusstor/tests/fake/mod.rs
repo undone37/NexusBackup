@@ -116,6 +116,8 @@ pub struct State {
     pub page: usize,
     /// every vStor's `anomaly` in the inventory (NexusStor's change-rate finding)
     pub anomaly: Option<Value>,
+    /// `POST /vstors/<v>/report` bodies received (contract step 3), with the vStor
+    pub reports: Vec<(String, Value)>,
 }
 
 pub struct Fake {
@@ -390,6 +392,13 @@ fn serve(tcp: TcpStream, cfg: Arc<ServerConfig>, st: &Mutex<State>) -> std::io::
             }
             out.extend(b"{\"end\": true}\n");
             stream(&mut s, &out)
+        }
+        ("POST", ["vstors", v, "report"]) => {
+            if !g.vstors.contains_key(*v) {
+                return respond(&mut s, 403, &json!({"error": "not in scope"}));
+            }
+            g.reports.push(((*v).to_owned(), body.clone()));
+            respond(&mut s, 200, &json!({"vstor": v, "state": body["state"]}))
         }
         ("POST", ["vstors", v, "list"]) => {
             let (evil, page) = (g.evil, g.page);

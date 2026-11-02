@@ -260,6 +260,19 @@ mod plugin {
                 .collect())
         }
 
+        /// #137: NexusStor shows the newest report on the vStor and raises `backup_overdue` without one.
+        fn report(&mut self, ctx: &Ctx) -> Result<()> {
+            let c = config(ctx)?;
+            let Some(guest) = ctx.guest() else { return Ok(()) };
+            crate::backup::check_guest(guest)?;
+            let p = &ctx.params;
+            let body = serde_json::json!({
+                "time": p["time"], "state": p["state"], "snapshot": p["snapshot"],
+                "message": p["message"].as_str().unwrap_or("").chars().take(500).collect::<String>(),
+            });
+            c.nst()?.report(guest, &body)
+        }
+
         fn backup(&mut self, ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult> {
             let c = config(ctx)?;
             let guest = ctx

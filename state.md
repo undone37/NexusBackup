@@ -1749,3 +1749,13 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   MySQL testbox suites (a log run stays incremental on the newest base, CI `testbox`). No lab run: the testbox
   suites run the real plugins against real servers.
   - open (in #43): `log_chain` alert, per-database timeline view.
+
+## NexusStor contract step 3: backup reports (added 2026-11-02, #137)
+
+- [x] Plugin contract v1.11 `Op::Report` (manifest `backup.reports`): after each guest's backup the plugin host
+  reports ok / warning / failed with the snapshot; nexusstor plugin 1.1.0 posts it to
+  `POST /nexusbackup/v1/vstors/<v>/report`. NexusStor side in undone37/NexusStor PR 58 (catalog v12, vStor card
+  "Last backup by NexusBackup", `backup_overdue` after 26 h). Tests: plugin-host ops, nexusstor plugin against its
+  fake NexusStor, NexusStor `backup_reports_and_overdue`. No lab run yet (NexusStor PR not merged).
+  - open (in #137): pairing scopes, findings, restores, LUN, whole vStor, S3 target (proposal in NexusStor PR 32,
+    waiting for review).

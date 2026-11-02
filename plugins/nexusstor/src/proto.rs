@@ -583,6 +583,15 @@ impl Nst {
         Ok(c)
     }
 
+    /// Contract step 3 (#137): how NexusBackup's last backup job of vStor `v` ended (`POST .../report`).
+    pub fn report(&self, v: &str, report: &serde_json::Value) -> Result<()> {
+        self.client
+            .request("POST", &format!("/vstors/{v}/report"), Some(report))?
+            .ok()?
+            .bytes(64 << 10)?;
+        Ok(())
+    }
+
     pub fn release(&self, v: &str, s: &str) -> Result<()> {
         ensure!(valid_snap(s), "not a nexusbackup snapshot");
         self.client

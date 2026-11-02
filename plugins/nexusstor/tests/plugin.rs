@@ -255,6 +255,36 @@ fn nexusstor_anomaly_reaches_the_snapshot_meta() {
     );
 }
 
+/// #137 contract step 3: the host's report after a backup reaches NexusStor as `POST /vstors/<v>/report`.
+#[test]
+fn backup_report_reaches_nexusstor() {
+    let l = paired();
+    let b = l.host.backup(&l.cfg, Some("acme")).unwrap();
+    let snap = format!("{}/{}", b.source, b.time);
+    l.host
+        .report(
+            &l.cfg,
+            json!({"guest": "acme", "state": "ok", "time": b.time, "snapshot": snap, "message": "x".repeat(900)}),
+        )
+        .unwrap();
+    let got = l.fake.state.lock().unwrap().reports.clone();
+    assert_eq!(got.len(), 1);
+    let (v, body) = &got[0];
+    assert_eq!((v.as_str(), body["state"].as_str()), ("acme", Some("ok")));
+    assert_eq!(body["snapshot"].as_str(), Some(snap.as_str()));
+    assert_eq!(
+        body["message"].as_str().unwrap().len(),
+        500,
+        "cut to the contract's limit"
+    );
+    // a vStor NexusStor refuses: the report op fails (the host logs it, the backup stays as it was)
+    let e = l.host.report(
+        &l.cfg,
+        json!({"guest": "gone", "state": "failed", "time": 1, "snapshot": null}),
+    );
+    assert!(e.is_err());
+}
+
 #[test]
 fn unpinned_server_certificate_is_refused() {
     let l = lab();
