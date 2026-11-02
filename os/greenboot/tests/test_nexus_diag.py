@@ -240,10 +240,10 @@ class Checks(Host):
         self.assertEqual(
             sorted(cs),
             sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
-                    "catalog.integrity", "selinux", "auditd", "tpm", "systemd.failed", "bootc", "smart", "network.mtu"]),
+                    "catalog.integrity", "selinux", "auditd", "tpm", "systemd.failed", "bootc", "smart", "encryption", "network.mtu"]),
         )
         for cid, c in cs.items():
-            want = "skip" if cid in ("smart", "network.mtu") else "pass"
+            want = "skip" if cid in ("smart", "encryption", "network.mtu") else "pass"
             self.assertEqual(c["status"], want, c)
             self.assertEqual(c["severity"], 1)
             self.assertEqual(c["manual"], "15-troubleshooting-faq.md#check-" + cid.replace(".", "-"))
@@ -345,6 +345,20 @@ class Checks(Host):
         ok["scanned"] = 0
         (self.d / "disks.json").write_text(json.dumps(ok))
         self.assertIn("nexus-disks.timer", self.by_id(self.m.checks())["smart"]["detail"])
+
+    def test_data_array_encryption(self):
+        st = {"scanned": int(time.time()), "disks": [], "arrays": [
+            {"name": "md126", "role": "metadata", "fs": {"type": "xfs", "encrypted": False}},
+            {"name": "md127", "role": "data", "fs": {"type": "xfs", "encrypted": True}}]}
+        (self.d / "disks.json").write_text(json.dumps(st))
+        c = self.by_id(self.m.checks())["encryption"]
+        self.assertEqual((c["status"], c["severity"]), ("pass", 1))
+        st["arrays"][1]["fs"]["encrypted"] = False
+        (self.d / "disks.json").write_text(json.dumps(st))
+        c = self.by_id(self.m.checks())["encryption"]
+        self.assertEqual((c["status"], c["severity"]), ("warn", 2))
+        self.assertIn("md127", c["detail"])
+        self.assertNotIn("md126", c["detail"])
 
     def test_network_mtu(self):
         now = int(time.time())

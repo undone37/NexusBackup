@@ -483,6 +483,24 @@ def smart():
     return "pass", 1, f"{len(st.get('disks') or [])} disk(s), {smart_ok} with SMART, {len(st.get('arrays') or [])} array(s) healthy"
 
 
+def encryption():
+    """#22 M2: the data array's file system sits on LUKS2. Arrays created before M2 are plain: the chunks are encrypted
+    anyway, but names, sizes and the layout of the store are readable from a removed disk."""
+    try:
+        with open(cfg("DISKS_STATUS")) as f:
+            st = json.load(f)
+    except FileNotFoundError:
+        return "skip", 1, "no disk status yet (nexus-disks has not run)"
+    data = [a for a in st.get("arrays") or [] if a.get("role") == "data" and a.get("fs")]
+    if not data:
+        return "skip", 1, "no data array (the store is on the system disk)"
+    plain = [a["name"] for a in data if not a["fs"].get("encrypted")]
+    if plain:
+        return ("warn", 2, "data array not encrypted (created before disk encryption): " + ", ".join(plain)
+                + ". The backups themselves are encrypted; the file system around them is not")
+    return "pass", 1, f"{len(data)} data array(s) encrypted (LUKS2, TPM2 token)"
+
+
 def net_mtu():
     """Path MTU to the destinations of each role as nexus-net last measured it (Phase 22a): ICMP
     echo with DF at the interface MTU. nexus-diag itself sends nothing (it has no network)."""
@@ -696,6 +714,7 @@ def checks():
         check("systemd.failed", "Failed system services", failed_units),
         check("bootc", "OS image (bootc)", bootc),
         check("smart", "Disk health (SMART)", smart),
+        check("encryption", "Data array encryption", encryption),
         check("network.mtu", "Network: path MTU", net_mtu),
     ]
     return out + posture_checks()

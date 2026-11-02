@@ -10547,6 +10547,7 @@ function diagChecks(t: number): Json[] {
       `booted ${db.updates.booted?.version}, rollback ${db.updates.rollback?.version}`,
     ),
     c('smart', 'Disk health (SMART)', 'skip', 1, 'smartctl not installed'),
+    c('encryption', 'Data array encryption', 'pass', 1, '1 data array(s) encrypted (LUKS2, TPM2 token)'),
     c(
       'network.mtu',
       'Network: path MTU',
