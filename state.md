@@ -1856,3 +1856,19 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   (records now kept); after a restore `v$archived_log` also names online redo logs, which the chain check now
   ignores (the lab's delete step had removed an online log of the lab database: repaired from LGWR's open file
   handle, group dropped and recreated). Not covered: restores to another host, restore tests, RAC.
+- [x] #41 SQL Server plugin lab (2026-11-02, VM 201 on 0.0.66-dev, plugin mssql 1.0.0-1.0.2 signed with the test
+  key, `lab/pvehost/mssql-e2e.sh`). Maintainer decision: a sources plugin over SSH like Oracle, and SQL Server on
+  Linux / Docker as well. Docker (`lab/pvehost/mssql-docker.sh`, VM 269: Debian 13, docker.io, the SQL Server 2022
+  image 16.0.4305.5 Developer, container mssql1, labdb FULL with a row per second): full + log 4 s, differential
+  4 s, log runs from the group's log schedule 3 s; point-in-time restore to a mark into labdb_pitr in 10 s
+  (6 files): 888 rows up to the mark, 888 expected, none after it; restore test (verify) 8 s, CHECKDB clean, SQL
+  check returned 914; a log backup taken outside the plugin: the next log run a full with `chain_break` and the
+  critical `log_chain` alert. Windows (`lab/windows/mssql.sh`, VM 268: Windows Server 2022, SQL Server 2022
+  Developer from Microsoft's ISO, OpenSSH server, local administrator with a key, sysadmin login): validate,
+  full 21 s, differential 11-20 s, log runs 11-12 s; point-in-time restore in 11 s: 1660 of 1660 rows, none after
+  it; restore test 13 s, CHECKDB clean; the foreign log backup broke the chain as on Docker. Found and fixed:
+  sqlcmd refuses `-h -1` with `-y 0`; PowerShell 5.1 over Windows OpenSSH stops reading a binary stdin after
+  128 KiB (with `-Command` and `-File`, also with the stock ssh client): restores upload over the SFTP subsystem
+  now (`plugin-ssh` Ssh::upload, russh-sftp already in the tree); the SSEI bootstrapper hangs as SYSTEM through the
+  guest agent (the lab installs from the ISO); a mark after the newest snapshot's range is refused by the API
+  (the e2e's pitr step backs up first).

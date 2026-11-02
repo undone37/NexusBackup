@@ -45,6 +45,13 @@ base snapshot's meta, the scheduler raises it, the next snapshot that continues 
 
 ## #41: SQL Server log chain and point-in-time restore
 
+**Changed 2026-11-02 (maintainer):** a sources plugin over SSH like Oracle (plugin `mssql`, plugins/mssql/README.md)
+instead of a mode of the Windows agent, and SQL Server on Linux (installed or in Docker / Podman) as well. Reason:
+agent sources have none of the plugins' log machinery (log schedules, `log_chain`, the recoverable range in the
+restore dialog, its server-side check, restore tests); the plugin gets all of it unchanged. First step: SQL Server
+writes into a staging folder (as for Oracle); VDI streaming without staging is a later step. The original proposal,
+kept for reference:
+
 - **Where**: a mode `mssql` of the Windows agent on each SQL Server host (the agent is there for VSS anyway). No
   connector on the appliance, no SQL credentials leave the host.
 - **Login**: integrated authentication as the agent service (`NT SERVICE\NexusAgent`), which the administrator adds
@@ -100,7 +107,7 @@ base snapshot's meta, the scheduler raises it, the next snapshot that continues 
 
 1. #43 for the existing PostgreSQL and MySQL plugins (scheduler, retention class, timeline view, alerts): no new
    database, testable in the existing testbox suites.
-2. #41 SQL Server (agent mode `mssql`, VDI), after the licence decision.
+2. #41 SQL Server (plugin `mssql` over SSH, Windows and Linux / Docker, staging), after the licence decision.
 3. #42 Oracle (plugin `oracle`, RMAN over SSH, staging), after the licence decision.
 
 ## Open questions

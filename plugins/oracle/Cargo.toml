@@ -1,6 +1,6 @@
 [package]
 name = "oracle"
-version = "1.0.3"
+version = "1.0.4"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -10,10 +10,9 @@ description = "NexusBackup plugin: Oracle Database through RMAN over SSH (level 
 [dependencies]
 anyhow = "1"
 plugin-sdk = { path = "../../crates/plugin-sdk" }
-russh = { version = "0.65", default-features = false, features = ["ring"] }
+plugin-ssh = { path = "../../crates/plugin-ssh" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
 
 [lints]
 workspace = true
