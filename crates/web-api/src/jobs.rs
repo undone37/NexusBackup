@@ -59,6 +59,9 @@ struct BackupP {
     /// one Linux agent (its linux source)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    /// #39 (M1, no source kind yet): with agent_id, one VM of that Hyper-V host (its id), snapshot `hv-<id>`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hyperv_vm: Option<String>,
     /// group_id only: back up these guests of the group (Phase 13b)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     guests: Option<Vec<Value>>,
@@ -456,6 +459,13 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
             crate::keep::check(b.keep_until)?;
             if b.group_id.is_none() && (b.guests.is_some() || b.failed_only) {
                 return Err(ApiError::bad("params: guests and failed_only need group_id"));
+            }
+            if let Some(vm) = &b.hyperv_vm {
+                if b.agent_id.is_none() || vm.len() != 36 || !vm.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
+                    return Err(ApiError::bad(
+                        "hyperv_vm: the VM id (GUID) of a VM on the Hyper-V host agent_id",
+                    ));
+                }
             }
             match (b.group_id, b.vmid, &b.agent_id) {
                 (None, None, Some(a)) => {

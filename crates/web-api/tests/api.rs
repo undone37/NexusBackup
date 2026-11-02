@@ -1325,6 +1325,12 @@ async fn input_validation() {
         ("backup", json!({"vmid": 5})),
         ("backup", json!({"vmid": 100, "group_id": ids["grp_acme"]})),
         ("backup", json!({"group_id": ids["grp_globex"]})),
+        // #39: a Hyper-V VM needs the host's agent and a GUID
+        (
+            "backup",
+            json!({"vmid": 100, "hyperv_vm": "5A1C2F0E-7B3D-4E6F-9A8B-0C1D2E3F4A5B"}),
+        ),
+        ("backup", json!({"agent_id": "0123456789abcdef", "hyperv_vm": "../x"})),
         (
             "files_get",
             json!({"source": "vm-100", "time": 1000, "paths": ["etc/passwd"], "format": "tar"}),
