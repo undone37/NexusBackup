@@ -422,6 +422,17 @@ Reviewed with the implementation (2026-10-10):
 - Remaining: arrays created before stay clear; /var (catalog, credentials) is M3; re-enrolment of the TPM2 token
   on new hardware is manual until the `nexus-disks` op exists.
 
+### 3.16 Windows volume images and their restore (#19 M1)
+
+- The Windows agent reads its own partitions (VSS shadow copies, the ESP / MSR raw) only on `ImgPrepare` from the
+  appliance it is enrolled with, through the existing job-disk table (`BlockScan` targets 1..15 of that job);
+  nothing else becomes readable over the protocol.
+- The rescue agent writes images only to the partitions its own plan created from the snapshot's layout, after the
+  operator confirmed the target disks (`RescueApply`), and only while that recovery job is open.
+- Policy change: `nexus_agentctl_t` may create one file, `layout.json`, in a scheduler job directory (type
+  transition to `nexus_p2v_work_t`, which `nexus_pve_t` reads); the job directory stays read-only to it otherwise.
+  Without it P2V restores were denied on an enforcing appliance.
+
 ---
 
 ## 4. Findings
