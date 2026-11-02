@@ -116,6 +116,23 @@ impl Platform for FakeHv {
         );
         Ok((json, self.disks.iter().map(|(p, _)| p.clone()).collect()))
     }
+    // #39 M4: the "new VM's disks" are sparse files next to the originals (`<disk>.restored`)
+    fn hv_restore_begin(&self, spec: &serde_json::Value) -> Result<(String, Vec<PathBuf>), String> {
+        let mut paths = Vec::new();
+        let mut out = Vec::new();
+        for (i, d) in spec["disks"].as_array().unwrap().iter().enumerate() {
+            let p = self.disks[i].0.with_extension("restored");
+            let f = fs::File::create(&p).map_err(|e| e.to_string())?;
+            f.set_len(d["size"].as_u64().unwrap()).map_err(|e| e.to_string())?;
+            out.push(serde_json::json!({"name": d["name"], "target": i + 1}));
+            paths.push(p);
+        }
+        Ok((serde_json::json!({"disks": out}).to_string(), paths))
+    }
+    fn hv_restore_finish(&self, _begun: &str, keep: bool) -> Result<String, String> {
+        self.finished.lock().unwrap().push(keep);
+        Ok(if keep { r#"{"vm":"NEW-VM"}"#.into() } else { "{}".into() })
+    }
     fn hv_finish(&self, _prepared: &str, keep: bool) -> Result<String, String> {
         self.finished.lock().unwrap().push(keep);
         Ok(if keep {
@@ -225,6 +242,17 @@ fn hyperv_vm_backup() {
     fs::write(&disks[0].0, &data[0]).unwrap();
     let r2 = hyperv::backup(&store, &mut map, &mut s, 6, VM, &mut |_| {}).unwrap();
     assert!(r2.time > r.time);
+    // #39 M4: the incremental snapshot back onto the host as a new VM: both disks byte-identical
+    finished.lock().unwrap().clear();
+    let back = hyperv::restore(&store, &mut s, 9, &r2.source, r2.time, "web-restored", &mut |_| {}).unwrap();
+    assert_eq!(back["vm"], "NEW-VM");
+    assert_eq!(*finished.lock().unwrap(), [true]);
+    for (i, want) in data.iter().enumerate() {
+        let got = fs::read(disks[i].0.with_extension("restored")).unwrap();
+        assert!(got == *want, "restored disk {i} differs");
+    }
+    let e = hyperv::restore(&store, &mut s, 10, &r2.source, r2.time, "bad/name", &mut |_| {});
+    assert!(format!("{:#}", e.unwrap_err()).contains("invalid VM name"));
     assert_eq!((r2.disks[0].1.blocks, r2.disks[1].1.blocks), (1, 1));
     let m2 = store.load_manifest(&r2.source, r2.time).unwrap();
     for (i, want) in data.iter().enumerate() {

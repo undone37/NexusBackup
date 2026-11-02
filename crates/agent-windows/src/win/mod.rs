@@ -398,6 +398,14 @@ impl Platform for Windows {
         hyperv::finish(prepared, keep)
     }
 
+    fn hv_restore_begin(&self, spec: &serde_json::Value) -> Result<(String, Vec<PathBuf>), String> {
+        hyperv::restore_begin(spec)
+    }
+
+    fn hv_restore_finish(&self, begun: &str, keep: bool) -> Result<String, String> {
+        hyperv::restore_finish(begun, keep)
+    }
+
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {
         let packaged = agent_core::update::packaged(&agent_core::update::package_marker());
         Some(agent_proto::release::HostFacts {

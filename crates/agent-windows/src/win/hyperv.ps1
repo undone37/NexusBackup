@@ -147,5 +147,65 @@ switch ($a.action) {
     # of other backup tools
     Out ([ordered]@{ reference_point = $rp.InstanceID; rct = @($rp.ResilientChangeTrackingIdentifiers) })
   }
+  'restore_begin' {
+    # #39 M4: the disks of a new VM as dynamic VHDX files below the host's virtual disk path, in a directory named
+    # after the VM (refused if it exists), mounted and offline (no volume gets mounted while raw blocks arrive)
+    $sp = $a.spec
+    $name = [string]$sp.name
+    if ($name -notmatch '^[^\\/:*?"<>|\x00-\x1f]{1,100}$') { throw "invalid VM name" }
+    if (Get-VM -Name $name -ErrorAction SilentlyContinue) { throw "a VM named $name exists" }
+    $dir = Join-Path (Get-VMHost).VirtualHardDiskPath $name
+    if (Test-Path $dir) { throw "$dir exists" }
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    $disks = @()
+    try {
+      $n = 0
+      foreach ($d in @($sp.disks)) {
+        $n++
+        if ([string]$d.name -notmatch '^[A-Za-z0-9-]{1,32}$') { throw "invalid disk name" }
+        $file = Join-Path $dir "$($d.name).vhdx"
+        New-VHD -Path $file -SizeBytes ([uint64]$d.size) -Dynamic | Out-Null
+        $disk = Mount-VHD -Path $file -Passthru | Get-Disk
+        Set-Disk -Number $disk.Number -IsOffline $true -ErrorAction SilentlyContinue
+        Set-Disk -Number $disk.Number -IsReadOnly $false
+        $disks += [ordered]@{ name = [string]$d.name; target = $n; file = $file; device = "\\.\PhysicalDrive$($disk.Number)" }
+      }
+    } catch {
+      foreach ($d in $disks) { Dismount-VHD -Path $d.file -ErrorAction SilentlyContinue }
+      Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+      throw
+    }
+    Out ([ordered]@{ name = $name; dir = $dir; config = $sp.config; disks = $disks })
+  }
+  'restore_finish' {
+    # the disks closed; keep: the VM defined from the snapshot's settings (powered off, NICs not connected, new
+    # MACs: the original may still run), else the files removed
+    $b = $a.begun
+    foreach ($d in @($b.disks)) { Dismount-VHD -Path $d.file -ErrorAction SilentlyContinue }
+    if (-not $a.keep) {
+      Remove-Item -Recurse -Force $b.dir -ErrorAction SilentlyContinue
+      Out @{}
+      break
+    }
+    $c = $b.config
+    $gen = if ($c.generation -eq 1) { 1 } else { 2 }
+    $mem = [int64]($(if ($c.memory_mb) { $c.memory_mb } else { 1024 })) * 1MB
+    $vm = New-VM -Name $b.name -Generation $gen -MemoryStartupBytes $mem -NoVHD -Path $b.dir
+    if ($c.cpus) { Set-VMProcessor -VM $vm -Count ([int]$c.cpus) }
+    $i = 0
+    foreach ($d in @($b.disks)) {
+      if ($gen -eq 1 -and $i -lt 2) { Add-VMHardDiskDrive -VM $vm -ControllerType IDE -ControllerNumber 0 -ControllerLocation $i -Path $d.file }
+      else { Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -Path $d.file }
+      $i++
+    }
+    if ($gen -eq 2) {
+      $sb = if ($c.firmware.secure_boot -eq 'On') { 'On' } else { 'Off' }
+      Set-VMFirmware -VM $vm -EnableSecureBoot $sb -FirstBootDevice (Get-VMHardDiskDrive -VM $vm | Select-Object -First 1)
+      if ($sb -eq 'On' -and $c.firmware.template) { Set-VMFirmware -VM $vm -SecureBootTemplate $c.firmware.template }
+    }
+    $nics = @($c.nics).Count
+    for ($k = 1; $k -lt $nics; $k++) { Add-VMNetworkAdapter -VM $vm }
+    Out ([ordered]@{ vm = $vm.Id.ToString().ToUpper(); name = $vm.Name })
+  }
   default { throw "unknown action $($a.action)" }
 }

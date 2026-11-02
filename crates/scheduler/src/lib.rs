@@ -3510,6 +3510,31 @@ impl Scheduler {
                 let sid = p["source_id"]
                     .as_i64()
                     .context("restore of a VM snapshot: source_id (the target Proxmox VE cluster) is required")?;
+                // #39 M4: a Hyper-V snapshot onto a Hyper-V host of the tenant: a new VM, nexus-agentctl hv-restore
+                if cmd == "restore-hyperv" {
+                    if let Ok(src) = self.source_of(tenant, sid, "hyperv") {
+                        let a = self.agent(
+                            tenant,
+                            src["agent_id"].as_str().context("hyperv source without agent_id")?,
+                        )?;
+                        let name = p["name"]
+                            .as_str()
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or("restored-vm")
+                            .to_owned();
+                        plan.key = format!("agent:{}", a.id);
+                        let (f, step) = self.agentctl(
+                            &dir,
+                            job,
+                            &a,
+                            "hv-restore",
+                            json!({"hyperv": {"restore": {"source": source, "time": num(p, "time")?, "name": name}}}),
+                        )?;
+                        plan.files.push(f);
+                        plan.steps.push(step);
+                        return Ok(plan);
+                    }
+                }
                 // an XCP-ng snapshot into an XCP-ng pool of the tenant (#40): a new VM, nexus-xcpng restore
                 if cmd == "restore-xcpng" && self.source_of(tenant, sid, "xcpng").is_ok() {
                     plan.key = format!("guest:{tenant}/{source}");

@@ -109,6 +109,12 @@ pub fn name(m: &Message) -> &'static str {
         Message::HvFinish { .. } => "HvFinish",
         Message::HvFinished { .. } => "HvFinished",
         Message::HvPrepareBase { .. } => "HvPrepareBase",
+        Message::HvRestoreBegin { .. } => "HvRestoreBegin",
+        Message::HvRestoreReady { .. } => "HvRestoreReady",
+        Message::BlockWrite { .. } => "BlockWrite",
+        Message::BlockWriteEnd { .. } => "BlockWriteEnd",
+        Message::BlockWritten { .. } => "BlockWritten",
+        Message::HvRestoreFinish { .. } => "HvRestoreFinish",
     }
 }
 

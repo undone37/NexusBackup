@@ -1831,3 +1831,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   hv- snapshot of nx-rct restored as VM 245 on pve-test in about 30 s: name `nx-rct-restore`, OVMF (generation 2),
   memory and vCPUs from the snapshot, the disk on SATA (1 GiB), one e1000e NIC with link down (PVE gave it a new MAC
   as for other restores to a new VMID); VM 245 removed again.
+- [x] Hyper-V restore back onto the host (2026-11-02, VM 201 on 0.0.66-dev, the new agent on VM 296,
+  `hyperv-e2e.sh restore-back`): the newest hv- snapshot of nx-rct as the new VM nx-rct-restored in about 50 s:
+  20 blocks written (80 MB), 236 zero blocks skipped; generation 2, 512 MB, 1 vCPU, the 1 GiB disk on SCSI, off;
+  removed again. Found: gexec's file upload stalled on one part file of the agent binary (a lock on the Windows
+  side, probably the virus scanner); the same file uploaded under another name.

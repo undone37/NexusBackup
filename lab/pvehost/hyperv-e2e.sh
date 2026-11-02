@@ -138,8 +138,30 @@ step_restore() {
 	pve "qm destroy $TARGET --purge 1 >/dev/null" && log "VM $TARGET restored and removed again"
 }
 
+# #39 M4: the newest hv- snapshot of $VM back onto the Hyper-V host as VM nx-rct-restored, checked, removed again
+step_restore_back() {
+	local vm src time sid j
+	vm=$(win "(Get-VM $VM).Id.ToString().ToLower()" | tr -d '\r')
+	src="hv-$vm"
+	time=$(api admin GET "/snapshots?tenant=lab" | jq -r --arg s "$src" '[.[] | select(.source == $s) | .time] | max // empty')
+	[ -n "$time" ] || die "no snapshot of $src"
+	sid=$(api admin GET /sources | jq -r '.[] | select(.kind == "hyperv" and .name == "hv-host") | .id')
+	[ -n "$sid" ] || die "no source hv-host (step group)"
+	j=$(api admin POST /jobs "$(jq -nc --arg s "$src" --argjson t "$time" --argjson p "$sid" \
+		'{kind:"restore", tenant:"lab", params:{source:$s, time:$t, source_id:$p, name:"nx-rct-restored"}}')")
+	expect 202 "restore onto Hyper-V"
+	j=$(wait_job admin "$(jq -r .id <<<"$j")" 3600)
+	jq -r ".log // \"\"" <<<"$j" | grep -E "blocks written|restored|error" | tail -4 >&2 || true
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "restore onto Hyper-V: $(jq -c '{state, error}' <<<"$j")"
+	win '$v = Get-VM nx-rct-restored; "$($v.Name) gen $($v.Generation) mem $($v.MemoryStartup / 1MB) MB cpus $($v.ProcessorCount) state $($v.State)";
+	     Get-VMHardDiskDrive -VM $v | ForEach-Object { "$($_.ControllerType)$($_.ControllerNumber)-$($_.ControllerLocation) $((Get-VHD $_.Path).Size) bytes" };
+	     $dir = Split-Path (Get-VMHardDiskDrive -VM $v | Select-Object -First 1).Path; Remove-VM -VM $v -Force; Remove-Item -Recurse -Force $dir; "removed"' >&2
+	log "restored onto Hyper-V and removed again"
+}
+
 case ${1:?step} in
 agent) step_agent ;;
+restore-back) step_restore_back ;;
 restore) step_restore ;;
 backup) step_backup ;;
 group) step_group ;;

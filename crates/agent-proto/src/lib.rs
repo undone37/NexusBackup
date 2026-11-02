@@ -707,12 +707,66 @@ pub enum Message {
         /// JSON text, at most [`MAX_HV_JSON`] bytes
         json: String,
     },
+    // --- appended (CAP_HYPERV_RESTORE, #39 M4): a snapshot back onto a Hyper-V host as a new VM ---
+    /// Appliance → agent: create the disks of a new VM (`json` = `{name, config, disks: [{name, size}]}`, the
+    /// snapshot's `hyperv.json` with the new name) as dynamic VHDX files, opened for writing. Answer
+    /// `HvRestoreReady { json: {disks: [{name, target}]} }`; the disks are then written with `BlockWrite` (job
+    /// `job * 16 + target`) and `BlockWriteEnd`, and `HvRestoreFinish` ends the job.
+    HvRestoreBegin {
+        /// job id chosen by the appliance
+        job: u64,
+        /// JSON text
+        json: String,
+    },
+    /// `json` = `{disks: [{name, target}]}`.
+    HvRestoreReady {
+        /// job id
+        job: u64,
+        /// JSON text
+        json: String,
+    },
+    /// Appliance → agent: write `data` at byte `offset` of the disk at `target` of the restore job (no answer;
+    /// blocks of zeros are not sent: a new dynamic VHDX reads as zeros).
+    BlockWrite {
+        /// `job * 16 + target`
+        job: u64,
+        /// the disk's target, 1..=[`MAX_BLOCK_TARGET`]
+        target: u32,
+        /// byte offset, a multiple of 4096
+        offset: u64,
+        /// at most [`BLOCK_SIZE`] bytes
+        data: Vec<u8>,
+    },
+    /// Appliance → agent: every block of the disk at `target` was sent; answer `BlockWritten` (flushed).
+    BlockWriteEnd {
+        /// `job * 16 + target`
+        job: u64,
+        /// the disk's target
+        target: u32,
+    },
+    /// Agent → appliance: the disk's blocks are on disk.
+    BlockWritten {
+        /// `job * 16 + target`
+        job: u64,
+        /// bytes written
+        bytes: u64,
+    },
+    /// Appliance → agent: close the disks; `keep` = define the VM with them (powered off, NICs not connected),
+    /// else delete them. Answer `HvFinished { json: {vm} }` (`{}` when deleted).
+    HvRestoreFinish {
+        /// job id
+        job: u64,
+        /// all disks were written
+        keep: bool,
+    },
 }
 
 /// Capability (v1.10): the agent backs up the VMs of its Hyper-V host (`HvList`, `HvPrepare`, `HvFinish`).
 pub const CAP_HYPERV: &str = "hyperv";
 /// Capability (#39 M2): the agent answers `HvPrepareBase` (the changed ranges of each disk since a reference point).
 pub const CAP_HYPERV_RCT: &str = "hyperv-rct";
+/// Capability (#39 M4): the agent restores snapshots as new VMs on its Hyper-V host (`HvRestoreBegin`).
+pub const CAP_HYPERV_RESTORE: &str = "hyperv-restore";
 /// Largest JSON text in the Hyper-V messages, bytes.
 pub const MAX_HV_JSON: usize = 256 << 10;
 
@@ -986,11 +1040,23 @@ pub fn check(m: &Message) -> io::Result<()> {
         | Message::HvPrepared { json, .. }
         | Message::HvFinished { json, .. }
         | Message::HvPrepareBase { json, .. }
+        | Message::HvRestoreBegin { json, .. }
+        | Message::HvRestoreReady { json, .. }
             if json.len() > MAX_HV_JSON =>
         {
             return Err(bad("Hyper-V answer too large"))
         }
         Message::HvPrepare { vm, .. } if vm.len() > MAX_TEXT => return Err(bad("VM id too long")),
+        Message::BlockWrite {
+            target, offset, data, ..
+        } if *target == 0
+            || *target > MAX_BLOCK_TARGET
+            || data.len() as u64 > BLOCK_SIZE
+            || data.is_empty()
+            || offset % 4096 != 0 =>
+        {
+            return Err(bad("block write exceeds limits"))
+        }
         Message::SetEdge { addr, cert_sha256 } if addr.len() > MAX_TEXT || cert_sha256.len() > 64 => {
             return Err(bad("edge setting exceeds limits"))
         }
@@ -1361,6 +1427,23 @@ mod tests {
                 job: 1,
                 json: "{}".into(),
             },
+            Message::HvRestoreBegin {
+                job: 1,
+                json: "{}".into(),
+            },
+            Message::HvRestoreReady {
+                job: 1,
+                json: "{}".into(),
+            },
+            Message::BlockWrite {
+                job: 17,
+                target: 1,
+                offset: 4096,
+                data: vec![1; 4096],
+            },
+            Message::BlockWriteEnd { job: 17, target: 1 },
+            Message::BlockWritten { job: 17, bytes: 4096 },
+            Message::HvRestoreFinish { job: 1, keep: true },
         ];
         for (i, m) in ms.into_iter().enumerate() {
             assert_eq!(postcard::to_stdvec(&m).unwrap()[0], first + 1 + i as u8);
@@ -1375,6 +1458,18 @@ mod tests {
             Message::HvPrepare {
                 job: 1,
                 vm: "x".repeat(MAX_TEXT + 1),
+            },
+            Message::BlockWrite {
+                job: 17,
+                target: 1,
+                offset: 100,
+                data: vec![0; 4096],
+            },
+            Message::BlockWrite {
+                job: 17,
+                target: 0,
+                offset: 0,
+                data: vec![0; 4096],
             },
         ] {
             let mut buf = Vec::new();

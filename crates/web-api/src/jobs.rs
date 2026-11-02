@@ -122,6 +122,16 @@ fn agent_name(st: &St, tenant: &str, id: &str) -> ApiResult<String> {
 }
 
 /// Full restore / instant recovery (options: Phase 15a, `crates/pve/src/restore.rs`).
+/// #39 M4: an `hv-` snapshot onto a Hyper-V host (`source_id` of kind `hyperv`) as the new VM `name`.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HvRestoreP {
+    source: String,
+    time: i64,
+    source_id: i64,
+    name: String,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RestoreP {
@@ -565,6 +575,31 @@ pub(crate) fn check_params(st: &St, kind: &str, tenant: &str, p: Value) -> ApiRe
                 if v.as_deref().is_some_and(|u| !xcpng::names::valid_uuid(u)) {
                     return Err(ApiError::bad(format!("{what}: a UUID from the pool")));
                 }
+            }
+            snapshot_exists(st, tenant, &r.source, r.time)?;
+            json!(r)
+        }
+        "restore"
+            if p["source"].as_str().is_some_and(|s| s.starts_with("hv-"))
+                && p["source_id"].as_i64().is_some_and(|sid| {
+                    st.cat
+                        .conn()
+                        .query_row(
+                            "SELECT 1 FROM sources WHERE id = ?1 AND tenant = ?2 AND kind = 'hyperv'",
+                            params![sid, tenant],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .is_ok()
+                }) =>
+        {
+            // #39 M4: back onto a Hyper-V host of the tenant as a new VM (never over the original)
+            let r: HvRestoreP = parse(p)?;
+            validate::source_ref(&r.source)?;
+            if r.name.is_empty()
+                || r.name.len() > 100
+                || r.name.chars().any(|c| c.is_control() || "\\/:*?\"<>|".contains(c))
+            {
+                return Err(ApiError::bad("name: 1..=100 characters, none of \\ / : * ? \" < > |"));
             }
             snapshot_exists(st, tenant, &r.source, r.time)?;
             json!(r)
