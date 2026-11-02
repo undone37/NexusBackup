@@ -70,8 +70,10 @@ writers; Data Deduplication, EFS; GPO/Intune deployment; image or bare-metal bac
 |---|---|---|---|
 | 9.2.2 | nested in QEMU, single node | backup, incrementals with dirty bitmaps, restore, file index | passed |
 | 9.2.x (9.2.21 storage API 16 noted) | the PVE lab host `pve-test`, single node, the appliance as VM 201 | VM and container backup, full restore, instant recovery, restore tests incl. a Windows VM with vTPM, file index and search | passed |
+| 9.2.2 | two nested nodes in cluster `nexuslab` (2026-11-01) | backup on node 1, live migration with a local disk, incremental backup on node 2 (the dirty bitmap migrated), byte-exact restore | passed |
+| 9.2.2 | nested node with a single-host Ceph 20.2 (2026-10-25) | backup and in-place rollback on RBD | passed |
 
-Not tested: multi-node clusters, Ceph/RBD storage, PVE 8 (not supported).
+Not tested: more than two nodes, HA failover, multi-node Ceph, PVE 8 (not supported).
 
 ## TrueNAS (connector `nexus-truenas`)
 

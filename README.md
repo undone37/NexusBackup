@@ -1,7 +1,8 @@
 # NexusBackup Appliance
 
-A self-contained backup appliance for Proxmox VE, Linux and Windows hosts, NAS shares, TrueNAS, PostgreSQL,
-MySQL/MariaDB and Microsoft 365. It **pulls** data from every source, keeps it as **deduplicated, encrypted
+A self-contained backup appliance for Proxmox VE (single nodes and clusters), VMware vSphere (ESXi and vCenter),
+Microsoft Hyper-V, XCP-ng, Linux and Windows hosts, NAS shares, TrueNAS, NexusStor, PostgreSQL, MySQL/MariaDB and
+Microsoft 365. It **pulls** data from every source, keeps it as **deduplicated, encrypted
 forever-full snapshots** and copies it to **immutable offsite storage**. Licensed under AGPL-3.0.
 
 > [!WARNING]
@@ -32,36 +33,37 @@ recovery key.
 
 | Source | How it is backed up | Restores |
 |---|---|---|
-| **Proxmox VE 9** VMs | PVE backup provider plugin on the node; changed blocks from QEMU dirty bitmaps; fleecing; zero blocks skipped | full VM restore (including EFI disk and TPM state), instant recovery (boot from the backup, then live disk move), instant disk attach, in-place rollback writing only changed blocks, single files from inside the guest |
-| Proxmox VE containers | tar stream from the container's user namespace | full container restore, file download |
+| **Proxmox VE 9** VMs, single nodes and clusters | PVE backup provider plugin on every node, one source per cluster; changed blocks from QEMU dirty bitmaps (they survive live migration between nodes); fleecing; zero blocks skipped; local, LVM-thin, ZFS, NFS and Ceph RBD storage | full VM restore (including EFI disk and TPM state), instant recovery (boot from the backup, then live disk move), instant disk attach, in-place rollback writing only changed blocks, single files from inside the guest |
+| Proxmox VE containers | tar stream from the container's user namespace | full container restore, in-place rollback, file download |
+| **VMware vSphere** (standalone ESXi 7/8 or vCenter 7/8 with its clusters) | connector `nexus-vmware`: snapshots (quiesced through VMware Tools), changed block tracking, reads over NFC (no VDDK) or through a hot-add proxy VM (`nexusbackup-proxy` OVA); VMs that move between hosts keep their incrementals | as a new Proxmox VE VM (conversion), single files; not yet back to vSphere |
+| **Microsoft Hyper-V** (standalone hosts) | the Windows agent on the host: recovery checkpoints, Resilient Change Tracking for incrementals | as a new Proxmox VE VM, as a new VM on a Hyper-V host, single files |
+| **XCP-ng** 8.3 | connector `nexus-xcpng`: XAPI snapshots, changed block tracking, NBD over TLS | into the pool, as a new Proxmox VE VM, single files |
 | Linux hosts | `nexus-agent` (static binary, .deb/.rpm, x86_64 and aarch64): LVM, ZFS or btrfs snapshots; source-side dedup | restore to a path or another host, tar/zip download, bare-metal recovery and P2V through a rescue ISO |
 | Windows Server and Windows 11 | `nexus-agent` MSI: VSS snapshots, USN journal for incrementals, security descriptors, alternate data streams; tray app | restore to a path or another host, tar/zip download |
 | NFS / SMB shares | read-only mounts on the appliance, parallel scan | tar/zip download, clean-file restore |
 | TrueNAS (SCALE) | ZFS snapshots plus `zfs diff` over the API and a restricted SSH user | tar/zip download |
 | PostgreSQL 14+ (plugin) | logical dumps per database; base backup plus WAL | restore to the source or another server, point in time |
 | MySQL / MariaDB (plugin) | dumps; physical backup plus binlog | restore, point in time |
+| NexusStor vStors (plugin) | ZFS snapshots, `zfs diff` incrementals | tar/zip download |
 | Microsoft 365 (plugin) | Microsoft Graph: mailboxes, OneDrive, SharePoint libraries, Teams, Entra ID export | download; restore to the original or another user, site or team; export as eml/mbox/PST |
 
 ### Planned sources
 
-In development or planned, each with its phase in `plan.md`. None of these work yet. The standalone agents aim
-at feature parity with Veeam Agent for Windows and Linux.
+In development or planned; open work is tracked in [GitHub issues](https://github.com/undone37/NexusBackup/issues).
+None of these work yet unless the row says so.
 
-| Source | Planned approach | Planned restores | Plan |
+| Source | Planned approach | Planned restores | Issue |
 |---|---|---|---|
-| **VMware ESXi** (standalone hosts, 7.0 and 8.0) | plugin `vmware-esxi`: snapshots with VMware Tools quiescing, changed block tracking (`QueryChangedDiskAreas`), datastore reads over HTTPS | to Proxmox VE (VM conversion), single files; back to ESXi later | Phase 41 |
-| **VMware vCenter** (7 and 8) | plugin `vmware-vcenter` on the same vSphere library: inventory, clusters, VMs that move between hosts, least-privilege role | as ESXi | Phase 41 |
-| **Windows bare metal** | volume images (EFI, MSR, Windows, recovery) with the layout of every backup | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | Phase 37 |
-| **Standalone Linux agent** (no appliance needed) | the same `nexus-agent` in standalone mode, for small sites without a backup server: entire machine, volumes or files into a local, USB, NFS, SMB, SFTP or S3 repository (same format as the appliance: deduplicated, always encrypted, 24-word recovery key, S3 Object Lock); schedules and triggers on the client; PostgreSQL and MySQL/MariaDB plugins locally; desktop UI, TUI and CLI | files and folders from the desktop UI, volumes, whole machine through the rescue ISO; later attach the repository to an appliance without a new full backup | Phase 38 |
-| **Standalone Windows agent** (no appliance needed) | the same MSI in standalone mode: entire computer, volumes or files to the same targets; backup at lock or log off, when the USB disk is connected, on idle; application-aware VSS (SQL Server, Exchange, Active Directory) with log truncation as an option; tray app | files with versions and search, volumes, bare-metal recovery (Phase 37), export as VHDX/qcow2 | Phase 38 |
-| **Microsoft SQL Server** | VSS writer with full, differential and transaction log backups (log chain, optional log truncation) | database to a point in time, to the source or another instance | Phase 38f, 42 |
-| **Oracle Database** | RMAN backups plus archive logs | database to a point in time | Phase 38f, 42 |
-| **Exchange Server, Active Directory** | application-aware VSS (full backups that truncate Exchange logs), AD system state | databases; AD objects as far as the comparison in 38a decides | Phase 38f |
-| **Microsoft Hyper-V** (Windows Server 2019 to 2025) | host-level VM backups with Resilient Change Tracking, production checkpoints | full VM, to Proxmox VE, single files | Phase 42 |
-| **XCP-ng / XenServer** | XAPI snapshots with changed block tracking, VDI export | full VM, to Proxmox VE, single files | Phase 42 |
+| **Oracle Database** | plugin `oracle`: RMAN over SSH on the database host (level 0/1, archived logs on their own schedule); in development | database to a point in time | #42 |
+| **Microsoft SQL Server** | full, differential and transaction log backups (log chain); today only copy-only VSS snapshots of the data files | database to a point in time, to the source or another instance | #41 |
+| **Windows bare metal** | volume images with the disk layout of every backup (WinPE-based restore; spike done) | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | #19 |
+| **Hyper-V failover clusters** | cluster-aware inventory and backups through the agent on every node | as standalone Hyper-V | #39 |
+| **Restore back to vSphere** | VM restore into ESXi / vCenter | full VM | #23 |
+| **Standalone agents** (no appliance) | working today: files and volumes into a local, USB, NFS, SMB repository with copies to SFTP or S3; planned: whole-machine images, application-aware processing, restores from the desktop UI, attaching a repository to an appliance | | #20 follow-ups |
+| **Exchange Server, Active Directory** | application-aware VSS with log truncation; AD objects | databases; AD objects | Phase 38f |
 
-Log backups that already work: PostgreSQL WAL archiving and MySQL/MariaDB binlogs (point-in-time restore, table
-above). SQL Server transaction logs and Oracle archive logs are part of the planned work above.
+Log backups that work today: PostgreSQL WAL and MySQL/MariaDB binlogs, on their own schedule per group (for example
+every 15 minutes), with the recoverable time range shown per snapshot and an alert when the log chain breaks.
 
 ### Storage and security
 - **Storage:**
@@ -140,20 +142,20 @@ above). SQL Server transaction logs and Oracle archive logs are part of the plan
   diagnostics bundle and self-checks.
 
 ## What it does not do
-- **Hypervisors other than Proxmox VE:** no VMware, Hyper-V or XCP-ng yet (planned, see "Planned sources"), and no
-  Nutanix or OpenStack.
+- **Hypervisors:** no Nutanix, OpenStack or Hyper-V failover clusters; no restore back into vSphere (VMware backups
+  restore to Proxmox VE). Windows guests on VMware are not yet tested with quiesced snapshots.
 - **Cloud:** no AWS, Azure or GCP VMs, cloud PaaS databases, Kubernetes, Salesforce or Google Workspace.
 - **Tape and NDMP:** none, and no archive storage classes (Glacier Deep Archive and similar).
-- **Databases other than PostgreSQL and MySQL/MariaDB** are not handled natively yet: Oracle and SQL Server (log
-  chain, point in time) are planned; SAP HANA and DB2 are not. On Windows, VSS takes copy-only snapshots and never truncates logs.
+- **Databases other than PostgreSQL and MySQL/MariaDB** are not handled natively yet: Oracle (in development) and SQL
+  Server (log chain, point in time) are planned; SAP HANA and DB2 are not. On Windows, VSS takes copy-only snapshots and never truncates logs.
 - **Windows:**
-  - file-level backups only, no block-level change tracking;
-  - no bare-metal recovery (Linux only);
+  - file-level backups only, no block-level change tracking (Hyper-V VM disks excepted: RCT);
+  - no bare-metal recovery (Linux only; Windows is planned);
   - EFS-encrypted files are not backed up.
 - **Clustering:** no scale-out cluster and no high availability. One appliance, plus optional replication to a
   second one; replicated tenants cannot be promoted automatically.
-- **Disk encryption:** no TPM-sealed key and no LUKS yet. The key-encryption key is a root-only file on the
-  appliance. Chunks are always encrypted, but whoever has the appliance's disks and that file can read the data.
+- **Disk encryption:** a TPM 2.0 is required. The key-encryption key is sealed to it, and new data arrays are LUKS2
+  volumes unlocked through the TPM. The system disk (with the catalog) is not encrypted yet.
 - **Archiving:** not a long-term archive for legal retention (GoBD, SEC 17a-4).
 - **Vendor-hosted services:** no SaaS and no vendor-hosted vault. You bring your own offsite storage.
 - **AI and machine learning:** none in detection or the data path. The anomaly checks are deterministic.
@@ -162,8 +164,12 @@ above). SQL Server transaction logs and Oracle archive logs are part of the plan
 ## What has been tested
 In this list, "lab" means a run end to end against real software in VMs. The lab used:
 - a Proxmox VE 9.2 host with a Windows Server 2022 member server and domain controller, Windows 11 and a Debian
-  guest, with the appliance as a VM with SELinux enforcing;
-- nested Proxmox VE;
+  guest, with the appliance as a VM with SELinux enforcing and a virtual TPM;
+- nested Proxmox VE, also as a two-node cluster, with a single-host Ceph;
+- VMware ESXi 7.0.3 and 8.0.3 and vCenter 8.0.3 as VMs;
+- a nested Hyper-V host (Windows Server 2022);
+- nested XCP-ng 8.3;
+- a three-node Patroni PostgreSQL cluster (PostgreSQL 14 to 18);
 - Linux VMs (Debian, AlmaLinux, Ubuntu with ZFS, Fedora with btrfs), and on 2026-10-20 the agent packages on the
   default installs of 14 releases: Ubuntu 22.04 to 26.10, Debian 12, 13 and testing, AlmaLinux and Rocky Linux 8, 9
   and 10, openSUSE Leap 16;
@@ -171,17 +177,18 @@ In this list, "lab" means a run end to end against real software in VMs. The lab
 - TrueNAS 25.10.7 and 27.0.0-RC1;
 - NFS and SMB servers;
 - MinIO;
-- Keycloak.
+- Keycloak, Wazuh, PegaProx and a NexusStor appliance.
 
 | Area | Status |
 |---|---|
-| Proxmox VE VM / container backup, full restore, instant recovery, restore tests, file index and search | lab (single PVE node; multi-node untested) |
+| Proxmox VE VM / container backup, full restore, instant recovery, in-place rollback (ZFS, LVM-thin, NFS, Ceph RBD), restore tests, file index and search | lab, including a two-node cluster with a live migration between backups (nested) |
+| VMware vSphere (NFC and hot-add, VMs moved between hosts, restore to Proxmox VE), XCP-ng (backup, restore into the pool and to Proxmox VE), Hyper-V (RCT incrementals, restore to Proxmox VE and to Hyper-V) | lab (nested hypervisors, small Linux guests) |
 | Linux agent (14 distribution releases, packages), Windows agent (Server 2022, Windows 11, domain controller with NTDS), bare-metal recovery (Linux) | lab |
-| NFS/SMB, TrueNAS, PostgreSQL, replication between two appliances, configuration restore, signed updates, installer ISO | lab |
+| NFS/SMB, TrueNAS, NexusStor, PostgreSQL (with Patroni failovers and restore tests), replication between two appliances, configuration restore, signed and offline updates, installer ISO, TPM-sealed keys and encrypted data arrays, instant rollback, clean-file restore, threat scans and IOC hunt, `nexusctl fleet` | lab |
 | SFTP and S3 offsite | lab against a local SFTP test server and MinIO only; never against a real Hetzner Storage Box or S3 provider |
 | Microsoft 365 | Graph mock only; **never run against a real tenant** |
-| MySQL/MariaDB, PSA ticketing, instant rollback, second offsite target, `nexusctl fleet`, clean-file restore, threat scans, IOC hunt, compliance cases | unit and integration tests or mocks only |
-| Scale, soak tests, real backup hardware, Windows Server 2016/2019/2025 | not tested |
+| MySQL/MariaDB (container test suites against real servers), PSA ticketing, second offsite target, compliance cases | unit and integration tests or mocks only |
+| Scale, soak tests, real backup hardware, Windows Server 2016/2019/2025, Hyper-V clusters, vSAN | not tested |
 
 Measured in the lab:
 - **Windows Server VM (120 GB disk):**
@@ -207,7 +214,7 @@ any cell. Detailed reviews: [Veeam](docs/veeam-comparison.md), [Cohesity](docs/c
 | **Deployment** | appliance image (ISO / VM) | software on Windows or a Linux appliance | appliances, virtual edition, SaaS | appliances, SaaS control plane | primary + media servers, appliances | software, HyperScale appliances, SaaS | Debian-based server |
 | **Proxmox VE VMs** | native (backup provider API, dirty bitmaps) | native | as a storage target for PVE's own backups | no native support documented | KVM agentless (11.1+), no PVE-specific integration | native | native (reference implementation) |
 | **Proxmox VE containers** | yes | no | through PVE's own backups | not documented | not documented | not documented | yes |
-| **VMware, Hyper-V, Nutanix** | VMware and Hyper-V planned | yes | yes | yes | yes | yes | no |
+| **VMware, Hyper-V, Nutanix** | VMware (restore to Proxmox VE), Hyper-V standalone, XCP-ng; no Nutanix | yes | yes | yes | yes | yes | no |
 | **Physical Windows / Linux** | agents (file level on Windows) | agents | agents | agents | clients | agents | Linux client only |
 | **Bare-metal recovery** | Linux only | yes | yes | yes | yes | yes | no |
 | **Microsoft 365** | plugin, untested against a real tenant | separate product | yes | yes | separate SaaS | yes | no |
@@ -216,7 +223,7 @@ any cell. Detailed reviews: [Veeam](docs/veeam-comparison.md), [Cohesity](docs/c
 | **Immutability** | extend-only locks, S3 Object Lock | hardened repository, Object Lock | WORM (DataLock) | immutable by design | WORM storage, Object Lock | WORM, Object Lock | no native lock |
 | **Multi-person approval** | yes, for all destructive actions | four-eyes for selected actions | quorum | quorum authorization | multi-person authorization | multi-person authorization | no |
 | **Ransomware detection** | deterministic anomalies, YARA, IOC hashes | yes | yes, ML-based | yes, ML-based | yes, ML-based | yes, ML-based | no |
-| **Automated restore tests** | yes (PVE) | yes (SureBackup) | yes | yes | yes | yes | no (verify jobs check data only) |
+| **Automated restore tests** | yes (PVE, PostgreSQL, MySQL) | yes (SureBackup) | yes | yes | yes | yes | no (verify jobs check data only) |
 | **Tape** | no | yes | via archive | via archive | yes | yes | yes |
 | **Scale-out / HA** | no | scale-out repositories | yes | yes | yes | yes | no (sync jobs between servers) |
 | **Multi-tenancy** | built in, separate keys | Cloud Connect / service providers | yes | yes | yes | yes | namespaces and permissions |
@@ -271,11 +278,11 @@ NexusBackup column is from the lab runs in [state.md](state.md), including a thr
 | **Encryption** | always, per tenant keys on the appliance | repository encryption (optional) | AES-256-GCM |
 | **Deduplication** | across all sources of a tenant (chunk level) | no (block-level incremental instead) | not documented |
 | **Immutability** | extend-only locks, S3 Object Lock | through the storage (object versioning / locks) | not documented |
-| **Restore checks** | none automatic for PostgreSQL yet | `verify` checks the repository, no test restore | test restore into a container after each backup or on a schedule |
+| **Restore checks** | scheduled restore tests: dumps into a throwaway database (row counts, content checksums, an optional SQL check), cluster snapshots point-in-time to a random target, started and queried | `verify` checks the repository, no test restore | test restore into a container after each backup or on a schedule |
 | **UI, approvals** | web UI shared with all other sources, multi-person approval for destructive actions | CLI only | web UI, workspaces with roles, audit log |
 
 For PostgreSQL alone, pgBackRest is the proven choice, especially with Patroni: years of production use, backups
-from a standby and parallel transfers, where the plugin has one lab day behind it. Databasus is the closer match in scope (web UI, logical
+from a standby and parallel transfers, where the plugin has a few lab days behind it. Databasus is the closer match in scope (web UI, logical
 and physical backups, restore checks). NexusBackup fits where PostgreSQL is one source among VMs, hosts and shares
 that should share one store, one key model and one approval process.
 
@@ -285,7 +292,8 @@ that should share one store, one key model and one approval process.
                                              │ intent                       │ /replication/v1 (mTLS)
                                        catalog (SQLite WAL)            nexus-replicad (read-only)
                                              │
- sources ◄── pull ── nexus-scheduler ── spawns connectors: nexus-pve · nexus-agentctl · nexus-truenas · nexus-nas
+ sources ◄── pull ── nexus-scheduler ── spawns connectors: nexus-pve · nexus-vmware · nexus-xcpng · nexus-agentctl
+                         │                                   (Linux, Windows, Hyper-V) · nexus-truenas · nexus-nas ·
                          │                                   nexus-offsite · nexus-replica · plugins (sandboxed)
                          ├── chunk store (dedup → zstd → XChaCha20-Poly1305, locks, GC, verify)
                          └── keyd (KEK, tenant DEKs, recovery-key escrow)
@@ -309,7 +317,7 @@ lab runs it as a VM. The full sizing guide is in [manual/02-installation.md](man
 | Metadata | on the system disk | 2 NVMe drives of at least 1 TB, mirrored |
 | Data | one or more extra disks, or the system disk for a first look | for example 6 × 12 TB in RAID6: about 40 TB usable for 10 TB of raw data after two years of GFS retention |
 | Network | one NIC | separate NICs for management, backup and offsite traffic (at least two) |
-| Firmware | UEFI | UEFI, TPM 2.0 and Secure Boot capable |
+| Firmware | UEFI, TPM 2.0 (a virtual TPM in a VM): required | UEFI, TPM 2.0 (required) and Secure Boot capable |
 
 Sizing notes:
 - **RAM:** add about 0.6–0.7 GB for each NFS/SMB share with around a million files while it is backed up (the file
@@ -351,6 +359,7 @@ for bare-metal recovery and the agent packages:
 |---|---|
 | `nexusbackup-<v>-x86_64.iso` | the appliance installer (UEFI); updates come as signed bootc images |
 | `nexus-rescue-<v>.iso` | Linux bare-metal recovery and P2V |
+| `nexusbackup-proxy-<v>.ova` | the hot-add proxy VM for VMware backups ([manual chapter 4](manual/04-sources.md)) |
 | `nexusbackup-edge-<v>-x86_64.iso` | the edge proxy for roaming laptops (a small VM in the DMZ, [docs/edge.md](docs/edge.md)); not yet tested as a VM |
 | `nexusbackup-<v>-update.tar` | offline update of an appliance without internet access (Settings, Updates) |
 | `nexus-agent_<v>-1_{amd64,arm64}.deb` | Debian, Ubuntu |
@@ -365,7 +374,7 @@ with `release/verify.sh --blobs DIR`. The manual starts with [installation](manu
 [sources](manual/04-sources.md).
 
 ## Documentation
-- [`manual/`](manual): the user manual, 18 chapters with screenshots.
+- [`manual/`](manual): the user manual, 19 chapters with screenshots.
 - [`lab/README.md`](lab/README.md): the reproducible labs (nested PVE, appliance VMs, Linux agent matrix, TrueNAS,
   NAS, e2e).
 - [`docs/release.md`](docs/release.md): how releases are built and signed.
@@ -397,11 +406,14 @@ podman build -f os/Containerfile -t localhost/nexus-os:dev .   # appliance image
 | `crates/pve`, `pve-plugin/` | Proxmox VE connector and node plugin (Perl, `.deb`) |
 | `crates/agent-*` | agent protocol, Linux and Windows agents, desktop UI, appliance side |
 | `crates/fsindex` | guest file system readers for the file index |
+| `crates/vmware`, `crates/xcpng`, `crates/nbd` | VMware vSphere (NFC, hot-add) and XCP-ng connectors, NBD client |
 | `crates/truenas`, `crates/nas` | TrueNAS and NFS/SMB connectors |
-| `crates/plugin-*`, `plugins/` | plugin protocol, sandbox host, SDK; PostgreSQL, MySQL, TrueNAS, Microsoft 365 plugins |
-| `crates/offsite`, `crates/replication` | offsite engine (SFTP, S3) and second-appliance replication |
+| `crates/plugin-*`, `plugins/` | plugin protocol, sandbox host, SDK; PostgreSQL, MySQL, Oracle, TrueNAS, NexusStor, Microsoft 365 plugins |
+| `crates/offsite`, `crates/remote`, `crates/replication` | offsite engine, SFTP / S3 / directory clients, second-appliance replication |
+| `crates/schedule`, `crates/retention`, `crates/reports`, `crates/edge` | schedules and windows, GFS retention, reports, edge proxy |
+| `integrations/` | PegaProx plugin, Wazuh decoder and rules |
 | `restore-vm/` | restore micro-VM and rescue ISO |
-| `os/` | bootc Containerfile, systemd units, SELinux policy, nftables, update and health checks |
+| `os/` | bootc Containerfile, systemd units, SELinux policy, nftables, update and health checks; `os/proxy`: the VMware hot-add proxy |
 | `release/` | packaging, signing, verification, promotion |
 | `manual/`, `lab/`, `docs/` | user manual, labs, design documents |
 
