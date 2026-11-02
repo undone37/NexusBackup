@@ -30,7 +30,7 @@ pub fn client_identity(appliance: &str, now: u64) -> ApiResult<(String, String)>
     Ok((cert.pem(), key.serialize_pem()))
 }
 
-fn hostname() -> String {
+pub fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
         .ok()
         .map(|h| {

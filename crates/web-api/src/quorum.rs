@@ -54,6 +54,8 @@ pub const WEB_ACTIONS: &[&str] = &[
     "approvals.disable",
     "oidc.update",
     "update.apply",
+    crate::power::REBOOT_ACTION,
+    crate::power::POWEROFF_ACTION,
     "settings.anomaly",
     "settings.forwarding",
     "security.session",
@@ -290,6 +292,7 @@ fn direct(st: &St, by: &str, action: &str, target: &str, params: Value) -> ApiRe
         crate::hardware::after_approve(st, action, by, &params, None);
         crate::network::after_approve(st, action, by, &params, None);
         crate::timesync::after_approve(st, action, by, &params, None);
+        crate::power::after_approve(st, action, by, &params, None);
     }
     Ok(Outcome::Direct { quorum_id, extra })
 }
@@ -459,6 +462,8 @@ fn execute(c: &Connection, action: &str, p: &Value, approver: &str, requested_by
         crate::network::ACTION => {}
         // and for nexus-time (timesync::after_approve)
         crate::timesync::ACTION => {}
+        // and for nexus-power (power::after_approve)
+        a if crate::power::ACTIONS.contains(&a) => {}
         "settings.anomaly" => catalog::set_setting(c, crate::storage::ANOMALY_SETTING, &p["anomaly"].to_string())?,
         crate::risk::ACTION => crate::risk::execute(c, p)?,
         "settings.forwarding" => catalog::set_setting(c, catalog::forwarding::SETTING, &p["forwarding"].to_string())?,
@@ -624,6 +629,10 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
             "the requester cannot approve their own request".into(),
         ));
     }
+    // a reboot or shutdown is checked again: an update may have started since the request (#179)
+    if crate::power::ACTIONS.contains(&action.as_str()) {
+        crate::power::check(&st, &p)?;
+    }
     // the provider's approver when a tenant decides last
     let mut recorded: Option<String> = None;
     if ctx.is_tenant_admin() {
@@ -709,6 +718,7 @@ pub async fn approve(State(st): State<St>, ctx: Ctx, Path(id): Path<i64>) -> Api
         crate::hardware::after_approve(&st, &action, &requested_by, &p, Some(id));
         crate::network::after_approve(&st, &action, &requested_by, &p, Some(id));
         crate::timesync::after_approve(&st, &action, &requested_by, &p, Some(id));
+        crate::power::after_approve(&st, &action, &requested_by, &p, Some(&approver));
         st.audit(
             &requested_by,
             &action,

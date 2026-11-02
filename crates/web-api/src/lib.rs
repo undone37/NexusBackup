@@ -88,6 +88,8 @@ pub mod tenant_key;
 pub mod tenants;
 pub mod threat;
 pub mod timesync;
+// reboot and shut down the appliance (issue #179): intent for nexus-power after approval
+pub mod power;
 pub mod tls;
 pub mod tokens;
 pub mod usage;
@@ -169,6 +171,8 @@ pub struct AppState {
     /// nexus-net control dir (default: env `NEXUS_NET_DIR` or /var/lib/nexus/net)
     pub net_dir: std::sync::OnceLock<PathBuf>,
     pub time_dir: std::sync::OnceLock<PathBuf>,
+    /// nexus-power control dir (default: env `NEXUS_POWER_DIR` or /var/lib/nexus/power)
+    pub power_dir: std::sync::OnceLock<PathBuf>,
     /// nexus-nft-sync status file (default: env `NEXUS_NFT_STATUS` or /run/nexus-nft-status/status.json)
     pub nft_status: std::sync::OnceLock<PathBuf>,
     /// `GET /dashboard` answers, ≤ 60 s old
@@ -209,6 +213,7 @@ impl AppState {
             disks_dir: std::sync::OnceLock::new(),
             net_dir: std::sync::OnceLock::new(),
             time_dir: std::sync::OnceLock::new(),
+            power_dir: std::sync::OnceLock::new(),
             nft_status: std::sync::OnceLock::new(),
             dashboard: Default::default(),
             oidc: Default::default(),
@@ -767,6 +772,7 @@ pub fn router(st: St) -> Router {
         .merge(hardware::routes())
         .merge(network::routes())
         .merge(timesync::routes())
+        .merge(power::routes())
         .merge(tenants::routes())
         .merge(approvers::routes())
         .merge(cases::routes())
