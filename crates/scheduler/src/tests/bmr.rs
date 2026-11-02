@@ -42,13 +42,13 @@ fn bmr_plan_enrolls_with_the_sealed_token_then_pins() {
     };
     assert_eq!(bin, &e.cfg.agentctl_bin);
     assert_eq!(args[1], "rescue");
-    let token = plan.files.iter().find(|(n, _)| n == "token").unwrap();
+    let token = plan.files.iter().find(|(n, _)| n == "rescue-token").unwrap();
     assert_eq!(token.1, b"d1g3st");
     let (_, cfg) = plan.files.iter().find(|(n, _)| n == "rescue.json").unwrap();
     let cfg: Value = serde_json::from_slice(cfg).unwrap();
     assert_eq!(cfg["agent"], json!({"id": R, "host": "192.0.2.50", "port": 7444}));
     assert_eq!(cfg["rescue"], json!({"source_agent": A, "time": 1000, "reboot": true}));
-    assert_eq!(cfg["token_file"], json!(plan.dir.join("token")));
+    assert_eq!(cfg["token_file"], json!(plan.dir.join("rescue-token")));
     // the rescue address is on the firewall allow-list while the session is open
     assert_eq!(s.rescue_targets().unwrap(), [("192.0.2.50".to_string(), 7444)]);
 
@@ -126,6 +126,12 @@ fn p2v_plan_and_cleanup_step() {
     )
     .unwrap();
     let plan = s.plan(&job(61, "bmr", p.clone())).unwrap();
+    // every job file once (the rescue token and the PVE source's API token both were `token`)
+    let mut names: Vec<&str> = plan.files.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort_unstable();
+    let n = names.len();
+    names.dedup();
+    assert_eq!(names.len(), n, "job file names collide: {names:?}");
     let Step::Cli { args, .. } = plan.steps.last().unwrap() else {
         panic!()
     };

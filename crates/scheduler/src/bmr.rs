@@ -72,8 +72,10 @@ impl Scheduler {
                     .secrets
                     .open(&rescue_token_location(&s.id, &s.agent), sealed)
                     .with_context(|| format!("rescue session {}", s.id))?;
-                plan.files.push(("token".into(), digest.as_bytes().to_vec()));
-                extra["token_file"] = json!(dir.join("token"));
+                // not `token`: a P2V recovery's cleanup step adds the PVE source's files, whose API token is `token`
+                // (lab 2026-11-02: "cannot write job config: File exists", every P2V recovery failed)
+                plan.files.push(("rescue-token".into(), digest.as_bytes().to_vec()));
+                extra["token_file"] = json!(dir.join("rescue-token"));
             }
             (None, None) => bail!(
                 "the recovery token of session {} was spent or expired: issue a new one",

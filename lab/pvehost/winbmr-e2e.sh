@@ -11,6 +11,7 @@
 #   winbmr-e2e.sh iso       the rescue ISO (target/rescue/nexus-rescue-*.iso, restore-vm/rescue/build.sh) to local:iso
 #   winbmr-e2e.sh p2v       P2V of the newest snapshot as VM $TARGET (SATA, e1000e), the rescue check-in, the
 #                           recovery started and awaited; the VM booted from its disk until its guest agent answers
+#   winbmr-e2e.sh recover   (part of p2v) the rescue check-in, the recovery, the boot check
 #   winbmr-e2e.sh clean     VM $TARGET removed
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444); VMID (293), AGENT (nx-winbmr), TARGET (272),
@@ -122,11 +123,19 @@ step_p2v() {
 		'{time:$t, source_id:$s, node:"pve-test", vmid:$v, name:"winbmr-p2v", storage:$st, iso:"local:iso/nexus-rescue-winbmr.iso",
 		  bridge:"vmbr0", memory:4096, cores:2, appliance:$ap}')")
 	expect 202 "p2v job"
-	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
+	j=$(wait_job admin "$(jq -r .p2v_job <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "p2v: $(jq -r .log <<<"$j" | tail -n 30)"
-	log "VM $TARGET created; waiting for the rescue check-in"
+	log "VM $TARGET created (rescue session $(jq -r .session <<<"$r"))"
+	step_recover
+}
+
+step_recover() {
+	local id snap r j sess end
+	id=$(agent_id)
+	snap=$(api admin GET '/snapshots?tenant=lab' | jq -r --arg s "host-$id" '[.[] | select(.source == $s)] | sort_by(.time) | .[-1].time')
+	log "waiting for the rescue check-in"
 	end=$(($(date +%s) + 900))
-	until sess=$(api admin GET /rescue | jq -r --arg a "$id" '[(.sessions // .)[] | select(.agent_id == $a and .state == "waiting")] | .[-1].id // empty') && [ -n "$sess" ]; do
+	until sess=$(api admin GET /rescue | jq -r --arg a "$id" '[.[] | select(.agent_id == $a and .state == "waiting")] | .[-1].id // empty') && [ -n "$sess" ]; do
 		[ "$(date +%s)" -lt "$end" ] || die "no rescue check-in within 15 minutes"
 		sleep 15
 	done
