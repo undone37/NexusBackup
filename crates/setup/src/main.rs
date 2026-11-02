@@ -284,7 +284,11 @@ fn keys_reseal(args: &[String]) -> Result<ExitCode> {
         Box::new(SystemRunner)
     };
     let mut s = Setup::open(o.paths, runner, o.dry_run, real)?;
-    s.keys_reseal(key.trim())?;
+    let r = s.keys_reseal(key.trim());
+    for l in &s.log {
+        eprintln!("+ {l}");
+    }
+    r?;
     println!(
         "The master key is sealed to the TPM again and the key service was restarted (audited: setup.keys_reseal)."
     );
