@@ -172,6 +172,7 @@
     paths: '',
     excludes: '',
     hooks: false,
+    images: false,
     // Phase 15e: agents + shares
     include: '',
     exclude_regex: '',
@@ -274,6 +275,7 @@
       paths: (l?.paths ?? []).join('\n'),
       excludes: (l?.excludes ?? sh?.excludes ?? []).join('\n'),
       hooks: l?.hooks ?? false,
+      images: l?.images ?? false,
       include: (l?.include ?? sh?.include ?? []).join('\n'),
       exclude_regex: (l?.exclude_regex ?? sh?.exclude_regex ?? []).join('\n'),
       cross_mounts: l?.cross_mounts ?? false,
@@ -516,7 +518,7 @@
     }
     const sel = selection(true);
     if (!sel) return null;
-    return { agent_id: f.agent_id, paths, excludes, hooks: f.hooks, ...sel };
+    return { agent_id: f.agent_id, paths, excludes, hooks: f.hooks, ...(f.images ? { images: true } : {}), ...sel };
   }
 
   /** Include roots, regex excludes (+ nested mounts for agents), or null (after telling the user). */
@@ -1283,6 +1285,12 @@
           ><input type="checkbox" bind:checked={f.hooks} aria-describedby="s-hooks-hint" />{t.sources.hooks}</label
         >
         <div class="hint" id="s-hooks-hint">{t.sources.hooksHint}</div>
+      </div>
+      <div class="field">
+        <label class="inline-check"
+          ><input type="checkbox" bind:checked={f.images} aria-describedby="s-img-hint" />{t.sources.images}</label
+        >
+        <div class="hint" id="s-img-hint">{t.sources.imagesHint}</div>
       </div>
       <fieldset class="field">
         <legend>{t.sources.selection}</legend>

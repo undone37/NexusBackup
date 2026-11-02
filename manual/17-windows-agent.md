@@ -147,9 +147,8 @@ ACLs (and SACLs), owners, alternate data streams and timestamps.
 
 ## Bare-metal recovery (preview)
 
-A backup job with **volume images** (`images: true` in the job parameters, for now through the API: `POST /jobs`
-`{"kind": "backup", "params": {"agent_id": ..., "images": true}}`; agent 0.4 or newer) also stores every
-partition of the boot and system disks as an image: NTFS and ReFS volumes from a VSS snapshot, the EFI system
+With **Bare-metal recovery: also back up the partitions as volume images** on the agent's source (**Sources** →
+the agent source; or `images: true` on a single backup job; agent 0.4 or newer) a backup also stores every partition of the boot and system disks as an image: NTFS and ReFS volumes from a VSS snapshot, the EFI system
 partition and the MSR read raw, plus the disk layout with the MBR boot code. Such a snapshot restores the whole
 machine:
 

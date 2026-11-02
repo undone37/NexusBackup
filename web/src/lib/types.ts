@@ -240,6 +240,8 @@ export interface LinuxSourceConfig {
   exclude_regex?: string[];
   cross_mounts?: boolean;
   skip_fstypes?: string[];
+  /** #19: also the partitions as volume images (bare-metal recovery; Windows agents) */
+  images?: boolean;
 }
 
 /** Config of a `truenas` source (docs/truenas-connector.md). Secrets are write-only. */

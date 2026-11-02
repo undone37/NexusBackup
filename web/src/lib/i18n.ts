@@ -1119,6 +1119,9 @@ export const en = {
     excludesInvalid: 'Excludes: at most 256 patterns.',
     hooks: 'Run pre/post backup hooks on the host',
     hooksHint: 'Scripts in /etc/nexus-agent/hooks.d run before and after each backup (e.g. database dumps).',
+    images: 'Bare-metal recovery: also back up the partitions as volume images (Windows agents)',
+    imagesHint:
+      'The disk layout and every partition of the boot and system disks, read from a VSS snapshot (free space is skipped). Restores the whole machine as a Proxmox VE VM or through the rescue ISO. Each backup reads the whole partitions: schedule this source less often than file backups.',
     // Phase 15e: file selection (agents and shares)
     selection: 'File selection',
     include: 'Include only (one absolute path per line, optional)',

@@ -4694,9 +4694,17 @@ on('POST', '/sources/:id/split', async (c, [id]) => {
 function linuxConfig(tenant: string, cfg: Json): Json {
   for (const k of Object.keys(cfg ?? {}))
     if (
-      !['agent_id', 'paths', 'excludes', 'hooks', 'include', 'exclude_regex', 'cross_mounts', 'skip_fstypes'].includes(
-        k,
-      )
+      ![
+        'agent_id',
+        'paths',
+        'excludes',
+        'hooks',
+        'include',
+        'exclude_regex',
+        'cross_mounts',
+        'skip_fstypes',
+        'images',
+      ].includes(k)
     )
       throw new HttpError(400, `config: unknown field "${k}"`);
   find(db.agents, (a) => a.id === cfg.agent_id && a.tenant === tenant, 'agent in tenant');
@@ -4730,6 +4738,7 @@ function selection(cfg: Json, agent: boolean): Json {
     throw new HttpError(400, 'config.exclude_regex: non-empty patterns');
   if (rx.length) out.exclude_regex = rx;
   if (agent && cfg.cross_mounts) out.cross_mounts = true;
+  if (agent && cfg.images === true) out.images = true;
   const fst = cfg.skip_fstypes ?? [];
   if (agent && fst.length) {
     if (fst.some((x: unknown) => typeof x !== 'string' || !/^[A-Za-z0-9._-]{1,32}$/.test(x)))
