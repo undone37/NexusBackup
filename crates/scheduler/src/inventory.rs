@@ -34,6 +34,7 @@ fn valid_guest(kind: &str, id: &str) -> bool {
         "truenas" => truenas::valid_dataset(id),
         "vmware" => vmware::names::valid_uuid(id),
         "xcpng" => xcpng::names::valid_uuid(id),
+        "hyperv" => crate::valid_hyperv_vm(id),
         k if k.starts_with("plugin:") => plugin_proto::valid_guest_id(id),
         _ => false,
     }
@@ -54,7 +55,7 @@ impl Scheduler {
             .into_iter()
             .filter(|(_, t, _)| !replicated.contains_key(t))
             .filter(|(_, _, kind)| match kind.strip_prefix("plugin:") {
-                None => matches!(kind.as_str(), "pve" | "truenas" | "vmware" | "xcpng"),
+                None => matches!(kind.as_str(), "pve" | "truenas" | "vmware" | "xcpng" | "hyperv"),
                 Some(k) => plugin_manager::current_for_kind(&c, k)
                     .ok()
                     .flatten()
@@ -152,6 +153,20 @@ impl Scheduler {
                 alert: Some("inventory_refresh"),
                 capture: true,
             });
+        } else if kind == "hyperv" {
+            // #39 M3: the host's VMs through its agent, the VM id as guest id (snapshots hv-<id>)
+            let src = self.source_of(&job.tenant, sid, "hyperv")?;
+            let a = self.agent(
+                &job.tenant,
+                src["agent_id"].as_str().context("hyperv source without agent_id")?,
+            )?;
+            let (f, mut step) = self.agentctl(&plan.dir, job, &a, "hv-inventory", json!({}))?;
+            if let Step::Cli { alert, capture, .. } = &mut step {
+                *alert = Some("inventory_refresh");
+                *capture = true;
+            }
+            plan.files.push(f);
+            plan.steps.push(step);
         } else if kind.starts_with("plugin:") {
             let (cur, k, config) = self.plugin_source(&job.tenant, sid)?;
             plan.files = self.plugin_cfg(job, &cur, &k, sid, config, json!({}))?;

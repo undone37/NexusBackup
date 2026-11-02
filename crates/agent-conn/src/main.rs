@@ -573,6 +573,30 @@ fn main() -> Result<()> {
             }
         }
         ("synthetic", []) => synthetic(&cfg)?,
+        ("hv-inventory", []) => {
+            // #39 M3: the scheduler's inventory of a Hyper-V source, `{"guests": [{id, title, kind, tags}]}` last
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let vms = agent_conn::hyperv::list(&mut s)?;
+            s.close();
+            let guests: Vec<serde_json::Value> = vms
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| {
+                    let id = v["id"].as_str().filter(|i| agent_conn::hyperv::valid_vm_id(i))?;
+                    let mut tags = vec![format!(
+                        "state:{}",
+                        v["state"].as_str().unwrap_or("unknown").to_lowercase()
+                    )];
+                    if let Some(g) = v["generation"].as_u64() {
+                        tags.push(format!("generation:{g}"));
+                    }
+                    Some(json!({"id": id.to_ascii_lowercase(), "title": v["name"], "kind": "vm", "tags": tags}))
+                })
+                .collect();
+            println!("{}", json!({ "guests": guests }));
+        }
         ("hv-list", []) => {
             let ca = Ca::load_or_create(&cfg.ca_dir)?;
             let (mut s, _) = cfg.session(&ca)?;

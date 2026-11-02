@@ -2413,6 +2413,48 @@ async fn agents_tokens_enrollment_and_deletion() {
     // linux source + group (guest = the agent)
     let p = t.post("/api/v1/policies", &admin, policy(7, true)).await;
     let pol = p.body["id"].as_i64().unwrap();
+
+    // #39 M3: a Hyper-V source is the host's agent; its groups list VM ids (lowercased), nothing else
+    let hv = t
+        .post(
+            "/api/v1/sources",
+            &admin,
+            json!({"tenant": "acme", "kind": "hyperv", "name": "hv-host", "config": {"agent_id": id}}),
+        )
+        .await;
+    assert_eq!(hv.status, StatusCode::CREATED, "{:?}", hv.body);
+    for bad in [
+        json!({"agent_id": "0000000000000000"}),
+        json!({"agent_id": id, "paths": ["/"]}),
+    ] {
+        let r = t
+            .post(
+                "/api/v1/sources",
+                &admin,
+                json!({"tenant": "acme", "kind": "hyperv", "name": "bad", "config": bad}),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {:?}", r.body);
+    }
+    let hsid = hv.body["id"].as_i64().unwrap();
+    let vm = "5A1C2F0E-7B3D-4E6F-9A8B-0C1D2E3F4A5B";
+    let g = t
+        .post(
+            "/api/v1/groups",
+            &admin,
+            json!({"tenant": "acme", "source_id": hsid, "policy_id": pol, "name": "hv-vms", "guests": [vm]}),
+        )
+        .await;
+    assert_eq!(g.status, StatusCode::CREATED, "{:?}", g.body);
+    assert_eq!(g.body["guests"], json!([vm.to_ascii_lowercase()]));
+    let r = t
+        .post(
+            "/api/v1/groups",
+            &admin,
+            json!({"tenant": "acme", "source_id": hsid, "policy_id": pol, "name": "hv-bad", "guests": [100]}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
     let cfg = json!({"agent_id": id, "paths": ["/etc", "/var/lib/postgresql"], "excludes": ["*.tmp"], "hooks": true});
     let s = t
         .post(

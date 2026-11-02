@@ -669,6 +669,32 @@ fn public_config(raw: &str) -> Value {
     v
 }
 
+/// #39 M3: a Hyper-V host source: the host's enrolled Windows agent (CAP_HYPERV); its VMs are the guests.
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct HyperVConfig {
+    agent_id: String,
+}
+
+impl HyperVConfig {
+    fn check(&self, c: &Connection, tenant: &str) -> ApiResult<()> {
+        validate::agent_id(&self.agent_id)?;
+        if !exists(
+            c,
+            "SELECT 1 FROM agents WHERE id = ?1 AND tenant = ?2",
+            params![self.agent_id, tenant],
+        )? {
+            return Err(ApiError::bad("config.agent_id: no such agent in this tenant"));
+        }
+        Ok(())
+    }
+}
+
+/// A Hyper-V VM id (GUID) as the agent reports it.
+pub fn valid_hyperv_vm(id: &str) -> bool {
+    id.len() == 36 && id.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+}
+
 /// Linux agent source (docs/agent-protocol.md): which agent, what to back up.
 /// No secrets (the agent trust lives in the `agents` table / appliance CA).
 #[derive(Deserialize, Serialize)]
@@ -1394,6 +1420,29 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
             )?;
             return Ok(created(out));
         }
+        "hyperv" => {
+            let cfg: HyperVConfig = parse_config(r.config)?;
+            let (id, out) = {
+                let c = st.cat.conn();
+                if !exists(&c, "SELECT 1 FROM tenants WHERE name = ?1", [&r.tenant])? {
+                    return Err(ApiError::bad("tenant: does not exist"));
+                }
+                cfg.check(&c, &r.tenant)?;
+                c.execute(
+                    "INSERT INTO sources (tenant, kind, name, config) VALUES (?1, 'hyperv', ?2, ?3)",
+                    params![r.tenant, r.name, json!(cfg).to_string()],
+                )?;
+                let id = c.last_insert_rowid();
+                (id, source_json(&c, id)?)
+            };
+            st.audit(
+                ctx.name(),
+                "source.create",
+                &format!("source/{id}"),
+                json!({"tenant": r.tenant, "kind": "hyperv", "name": r.name, "config": out["config"]}),
+            )?;
+            return Ok(created(out));
+        }
         "linux" => {
             let cfg: LinuxConfig = parse_config(r.config)?;
             let (id, out) = {
@@ -1508,7 +1557,7 @@ pub async fn create_source(State(st): State<St>, ctx: Ctx, J(r): J<SourceReq>) -
         }
         _ => {
             return Err(ApiError::bad(
-                "kind: `pve`, `linux`, `truenas`, `vmware`, `nfs`, `smb` or `plugin:<kind>` of an installed plugin",
+                "kind: `pve`, `linux`, `truenas`, `vmware`, `xcpng`, `hyperv`, `nfs`, `smb` or `plugin:<kind>` of an installed plugin",
             ))
         }
     }
@@ -1572,6 +1621,25 @@ pub async fn update_source(
     if kind.starts_with("plugin:") {
         crate::plugins::update_source(&st, id, &kind, &r.name, r.config)?;
         let out = source_json(&st.cat.conn(), id)?;
+        st.audit(
+            ctx.name(),
+            "source.update",
+            &format!("source/{id}"),
+            json!({"name": r.name, "config": out["config"]}),
+        )?;
+        return Ok(Json(out));
+    }
+    if kind == "hyperv" {
+        let cfg: HyperVConfig = parse_config(r.config)?;
+        let out = {
+            let c = st.cat.conn();
+            cfg.check(&c, &tenant)?;
+            c.execute(
+                "UPDATE sources SET name = ?2, config = ?3 WHERE id = ?1",
+                params![id, r.name, json!(cfg).to_string()],
+            )?;
+            source_json(&c, id)?
+        };
         st.audit(
             ctx.name(),
             "source.update",
@@ -2211,12 +2279,12 @@ fn check_group(
             guests.sort_by_key(|g| g.as_str().unwrap_or_default().to_owned());
             guests.dedup();
         }
-    } else if kind == "vmware" || kind == "xcpng" {
-        // guests = VM UUIDs (the inventory's guest ids; the snapshots are vmw-<uuid> / xcp-<uuid>)
-        let valid = if kind == "vmware" {
-            vmware::names::valid_uuid
-        } else {
-            xcpng::names::valid_uuid
+    } else if kind == "vmware" || kind == "xcpng" || kind == "hyperv" {
+        // guests = VM UUIDs (the inventory's guest ids; the snapshots are vmw-<uuid> / xcp-<uuid> / hv-<id>)
+        let valid = match kind.as_str() {
+            "vmware" => vmware::names::valid_uuid,
+            "xcpng" => xcpng::names::valid_uuid,
+            _ => valid_hyperv_vm,
         };
         let mut ids = Vec::with_capacity(guests.len());
         for g in guests.iter() {

@@ -1057,6 +1057,20 @@ const SCHEMA_V51: &str = r#"
 ALTER TABLE tenants ADD COLUMN directory TEXT;
 "#;
 
+/// v53 (#39 M3): source kind `hyperv` (a Hyper-V host behind its Windows agent, docs/hyperv-design.md). Rebuilds
+/// `sources` for the wider kind CHECK like v50.
+const SCHEMA_V53: &str = r#"
+CREATE TABLE sources_v53 (
+  id INTEGER PRIMARY KEY, tenant TEXT NOT NULL REFERENCES tenants(name),
+  kind TEXT NOT NULL CHECK (kind IN ('pve','linux','truenas','nfs','smb','vmware','xcpng','hyperv')
+    OR (kind GLOB 'plugin:[a-z0-9]*' AND kind NOT GLOB 'plugin:*[^a-z0-9-]*' AND length(kind) <= 39)),
+  name TEXT NOT NULL, config TEXT NOT NULL, maintenance_until INTEGER, UNIQUE (tenant, name));
+INSERT INTO sources_v53 (id, tenant, kind, name, config, maintenance_until)
+  SELECT id, tenant, kind, name, config, maintenance_until FROM sources;
+DROP TABLE sources;
+ALTER TABLE sources_v53 RENAME TO sources;
+"#;
+
 // v52 (#43): log runs on their own schedule (database plugins whose manifest declares backup.logs): the
 // policy's schedule then takes the base backups, this one the log-only runs
 const SCHEMA_V52: &str = r#"
@@ -1069,7 +1083,7 @@ const MIGRATIONS: &[&str] = &[
     SCHEMA_V20, SCHEMA_V21, SCHEMA_V22, SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
     SCHEMA_V29, SCHEMA_V31, SCHEMA_V32, SCHEMA_V33, SCHEMA_V34, SCHEMA_V37, SCHEMA_V39, SCHEMA_V40, SCHEMA_V41,
     SCHEMA_V42, SCHEMA_V43, SCHEMA_V44, SCHEMA_V45, SCHEMA_V46, SCHEMA_V47, SCHEMA_V48, SCHEMA_V49, SCHEMA_V50,
-    SCHEMA_V51, SCHEMA_V52,
+    SCHEMA_V51, SCHEMA_V52, SCHEMA_V53,
 ];
 
 /// Placeholder password hash of accounts without a password (pending
@@ -1629,6 +1643,11 @@ mod tests {
     #[test]
     fn migration_v50_adds_xcpng() {
         rebuild_adds_kind(MIGRATIONS.iter().position(|m| *m == SCHEMA_V50).unwrap(), "xcpng");
+    }
+
+    #[test]
+    fn migration_v53_adds_hyperv() {
+        rebuild_adds_kind(MIGRATIONS.iter().position(|m| *m == SCHEMA_V53).unwrap(), "hyperv");
     }
     #[test]
     fn migration_v8_adds_plugins() {
@@ -2589,6 +2608,7 @@ mod tests {
                 "smb",
                 "vmware",
                 "xcpng",
+                "hyperv",
                 "plugin:files",
             ] {
                 conn.execute(

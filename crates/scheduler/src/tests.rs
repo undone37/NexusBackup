@@ -2999,3 +2999,63 @@ fn log_schedule_queues_log_runs_beside_the_base_backups() {
     s.check_log_lag(s.now).unwrap();
     assert_eq!(open(&s), 0);
 }
+
+#[test]
+fn hyperv_source_groups_and_inventory() {
+    // #39 M3: a Hyper-V source = the host's agent; groups list VM ids, one hv-backup step per VM; inventory through
+    // the agent; the group's snapshots are hv-<id>
+    let e = env(4);
+    let (u1, u2) = (
+        "5a1c2f0e-7b3d-4e6f-9a8b-0c1d2e3f4a5b",
+        "5a1c2f0e-7b3d-4e6f-9a8b-0c1d2e3f4a5c",
+    );
+    e.db.conn()
+        .execute_batch(&format!(
+            "INSERT INTO agents (id, tenant, name, host, port, cert_sha256) VALUES ('0123456789abcdef','t1','hv1','10.0.0.7',7444,'ab');
+             INSERT INTO sources (id, tenant, kind, name, config) VALUES (9,'t1','hyperv','hv-host','{{\"agent_id\":\"0123456789abcdef\"}}');
+             INSERT INTO policies (id, name, schedule, gfs, offsite) VALUES (3,'h','daily 22:00','{{\"daily\":7}}',0);
+             INSERT INTO groups (id, tenant, source_id, policy_id, name, guests) VALUES (9,'t1',9,3,'vms','[\"{u1}\",\"{u2}\",\"not-a-vm\"]');"
+        ))
+        .unwrap();
+    let s = sched(&e);
+    let job = |id, kind: &str, p: Value| Job {
+        id,
+        kind: kind.into(),
+        tenant: "t1".into(),
+        params: p,
+    };
+    let p = s.plan(&job(50, "backup", json!({"group_id": 9}))).unwrap();
+    assert_eq!(p.key, "source:9");
+    let names: Vec<&str> = p.files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(
+        names,
+        ["agent-0123456789abcdef-0.json", "agent-0123456789abcdef-1.json"]
+    );
+    let cfg: Value = serde_json::from_slice(&p.files[1].1).unwrap();
+    assert_eq!(cfg["hyperv"]["vm"], u2);
+    let args: Vec<(String, String)> = p
+        .steps
+        .iter()
+        .map(|st| match st {
+            Step::Cli { args, .. } => (args[0].clone(), args[1].clone()),
+            st => panic!("{st:?}"),
+        })
+        .collect();
+    assert_eq!(
+        args[1],
+        (
+            p.dir
+                .join("agent-0123456789abcdef-1.json")
+                .to_string_lossy()
+                .into_owned(),
+            "hv-backup".into()
+        )
+    );
+    let g = s.groups().unwrap().into_iter().find(|g| g.id == 9).unwrap();
+    assert_eq!(crate::group_sources(&g), [format!("hv-{u1}"), format!("hv-{u2}")]);
+    let inv = s.plan(&job(51, "inventory", json!({"source_id": 9}))).unwrap();
+    match &inv.steps[..] {
+        [Step::Cli { args, capture, .. }] => assert_eq!((args[1].as_str(), *capture), ("hv-inventory", true)),
+        st => panic!("{st:?}"),
+    }
+}

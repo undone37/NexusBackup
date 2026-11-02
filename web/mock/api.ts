@@ -4781,8 +4781,18 @@ on('POST', '/sources', async (c) => {
     await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
     return [201, stripSource(s)];
   }
-  if (!['pve', 'linux', 'truenas', 'vmware', 'xcpng', 'nfs', 'smb'].includes(kind))
-    throw new HttpError(400, 'kind: must be pve, linux, truenas, vmware, xcpng, nfs, smb or plugin:<kind>');
+  if (!['pve', 'linux', 'truenas', 'vmware', 'xcpng', 'hyperv', 'nfs', 'smb'].includes(kind))
+    throw new HttpError(400, 'kind: must be pve, linux, truenas, vmware, xcpng, hyperv, nfs, smb or plugin:<kind>');
+  if (kind === 'hyperv') {
+    // #39 M3: the host's enrolled agent; its VMs are the guests
+    const agentId = String(config?.agent_id ?? '');
+    if (!db.agents.some((a) => a.id === agentId && a.tenant === tenant))
+      throw new HttpError(400, 'config.agent_id: no such agent in this tenant');
+    const s = { id: nextId(), tenant, kind: 'hyperv' as const, name, config: { agent_id: agentId } };
+    db.sources.push(s as never);
+    await audit(u.name, 'source.create', `source/${s.id}`, { name, kind });
+    return [201, stripSource(s as never)];
+  }
   if (kind === 'xcpng') {
     const s = { id: nextId(), tenant, kind: 'xcpng' as const, name, config: xcpngConfig(config) };
     db.sources.push(s);

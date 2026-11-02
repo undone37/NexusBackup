@@ -122,7 +122,7 @@
   // A vmware or xcpng source: guests = VM UUIDs from its inventory (kept in f.datasets, like plugin guest ids).
   const vmSource = $derived.by(() => {
     const s = sources.find((x) => x.id === Number(f.source_id));
-    return s?.kind === 'vmware' || s?.kind === 'xcpng' ? s : null;
+    return s?.kind === 'vmware' || s?.kind === 'xcpng' || s?.kind === 'hyperv' ? s : null;
   });
   // An nfs/smb source is one share: the group has no guests.
   const shareSource = $derived.by(() => {
@@ -178,6 +178,7 @@
       s.kind === 'truenas' ||
       s.kind === 'vmware' ||
       s.kind === 'xcpng' ||
+      s.kind === 'hyperv' ||
       (isPluginKind(s.kind) && !!kinds.get(s.kind)?.kind.guests?.list)
       ? s
       : null;

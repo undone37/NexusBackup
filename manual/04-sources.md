@@ -864,6 +864,26 @@ session, **T** switches the chart height, **B** requests a backup, **R** refresh
 End users of a host see its backup status with `nexus-agent tui` (Linux): see
 [16 Linux agent](16-linux-agent.md#on-the-endpoint-status-and-backup-now).
 
+## Microsoft Hyper-V hosts
+
+A Hyper-V host (Windows Server 2019 to 2025 with the Hyper-V role and its PowerShell module) is backed up through
+the Windows agent on it; the appliance needs no Windows account and no WinRM.
+
+1. Install and enroll the Windows agent on the host as for any Windows host (above). Agent 0.3.0 or newer offers
+   Hyper-V backups (`hyperv` in the agent's capabilities).
+2. **Sources → New source**, kind **Microsoft Hyper-V host (Windows agent)**, choose the host's agent.
+3. **Inventory** lists the host's VMs (name, state, generation); a group selects them like the VMs of a VMware or
+   XCP-ng source.
+
+Each backup takes a **recovery checkpoint** of the VM (application consistent through the guest's integration
+services, else crash consistent), reads its disks from the frozen state while the VM keeps running, then turns the
+checkpoint into a **reference point**: the next backup reads only the blocks Hyper-V's change tracking (RCT)
+reports as changed. No checkpoint stays behind; a failed backup removes its own. The snapshots are named
+`hv-<VM id>` (one disk image per virtual disk plus the VM's settings).
+
+> **Status:** backups and incrementals are implemented and lab-tested on a nested Hyper-V host (#39). Restores of
+> Hyper-V snapshots (to Proxmox VE, back to Hyper-V) and failover clusters follow.
+
 ## TrueNAS
 
 Supported: TrueNAS Community Edition (tested: 25.10.7). The appliance creates a ZFS snapshot through the TrueNAS
