@@ -156,9 +156,12 @@ pub fn backup(
         .as_deref()
         .filter(|_| sink.has_base())
         .and_then(|s| serde_json::from_slice(s).ok());
+    // #43: why the binlog chain broke: the new base snapshot's meta `chain_break` (the scheduler raises log_chain)
+    let mut brk = None;
     if let Some(p) = prev {
         if p.server != server {
             ctx.info(format!("another server ({} → {server}): full backup", p.server));
+            brk = Some(format!("another server ({} -> {server})", p.server));
         } else if now().saturating_sub(p.full_time) >= full_days * 86400 {
             ctx.info(format!("base backup older than {full_days} days: full backup"));
         } else if !binlogs(&mut c)?.contains(&p.next_file) {
@@ -167,11 +170,16 @@ pub fn backup(
                  binlog_expire_logs_seconds above the backup interval)",
                 p.next_file
             ));
+            brk = Some(format!("binlog {} was purged before it was backed up", p.next_file));
         } else {
             return incremental(ctx, sink, &mut c, p);
         }
     }
-    full(ctx, sink, &mut c, o, &ssh()?, server)
+    let mut r = full(ctx, sink, &mut c, o, &ssh()?, server)?;
+    if let Some(why) = brk {
+        r.meta["chain_break"] = serde_json::json!(why);
+    }
+    Ok(r)
 }
 
 fn incremental(ctx: &Ctx, sink: &mut Sink, c: &mut Conn, mut st: State) -> Result<Report> {

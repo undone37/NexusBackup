@@ -529,6 +529,12 @@ fn cluster_backup_and_point_in_time_restore() {
     b.psql(false, "pitr", "INSERT INTO t (id) VALUES (301)");
     let again = h.backup(&cfg, None).unwrap();
     assert!(again.summary.starts_with("full:"), "{} {:?}", again.summary, h.log());
+    // #43: the scheduler raises log_chain from this
+    let brk = again.meta.as_ref().unwrap()["chain_break"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(brk.contains("WAL streaming refused"), "{:?}", again.meta);
     // #43: a log run of a group with a log schedule pulls WAL onto the newest base
     b.psql(false, "pitr", "INSERT INTO t (id) VALUES (302)");
     let log = h.backup_mode(&cfg, None, Some("log")).unwrap();

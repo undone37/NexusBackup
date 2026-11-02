@@ -227,16 +227,23 @@ pub fn backup(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, full
         .as_deref()
         .filter(|_| sink.has_base())
         .and_then(|s| serde_json::from_slice(s).ok());
+    // #43: why the WAL chain broke (another cluster, a timeline it cannot follow, WAL the slot lost): the new base
+    // snapshot's meta `chain_break` (the scheduler raises log_chain)
+    let mut brk = None;
     if let Some(p) = prev {
         if p.files.is_empty() {
             ctx.info("previous snapshot has no file list: full backup");
         } else if now().saturating_sub(p.full_time) >= full_days * 86400 {
             ctx.info(format!("base backup older than {full_days} days: full backup"));
-        } else if let Some(r) = incremental(ctx, sink, o, sql, slot, &p)? {
+        } else if let Some(r) = incremental(ctx, sink, o, sql, slot, &p, &mut brk)? {
             return Ok(r);
         }
     }
-    full(ctx, sink, o, sql, slot)
+    let mut r = full(ctx, sink, o, sql, slot)?;
+    if let Some(why) = brk {
+        r.meta["chain_break"] = serde_json::json!(why);
+    }
+    Ok(r)
 }
 
 fn full(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str) -> Result<Report> {
@@ -521,13 +528,22 @@ impl Read for CopyReader<'_> {
 }
 
 /// Incremental: previous data + WAL as `Unchanged`, new WAL streamed. None = do a full backup.
-fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: &State) -> Result<Option<Report>> {
+fn incremental(
+    ctx: &Ctx,
+    sink: &mut Sink,
+    o: &Opts,
+    sql: &Opts,
+    slot: &str,
+    p: &State,
+    brk: &mut Option<String>,
+) -> Result<Option<Report>> {
     // the marker commit lies before the flush position IDENTIFY_SYSTEM reports
     let to_time = marker(ctx, sql).floor() as u64;
     let mut c = Conn::connect(o)?;
     let (system, tli, target) = identify(&mut c)?;
     if system != p.system {
         ctx.info(format!("another cluster ({} → {system}): full backup", p.system));
+        *brk = Some(format!("another cluster ({} -> {system})", p.system));
         return Ok(None);
     }
     // what to stream: (timeline, from, to); after a switchover or failover the old
@@ -536,6 +552,7 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
         Ok(s) => s,
         Err(why) => {
             ctx.info(format!("timeline {} → {tli}: {why}: full backup", p.tli));
+            *brk = Some(format!("timeline {} -> {tli}: {why}", p.tli));
             return Ok(None);
         }
     };
@@ -569,6 +586,7 @@ fn incremental(ctx: &Ctx, sink: &mut Sink, o: &Opts, sql: &Opts, slot: &str, p: 
     if streaming {
         if let Err(e) = start_stream(&mut c, slot, steps[0].0, steps[0].1)? {
             ctx.warn(format!("WAL streaming refused ({e}): full backup"));
+            *brk = Some(format!("WAL streaming refused ({e})"));
             return Ok(None);
         }
     }
