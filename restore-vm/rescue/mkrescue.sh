@@ -32,7 +32,7 @@ cp /bin/busybox "$r/usr/bin/busybox"
 for a in $(/bin/busybox --list); do
 	[ -e "$r/usr/bin/$a" ] || ln -s busybox "$r/usr/bin/$a"
 done
-for t in lsblk blkid wipefs sfdisk sgdisk partx mount umount findmnt chroot sync \
+for t in lsblk blkid wipefs blkdiscard sfdisk sgdisk partx mount umount findmnt chroot sync \
 	mkfs.ext4 mke2fs tune2fs e2fsck mkfs.xfs xfs_admin mkfs.btrfs btrfs mkfs.vfat fatlabel mkswap \
 	lvm ip modprobe; do
 	rm -f "$r/usr/bin/$t" "$r/usr/sbin/$t"
