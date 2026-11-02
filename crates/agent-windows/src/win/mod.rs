@@ -3,6 +3,7 @@
 pub mod acl;
 pub mod cli;
 pub mod host;
+pub mod hyperv;
 pub mod pipe;
 pub mod power;
 pub mod restore;
@@ -375,6 +376,26 @@ impl Platform for Windows {
     }
     fn user_sessions(&self) -> Option<Vec<(String, bool)>> {
         power::sessions()
+    }
+
+    fn device_size(&self, f: &std::fs::File) -> io::Result<u64> {
+        hyperv::device_size(f)
+    }
+
+    fn hyperv(&self) -> bool {
+        hyperv::available()
+    }
+
+    fn hv_list(&self) -> Result<String, String> {
+        hyperv::list()
+    }
+
+    fn hv_prepare(&self, vm: &str) -> Result<(String, Vec<PathBuf>), String> {
+        hyperv::prepare(vm)
+    }
+
+    fn hv_finish(&self, prepared: &str, keep: bool) -> Result<String, String> {
+        hyperv::finish(prepared, keep)
     }
 
     fn host_facts(&self) -> Option<agent_proto::release::HostFacts> {

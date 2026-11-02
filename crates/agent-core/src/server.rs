@@ -194,6 +194,28 @@ pub trait Platform: Send + Sync + 'static {
     fn block_device(&self, _target: u32) -> Result<PathBuf, String> {
         Err("this agent cannot read hot-added disks".into())
     }
+    /// Size of a block device opened by `block_scan` (Windows disks need an IOCTL; files and Linux devices seek).
+    fn device_size(&self, f: &std::fs::File) -> io::Result<u64> {
+        io::Seek::seek(&mut &*f, io::SeekFrom::End(0))
+    }
+    /// v1.10 Hyper-V host (CAP_HYPERV, docs/hyperv-design.md): whether this host runs Hyper-V.
+    fn hyperv(&self) -> bool {
+        false
+    }
+    /// `HvList`: the host's VMs as JSON (`[{id, name, state, generation, disks}]`).
+    fn hv_list(&self) -> Result<String, String> {
+        Err("this agent has no Hyper-V support".into())
+    }
+    /// `HvPrepare`: recovery checkpoint of VM `vm`, frozen disks opened read-only. Returns the `HvPrepared` JSON and
+    /// the device of each disk in target order (target 1 = the first).
+    fn hv_prepare(&self, _vm: &str) -> Result<(String, Vec<PathBuf>), String> {
+        Err("this agent has no Hyper-V support".into())
+    }
+    /// `HvFinish`: close the disks of the prepared job (`prepared` = its `HvPrepared` JSON), then convert the
+    /// checkpoint to a reference point (`keep`) or remove it. Returns the `HvFinished` JSON.
+    fn hv_finish(&self, _prepared: &str, _keep: bool) -> Result<String, String> {
+        Err("this agent has no Hyper-V support".into())
+    }
     /// The executable format check of a `binary` update (ELF for this architecture,
     /// PE32+ x86-64).
     fn native_binary(&self, _binary: &[u8]) -> bool {
@@ -512,6 +534,7 @@ impl<P: Platform> Agent<P> {
                     staged: Vec::new(),
                     staged_rollback: false,
                     blocks: HashMap::new(),
+                    hv: HashMap::new(),
                 };
                 let r = sess.run(&mut s);
                 sess.abort_all();
@@ -649,6 +672,8 @@ struct Session<'a, P: Platform> {
     staged_rollback: bool,
     /// v1.9 block reads: job → the blocks of its hot-added disk (served by `Want`)
     blocks: HashMap<u64, Locator>,
+    /// v1.10 Hyper-V jobs: job → (`HvPrepared` JSON, the frozen disks in target order)
+    hv: HashMap<u64, (String, Vec<PathBuf>)>,
 }
 
 impl<P: Platform> Session<'_, P> {
@@ -692,6 +717,10 @@ impl<P: Platform> Session<'_, P> {
                     // v1.9: the VMware proxy role, only when configured
                     if self.agent.settings.proxy {
                         c.push(agent_proto::CAP_BLOCK_READ.into());
+                    }
+                    // v1.10: Hyper-V hosts
+                    if self.agent.platform.hyperv() {
+                        c.push(agent_proto::CAP_HYPERV.into());
                     }
                     // v1.8: chunked updates with the install's own package type
                     if let Some(f) = self.agent.platform.host_facts() {
@@ -772,6 +801,41 @@ impl<P: Platform> Session<'_, P> {
                     size,
                     ranges,
                 } => self.block_scan(s, job, target, size, &ranges)?,
+                Message::HvList if self.agent.platform.hyperv() => match self.agent.platform.hv_list() {
+                    Ok(json) => write_msg(s, &Message::HvVms { json })?,
+                    Err(e) => error(s, E_INTERNAL, e)?,
+                },
+                Message::HvPrepare { job, vm } if self.agent.platform.hyperv() => {
+                    if self.hv.contains_key(&job) || self.jobs.contains_key(&job) {
+                        error(s, E_BUSY, format!("job {job} is already running"))?;
+                        continue;
+                    }
+                    log(format!("job {job}: Hyper-V checkpoint of VM {vm}"));
+                    match self.agent.platform.hv_prepare(&vm) {
+                        Ok((json, disks)) => {
+                            self.hv.insert(job, (json.clone(), disks));
+                            write_msg(s, &Message::HvPrepared { job, json })?;
+                        }
+                        Err(e) => error(s, E_INTERNAL, e)?,
+                    }
+                }
+                Message::HvFinish { job, keep } => match self.hv.remove(&job) {
+                    Some((prepared, _)) => {
+                        self.blocks.retain(|b, _| b / 16 != job);
+                        match self.agent.platform.hv_finish(&prepared, keep) {
+                            Ok(json) => write_msg(s, &Message::HvFinished { job, json })?,
+                            Err(e) => error(s, E_INTERNAL, e)?,
+                        }
+                    }
+                    None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
+                },
+                Message::HvList | Message::HvPrepare { .. } => {
+                    error(
+                        s,
+                        E_REFUSED,
+                        "this host does not run Hyper-V (or the agent cannot use it)",
+                    )?;
+                }
                 Message::Want { job, hashes } => self.want(s, job, &hashes, false)?,
                 Message::WantLz4 { job, hashes } => self.want(s, job, &hashes, true)?,
                 Message::Release { job, .. } if self.blocks.remove(&job).is_some() => write_msg(
@@ -1061,7 +1125,14 @@ impl<P: Platform> Session<'_, P> {
         ranges: &[(u64, u64)],
     ) -> io::Result<()> {
         use agent_proto::BLOCK_SIZE;
-        if !self.agent.settings.proxy {
+        // a disk of a prepared Hyper-V job (job id `hv job * 16 + target`), else a disk hot-added to the proxy
+        let hv = self.hv.get(&(job / 16)).map(|(_, disks)| {
+            let i = (target as usize)
+                .checked_sub(1)
+                .filter(|_| job % 16 == u64::from(target));
+            i.and_then(|i| disks.get(i)).cloned()
+        });
+        if hv.is_none() && !self.agent.settings.proxy {
             return error(
                 s,
                 E_REFUSED,
@@ -1071,15 +1142,25 @@ impl<P: Platform> Session<'_, P> {
         if self.jobs.contains_key(&job) || self.blocks.contains_key(&job) {
             return error(s, E_BUSY, format!("job {job} is already running"));
         }
-        let path = match self.agent.platform.block_device(target) {
-            Ok(p) => p,
-            Err(e) => return error(s, E_REFUSED, e),
+        let path = match hv {
+            Some(Some(p)) => p,
+            Some(None) => {
+                return error(
+                    s,
+                    E_BAD_REQUEST,
+                    format!("the Hyper-V job has no disk at target {target}"),
+                )
+            }
+            None => match self.agent.platform.block_device(target) {
+                Ok(p) => p,
+                Err(e) => return error(s, E_REFUSED, e),
+            },
         };
         let f = match crate::chunk::open_read(&path) {
             Ok(f) => f,
             Err(e) => return error(s, E_INTERNAL, format!("{}: {e}", path.display())),
         };
-        let have = match io::Seek::seek(&mut &f, io::SeekFrom::End(0)) {
+        let have = match self.agent.platform.device_size(&f) {
             Ok(n) => n,
             Err(e) => return error(s, E_INTERNAL, format!("{}: {e}", path.display())),
         };
@@ -1315,6 +1396,14 @@ impl<P: Platform> Session<'_, P> {
         if let Some(r) = self.restore.take() {
             log("restore aborted by disconnect");
             r.end();
+        }
+        for (job, (prepared, _)) in std::mem::take(&mut self.hv) {
+            log(format!(
+                "job {job}: connection closed during a Hyper-V backup, removing the checkpoint"
+            ));
+            if let Err(e) = self.agent.platform.hv_finish(&prepared, false) {
+                log(format!("job {job}: {e}"));
+            }
         }
     }
 
