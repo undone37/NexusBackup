@@ -1304,6 +1304,11 @@ dontaudit nexus_disks_t systemd_userdbd_t:unix_stream_socket connectto;
 dontaudit nexus_disks_t hugetlbfs_t:dir { open read };
 dontaudit nexus_disks_t container_runtime_tmpfs_t:file getattr;
 dontaudit nexus_disks_t sysctl_vm_t:file getattr;
+# systemd-cryptenroll offers entropy back to /dev/urandom; reading it is enough
+gen_require(`
+	type urandom_device_t;
+')
+dontaudit nexus_disks_t urandom_device_t:chr_file write;
 # systemctl: daemon-reload, enable --now the mount unit, stop/start the scheduler and
 # replicad around the mount, is-active (private socket of PID 1, as root)
 systemd_exec_systemctl(nexus_disks_t)
