@@ -3,7 +3,8 @@
 #
 #   deploy.sh [steps]   default: upload create tunnel setup source
 #     upload   the disk built by `LAB=$LAB SIZE=300G lab/appliance/e2e.sh disk` -> the host's import storage
-#     create   VM $VMID (q35, virtio, serial console, NIC on $BRIDGE), disk imported to $STORAGE, started
+#     create   VM $VMID (q35, virtio, serial console, NIC on $BRIDGE, a vTPM 2.0 unless TPM=0: setup requires one,
+#              #22), disk imported to $STORAGE, EXTRA_DISKS blank data disks of DISK_SIZE (serials NXLAB-D<n>), started
 #     tunnel   ssh forwards from the workstation: the VM's serial console (unix socket) and the web API
 #              (127.0.0.1:$PORT -> $ADDR:8443); restart after a reboot of the workstation
 #     setup    first boot through nexus-setup --script (lab/appliance/e2e.sh setup) with a static address
@@ -56,9 +57,14 @@ step_create() {
 		[ "$(pve "qm config $VMID" | sed -n 's/^name: //p')" = nexus-appliance ] || die "VM $VMID exists and is not nexus-appliance"
 		pve "qm stop $VMID --skiplock 1 >/dev/null 2>&1; qm destroy $VMID --purge 1 >/dev/null"
 	fi
+	local extra="" n
+	[ "${TPM:-1}" = 0 ] || extra="--tpmstate0 $STORAGE:1,version=v2.0"
+	for n in $(seq 1 "${EXTRA_DISKS:-0}"); do
+		extra="$extra --scsi$n $STORAGE:${DISK_SIZE:-16},serial=NXLAB-D$n,discard=on,iothread=1"
+	done
 	pve "qm create $VMID --name nexus-appliance --machine q35 --cpu host --cores $CPUS --memory $MEM --balloon 0 \
 		--scsihw virtio-scsi-single --scsi0 $STORAGE:0,import-from=local:import/nexus-appliance.qcow2,discard=on,iothread=1,ssd=1 \
-		--net0 virtio,bridge=$BRIDGE --serial0 socket --vga std --rng0 source=/dev/urandom --boot order=scsi0 \
+		--net0 virtio,bridge=$BRIDGE --serial0 socket --vga std --rng0 source=/dev/urandom --boot order=scsi0 $extra \
 		--onboot 1 --description 'NexusBackup appliance (lab, lab/pvehost/deploy.sh)' >/dev/null && qm start $VMID && qm status $VMID"
 }
 
