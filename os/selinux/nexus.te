@@ -1317,7 +1317,9 @@ allow init_t nexus_disks_var_lib_t:file { getattr read watch };
 # (and the web-api, for requests) writes its dir
 neverallow nexus_disks_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
 neverallow nexus_disks_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
-neverallow nexus_disks_t { nexus_keyd_var_run_t nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
+# #22 M2: the keyd socket is allowed (keyd answers root only `luks-data`, the array's passphrase); the key files
+# stay out of reach (above)
+neverallow nexus_disks_t { nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
 neverallow { nexus_domain -nexus_disks_t -nexus_webapi_t } nexus_disks_var_lib_t:file { write append create unlink rename };
 
 ########################################
