@@ -199,3 +199,44 @@ fn source_system_anomaly_from_plugin_meta() {
     assert!(!msg.contains(&format!("{src}/200")), "{msg}");
     assert!(!msg.contains('\u{1b}'), "{msg}");
 }
+
+/// #43: a database plugin's `chain_break` raises log_chain (critical); the next snapshot with a recoverable range
+/// and no break resolves it.
+#[test]
+fn log_chain_break_from_plugin_meta() {
+    let e = env(1);
+    let s = sched(&e);
+    let src = "plugin-postgresql-4";
+    let job = Job {
+        id: 12,
+        kind: "backup".into(),
+        tenant: "t1".into(),
+        params: json!({"group_id": 1}),
+    };
+    let open = |s: &Scheduler| -> Vec<(String, String)> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare("SELECT severity, message FROM alerts WHERE kind='log_chain' AND resolved_at IS NULL")
+            .unwrap();
+        let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    let snap = |t: i64, meta: Value| json!({"snapshots": [{"source": src, "time": t, "meta": meta}]});
+    s.meta_bookkeeping(&job, Some(&snap(100, json!({"recoverable": {"from_time": 90}, "chain_break": "WAL streaming refused (requested WAL segment has already been removed)\u{1b}[31m"}))))
+        .unwrap();
+    let a = open(&s);
+    assert_eq!(a.len(), 1);
+    assert_eq!(a[0].0, "critical");
+    assert!(
+        a[0].1.contains("already been removed") && a[0].1.contains("snapshot 100") && !a[0].1.contains('\u{1b}'),
+        "{}",
+        a[0].1
+    );
+    // a logical dump snapshot (no recoverable range) leaves it alone, the next cluster snapshot resolves it
+    s.meta_bookkeeping(&job, Some(&snap(150, json!({"databases": 3}))))
+        .unwrap();
+    assert_eq!(open(&s).len(), 1);
+    s.meta_bookkeeping(&job, Some(&snap(200, json!({"recoverable": {"from_time": 100}}))))
+        .unwrap();
+    assert!(open(&s).is_empty());
+}

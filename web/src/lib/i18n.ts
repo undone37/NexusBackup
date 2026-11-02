@@ -2895,6 +2895,7 @@ export const en = {
       vmid_reused: 'VM ID reused by another VM',
       offsite_lag: 'Offsite copy behind',
       log_lag: 'Log backups behind',
+      log_chain: 'Log chain broken',
       fleecing_space: 'Fleecing storage low',
       inventory: 'Guest inventory changed',
       inventory_refresh: 'Guest inventory not refreshed',
@@ -2958,6 +2959,8 @@ export const en = {
         'Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.',
       capacity:
         'The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.',
+      log_chain:
+        "The database's log chain broke (another tool took a log backup, a failover the plugin could not follow, a removed replication slot or purged binary log): the plugin took a new base backup, and no point in time between the previous snapshot and that base can be restored. Find the cause in the job log, fix the server setting (slot, binlog retention) and check the restore range. Resolves with the next snapshot that continues the chain.",
       log_lag:
         "Log backups of a database group are behind their log schedule. Check the group's recent log runs (job log), the database's reachability and its log settings (replication slot, binary log). Resolves with the next good log run.",
       offsite_lag:

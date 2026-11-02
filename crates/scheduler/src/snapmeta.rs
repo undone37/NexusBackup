@@ -3,7 +3,8 @@
 //! carries it as `snapshots[].meta` and it is kept in `snapshots.meta` (catalog v23),
 //! e.g. PostgreSQL's recoverable range for the point-in-time restore dialog. A source system's own
 //! change-rate finding in it (`anomaly`, e.g. NexusStor's, #137) flags the snapshot and raises `anomaly`
-//! ([`Scheduler::external_anomaly`]).
+//! ([`Scheduler::external_anomaly`]); a broken log chain (`chain_break`, the database plugins, #43) raises
+//! `log_chain` until a snapshot with a recoverable range and no break resolves it.
 
 use crate::{Job, Scheduler};
 use anyhow::Result;
@@ -51,6 +52,27 @@ impl Scheduler {
             )?;
             if let Some(a) = m.get("anomaly").filter(|a| a.is_object()) {
                 self.external_anomaly(&job.tenant, src, t, a)?;
+            }
+            // #43: the database's log chain broke (the plugin took a new base): critical until a snapshot of the
+            // source continues the chain again
+            let key = format!("log_chain:{}/{src}", job.tenant);
+            match m["chain_break"].as_str() {
+                Some(why) => {
+                    let why: String = why.chars().filter(|c| !c.is_control()).take(300).collect();
+                    self.raise(
+                        "critical",
+                        "log_chain",
+                        &key,
+                        &format!(
+                            "{}/{src}: the log chain broke ({why}); snapshot {t} is a new base, no point in time \
+                             between the previous snapshot and it can be restored",
+                            job.tenant
+                        ),
+                        Some(&job.tenant),
+                    )?;
+                }
+                None if m.get("recoverable").is_some() => self.resolve(&key)?,
+                None => {}
             }
         }
         Ok(())

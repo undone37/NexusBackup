@@ -1748,7 +1748,8 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   first, log_lag raise and resolve), web-api plugins (validation, kind check, GET fields) and route matrix, PG and
   MySQL testbox suites (a log run stays incremental on the newest base, CI `testbox`). No lab run: the testbox
   suites run the real plugins against real servers.
-  - open (in #43): `log_chain` alert, per-database timeline view.
+  - [x] `log_chain` (critical) from the plugins' `chain_break` snapshot meta (2026-11-02, scheduler test, PG testbox: a
+    dropped slot). Open (in #43): per-database timeline view.
 
 ## NexusStor contract step 3: backup reports (added 2026-11-02, #137)
 
