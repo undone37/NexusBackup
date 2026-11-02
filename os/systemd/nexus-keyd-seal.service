@@ -1,0 +1,38 @@
+[Unit]
+Description=NexusBackup: seal the KEK to the TPM (systemd credential, PCR 7)
+# #22: turns a plain kek.local (first boot, reseal) into the credential nexus-keyd.service loads; on an appliance
+# installed before the TPM requirement it seals with the host key and reports that (diagnostics: tpm).
+ConditionPathExists=/var/lib/nexus/keyd/kek.recovery
+Before=nexus-keyd.service
+After=systemd-tpm2-setup-early.service tpm2.target
+Wants=tpm2.target
+
+[Service]
+Type=oneshot
+# stays active: keyd's restarts (Restart=on-failure) do not run it again; setup and `nexus-setup keys-reseal`
+# restart it explicitly
+RemainAfterExit=yes
+ExecStart=/usr/libexec/nexus/nexus-keyd-seal migrate
+UMask=0077
+# the TPM (systemd-creds talks to it through the resource manager) and nothing else
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+ProtectSystem=strict
+# /var/lib/systemd: the host key systemd-creds creates for an appliance without a TPM (credential.secret; lab: a
+# read-only /var/lib/systemd failed the seal and with it keyd)
+ReadWritePaths=/var/lib/nexus/keyd /var/lib/nexus /var/lib/systemd
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+LimitCORE=0
+SystemCallArchitectures=native

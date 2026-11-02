@@ -41,6 +41,23 @@ Keep the recovery key offline and separate from the offsite credentials (see
 [02 Installation](02-installation.md#store-the-recovery-key)). A replicated secondary has its **own** recovery key:
 store that one too.
 
+### The master key and the TPM
+
+The appliance's master key (KEK, it unlocks every tenant's data keys) is sealed to the **TPM 2.0** and bound to the
+Secure Boot state (PCR 7): taken out of the appliance, the system disk alone does not reveal it. Updates and rollbacks
+of the appliance image do not change that state. A **firmware update**, turning Secure Boot off or on, or a new
+mainboard does: the TPM then no longer unseals the key, the key service does not start (backups and restores stop,
+**Diagnostics** shows `keyd` and `tpm`), and you reseal it with the recovery key on the console (emergency root shell,
+[below](#emergency-root-shell-on-the-console)):
+
+```
+nexus-setup keys-reseal
+```
+
+It asks for the recovery key, seals the key to the TPM's current state and restarts the key service (audited:
+`setup.keys_reseal`). Plan firmware updates with the recovery key at hand. A system disk moved to new hardware works
+the same way.
+
 ### Boot menu password
 
 The boot menu (GRUB) boots the appliance without any input. Changing a boot entry (key `e`) or opening the GRUB

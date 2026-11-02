@@ -154,6 +154,7 @@ class Host(unittest.TestCase):
         self._sock.bind(str(sock))
         (self.d / "setup-done").write_text("")
         (self.d / "enforce").write_text("1")
+        (self.d / "keyd-seal.json").write_text(json.dumps({"mode": "tpm2", "pcrs": [7], "at": 1}))
         (self.d / "update.json").write_text(json.dumps({
             "booted": {"version": "1.0.0", "digest": "sha256:aaa"}, "staged": None,
             "rollback": {"version": "0.9.0", "digest": "sha256:999"}, "spec_signature": "containerPolicy",
@@ -168,6 +169,7 @@ class Host(unittest.TestCase):
             "NEXUS_DIAG_KEYD_SOCKET": str(sock),
             "NEXUS_DIAG_TLS_CERT": str(self.d / "cert.pem"),
             "NEXUS_DIAG_SELINUX_ENFORCE": str(self.d / "enforce"),
+            "NEXUS_DIAG_KEYD_SEAL": str(self.d / "keyd-seal.json"),
             "NEXUS_DIAG_DISKS": f"store={self.d / 'store'} var={self.d}",
             "NEXUS_DIAG_HEALTH": str(HEALTH),
             "NEXUS_DIAG_DISKS_STATUS": str(self.d / "disks.json"),
@@ -238,7 +240,7 @@ class Checks(Host):
         self.assertEqual(
             sorted(cs),
             sorted(["disk.store", "disk.var", "time.sync", "time.nts", "time.compliance", "egress", "keyd", "tls.cert", "audit.chain",
-                    "catalog.integrity", "selinux", "auditd", "systemd.failed", "bootc", "smart", "network.mtu"]),
+                    "catalog.integrity", "selinux", "auditd", "tpm", "systemd.failed", "bootc", "smart", "network.mtu"]),
         )
         for cid, c in cs.items():
             want = "skip" if cid in ("smart", "network.mtu") else "pass"
@@ -264,6 +266,7 @@ class Checks(Host):
         })
         self.save()
         (self.d / "enforce").write_text("0")
+        (self.d / "keyd-seal.json").write_text(json.dumps({"mode": "host", "pcrs": [], "at": 1}))
         self._db.execute("UPDATE audit SET actor = 'mallory' WHERE seq = 2")
         self._db.commit()
         cs = self.by_id(self.m.checks())
@@ -276,6 +279,7 @@ class Checks(Host):
             "audit.chain": ("fail", 4),
             "selinux": ("fail", 4),
             "auditd": ("fail", 2),
+            "tpm": ("fail", 2),
             "systemd.failed": ("fail", 3),
         }
         for cid, (status, sev) in expect.items():
@@ -283,6 +287,7 @@ class Checks(Host):
         self.assertIn("seq 2", cs["audit.chain"]["detail"])
         self.assertIn("allowed_out_v6", cs["egress"]["detail"])
         self.assertIn("kernel log", cs["auditd"]["detail"])
+        self.assertIn("NO TPM", cs["tpm"]["detail"])
         self.assertEqual(
             sorted(c["id"] for c in self.m.blocking(list(cs.values()))),
             ["audit.chain", "egress", "keyd", "selinux", "systemd.failed", "time.sync"],
