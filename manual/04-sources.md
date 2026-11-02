@@ -885,8 +885,14 @@ reports as changed. No checkpoint stays behind; a failed backup removes its own.
 VMware or XCP-ng VM): generation 2 VMs get UEFI (and the Secure Boot setting they had), the disks come up on SATA
 and the NICs as e1000e with their MACs, which every guest drives; install the VirtIO drivers afterwards.
 
-> **Status:** backups, incrementals and the restore to Proxmox VE are implemented and lab-tested on a nested
-> Hyper-V host (#39). The restore back to Hyper-V and failover clusters follow.
+A Hyper-V snapshot can also go **back onto a Hyper-V host** as a new VM: a restore job of the snapshot with the
+Hyper-V source as the target and a new VM name. The agent creates the disks in a new directory below the host's
+virtual hard disk path, the appliance writes the data (blocks of zeros are skipped), then the VM is defined with the
+snapshot's settings, powered off and with its network adapters not connected (new MAC addresses, so the copy never
+clashes with the original). A failed restore removes what it created.
+
+> **Status:** backups, incrementals and the restores to Proxmox VE and to Hyper-V are implemented and lab-tested on
+> a nested Hyper-V host (#39). Failover clusters follow.
 
 ## TrueNAS
 

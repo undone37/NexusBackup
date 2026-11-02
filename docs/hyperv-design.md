@@ -87,7 +87,8 @@ checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM o
   hv-inventory`, the VM id as guest id), groups of VM ids with one `hv-backup` step per VM (lock per source), the
   Sources and Groups pages. M3 part 2: `hv-` snapshots restore as PVE VMs through the VMware converter
   (`vmx_from_hyperv`: name, vCPUs, memory, generation 2 = OVMF, Secure Boot, NIC MACs; guests as "other": SATA,
-  e1000e). Still open: restore to Hyper-V (M4), clusters.
+  e1000e). M4: back onto a Hyper-V host (HvRestoreBegin, BlockWrite, HvRestoreFinish; dynamic VHDX files mounted
+  offline for raw writes, zero blocks skipped, `New-VM` from `hyperv.json`). Still open: failover clusters.
 
 ## Open questions
 
