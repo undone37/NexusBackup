@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The nightly regression suite (plan.md Phase 44): the lab scripts in a row against the PVE lab host and the appliance
-# VM 201, each with a time limit, the result per step in $OUT/<date>.json (and the full log next to it). Runs on the
+# VM 201, each with a time limit, the result per step in $OUT/<date>.json (and the full log next to it, plus one log
+# per step, <date>-<step>.log). Runs on the
 # regression VM (lab/pvehost/regress.sh, systemd timer), not on a workstation; the lab VMs a step needs are started
 # before it and stopped after it.
 #
@@ -44,10 +45,12 @@ step() {
 	local name=$1 t0 rc tail
 	t0=$(date +%s)
 	printf '\n===== %s %s\n' "$name" "$(date -u +%FT%TZ)" >>"$LOG"
-	# timeout runs programs, not shell functions: the script runs the step itself
-	timeout --kill-after=60 "$((LIMIT * 60))" "$0" __run "$name" >>"$LOG" 2>&1
+	# timeout runs programs, not shell functions: the script runs the step itself. Each step also gets its own log
+	# ($OUT/<stamp>-<step>.log, #158): a step that leaves processes behind cannot hide the next step's output
+	timeout --kill-after=60 "$((LIMIT * 60))" "$0" __run "$name" >"$OUT/$stamp-$name.log" 2>&1
 	rc=$?
-	tail=$(tail -n 8 "$LOG" | cut -c1-300)
+	cat "$OUT/$stamp-$name.log" >>"$LOG"
+	tail=$(tail -n 8 "$OUT/$stamp-$name.log" | cut -c1-300)
 	results+=("$(jq -nc --arg n "$name" --argjson rc "$rc" --argjson s "$(($(date +%s) - t0))" --arg t "$tail" \
 		'{step:$n, ok:($rc == 0), rc:$rc, seconds:$s, tail:$t}')")
 	printf '%s: %s (%ss)\n' "$name" "$([ "$rc" = 0 ] && echo ok || echo "FAILED rc=$rc")" "$(($(date +%s) - t0))"
