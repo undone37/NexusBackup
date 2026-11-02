@@ -1,7 +1,7 @@
 {
   "id": "nexusstor",
   "name": "NexusStor",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -49,7 +49,21 @@
       "endpoints": [{ "host": "/host", "port": "/port", "default_port": 8443, "proto": "tcp" }],
       "guests": { "title": "vStors", "list": true },
       "backup": { "incremental": true, "consistent": "snapshot", "reports": true, "findings": true },
-      "restores": [{ "id": "download", "title": "Download (tar/zip)" }]
+      "restores": [
+        { "id": "download", "title": "Download (tar/zip)" },
+        {
+          "id": "to_vstor",
+          "title": "Restore into the vStor (a new nexusbackup-restore-... directory; NexusStor pairing scope restore)",
+          "applies_to": "guest",
+          "params_schema": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string", "title": "Path of the backup to restore (data, s3, or below them)", "default": "data", "pattern": "^(data|s3)(/[^/\\u0000]{1,255}){0,64}$", "maxLength": 4096 },
+              "into": { "type": "string", "title": "Name of the new directory: nexusbackup-restore-<this> (default: the snapshot time)", "pattern": "^[A-Za-z0-9._-]{0,80}$" }
+            }
+          }
+        }
+      ]
     }
   ],
   "sandbox": { "network": "endpoints", "tmp_mb": 64, "memory_mb": 2048 }

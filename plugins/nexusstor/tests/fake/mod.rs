@@ -118,6 +118,16 @@ pub struct State {
     pub anomaly: Option<Value>,
     /// `POST /vstors/<v>/report` bodies received (contract step 3), with the vStor
     pub reports: Vec<(String, Value)>,
+    /// `POST /vstors/<v>/finding` bodies received, with the vStor
+    pub findings: Vec<(String, Value)>,
+    /// contract step 4: the restore directory (`dir/into`) and the files written into it (path -> bytes; dirs and
+    /// symlinks as headers), finished / aborted
+    pub restore_path: Option<String>,
+    pub restored: BTreeMap<String, Vec<u8>>,
+    pub restored_heads: Vec<Value>,
+    pub restore_requests: u32,
+    pub restore_finished: bool,
+    pub restore_aborted: bool,
 }
 
 pub struct Fake {
@@ -125,6 +135,19 @@ pub struct Fake {
     pub port: u16,
     /// SHA-256 of the server certificate (the pairing token's fingerprint)
     pub fingerprint: String,
+}
+
+impl Fake {
+    /// The regular files of vStor `v` below `data/` (live tree): path -> contents.
+    pub fn data_files(&self, v: &str) -> BTreeMap<String, Vec<u8>> {
+        let g = self.state.lock().unwrap();
+        g.vstors[v]
+            .live
+            .iter()
+            .filter(|(p, n)| n.kind == "file" && p.starts_with("data/"))
+            .map(|(p, n)| (p.clone(), n.data.clone()))
+            .collect()
+    }
 }
 
 pub fn sha256(der: &[u8]) -> String {
@@ -289,6 +312,7 @@ fn serve(tcp: TcpStream, cfg: Arc<ServerConfig>, st: &Mutex<State>) -> std::io::
         parts.next().unwrap_or("").to_owned(),
         parts.next().unwrap_or("").to_owned(),
     );
+    let raw = body.clone();
     let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     let mut g = st.lock().unwrap();
     g.requests.push(format!("{method} {target}"));
@@ -399,6 +423,69 @@ fn serve(tcp: TcpStream, cfg: Arc<ServerConfig>, st: &Mutex<State>) -> std::io::
             }
             g.reports.push(((*v).to_owned(), body.clone()));
             respond(&mut s, 200, &json!({"vstor": v, "state": body["state"]}))
+        }
+        ("POST", ["vstors", v, "finding"]) => {
+            g.findings.push(((*v).to_owned(), body.clone()));
+            respond(&mut s, 200, &json!({"finding": 1, "locked": null}))
+        }
+        ("POST", ["vstors", v, "restores"]) => {
+            if !g.vstors.contains_key(*v) {
+                return respond(&mut s, 403, &json!({"error": "not in scope"}));
+            }
+            let p = format!(
+                "{}/{}",
+                body["dir"].as_str().unwrap_or(""),
+                body["into"].as_str().unwrap_or("")
+            );
+            g.restore_path = Some(p.clone());
+            respond(&mut s, 200, &json!({"restore": "r1", "path": p}))
+        }
+        ("PUT", ["restores", "r1", "records"]) => {
+            g.restore_requests += 1;
+            let mut rest = &raw[..];
+            let (mut files, mut bytes) = (0u64, 0u64);
+            while !rest.is_empty() {
+                let nl = rest.iter().position(|c| *c == b'\n').unwrap();
+                let h: Value = serde_json::from_slice(&rest[..nl]).unwrap();
+                let n = if h["type"] == "file" {
+                    h["size"].as_u64().unwrap() as usize
+                } else {
+                    0
+                };
+                let data = rest[nl + 1..nl + 1 + n].to_vec();
+                rest = &rest[nl + 1 + n..];
+                let path = h["path"].as_str().unwrap().to_owned();
+                if h["append"] == true {
+                    g.restored
+                        .get_mut(&path)
+                        .expect("append to a file that was created")
+                        .extend(data);
+                } else {
+                    assert!(g.restored.insert(path, data).is_none(), "created twice");
+                    files += 1;
+                }
+                bytes += n as u64;
+                g.restored_heads.push(h);
+            }
+            respond(
+                &mut s,
+                200,
+                &json!({"files": files, "bytes": bytes, "failed": 0, "errors": []}),
+            )
+        }
+        ("POST", ["restores", "r1", "finish"]) => {
+            g.restore_finished = true;
+            let n = g.restored.len();
+            let b: usize = g.restored.values().map(Vec::len).sum();
+            respond(
+                &mut s,
+                200,
+                &json!({"restore": "r1", "files": n, "bytes": b, "failed": 0}),
+            )
+        }
+        ("DELETE", ["restores", "r1"]) => {
+            g.restore_aborted = true;
+            respond(&mut s, 200, &json!({"aborted": true}))
         }
         ("POST", ["vstors", v, "list"]) => {
             let (evil, page) = (g.evil, g.page);

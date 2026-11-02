@@ -207,6 +207,29 @@ impl Client {
         Ok(s)
     }
 
+    /// Sends one request with a raw body (restore records, at most [`MAX_RAW_BODY`]) and reads the response head.
+    pub fn request_raw(&self, method: &str, path: &str, body: &[u8]) -> Result<Response> {
+        if body.len() as u64 > MAX_RAW_BODY {
+            bail!("request body larger than {} MiB", MAX_RAW_BODY >> 20);
+        }
+        let mut s = self.connect()?;
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let head = format!(
+            "{method} {PREFIX}{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n\
+             Content-Type: application/octet-stream\r\n\r\n",
+            body.len()
+        );
+        s.write_all(head.as_bytes())?;
+        s.write_all(body)?;
+        s.flush()?;
+        Response::read_head(BufReader::with_capacity(256 << 10, Box::new(s)))
+            .with_context(|| format!("{method} {path}"))
+    }
+
     /// Sends one request (`path` below [`PREFIX`]) and reads the response head.
     pub fn request(&self, method: &str, path: &str, body: Option<&serde_json::Value>) -> Result<Response> {
         let body = body.map(serde_json::Value::to_string).unwrap_or_default();
@@ -234,6 +257,9 @@ impl Client {
             .with_context(|| format!("{method} {path}"))
     }
 }
+
+/// A raw request body at most (NexusStor takes 64 MiB of file data plus headers per records request).
+pub const MAX_RAW_BODY: u64 = 80 << 20;
 
 enum Body {
     Length(u64),

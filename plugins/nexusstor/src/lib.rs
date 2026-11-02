@@ -20,6 +20,9 @@ pub mod client;
 #[cfg(feature = "client")]
 #[allow(missing_docs)]
 pub mod proto;
+#[cfg(feature = "client")]
+#[allow(missing_docs)]
+pub mod restore;
 
 #[cfg(feature = "client")]
 pub use plugin::*;
@@ -304,11 +307,25 @@ mod plugin {
             crate::backup::run(ctx, sink, &nst, &inv.nexusstor, vs)
         }
 
-        fn restore(&mut self, _ctx: &Ctx, _src: &mut Source) -> Result<String> {
-            Err(error(
-                95,
-                "restores into NexusStor are not supported yet (download only, docs/nexusstor-design.md)",
-            ))
+        fn restore(&mut self, ctx: &Ctx, src: &mut Source) -> Result<String> {
+            if ctx.params["restore"].as_str() != Some("to_vstor") {
+                return Err(error(95, format!("unknown restore {}", ctx.params["restore"])));
+            }
+            let c = config(ctx)?;
+            // the guest, else from the snapshot's source `plugin-nexusstor-<source id>-<vStor>`
+            let from_source = ctx.params["snapshot"]["source"]
+                .as_str()
+                .and_then(|s| s.strip_prefix("plugin-nexusstor-"))
+                .and_then(|r| r.split_once('-'))
+                .map(|(_, v)| v.to_owned());
+            let vstor = ctx
+                .guest()
+                .map(str::to_owned)
+                .or(from_source)
+                .ok_or_else(|| error(22, "restore into a vStor: the snapshot of one vStor"))?;
+            let vstor = vstor.as_str();
+            crate::backup::check_guest(vstor)?;
+            crate::restore::to_vstor(ctx, src, &c.nst()?, vstor)
         }
     }
 }

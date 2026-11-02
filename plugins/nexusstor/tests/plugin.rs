@@ -285,6 +285,67 @@ fn backup_report_reaches_nexusstor() {
     assert!(e.is_err());
 }
 
+/// #137 step 3: a finding from the scheduler (`nexus-pluginhost finding`) reaches NexusStor as
+/// `POST /vstors/<v>/finding`, message cut to 500 characters.
+#[test]
+fn finding_reaches_nexusstor() {
+    let l = paired();
+    l.host
+        .report(
+            &l.cfg,
+            json!({"guest": "acme", "finding": {"guest": "acme", "kind": "malware", "severity": "critical",
+                "snapshot": "plugin-nexusstor-1-acme/5", "message": "y".repeat(900)}}),
+        )
+        .unwrap();
+    let got = l.fake.state.lock().unwrap().findings.clone();
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        (got[0].0.as_str(), got[0].1["severity"].as_str()),
+        ("acme", Some("critical"))
+    );
+    assert_eq!(got[0].1["message"].as_str().unwrap().len(), 500);
+    assert!(
+        l.fake.state.lock().unwrap().reports.is_empty(),
+        "a finding is not a report"
+    );
+}
+
+/// #137 step 4: a backup restored into the vStor: a new nexusbackup-restore-* directory below `data`, every file
+/// of the vStor's data root byte for byte (large ones in appended parts), finished.
+#[test]
+fn restore_into_the_vstor() {
+    let l = paired();
+    let b = l.host.backup(&l.cfg, Some("acme")).unwrap();
+    let r = l
+        .host
+        .restore(
+            &l.cfg,
+            &b.source,
+            b.time,
+            "to_vstor",
+            json!({"path": "data", "into": "t1"}),
+        )
+        .unwrap();
+    assert!(r.summary.contains("restored into acme"), "{}", r.summary);
+    let want: BTreeMap<String, Vec<u8>> = l
+        .fake
+        .data_files("acme")
+        .into_iter()
+        .map(|(p, d)| (p.strip_prefix("data/").unwrap_or(&p).to_owned(), d))
+        .collect();
+    let g = l.fake.state.lock().unwrap();
+    assert_eq!(g.restore_path.as_deref(), Some("data/nexusbackup-restore-t1"));
+    assert!(g.restore_finished && !g.restore_aborted);
+    let got: BTreeMap<String, Vec<u8>> = g
+        .restored
+        .iter()
+        .filter(|(p, _)| want.contains_key(*p))
+        .map(|(p, d)| (p.clone(), d.clone()))
+        .collect();
+    assert_eq!(got.len(), want.len(), "every file of the data root");
+    assert!(got == want, "the files byte for byte");
+}
+
 #[test]
 fn unpinned_server_certificate_is_refused() {
     let l = lab();
