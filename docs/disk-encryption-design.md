@@ -112,6 +112,14 @@ follows that risk.
   graphical installer (2026-11-02, inconclusive whether the edited boot entry took effect); whether a pre-set
   "Encrypt my data" survives the interactive selection needs a check by hand in the GUI.
 
+- Implemented (2026-11-02, `release/iso/config.toml`): `%pre` refuses without a TPM and writes the encrypted
+  `autopart` with a random passphrase (`od`: the installer has no `base64`; an empty passphrase made the GUI ask for
+  one), `bootloader --append`, `%post` enrols the TPM2 token. Disk selection stays interactive: without `clearpart`
+  the destination spoke reads "Kickstart insufficient" until the user picks the disk; **Encrypt my data** arrives
+  checked and the passphrase dialog pre-filled with the generated passphrase; **Reclaim space** works as usual.
+  Lab on VM 204 (state.md). Not done: the KEK keyslot at first boot (the generated passphrase is gone after the
+  install, so the TPM is the only unlock; recovery is a reinstall plus the configuration backup).
+
 ## Open questions
 
 - Whether AlmaLinux 10's systemd builds `systemd-creds` with TPM2 support and which `tpm2-tss` packages that needs.

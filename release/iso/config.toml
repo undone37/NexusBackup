@@ -2,6 +2,9 @@
 # Anaconda installs the embedded, signed release image; bootc-image-builder adds the ostreecontainer line.
 # Disk selection stays interactive (it wipes the chosen disk). Accounts, network and TLS come from the
 # first-boot wizard (nexus-setup), so root stays locked and no user is created here.
+# #22 M3 (docs/disk-encryption-design.md): the system disk is LUKS2, unlocked at boot by the TPM (PCR 7). %pre refuses
+# without a TPM and generates a random install passphrase (installer RAM only: the installer's passphrase dialog
+# shows it pre-filled); %post enrols the TPM2 token with it. The installer has no base64: od.
 [customizations.installer.kickstart]
 contents = """
 lang en_US.UTF-8
@@ -9,4 +12,29 @@ keyboard us
 timezone Etc/UTC --utc
 rootpw --lock
 firstboot --disable
+%pre --erroronfail
+if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
+  m="NexusBackup requires a TPM 2.0: enable it in the firmware or add a vTPM to the VM, then start the installer again"
+  # the script's output only goes to its log; the console shows Anaconda's traceback after it
+  printf '\\n\\n*** %s ***\\n\\n' "$m" > /dev/tty1 2>/dev/null
+  echo "$m" >&2
+  exit 1
+fi
+umask 077
+p=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \\n')
+[ ${#p} -eq 48 ] || exit 1
+printf '%s' "$p" > /tmp/nexus-install-pass
+echo "autopart --type=plain --fstype=xfs --nohome --encrypted --luks-version=luks2 --passphrase=$p" > /tmp/nexus-part.ks
+%end
+%include /tmp/nexus-part.ks
+bootloader --append="rd.luks.options=tpm2-device=auto"
+%post --nochroot --erroronfail
+for d in $(blkid -t TYPE=crypto_LUKS -o device); do
+  if ! cryptsetup open --test-passphrase --key-file=/tmp/nexus-install-pass "$d"; then
+    echo "$d: the passphrase was changed in the installer: it unlocks this disk at boot, no TPM token"
+    continue
+  fi
+  systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 --unlock-key-file=/tmp/nexus-install-pass "$d"
+done
+%end
 """
