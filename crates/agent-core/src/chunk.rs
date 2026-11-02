@@ -87,6 +87,8 @@ struct Spool {
 #[derive(Default)]
 pub struct Locator {
     files: Vec<PathBuf>,
+    /// #19: per file the byte ranges read as zeros (free clusters of a volume image), sorted
+    masks: HashMap<u32, Vec<(u64, u64)>>,
     map: HashMap<u64, Vec<(Hash, Loc)>>,
     spool: Option<Spool>,
     open: Option<(u32, File)>,
@@ -151,6 +153,16 @@ impl Locator {
         (self.files.len() - 1) as u32
     }
 
+    /// #19: a file whose `zero` ranges (start, end; bytes) read as zeros, at the scan and when a chunk is read again
+    /// (a volume shadow copy keeps only the allocated clusters: free ones can change in between).
+    pub fn add_file_masked(&mut self, p: PathBuf, zero: Vec<(u64, u64)>) -> u32 {
+        let i = self.add_file(p);
+        if !zero.is_empty() {
+            self.masks.insert(i, zero);
+        }
+        i
+    }
+
     /// Remember one chunk location; with `spool_data` (fallback mode) the bytes are
     /// also copied to the spool while it has room.
     pub fn add(&mut self, h: &Hash, file: u32, offset: u64, len: u32, spool_data: Option<&[u8]>) -> io::Result<()> {
@@ -211,9 +223,15 @@ impl Locator {
                     .spool
                     .as_ref()
                     .is_some_and(|s| read_exact_at(&s.f, &mut buf, off).is_ok()),
-                None => self
-                    .file(loc.file)
-                    .is_some_and(|f| read_exact_at(f, &mut buf, loc.offset).is_ok()),
+                None => {
+                    let ok = self
+                        .file(loc.file)
+                        .is_some_and(|f| read_exact_at(f, &mut buf, loc.offset).is_ok());
+                    if let Some(m) = self.masks.get(&loc.file) {
+                        apply_mask(&mut buf, loc.offset, m);
+                    }
+                    ok
+                }
             };
             if ok && blake3::hash(&buf).as_bytes() == h {
                 return Some(buf);
@@ -313,6 +331,40 @@ pub fn read_exact_at(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::read_exact_at(f, buf, off)
 }
 
+/// Zeroes the parts of `buf` (read at `off`) that fall in one of the sorted `zero` ranges (start, end).
+pub fn apply_mask(buf: &mut [u8], off: u64, zero: &[(u64, u64)]) {
+    let end = off + buf.len() as u64;
+    // the first range that ends after `off`
+    let i = zero.partition_point(|&(_, e)| e <= off);
+    for &(a, b) in &zero[i..] {
+        if a >= end {
+            break;
+        }
+        let (a, b) = (a.max(off), b.min(end));
+        if a < b {
+            buf[(a - off) as usize..(b - off) as usize].fill(0);
+        }
+    }
+}
+
+/// Reads up to `buf.len()` bytes at `off`, fewer only at the end of the file or device; the bytes read.
+pub fn read_at_most(f: &File, buf: &mut [u8], off: u64) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        #[cfg(unix)]
+        let r = std::os::unix::fs::FileExt::read_at(f, &mut buf[n..], off + n as u64);
+        #[cfg(windows)]
+        let r = std::os::windows::fs::FileExt::seek_read(f, &mut buf[n..], off + n as u64);
+        match r {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(unix)]
 pub fn write_all_at(f: &File, buf: &[u8], off: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(f, buf, off)
@@ -350,6 +402,21 @@ pub fn write_all_at(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::apply_mask;
+
+    #[test]
+    fn masks() {
+        let mut b = vec![1u8; 10];
+        apply_mask(&mut b, 100, &[(0, 50), (102, 104), (108, 200)]);
+        assert_eq!(b, [1, 1, 0, 0, 1, 1, 1, 1, 0, 0]);
+        let mut b = vec![1u8; 4];
+        apply_mask(&mut b, 0, &[]);
+        assert_eq!(b, [1; 4]);
+    }
 }
 
 #[cfg(test)]

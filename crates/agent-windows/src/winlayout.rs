@@ -221,6 +221,34 @@ pub fn images(f: &Facts) -> Vec<(String, String, Option<String>, u64)> {
     out
 }
 
+/// The free clusters of an NTFS cluster bitmap (bit set = in use, LSB first) as sorted byte ranges.
+pub fn free_from_bitmap(bitmap: &[u8], clusters: u64, cluster_size: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    let mut c = 0u64;
+    while c < clusters {
+        let byte = bitmap[(c / 8) as usize];
+        // a whole byte of free clusters at once
+        if c.is_multiple_of(8) && byte == 0 && c + 8 <= clusters {
+            push_free(&mut out, c, c + 8, cluster_size);
+            c += 8;
+            continue;
+        }
+        if byte & (1 << (c % 8)) == 0 {
+            push_free(&mut out, c, c + 1, cluster_size);
+        }
+        c += 1;
+    }
+    out
+}
+
+fn push_free(out: &mut Vec<(u64, u64)>, a: u64, b: u64, cs: u64) {
+    let (a, b) = (a * cs, b * cs);
+    match out.last_mut() {
+        Some(last) if last.1 == a => last.1 = b,
+        _ => out.push((a, b)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,6 +300,22 @@ mod tests {
         let im = images(&facts());
         assert_eq!(im.len(), 2);
         assert_eq!(im[1].2.as_deref(), Some("\\\\?\\Volume{b}\\"), "NTFS through VSS");
+    }
+
+    #[test]
+    fn bitmap_to_free_ranges() {
+        // clusters 0-2 used, 3-12 free (across the byte border), 13 used, 14-15 free; 4 KiB clusters
+        let bm = [0b0000_0111u8, 0b0010_0000];
+        assert_eq!(
+            free_from_bitmap(&bm, 16, 4096),
+            vec![(3 * 4096, 13 * 4096), (14 * 4096, 16 * 4096)]
+        );
+        assert_eq!(free_from_bitmap(&[0xff], 8, 4096), vec![]);
+        assert_eq!(
+            free_from_bitmap(&[0, 0], 12, 512),
+            vec![(0, 12 * 512)],
+            "only the clusters that exist"
+        );
     }
 
     #[test]

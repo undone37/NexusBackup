@@ -89,8 +89,15 @@ pub fn prepare() -> Result<(String, Vec<PathBuf>), String> {
             (Some(m), Some(s)) => s.device(m)?,
             _ => dev.clone(),
         };
-        // what the device reads as (a shadow copy can be a little shorter than its partition)
-        let len = size_of(&path).unwrap_or(*size);
+        // what the device reads as: a shadow copy is its volume, which can end before its partition (lab
+        // 2026-11-02: 4 MiB short of a 40 GiB partition); the shadow device does not answer the length IOCTL, its
+        // live volume does (`\\?\Volume{...}` without the trailing backslash opens the volume, not its root)
+        let len = match &im[k].2 {
+            Some(v) if member[k].is_some() => size_of(v.trim_end_matches('\\')).or_else(|| size_of(&path)),
+            _ => size_of(&path),
+        }
+        .unwrap_or(*size)
+        .min(*size);
         out.push(serde_json::json!({"name": name, "target": k + 1, "size": len, "vss": member[k].is_some()}));
         paths.push(PathBuf::from(path));
     }
@@ -109,4 +116,61 @@ pub fn finish(prepared: &str) -> Result<(), String> {
         drop(s.finish(true));
     }
     Ok(())
+}
+
+/// One `DeviceIoControl` with input and output buffers; the bytes returned. ERROR_MORE_DATA counts as success
+/// (the output is then full).
+fn ioctl(f: &std::fs::File, code: u32, input: &[u8], out: &mut [u8]) -> std::io::Result<usize> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::DeviceIoControl;
+    let mut got = 0u32;
+    // SAFETY: the handle is open for the call; both buffers are valid for their lengths.
+    let r = unsafe {
+        DeviceIoControl(
+            HANDLE(f.as_raw_handle()),
+            code,
+            (!input.is_empty()).then_some(input.as_ptr().cast()),
+            input.len() as u32,
+            Some(out.as_mut_ptr().cast()),
+            out.len() as u32,
+            Some(&mut got),
+            None,
+        )
+    };
+    match r {
+        Ok(()) => Ok(got as usize),
+        Err(e) if e.code().0 as u32 == 0x8007_00EA => Ok(got as usize), // ERROR_MORE_DATA
+        Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
+/// The free clusters of the NTFS volume on `path` (a shadow copy device) as sorted byte ranges, from its cluster
+/// bitmap. Empty when the volume is not NTFS or the bitmap cannot be read (the image is then read in full).
+pub fn free_ranges(path: &std::path::Path) -> Vec<(u64, u64)> {
+    const FSCTL_GET_NTFS_VOLUME_DATA: u32 = 0x0009_0064;
+    const FSCTL_GET_VOLUME_BITMAP: u32 = 0x0009_006F;
+    let Ok(f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let mut vd = [0u8; 128];
+    if ioctl(&f, FSCTL_GET_NTFS_VOLUME_DATA, &[], &mut vd).is_err() {
+        return Vec::new();
+    }
+    let i64_at = |b: &[u8], o: usize| i64::from_le_bytes(b[o..o + 8].try_into().unwrap_or_default());
+    let total = i64_at(&vd, 16).max(0) as u64; // TotalClusters
+    let bpc = u64::from(u32::from_le_bytes(vd[44..48].try_into().unwrap_or_default())); // BytesPerCluster
+    if total == 0 || bpc == 0 {
+        return Vec::new();
+    }
+    let mut out = vec![0u8; 16 + total.div_ceil(8) as usize];
+    let start = 0i64.to_le_bytes(); // STARTING_LCN_INPUT_BUFFER
+    let Ok(n) = ioctl(&f, FSCTL_GET_VOLUME_BITMAP, &start, &mut out) else {
+        return Vec::new();
+    };
+    if n < 16 || i64_at(&out, 0) != 0 {
+        return Vec::new();
+    }
+    let clusters = (i64_at(&out, 8).max(0) as u64).min(((n - 16) as u64) * 8);
+    crate::winlayout::free_from_bitmap(&out[16..], clusters, bpc)
 }

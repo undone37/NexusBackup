@@ -403,6 +403,10 @@ impl Platform for Windows {
         image::finish(prepared)
     }
 
+    fn image_free_ranges(&self, path: &std::path::Path) -> Vec<(u64, u64)> {
+        image::free_ranges(path)
+    }
+
     fn hv_list(&self) -> Result<String, String> {
         hyperv::list()
     }

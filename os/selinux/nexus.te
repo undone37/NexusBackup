@@ -146,6 +146,8 @@ type nexus_downloads_t;		# file-restore downloads
 files_type(nexus_downloads_t)
 type nexus_vmware_work_t;	# hot-add proxy handoff in a job dir (plan, state, disk indexes; #80)
 files_type(nexus_vmware_work_t)
+type nexus_p2v_work_t;	# P2V: the snapshot's layout.json agentctl writes into the job dir for nexus-pve p2v (#19)
+files_type(nexus_p2v_work_t)
 type nexus_keyd_var_lib_t;	# wrapped KEK + DEKs
 files_type(nexus_keyd_var_lib_t)
 type nexus_keyd_cred_t;	# the KEK as a systemd credential sealed to the TPM (#22): only PID 1 reads it
@@ -670,6 +672,15 @@ rw_dirs_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_files_pattern(nexus_agentctl_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_dirs_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
 manage_files_pattern(nexus_scheduler_t, nexus_vmware_work_t, nexus_vmware_work_t)
+# P2V (#19, lab 2026-11-02: the job dir is read-only for job domains, so `nexus-agentctl layout` was denied and no
+# P2V restore ran on an enforcing appliance): agentctl creates layout.json there with its own type, nexus-pve reads
+# it, the scheduler removes the job dir. Only the named file.
+allow nexus_agentctl_t nexus_scheduler_var_run_t:dir { add_name write };
+type_transition nexus_agentctl_t nexus_scheduler_var_run_t:file nexus_p2v_work_t "layout.json";
+create_files_pattern(nexus_agentctl_t, nexus_scheduler_var_run_t, nexus_p2v_work_t)
+rw_files_pattern(nexus_agentctl_t, nexus_p2v_work_t, nexus_p2v_work_t)
+read_files_pattern(nexus_pve_t, nexus_p2v_work_t, nexus_p2v_work_t)
+manage_files_pattern(nexus_scheduler_t, nexus_p2v_work_t, nexus_p2v_work_t)
 
 ########################################
 # nexus-xcpng (crate xcpng, docs/xcpng-design.md): XAPI JSON-RPC over https and the snapshot VDIs over NBD with

@@ -14,7 +14,8 @@
 #   winbmr-e2e.sh clean     VM $TARGET removed
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444); VMID (293), AGENT (nx-winbmr), TARGET (272),
-#      PVE_SOURCE (the appliance's PVE source of pve-test, by name: pve-test), STORAGE (vmpool)
+#      PVE_SOURCE (the appliance's PVE source of pve-test, by name: pve-test), STORAGE (vmpool),
+#      APPLIANCE (10.2.34.211:8443: the address the rescue system checks in with)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -48,9 +49,19 @@ step_agent() {
 	for _ in $(seq 60); do win 'exit 0' >/dev/null 2>&1 && break; sleep 10; done
 	id=$(agent_id)
 	if [ -n "$id" ]; then
+		# the binary the existing service runs (a clone may carry an older agent at another path)
 		"$repo/lab/windows/gexec.py" "$VMID" --put "$EXE" 'C:\nx\agent\nexus-agent.new.exe' >/dev/null
-		win 'Stop-Service NexusAgent; Move-Item -Force C:\nx\agent\nexus-agent.new.exe C:\nx\agent\nexus-agent.exe; Start-Service NexusAgent; (Get-Service NexusAgent).Status' >&2
+		win '$p = ((sc.exe qc NexusAgent | Select-String BINARY_PATH).ToString() -split ":", 2)[1].Trim().Split(" ")[0]
+		     Stop-Service NexusAgent -ErrorAction SilentlyContinue; Copy-Item -Force C:\nx\agent\nexus-agent.new.exe $p
+		     Start-Service NexusAgent; "${p}: $((Get-Service NexusAgent).Status)"' >&2
 		log "agent $AGENT exists ($id): binary replaced"
+		if [ "$(api admin GET /agents | jq -r --arg a "$id" '.[] | select(.id == $a) | .cert_sha256 // empty')" = "" ]; then
+			r=$(api admin POST "/agents/$id/enroll")
+			expect 202 "enroll $AGENT"
+			j=$(wait_job admin "$(jq -r .id <<<"$r")" 600)
+			[ "$(jq -r .state <<<"$j")" = ok ] || die "enroll $AGENT: $(jq -r .log <<<"$j" | tail -n 20)"
+			log "agent $AGENT enrolled"
+		fi
 		return
 	fi
 	[ -f "$EXE" ] || die "$EXE missing (crates/agent-windows/build.sh --test-key)"
@@ -77,6 +88,12 @@ step_backup() {
 	local id r j
 	id=$(agent_id)
 	[ -n "$id" ] || die "no agent $AGENT (step agent)"
+	# the agent's source (kind linux covers Windows agents): a small file tree; the images carry the machine
+	if ! api admin GET /sources | jq -e --arg a "$id" '.[] | select(.kind == "linux" and .config.agent_id == $a)' >/dev/null; then
+		api admin POST /sources "$(jq -nc --arg a "$id" --arg n "$AGENT" \
+			'{tenant:"lab", kind:"linux", name:$n, config:{agent_id:$a, paths:["C:\\Users"]}}')" >/dev/null
+		expect 201 "agent source"
+	fi
 	r=$(api admin POST /jobs "$(jq -nc --arg a "$id" '{kind:"backup", tenant:"lab", params:{agent_id:$a, images:true}}')")
 	expect 202 "backup job"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 7200)
@@ -101,9 +118,9 @@ step_p2v() {
 	src=$(api admin GET /sources | jq -r '.[] | select(.kind == "pve" and .name == "'"${PVE_SOURCE:-pve-test}"'") | .id' | head -1)
 	[ -n "$src" ] || die "no PVE source ${PVE_SOURCE:-pve-test}"
 	pve "qm status $TARGET >/dev/null 2>&1" && die "VM $TARGET exists (step clean)"
-	r=$(api admin POST "/agents/$id/p2v" "$(jq -nc --argjson t "$snap" --argjson s "$src" --argjson v "$TARGET" --arg st "$STORAGE" \
+	r=$(api admin POST "/agents/$id/p2v" "$(jq -nc --arg ap "${APPLIANCE:-10.2.34.211:8443}" --argjson t "$snap" --argjson s "$src" --argjson v "$TARGET" --arg st "$STORAGE" \
 		'{time:$t, source_id:$s, node:"pve-test", vmid:$v, name:"winbmr-p2v", storage:$st, iso:"local:iso/nexus-rescue-winbmr.iso",
-		  bridge:"vmbr0", memory:4096, cores:2}')")
+		  bridge:"vmbr0", memory:4096, cores:2, appliance:$ap}')")
 	expect 202 "p2v job"
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 1800)
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "p2v: $(jq -r .log <<<"$j" | tail -n 30)"

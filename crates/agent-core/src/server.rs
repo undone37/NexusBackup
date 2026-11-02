@@ -187,6 +187,11 @@ pub trait Platform: Send + Sync + 'static {
     fn img_finish(&self, _prepared: &str) -> Result<(), String> {
         Ok(())
     }
+    /// #19: the byte ranges of an image device that hold no data (the free clusters of an NTFS volume), sorted; they
+    /// are read as zeros. Empty: everything is read.
+    fn image_free_ranges(&self, _path: &std::path::Path) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
     /// #19, rescue agents: after a successful `RescueApply` of a layout with images, the devices the images are
     /// written to (`BlockWrite` target order); empty: the restore goes through files.
     fn rescue_images(&self, _job: u64) -> Vec<PathBuf> {
@@ -1378,8 +1383,28 @@ impl<P: Platform> Session<'_, P> {
                 format!("a range goes beyond the disk's {total} blocks"),
             );
         }
-        let mut loc = Locator::new(None, 0)?;
-        let idx = loc.add_file(path.clone());
+        // #19: a volume image may end before its partition (a shadow copy device is its volume; lab 2026-11-02:
+        // 4 MiB short of a 40 GiB partition while both report the partition's length): the rest reads as zeros,
+        // spooled, as the device cannot be read there again when the appliance asks for the block
+        let image = self.img.contains(&(job / 16));
+        let mut loc = if image {
+            Locator::new(Some(&self.agent.paths.state), 64 << 20)?
+        } else {
+            Locator::new(None, 0)?
+        };
+        let mask = if image {
+            self.agent.platform.image_free_ranges(&path)
+        } else {
+            Vec::new()
+        };
+        if !mask.is_empty() {
+            log(format!(
+                "job {job}: {}: {} bytes free (read as zeros)",
+                path.display(),
+                mask.iter().map(|(a, b)| b - a).sum::<u64>()
+            ));
+        }
+        let idx = loc.add_file_masked(path.clone(), mask.clone());
         let (mut blocks, mut bytes) = (0u64, 0u64);
         let mut buf = vec![0u8; BLOCK_SIZE as usize];
         for &(first, n) in ranges {
@@ -1388,11 +1413,24 @@ impl<P: Platform> Session<'_, P> {
             for b in first..first + n {
                 let off = b * BLOCK_SIZE;
                 let len = (size - off).min(BLOCK_SIZE) as usize;
-                if let Err(e) = crate::chunk::read_exact_at(&f, &mut buf[..len], off) {
-                    return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display()));
-                }
+                let short = if image {
+                    match crate::chunk::read_at_most(&f, &mut buf[..len], off) {
+                        Ok(n) if n < len => {
+                            buf[n..len].fill(0);
+                            true
+                        }
+                        Ok(_) => false,
+                        Err(e) => return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display())),
+                    }
+                } else {
+                    if let Err(e) = crate::chunk::read_exact_at(&f, &mut buf[..len], off) {
+                        return error(s, E_INTERNAL, format!("{} at {off}: {e}", path.display()));
+                    }
+                    false
+                };
+                crate::chunk::apply_mask(&mut buf[..len], off, &mask);
                 let h: Hash = *blake3::hash(&buf[..len]).as_bytes();
-                loc.add(&h, idx, off, len as u32, None)?;
+                loc.add(&h, idx, off, len as u32, short.then_some(&buf[..len]))?;
                 batch.push(h);
                 blocks += 1;
                 bytes += len as u64;
