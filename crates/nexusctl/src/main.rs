@@ -34,6 +34,31 @@ fn real_main() -> Result<()> {
             .transpose()?;
         return update(&url, ca_pem.as_deref(), &cli.cmd[1..], cli.json);
     }
+    // #179: reboot and shutdown, also a person's action
+    if cli.cmd[0] == "system" {
+        let (cmd, user) = nexusctl::system::parse(&cli.cmd[1..])?;
+        let url = cli
+            .url
+            .or_else(|| env("NEXUS_URL"))
+            .context("--url or NEXUS_URL is required")?;
+        let ca_pem = ca
+            .map(|p| std::fs::read_to_string(&p).with_context(|| format!("reading {p}")))
+            .transpose()?;
+        let password = prompt(&format!("password of {user}: "), false)?;
+        let mut totp = || prompt("TOTP code: ", true);
+        let mut login = nexusctl::update::Login {
+            user,
+            password,
+            totp: &mut totp,
+        };
+        let v = nexusctl::system::run(&url, ca_pem.as_deref(), &mut login, &cmd)?;
+        if cli.json {
+            println!("{v:#}");
+        } else {
+            print!("{}", nexusctl::system::render(&cmd, &v));
+        }
+        return Ok(());
+    }
     let conn = Conn {
         url: cli
             .url

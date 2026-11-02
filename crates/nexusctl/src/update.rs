@@ -17,7 +17,7 @@ pub struct Login<'a> {
     pub totp: &'a mut dyn FnMut() -> Result<String>,
 }
 
-struct Session {
+pub(crate) struct Session {
     http: Client,
     base: String,
     cookie: String,
@@ -54,6 +54,19 @@ impl Session {
             path,
         )
     }
+    /// `method path [body]`, the JSON answer (`null` for an empty one).
+    pub(crate) fn call(&self, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
+        let mut r = self.req(self.http.request(method, format!("{}{path}", self.base)));
+        if let Some(b) = body {
+            r = r.json(b);
+        }
+        let text = check(r.send()?, path)?.text()?;
+        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
+    }
+    /// Best effort: the session ends at its idle timeout anyway.
+    pub(crate) fn sign_out(&self) {
+        let _ = self.post("/auth/logout", &json!({}));
+    }
 }
 
 fn sign_in(http: Client, base: String, l: &mut Login) -> Result<Session> {
@@ -80,7 +93,7 @@ fn sign_in(http: Client, base: String, l: &mut Login) -> Result<Session> {
     let me = s.get("/auth/me")?;
     if me["user"]["role"] != "admin" {
         bail!(
-            "{} is not an administrator: only administrators upload update bundles",
+            "{} is not an administrator: only administrators upload update bundles or reboot the appliance",
             l.user
         );
     }
@@ -105,26 +118,10 @@ pub fn upload(
     wait: Duration,
     say: &mut dyn FnMut(&str),
 ) -> Result<Value> {
-    let parsed = reqwest::Url::parse(url).context("--url / NEXUS_URL: not a URL")?;
-    let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
-        bail!("--url / NEXUS_URL: https:// (http:// only for localhost)");
-    }
     let f = std::fs::File::open(file).with_context(|| format!("{}", file.display()))?;
     let size = f.metadata()?.len();
     // no overall timeout: a bundle is about a gigabyte
-    let mut b = Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(None)
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("nexusctl/", env!("CARGO_PKG_VERSION")));
-    if let Some(pem) = ca_pem {
-        for c in reqwest::Certificate::from_pem_bundle(pem.as_bytes()).context("--ca: PEM certificates")? {
-            b = b.add_root_certificate(c);
-        }
-    }
-    let base = format!("{}/api/v1", url.trim_end_matches('/'));
-    let s = sign_in(b.build()?, base, login)?;
+    let s = connect(url, ca_pem, login, None)?;
     let res = (|| {
         let before = s.get("/updates")?["last_result"]["time"].as_i64();
         say(&format!("uploading {} ({size} bytes)", file.display()));
@@ -148,7 +145,32 @@ pub fn upload(
             std::thread::sleep(Duration::from_secs(3));
         }
     })();
-    // best effort: the session ends at its idle timeout anyway
-    let _ = s.post("/auth/logout", &json!({}));
+    s.sign_out();
     res
+}
+
+/// An administrator's session on `url` (https, http only for localhost); `timeout` per request.
+pub(crate) fn connect(
+    url: &str,
+    ca_pem: Option<&str>,
+    login: &mut Login,
+    timeout: Option<Duration>,
+) -> Result<Session> {
+    let parsed = reqwest::Url::parse(url).context("--url / NEXUS_URL: not a URL")?;
+    let loopback = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && loopback) {
+        bail!("--url / NEXUS_URL: https:// (http:// only for localhost)");
+    }
+    let mut b = Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("nexusctl/", env!("CARGO_PKG_VERSION")));
+    if let Some(pem) = ca_pem {
+        for c in reqwest::Certificate::from_pem_bundle(pem.as_bytes()).context("--ca: PEM certificates")? {
+            b = b.add_root_certificate(c);
+        }
+    }
+    let base = format!("{}/api/v1", url.trim_end_matches('/'));
+    sign_in(b.build()?, base, login)
 }
