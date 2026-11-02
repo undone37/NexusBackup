@@ -52,6 +52,71 @@ export const en = {
   ux: {
     copy: 'Copy',
     copyWhat: (what: string) => `Copy ${what}`,
+    // the dashboard's attention list
+    attention: 'Needs attention',
+    attentionSub: 'What to look at first, most urgent on top',
+    allClear:
+      'All clear: every protected object is within its RPO, no job failed in the last 7 days, no open alerts and no pending approvals.',
+    open: 'Open',
+    openJob: 'Open job',
+    showMore: (n: number) => `Show ${n} more`,
+    showLess: 'Show fewer',
+    failedJobs: 'Failed jobs',
+    review: 'Review',
+    alertsMore: (n: number) => `${n} more open ${n === 1 ? 'alert' : 'alerts'}`,
+    approvals: (n: number) => `${n} ${n === 1 ? 'request waits' : 'requests wait'} for approval`,
+    approvalsYou: 'Another administrator or security officer has to approve them.',
+    approvalsMine: 'Requested by you: another person has to approve them.',
+    slaBreach: (n: number) => `${n} protected ${n === 1 ? 'object is' : 'objects are'} past the RPO`,
+    slaHint:
+      'The last good backup is older than 1.5 times the policy period. The failed jobs say why; "Objects needing attention" below lists them.',
+    neverBacked: (n: number) => `${n} ${n === 1 ? 'object was' : 'objects were'} never backed up`,
+    neverHint: 'They are in a protection group but have no snapshot yet. Run a backup or wait for the schedule.',
+    jobsFailed: (n: number) => `${n} ${n === 1 ? 'job' : 'jobs'} failed in the last 7 days`,
+    restoreTestsFailed: (n: number) => `${n} restore ${n === 1 ? 'test' : 'tests'} failed`,
+    verifyFailed: (n: number) => `${n} verify ${n === 1 ? 'job' : 'jobs'} failed in the selected period`,
+    verifyHint:
+      'A verify job found chunks it could not read or check: open the job log; the affected snapshots are listed there.',
+    offsiteLag: (n: number, all: number) =>
+      `Offsite copy behind for ${n} of ${all} ${all === 1 ? 'tenant' : 'tenants'}`,
+    offsiteHint: 'Check that the offsite target is reachable, its credentials and quota, and the offsite job logs.',
+    storageFull: (pct: string) => `Backup storage is ${pct} full`,
+    storageHint: 'Shorten retention, delete snapshots that are no longer needed or add capacity before backups fail.',
+    hwHint: 'A disk or array of the appliance needs a look; the Hardware page says which and what to do.',
+    more: 'More',
+    moreFor: (v: string) => `More actions for ${v}`,
+    newActivationHint: 'Password and authenticator stop working; the user sets new ones',
+    resetTotpHint: 'A new secret for your own account; the old one stops working',
+    // leave guard (lib/router.svelte.ts)
+    leaveTitle: 'Leave without saving?',
+    leave: 'Leave and discard',
+    leaveDraft:
+      'The network changes have not been requested yet and are lost. Stay on the page and use Request change to keep them.',
+    // empty states say why the list is empty and offer the next step
+    noAlerts:
+      'No open alerts. The appliance raises one when a backup misses its RPO, a job fails, a disk or the storage needs a look, or a sign-in looks unusual.',
+    noAlertsFiltered: 'No alerts match this filter.',
+    showAll: 'Show all alerts',
+    noAudit: 'No audit entries match these filters.',
+    clearFilters: 'Clear filters',
+    filters: 'Filters',
+    filtersActive: (n: number) => `Filters (${n} active)`,
+    noPending: 'No request is waiting for a decision.',
+    noPendingOff:
+      'No request is waiting for a decision. Approvals are off: deletions and weakening changes take effect at once (still audited).',
+    enableApprovals: 'Turn approvals on',
+    noRequests:
+      'No approval requests yet. Requests appear here when someone deletes, weakens or exports something while approvals are on.',
+    showHistory: 'Show decided requests',
+    // settings groups (Settings.svelte)
+    settingsGroups: {
+      system: 'System',
+      access: 'Access and security',
+      monitoring: 'Monitoring',
+      threats: 'Threat detection',
+      maintenance: 'Maintenance',
+    } as Record<string, string>,
+    settingsSection: 'Section',
     // the confirming button of a question names the action (never a bare "Confirm")
     do: {
       accept: 'Accept',
@@ -2292,6 +2357,11 @@ export const en = {
       deleteConfirm: (n: string) => `Delete rule "${n}"? Alerts it matched are no longer sent there.`,
       ruleName: 'Name',
       ruleNameHint: 'Letters, digits, dot, dash and underscore.',
+      nameBad: 'Letters, digits, . _ and -, not starting with a dot',
+      nameTaken: (n: string) => `A rule ${n} exists already`,
+      emailBad: (a: string) => `${a}: not an e-mail address`,
+      noChannelYet: 'Add e-mail recipients, a webhook URL or a PSA: a rule without a channel sends nothing',
+      urlBad: 'An http(s) URL, e.g. https://hooks.example.com/alerts',
       kinds: 'Alert kinds',
       kindsHint: 'None selected = every kind.',
       tenants: 'Tenants',
@@ -2729,7 +2799,6 @@ export const en = {
     approved: 'Approved.',
     rejected: 'Rejected.',
     onlyPending: 'Pending only',
-    nonePending: 'No request is waiting for a decision. Clear "Pending only" to see decided and expired ones.',
     ownOnly: 'Your requests. An administrator or security officer of the provider decides them.',
     ownRequest: 'You requested this — another administrator or security officer must decide.',
     settingsLink: 'Approval settings',
@@ -3728,6 +3797,17 @@ export const en = {
     dashText: (by: string, since: string) => `Entered by ${by} ${since}. Backups are paused until it is left.`,
   },
   net: {
+    // checks while typing (lib/net.ts; the API checks again)
+    chk: {
+      mtu: 'MTU 1280-9216 (1500 is standard, 9000 for jumbo frames)',
+      vlan: 'VLAN id 1-4094',
+      ip: (s: string) => `${s}: not an IP address`,
+      gwOutside: (nets: string) => `The gateway must be in a subnet of this interface (${nets})`,
+      route: (l: string) => `${l}: write network/prefix, optionally "via" and the next hop`,
+      address: 'An address with prefix length, e.g. 10.0.20.5/24',
+      networkAddr: 'This is the network address of the subnet, not a host address',
+      broadcast: 'This is the broadcast address of the subnet',
+    },
     intro:
       'Network cards, bonds and VLANs of this appliance, their addresses, MTU and routes, and the role of each interface: management (web UI, API, the default route), data (sources and agents are pulled through it) and replication. Outbound connections of a role leave only through its interface; a role without an interface uses any. Changes are collected here and requested together; every change needs approval.',
     unavailable: 'No network status yet: nexus-net has not reported (it runs every 15 minutes and after each request).',

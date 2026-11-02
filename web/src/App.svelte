@@ -236,6 +236,7 @@
   const active = (p: string) => (p === '/' ? route.path === '/' : route.path === p || route.path.startsWith(p + '/'));
   // top-bar breadcrumb: section / page
   const crumb = $derived.by(() => {
+    if (route.path === '/account') return { section: '', page: t.account.title };
     const r = routes.find((x) => x.nav && active(x.path)) ?? (route.path.startsWith('/files') ? routes[1] : null);
     return r ? { section: SECTIONS.find((s) => s.id === r.section)?.label ?? '', page: r.nav ?? '' } : null;
   });

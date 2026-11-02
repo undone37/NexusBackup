@@ -40,7 +40,7 @@
 </script>
 
 <div class="table-wrap">
-  <table>
+  <table class="stack">
     <thead>
       <tr>
         {#if showUser}<th scope="col">{t.name}</th>{/if}
@@ -54,11 +54,11 @@
     <tbody>
       {#each sessions as s (s.id)}
         <tr>
-          {#if showUser}<td><strong>{s.user}</strong></td>{/if}
-          <td class="nowrap"><code>{s.ip || '—'}</code></td>
-          <td class="ua" title={s.user_agent}>{fmtUserAgent(s.user_agent)}</td>
-          <td class="nowrap">{fmtTime(s.created)}</td>
-          <td class="nowrap">{fmtAgo(s.last_seen)}</td>
+          {#if showUser}<th scope="row">{s.user}</th>{/if}
+          <td class="nowrap" data-label={t.access.ip}><code>{s.ip || '—'}</code></td>
+          <td class="ua" data-label={t.access.agent} title={s.user_agent}>{fmtUserAgent(s.user_agent)}</td>
+          <td class="nowrap" data-label={t.access.started}>{fmtTime(s.created)}</td>
+          <td class="nowrap" data-label={t.access.lastSeen}>{fmtAgo(s.last_seen)}</td>
           <td class="actions">
             {#if s.current}
               <span class="chip ok">{t.access.current}</span>

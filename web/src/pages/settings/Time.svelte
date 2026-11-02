@@ -232,6 +232,7 @@
                 <td>
                   <input
                     aria-label={t.timeSync.hostField}
+                    aria-invalid={!!r.host.trim() && !hostOk(r.host.trim())}
                     bind:value={r.host}
                     spellcheck="false"
                     autocapitalize="none"

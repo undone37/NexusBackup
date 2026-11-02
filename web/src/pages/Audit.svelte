@@ -75,6 +75,15 @@
     more = true;
     loadMore();
   }
+  const active = $derived(Object.values(applied).filter((v) => v.trim()).length);
+  // narrow screens: the filter form folds away (it would fill the whole screen before the first entry)
+  const wide = window.matchMedia('(min-width: 641px)');
+  let filtersOpen = $state(wide.matches);
+  $effect(() => {
+    const on = () => wide.matches && (filtersOpen = true);
+    wide.addEventListener('change', on);
+    return () => wide.removeEventListener('change', on);
+  });
   function clear() {
     form = { actor: '', action: '', target: '', tenant: '', from: '', to: '' };
     apply();
@@ -164,45 +173,52 @@
   </section>
 {/if}
 
-<form class="filters" role="search" aria-label={t.audit.filters} onsubmit={apply}>
-  <div class="field">
-    <label for="a-actor">{t.audit.actor}</label>
-    <input id="a-actor" bind:value={form.actor} placeholder={t.audit.actorPh} spellcheck="false" />
-  </div>
-  <div class="field">
-    <label for="a-action">{t.audit.action}</label>
-    <input id="a-action" class="mono" bind:value={form.action} placeholder={t.audit.actionPh} spellcheck="false" />
-  </div>
-  <div class="field">
-    <label for="a-target">{t.audit.target}</label>
-    <input id="a-target" class="mono" bind:value={form.target} placeholder={t.audit.targetPh} spellcheck="false" />
-  </div>
-  {#if !scoped}
+<details class="filter-fold" bind:open={filtersOpen}>
+  <summary>{active ? t.ux.filtersActive(active) : t.ux.filters}</summary>
+  <form class="filters" role="search" aria-label={t.audit.filters} onsubmit={apply}>
     <div class="field">
-      <label for="a-tenant">{t.audit.tenant}</label>
-      <input id="a-tenant" bind:value={form.tenant} placeholder={t.audit.tenantPh} spellcheck="false" />
+      <label for="a-actor">{t.audit.actor}</label>
+      <input id="a-actor" bind:value={form.actor} placeholder={t.audit.actorPh} spellcheck="false" />
     </div>
-  {/if}
-  <div class="field narrow">
-    <label for="a-from">{t.audit.from}</label>
-    <input id="a-from" type="date" bind:value={form.from} />
-  </div>
-  <div class="field narrow">
-    <label for="a-to">{t.audit.to}</label>
-    <input id="a-to" type="date" bind:value={form.to} />
-  </div>
-  <button type="submit" class="primary">{t.audit.apply}</button>
-  <button type="button" onclick={clear}>{t.audit.clear}</button>
-</form>
+    <div class="field">
+      <label for="a-action">{t.audit.action}</label>
+      <input id="a-action" class="mono" bind:value={form.action} placeholder={t.audit.actionPh} spellcheck="false" />
+    </div>
+    <div class="field">
+      <label for="a-target">{t.audit.target}</label>
+      <input id="a-target" class="mono" bind:value={form.target} placeholder={t.audit.targetPh} spellcheck="false" />
+    </div>
+    {#if !scoped}
+      <div class="field">
+        <label for="a-tenant">{t.audit.tenant}</label>
+        <input id="a-tenant" bind:value={form.tenant} placeholder={t.audit.tenantPh} spellcheck="false" />
+      </div>
+    {/if}
+    <div class="field narrow">
+      <label for="a-from">{t.audit.from}</label>
+      <input id="a-from" type="date" bind:value={form.from} />
+    </div>
+    <div class="field narrow">
+      <label for="a-to">{t.audit.to}</label>
+      <input id="a-to" type="date" bind:value={form.to} />
+    </div>
+    <button type="submit" class="primary">{t.audit.apply}</button>
+    <button type="button" onclick={clear}>{t.audit.clear}</button>
+  </form>
+</details>
 
-<div class="card">
+<div class="card" aria-busy={!loaded}>
   {#if !loaded}
-    <p class="muted" aria-busy="true">{t.loading}</p>
+    <div class="skeleton-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+    <span class="visually-hidden">{t.loading}</span>
   {:else if entries.length === 0}
-    <p class="empty">{t.none}</p>
+    <div class="empty">
+      <p>{active ? t.ux.noAudit : t.none}</p>
+      {#if active}<button type="button" class="small" onclick={clear}>{t.ux.clearFilters}</button>{/if}
+    </div>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             <th scope="col" class="num">{t.audit.seq}</th>
@@ -217,18 +233,18 @@
         <tbody>
           {#each entries as e (e.seq)}
             <tr>
-              <td class="num">{e.seq}</td>
-              <td class="nowrap">{fmtTime(e.ts)}</td>
-              <td>{e.actor}</td>
-              <td class="mono">{e.action}</td>
-              <td class="mono">
+              <td class="num" data-label={t.audit.seq}>{e.seq}</td>
+              <td class="nowrap" data-label={t.time}>{fmtTime(e.ts)}</td>
+              <td data-label={t.audit.actor}>{e.actor}</td>
+              <td class="mono" data-label={t.audit.action}>{e.action}</td>
+              <td class="mono" data-label={t.audit.target}>
                 <!-- jobs and approvals open from their entries -->
                 {#if /^job\/\d+$/.test(e.target)}<a href={href(`/${e.target.replace('job/', 'jobs/')}`)}>{e.target}</a>
                 {:else if /^quorum\/\d+$/.test(e.target)}<a href={href(`/quorum?id=${e.target.slice(7)}`)}>{e.target}</a
                   >
                 {:else}{e.target}{/if}
               </td>
-              <td class="mono details">
+              <td class="mono details" data-label={t.audit.details}>
                 {#if JSON.stringify(e.details).length > 120}
                   <details>
                     <summary>{JSON.stringify(e.details).slice(0, 110)}…</summary>
@@ -236,7 +252,7 @@
                   </details>
                 {:else}{JSON.stringify(e.details)}{/if}
               </td>
-              <td class="hash" title={`${e.hash}\nprev ${e.prev_hash}`}>{short(e.hash)}</td>
+              <td class="hash" data-label={t.audit.hash} title={`${e.hash}\nprev ${e.prev_hash}`}>{short(e.hash)}</td>
             </tr>
           {/each}
         </tbody>
@@ -257,5 +273,17 @@
   }
   .filters .field.narrow {
     min-width: 150px;
+  }
+  .filter-fold > summary {
+    cursor: pointer;
+    font-weight: 500;
+    margin-bottom: 0.6rem;
+    width: fit-content;
+  }
+  @media (min-width: 641px) {
+    /* wide screens: the form is always shown, the fold is only for phones */
+    .filter-fold > summary {
+      display: none;
+    }
   }
 </style>

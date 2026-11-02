@@ -197,10 +197,24 @@
 {/if}
 
 {#if !loaded}
-  <p class="muted" aria-busy="true">{t.loading}</p>
+  <div class="card" aria-busy="true">
+    <div class="skeleton-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+    <span class="visually-hidden">{t.loading}</span>
+  </div>
 {:else if shown.length === 0}
   <div class="card">
-    <p class="empty">{onlyPending && items.length ? t.quorum.nonePending : t.none}</p>
+    <div class="empty">
+      {#if !onlyPending || items.length === 0}
+        <p>{t.ux.noRequests}</p>
+      {:else}
+        <p>{settings && !settings.enabled ? t.ux.noPendingOff : t.ux.noPending}</p>
+      {/if}
+      {#if settings && !settings.enabled && can.configure(session.user)}
+        <a class="button small" href={href('/settings?tab=approvals')}>{t.ux.enableApprovals}</a>
+      {:else if onlyPending && items.length}
+        <button type="button" class="small" onclick={() => (onlyPending = false)}>{t.ux.showHistory}</button>
+      {/if}
+    </div>
   </div>
 {:else}
   {#each shown as q (q.id)}

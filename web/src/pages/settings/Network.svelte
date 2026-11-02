@@ -2,13 +2,14 @@
   import { onDestroy, onMount } from 'svelte';
   import { get, put, post, act, errText } from '../../lib/api';
   import { session } from '../../lib/session.svelte';
-  import { href } from '../../lib/router.svelte';
+  import { href, setLeaveGuard } from '../../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../../lib/format';
   import { askConfirm } from '../../lib/confirm.svelte';
   import { t } from '../../lib/i18n';
   import type { NetConfig, NetIface, NetRole, NetworkState } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import Modal from '../../components/Modal.svelte';
+  import { checkAddress, inSubnets, isIp, parseCidr, subnetOf } from '../../lib/net';
 
   // Phase 22a (docs/control-plane.md "Network interfaces"): the configuration is edited as a
   // whole draft and requested in one go (approval `network.apply`); nexus-net applies it. A
@@ -41,6 +42,13 @@
 
   const cfg = $derived(draft ?? cur?.config ?? null);
   const dirty = $derived(!!draft && !!cur && JSON.stringify(draft) !== JSON.stringify(cur.config));
+  // leaving the section (another page or Settings section, reload, closing the tab) with a draft asks first
+  onMount(() =>
+    setLeaveGuard({
+      ask: () => (dirty ? t.ux.leaveDraft : null),
+      confirm: (q) => askConfirm(q, { title: t.ux.leaveTitle, ok: t.ux.leave, danger: true }),
+    }),
+  );
   const nics = $derived(cur?.devices.filter((d) => d.kind === 'nic') ?? []);
   const consoleMgmt = $derived(cur?.management?.source === 'console' ? cur.management.ifname : null);
   const remaining = $derived(cur?.pending ? Math.max(0, Math.round(cur.pending.deadline - now)) : 0);
@@ -124,9 +132,49 @@
     ...(cfg?.interfaces ?? []).filter((i) => i.kind === 'bond').map((i) => i.name),
   ]);
 
+  /** What is wrong with the dialog's fields, per field, while typing (the API checks again). */
+  const errs = $derived.by(() => {
+    const e: Record<string, string> = {};
+    if (!ed) return e;
+    const c = t.net.chk;
+    // (bound to number inputs: a number, or null once cleared)
+    const blank = (x: unknown) => x === '' || x === null || x === undefined;
+    const mtu = Number(mtuText);
+    if (!blank(mtuText) && (!Number.isInteger(mtu) || mtu < 1280 || mtu > 9216)) e.mtu = c.mtu;
+    const vlan = Number(vlanText);
+    if (ed.kind === 'vlan' && !blank(vlanText) && (!Number.isInteger(vlan) || vlan < 1 || vlan > 4094)) e.vlan = c.vlan;
+    const addrs = words(addrText);
+    for (const a of addrs) {
+      const m = checkAddress(a);
+      if (m) {
+        e.addr = `${a}: ${m}`;
+        break;
+      }
+    }
+    const gw = ed.role === 'management' ? (ed.gateway ?? '').trim() : '';
+    if (gw && !isIp(gw)) e.gw = c.ip(gw);
+    else if (gw && !gw.includes(':') && !inSubnets(gw, addrs))
+      e.gw = c.gwOutside(addrs.map(subnetOf).filter(Boolean).join(', '));
+    const dns = ed.role === 'management' ? words(dnsText).find((x) => !isIp(x)) : undefined;
+    if (dns) e.dns = c.ip(dns);
+    for (const l of routesText
+      .split('\n')
+      .map((x) => x.trim())
+      .filter(Boolean)) {
+      const [to, kw, via, extra] = l.split(/\s+/);
+      const net = to.includes(':') ? /^[0-9a-fA-F:]+\/\d{1,3}$/.test(to) : !!parseCidr(to);
+      if (!net || extra !== undefined || (kw !== undefined && (kw !== 'via' || !via || !isIp(via)))) {
+        e.routes = c.route(l);
+        break;
+      }
+    }
+    return e;
+  });
+  const hasErrs = $derived(Object.keys(errs).length > 0);
+
   function saveIface(e: SubmitEvent) {
     e.preventDefault();
-    if (!ed || !cfg) return;
+    if (!ed || !cfg || hasErrs) return;
     const i: NetIface = {
       ...ed,
       ports: ed.kind === 'bond' ? ed.ports : [],
@@ -459,7 +507,17 @@
         </div>
         <div class="field">
           <label for="ni-mtu">MTU</label>
-          <input id="ni-mtu" type="number" min="1280" max="9216" bind:value={mtuText} placeholder="1500" />
+          <input
+            id="ni-mtu"
+            type="number"
+            min="1280"
+            max="9216"
+            bind:value={mtuText}
+            placeholder="1500"
+            aria-invalid={!!errs.mtu}
+            aria-describedby={errs.mtu ? 'ni-mtu-h' : undefined}
+          />
+          {#if errs.mtu}<p class="hint bad" id="ni-mtu-h">{errs.mtu}</p>{/if}
         </div>
       </div>
       {#if ed.kind === 'bond'}
@@ -496,7 +554,17 @@
           </div>
           <div class="field">
             <label for="ni-vlan">{t.net.vlanId}</label>
-            <input id="ni-vlan" type="number" min="1" max="4094" bind:value={vlanText} required />
+            <input
+              id="ni-vlan"
+              type="number"
+              min="1"
+              max="4094"
+              bind:value={vlanText}
+              required
+              aria-invalid={!!errs.vlan}
+              aria-describedby={errs.vlan ? 'ni-vlan-h' : undefined}
+            />
+            {#if errs.vlan}<p class="hint bad" id="ni-vlan-h">{errs.vlan}</p>{/if}
           </div>
         </div>
       {/if}
@@ -509,17 +577,36 @@
           bind:value={addrText}
           spellcheck="false"
           autocapitalize="none"
-          placeholder="10.0.20.5/24"></textarea>
+          placeholder="10.0.20.5/24"
+          aria-invalid={!!errs.addr}
+          aria-describedby={errs.addr ? 'ni-addr-h' : undefined}></textarea>
+        {#if errs.addr}<p class="hint bad" id="ni-addr-h">{errs.addr}</p>{/if}
       </div>
       {#if ed.role === 'management'}
         <div class="grid">
           <div class="field">
             <label for="ni-gw">{t.net.gateway}</label>
-            <input id="ni-gw" bind:value={ed.gateway} spellcheck="false" autocomplete="off" />
+            <input
+              id="ni-gw"
+              bind:value={ed.gateway}
+              spellcheck="false"
+              autocomplete="off"
+              aria-invalid={!!errs.gw}
+              aria-describedby={errs.gw ? 'ni-gw-h' : undefined}
+            />
+            {#if errs.gw}<p class="hint bad" id="ni-gw-h">{errs.gw}</p>{/if}
           </div>
           <div class="field">
             <label for="ni-dns">{t.net.dns}</label>
-            <input id="ni-dns" bind:value={dnsText} spellcheck="false" autocomplete="off" />
+            <input
+              id="ni-dns"
+              bind:value={dnsText}
+              spellcheck="false"
+              autocomplete="off"
+              aria-invalid={!!errs.dns}
+              aria-describedby={errs.dns ? 'ni-dns-h' : undefined}
+            />
+            {#if errs.dns}<p class="hint bad" id="ni-dns-h">{errs.dns}</p>{/if}
           </div>
         </div>
         <p class="banner warn">{t.net.mgmtWarn(cur.confirm_secs)}</p>
@@ -532,12 +619,14 @@
           bind:value={routesText}
           spellcheck="false"
           autocapitalize="none"
-          placeholder="10.30.0.0/16 via 10.0.20.1"></textarea>
-        <p class="hint">{t.net.routesHint}</p>
+          placeholder="10.30.0.0/16 via 10.0.20.1"
+          aria-invalid={!!errs.routes}
+          aria-describedby="ni-routes-h"></textarea>
+        <p class="hint" class:bad={!!errs.routes} id="ni-routes-h">{errs.routes || t.net.routesHint}</p>
       </div>
       <div class="form-actions">
         <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-        <button type="submit" class="primary">{t.net.keepInDraft}</button>
+        <button type="submit" class="primary" disabled={hasErrs}>{t.net.keepInDraft}</button>
       </div>
     </form>
   {/if}

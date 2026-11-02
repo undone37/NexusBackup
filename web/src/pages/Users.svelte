@@ -16,6 +16,7 @@
   import ActivationCode from '../components/ActivationCode.svelte';
   import ApiTokens from '../components/ApiTokens.svelte';
   import RiskMarks from '../components/RiskMarks.svelte';
+  import Menu from '../components/Menu.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
   // POST /users -> {user, activation}; PUT /users/{id} -> {user, totp_uri? (own account),
@@ -250,7 +251,7 @@
     <p class="muted" aria-busy="true">{t.loading}</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             <th scope="col">{t.name}</th>
@@ -264,8 +265,8 @@
         <tbody>
           {#each items as x (x.id)}
             <tr use:rowClick={!tenantAdmin || TENANT_ROLES.includes(x.role) ? () => edit(x) : null}>
-              <td><strong>{x.name}</strong></td>
-              <td>
+              <th scope="row">{x.name}</th>
+              <td data-label={t.users.role}>
                 {t.roles[x.role] ?? x.role}
                 {#if x.eligible_role}<span class="chip accent" title={t.p30.elev.eligibleHint}
                     >{t.p30.elev.eligibleChip(t.roles[x.eligible_role])}</span
@@ -273,8 +274,8 @@
                 {#if x.elevated_until}<span class="chip warn">{t.p30.elev.elevatedChip(fmtTime(x.elevated_until))}</span
                   >{/if}
               </td>
-              <td>{x.tenant ?? t.allTenants}</td>
-              <td>
+              <td data-label={t.tenant}>{x.tenant ?? t.allTenants}</td>
+              <td data-label={t.state}>
                 {#if x.disabled && x.pending_activation}
                   <span class="chip bad">{t.users.disabled}</span> <span class="chip warn">{t.users.pending}</span>
                 {:else}
@@ -290,17 +291,32 @@
                     title={t.access.canDownloadHint}>{t.access.noDownloadChip}</span
                   >{/if}
               </td>
-              <td class="nowrap">{x.last_login ? fmtAgo(x.last_login) : t.ago.never}</td>
+              <td class="nowrap" data-label={t.access.lastLogin}>{x.last_login ? fmtAgo(x.last_login) : t.ago.never}</td
+              >
               <td class="actions">
                 {#if !tenantAdmin || TENANT_ROLES.includes(x.role)}
                   <button type="button" class="small" onclick={() => edit(x)}>{t.edit}</button>
                 {/if}
                 {#if isSso(x) || (tenantAdmin && !TENANT_ROLES.includes(x.role))}
                   <!-- password and authenticator are managed by the identity provider -->
-                {:else if isSelf(x)}
-                  <button type="button" class="small" onclick={() => resetTotp(x)}>{t.users.resetTotp}</button>
-                {:else}
+                {:else if x.pending_activation && !isSelf(x)}
+                  <!-- not signed in yet: a new code is what this account needs -->
                   <button type="button" class="small" onclick={() => newActivation(x)}>{t.users.newActivation}</button>
+                {:else}
+                  <!-- rarer and disruptive: behind "More", with what it does, not as prominent as Edit -->
+                  <Menu
+                    label={t.ux.more}
+                    ariaLabel={t.ux.moreFor(x.name)}
+                    items={isSelf(x)
+                      ? [{ label: t.users.resetTotp, hint: t.ux.resetTotpHint, onselect: () => resetTotp(x) }]
+                      : [
+                          {
+                            label: t.users.newActivation,
+                            hint: t.ux.newActivationHint,
+                            onselect: () => newActivation(x),
+                          },
+                        ]}
+                  />
                 {/if}
               </td>
             </tr>

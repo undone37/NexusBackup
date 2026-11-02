@@ -220,6 +220,23 @@
       .map((x) => x.trim())
       .filter(Boolean);
 
+  /** The rule dialog's problems per field, while typing (the API checks again). */
+  const ruleErrs = $derived.by(() => {
+    const e: Record<string, string> = {};
+    const a = t.settings.al;
+    const name = r.name.trim();
+    if (name && !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) e.name = a.nameBad;
+    else if (saved?.rules.some((x, i) => x.name === name && i !== editing)) e.name = a.nameTaken(name);
+    const email = list(r.email);
+    const bad = email.find((x) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+    if (bad) e.email = a.emailBad(bad);
+    else if (email.length && saved && !saved.smtp) e.email = a.smtpNeeded;
+    const url = r.url.trim();
+    if (url && !/^https?:\/\/[^\s/]+/.test(url)) e.url = a.urlBad;
+    if (!email.length && !url && !r.psa.vendor) e.channel = a.noChannelYet;
+    return e;
+  });
+
   async function saveRule(e: SubmitEvent) {
     e.preventDefault();
     if (!saved) return;
@@ -476,9 +493,12 @@
           required
           maxlength="64"
           pattern={'[A-Za-z0-9_\\-][A-Za-z0-9._\\-]*'}
+          aria-invalid={!!ruleErrs.name}
           aria-describedby="{id}-rn-hint"
         />
-        <div class="hint" id="{id}-rn-hint">{t.settings.al.ruleNameHint}</div>
+        <div class="hint" class:bad={!!ruleErrs.name} id="{id}-rn-hint">
+          {ruleErrs.name || t.settings.al.ruleNameHint}
+        </div>
       </div>
       <div class="field">
         <label for="{id}-rs">{t.settings.al.minSeverity}</label>
@@ -511,9 +531,16 @@
       <legend>{t.settings.al.channels}</legend>
       <div class="field">
         <label for="{id}-re">{t.settings.al.email}</label>
-        <textarea id="{id}-re" bind:value={r.email} rows="2" spellcheck="false" aria-describedby="{id}-re-hint"
-        ></textarea>
-        <div class="hint" id="{id}-re-hint">{t.settings.al.emailHint}</div>
+        <textarea
+          id="{id}-re"
+          bind:value={r.email}
+          rows="2"
+          spellcheck="false"
+          aria-invalid={!!ruleErrs.email}
+          aria-describedby="{id}-re-hint"></textarea>
+        <div class="hint" class:bad={!!ruleErrs.email} id="{id}-re-hint">
+          {ruleErrs.email || t.settings.al.emailHint}
+        </div>
       </div>
       <div class="field">
         <label for="{id}-ru">{t.settings.al.webhookUrl}</label>
@@ -525,9 +552,12 @@
           placeholder="https://hooks.example.com/…"
           autocomplete="off"
           spellcheck="false"
+          aria-invalid={!!ruleErrs.url}
           aria-describedby="{id}-ru-hint"
         />
-        <div class="hint" id="{id}-ru-hint">{t.settings.al.webhookHint}</div>
+        <div class="hint" class:bad={!!ruleErrs.url} id="{id}-ru-hint">
+          {ruleErrs.url || t.settings.al.webhookHint}
+        </div>
       </div>
       {#if r.url.trim()}
         <div class="field">
@@ -703,9 +733,10 @@
         </div>
       {/if}
     </fieldset>
+    {#if ruleErrs.channel && (r.name.trim() || editing !== null)}<p class="hint bad">{ruleErrs.channel}</p>{/if}
     <div class="form-actions">
       <button type="button" onclick={() => (open = false)}>{t.cancel}</button>
-      <button type="submit" class="primary" disabled={busy}>{t.save}</button>
+      <button type="submit" class="primary" disabled={busy || Object.keys(ruleErrs).length > 0}>{t.save}</button>
     </div>
   </form>
 </Modal>

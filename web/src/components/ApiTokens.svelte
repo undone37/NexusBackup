@@ -93,7 +93,7 @@
     <p class="empty">{t.tokens.none}</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             {#if all}<th scope="col">{t.tokens.user}</th>{/if}
@@ -108,11 +108,15 @@
           {#each items as x (x.id)}
             {@const ex = expiry(x)}
             <tr>
-              {#if all}<td>{x.user}</td>{/if}
-              <td><strong>{x.name}</strong> <code class="muted">nxt_{x.prefix}_…</code></td>
-              <td><span class="chip {x.scope === 'operator' ? 'accent' : ''}">{t.tokens.scopes[x.scope]}</span></td>
-              <td class="nowrap"><span class={ex.cls ? `chip ${ex.cls}` : ''}>{ex.text}</span></td>
-              <td class="nowrap"
+              {#if all}<td data-label={t.tokens.user}>{x.user}</td>{/if}
+              <td data-label={t.name}><strong>{x.name}</strong> <code class="muted">nxt_{x.prefix}_…</code></td>
+              <td data-label={t.tokens.scope}
+                ><span class="chip {x.scope === 'operator' ? 'accent' : ''}">{t.tokens.scopes[x.scope]}</span></td
+              >
+              <td class="nowrap" data-label={t.tokens.expires}
+                ><span class={ex.cls ? `chip ${ex.cls}` : ''}>{ex.text}</span></td
+              >
+              <td class="nowrap" data-label={t.tokens.lastUsed}
                 >{fmtAgo(x.last_used)}{#if x.last_ip}<span class="muted">{` · ${x.last_ip}`}</span>{/if}</td
               >
               <td class="actions"

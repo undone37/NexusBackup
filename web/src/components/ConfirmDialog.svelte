@@ -16,6 +16,7 @@
 
 <Modal bind:open title={pending.opts.title ?? (pending.input === null ? t.confirmTitle : t.inputTitle)}>
   <form
+    class="confirm-form"
     onsubmit={(e) => {
       e.preventDefault();
       answer(true);
