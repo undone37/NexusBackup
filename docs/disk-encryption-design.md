@@ -87,8 +87,9 @@ follows that risk.
   systemd-cryptsetup-generator would make of `nexus-data UUID=... none tpm2-device=auto,discard,headless=true`; the
   mount unit requires it. A grow resizes the mapping before `xfs_growfs`.
 - Image: `cryptsetup` stays (os/slim.sh); systemd-cryptenroll and the generator come with systemd-udev.
-- Not yet: re-enrolling the TPM2 token on new hardware from the KEK-derived keyslot (`nexus-disks` op, then the
-  manual), the dashboard state.
+- New hardware: `nexus-disks reenroll` (console, after `nexus-setup keys-reseal`) wipes the TPM2 slot and enrols a
+  new one with the KEK-derived passphrase (two calls: one call skips as "PCR set already enrolled"); lab drill
+  2026-11-02 with a replaced vTPM. Not yet: the dashboard state.
 
 ## Open questions
 

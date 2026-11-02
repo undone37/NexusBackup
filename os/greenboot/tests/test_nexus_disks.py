@@ -440,6 +440,25 @@ class Host(unittest.TestCase):
         self.assertIn("the key service did not answer", ops[rid]["error"])
         self.assertFalse(any(c.startswith("mdadm --create") for c in self.calls()), "nothing created without the key")
 
+    def test_reenroll_replaces_the_tpm2_token(self):
+        md = self.dev / "md" / "nexus-data"
+        self.assertEqual(self.m.main(["nexus-disks", "reenroll"]), 1, "no array")
+        md.write_text("")
+        self.assertEqual(self.m.main(["nexus-disks", "reenroll"]), 0)
+        calls = self.calls()
+        enrol = [c for c in calls if c.startswith("systemd-cryptenroll")]
+        self.assertEqual(enrol, [f"systemd-cryptenroll --wipe-slot=tpm2 --unlock-key-file=/dev/stdin {md}",
+                                 f"systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7 --unlock-key-file=/dev/stdin {md}"],
+                         "wipe first: one call would see the PCR set as enrolled and skip")
+        self.assertIn("systemctl --no-ask-password restart nexus-data-unlock.service", calls)
+        self.assertIn("systemctl --no-ask-password start var-lib-nexus-chunkstore.mount nexus-scheduler.service "
+                      "nexus-replicad.service", calls)
+        self.assertFalse(any(LUKS_KEY.hex() in c for c in calls))
+        # a clear array: nothing to do
+        self.answers["cryptsetup isLuks"] = [1, ""]
+        self.save()
+        self.assertEqual(self.m.main(["nexus-disks", "reenroll"]), 1)
+
     def test_create_refuses_system_disk(self):
         self.fresh()
         self.assert_refused(self.create(disks=["S6PNNM0T401234A", *self.HDDS[1:]]), "is not empty: system")
