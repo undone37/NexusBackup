@@ -8,6 +8,8 @@
 #                          crates/agent-windows/build.sh --test-key) on the host: init with the token, service,
 #                          firewall rule for TCP 7444; enrolled
 #   hyperv-e2e.sh backup   backup job of the VM named $VM; the snapshot, the checkpoints left on the host (none)
+#   hyperv-e2e.sh group    (#39 M3) source "hv-host" of kind hyperv, its inventory, group "hv-vms" with $VM, a group
+#                          backup through the scheduler
 #
 # env: as deploy.sh (LAB ~/nexus-lab/pvehost, PORT 28444); VMID (296), VM (nx-rct), AGENT (nx-hyperv)
 set -euo pipefail
@@ -80,8 +82,42 @@ step_backup() {
 	log "checkpoints left on the host: $(win "@(Get-VMSnapshot $VM).Count; @(Get-Disk).Count" | tr -d '\r' | paste -sd' ')"
 }
 
+# #39 M3: the source kind, its inventory and a group backup through the scheduler
+step_group() {
+	local id sid vm r j pid gid
+	id=$(agent_id)
+	[ -n "$id" ] || die "no agent $AGENT (step agent)"
+	sid=$(api admin GET /sources | jq -r '.[] | select(.name == "hv-host") | .id')
+	if [ -z "$sid" ]; then
+		r=$(api admin POST /sources "$(jq -nc --arg a "$id" '{tenant:"lab", kind:"hyperv", name:"hv-host", config:{agent_id:$a}}')")
+		expect 201 "create source hv-host"
+		sid=$(jq -r .id <<<"$r")
+	fi
+	r=$(api admin POST /jobs "$(jq -nc --argjson s "$sid" '{kind:"inventory", tenant:"lab", params:{source_id:$s}}')")
+	expect 202 "inventory job"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 600)
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "inventory: $(jq -r .log <<<"$j" | tail -n 10)"
+	vm=$(api admin GET "/sources/$sid/inventory" | jq -r --arg n "$VM" '[.guests[] | select(.name == $n and .gone == null)][0].guest // empty')
+	[ -n "$vm" ] || die "$VM not in the inventory of hv-host"
+	log "inventory: $VM = $vm"
+	pid=$(api admin GET /policies | jq -r '.[0].id')
+	gid=$(api admin GET /groups | jq -r '.[] | select(.name == "hv-vms") | .id')
+	if [ -z "$gid" ]; then
+		r=$(api admin POST /groups "$(jq -nc --argjson s "$sid" --argjson p "$pid" --arg v "$vm" '{tenant:"lab", source_id:$s, policy_id:$p, name:"hv-vms", guests:[$v]}')")
+		expect 201 "create group hv-vms"
+		gid=$(jq -r .id <<<"$r")
+	fi
+	r=$(api admin POST /jobs "$(jq -nc --argjson g "$gid" '{kind:"backup", tenant:"lab", params:{group_id:$g}}')")
+	expect 202 "group backup job"
+	j=$(wait_job admin "$(jq -r .id <<<"$r")" 3600)
+	jq -r .log <<<"$j" | grep -E "scsi|result" | tail -n 4 >&2
+	[ "$(jq -r .state <<<"$j")" = ok ] || die "group backup: $(jq -r .state <<<"$j")"
+	log "group backup of $VM ok"
+}
+
 case ${1:?step} in
 agent) step_agent ;;
 backup) step_backup ;;
+group) step_group ;;
 *) die "unknown step $1" ;;
 esac
