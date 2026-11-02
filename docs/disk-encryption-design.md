@@ -91,6 +91,25 @@ follows that risk.
   new one with the KEK-derived passphrase (two calls: one call skips as "PCR set already enrolled"); lab drill
   2026-11-02 with a replaced vTPM. Not yet: the dashboard state.
 
+## M3 spike (2026-11-02, pve-test VM 204, OVMF + vTPM, the published 0.2.0-alpha.3 installer ISO)
+
+- Anaconda with `ostreecontainer` and `autopart --type=plain --encrypted --luks-version=luks2 --passphrase=...`
+  (an OEMDRV kickstart that `%include`s the ISO's): installs without errors, LUKS2 on root and swap, /boot and the
+  ESP clear (about 3 minutes).
+- The image's initramfs already has systemd-cryptsetup, `libcryptsetup-token-systemd-tpm2.so` and the tss2
+  libraries (0.2.0 and the current image): no dracut change for a TPM2 unlock.
+- `%post` can enrol the TPM2 token: `systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7` with the install
+  passphrase on every `crypto_LUKS` device (both got a `systemd-tpm2` token).
+- The initrd tries the token only with `rd.luks.options=tpm2-device=auto` on the kernel command line (Anaconda's
+  `rd.luks.uuid=` entries carry no options): `bootloader --append=...` in the kickstart.
+- PCR 7 must be measured the same way at install and at boot: installed from a direct kernel boot (no shim) the
+  token did not unseal; installed through the ISO's own shim and GRUB (the real path) the appliance booted
+  unattended into the first-boot wizard, no passphrase prompt.
+- Implementation plan: the ISO kickstart (`release/iso/config.toml`) gets `%pre` writing an `autopart --encrypted`
+  include with a random passphrase, the karg and the `%post` enrolment; the first-boot setup adds a keyslot from
+  the KEK (keyd, like `luks-data`) and wipes the install passphrase (`systemd-cryptenroll --wipe-slot=password`).
+  Open: whether `autopart` in the ISO kickstart keeps the disk selection interactive (as the ISO does today).
+
 ## Open questions
 
 - Whether AlmaLinux 10's systemd builds `systemd-creds` with TPM2 support and which `tpm2-tss` packages that needs.

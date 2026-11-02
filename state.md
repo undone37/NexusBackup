@@ -1817,3 +1817,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   dedup) and stored its reference point (`...:00000008`) in `hyperv.json`; after another 4 MiB guest write the
   second backup read 1 block (4 MiB, "changed blocks (RCT)") in 18 s, the rest from the previous index, and
   stored the next base (`...:00000009`).
+- [x] M3 spike (2026-11-02, VM 204, OVMF + vTPM, release ISO 0.2.0-alpha.3 + an OEMDRV kickstart, lab passphrase
+  only in the lab directory): encrypted autopart with `ostreecontainer` installs; the initramfs has the TPM2 token
+  plugin; `%post` enrols TPM2 tokens; with `rd.luks.options=tpm2-device=auto` and the install booted through the
+  ISO's own shim/GRUB (edited entry, `inst.ks=hd:LABEL=OEMDRV:/ks.cfg`), the appliance boots unattended to the
+  first-boot wizard. A direct-kernel install boot (no shim measurement) leaves PCR 7 different: passphrase prompt.
+  Details in docs/disk-encryption-design.md "M3 spike". VM 204 stopped.
