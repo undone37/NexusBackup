@@ -115,6 +115,10 @@ pub fn name(m: &Message) -> &'static str {
         Message::BlockWriteEnd { .. } => "BlockWriteEnd",
         Message::BlockWritten { .. } => "BlockWritten",
         Message::HvRestoreFinish { .. } => "HvRestoreFinish",
+        Message::ImgPrepare { .. } => "ImgPrepare",
+        Message::ImgPrepared { .. } => "ImgPrepared",
+        Message::ImgFinish { .. } => "ImgFinish",
+        Message::ImgFinished { .. } => "ImgFinished",
     }
 }
 

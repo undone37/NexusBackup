@@ -85,6 +85,8 @@ pub fn info() -> HostInfo {
             "fallback",
             "restore",
             "update",
+            // #19: the machine layout (GetLayout) for bare-metal recovery; CAP_VOLUME_IMAGE comes from the platform
+            agent_proto::CAP_LAYOUT,
         ]
         .iter()
         .map(ToString::to_string)

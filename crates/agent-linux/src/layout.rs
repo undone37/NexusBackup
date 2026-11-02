@@ -174,6 +174,7 @@ pub fn parse_sfdisk(text: &str) -> (String, String, Vec<Partition>) {
                 name: s(&p["name"]),
                 bootable: flag(&p["bootable"]),
                 attrs: s(&p["attrs"]),
+                ..Default::default()
             }
         })
         .collect();
@@ -380,6 +381,7 @@ pub fn build(src: &Sources) -> Layout {
             table,
             id,
             partitions,
+            ..Default::default()
         });
     }
     let on_disk = |path: &str| {

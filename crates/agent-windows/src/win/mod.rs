@@ -4,6 +4,7 @@ pub mod acl;
 pub mod cli;
 pub mod host;
 pub mod hyperv;
+pub mod image;
 pub mod pipe;
 pub mod power;
 pub mod restore;
@@ -384,6 +385,22 @@ impl Platform for Windows {
 
     fn hyperv(&self) -> bool {
         hyperv::available()
+    }
+
+    fn layout(&self) -> Result<String, Refused> {
+        image::layout().map_err(|e| Refused(E_INTERNAL, e))
+    }
+
+    fn volume_images(&self) -> bool {
+        true
+    }
+
+    fn img_prepare(&self) -> Result<(String, Vec<PathBuf>), String> {
+        image::prepare()
+    }
+
+    fn img_finish(&self, prepared: &str) -> Result<(), String> {
+        image::finish(prepared)
     }
 
     fn hv_list(&self) -> Result<String, String> {

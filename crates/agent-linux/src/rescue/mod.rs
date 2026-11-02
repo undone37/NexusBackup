@@ -150,7 +150,9 @@ impl Platform for Rescue {
         let mut log = exec::Log::default();
         match exec::apply(&l, &self.targets, &mut log) {
             Ok(plan) => {
-                log.line(format!("file systems mounted below {TARGET}: restoring files"));
+                if plan.images.is_empty() {
+                    log.line(format!("file systems mounted below {TARGET}: restoring files"));
+                }
                 *applied = Some((l, plan));
                 Ok((TARGET.into(), log.0))
             }
@@ -161,12 +163,31 @@ impl Platform for Rescue {
         }
     }
 
+    fn volume_images(&self) -> bool {
+        true
+    }
+
+    fn rescue_images(&self, _job: u64) -> Vec<PathBuf> {
+        let applied = self.applied.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        applied
+            .as_ref()
+            .map(|(_, p)| p.images.iter().map(|(_, d, _)| PathBuf::from(d)).collect())
+            .unwrap_or_default()
+    }
+
     fn rescue_finish(&self, _: Ctx, _job: u64) -> Result<(String, String), Refused> {
         let applied = self.applied.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some((l, plan)) = applied.as_ref() else {
             return Err(refused("RescueFinish before RescueApply"));
         };
         let mut log = exec::Log::default();
+        if !plan.images.is_empty() {
+            // #19: the images carry the boot files; the BCD refers to the disk signature sfdisk restored
+            // SAFETY: plain syscall
+            unsafe { libc::sync() };
+            log.line("restored from volume images: nothing to adjust; recovery finished");
+            return Ok((TARGET.into(), log.0));
+        }
         match exec::finish(l, plan, &mut log) {
             Ok(()) => {
                 log.line("recovery finished");

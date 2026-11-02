@@ -198,6 +198,7 @@ dependencies = [
  "agent-ui-proto",
  "base64 0.22.1",
  "blake3",
+ "serde",
  "serde_json",
  "tempfile",
  "windows",

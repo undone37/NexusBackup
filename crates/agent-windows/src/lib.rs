@@ -15,6 +15,7 @@ pub mod paths;
 pub mod scan;
 pub mod update;
 pub mod usn;
+pub mod winlayout;
 pub mod writers;
 
 #[cfg(windows)]

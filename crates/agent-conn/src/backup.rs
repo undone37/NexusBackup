@@ -40,6 +40,8 @@ pub struct Spec {
     /// Phase 29: read everything and check this change tracker ("metadata-cache",
     /// or "usn" for Windows agents); None = incremental as usual
     pub full_read: Option<&'static str>,
+    /// #19: the partitions as volume images too (agents with CAP_VOLUME_IMAGE), for bare-metal recovery
+    pub images: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,6 +70,8 @@ pub struct Report {
     pub layout: Option<String>,
     /// Phase 29: result of a full read (`Spec::full_read`)
     pub full_read: Option<Drift>,
+    /// #19: the volume images read (index name, index), committed with the tree
+    pub images: Vec<(String, Index)>,
 }
 
 /// Newest committed snapshot of this agent (the `base` of the next scan).
@@ -155,6 +159,13 @@ pub fn backup(
     };
     if s.has_cap(agent_proto::CAP_LAYOUT) {
         r.layout = fetch_layout(s, log)?;
+    }
+    if spec.images {
+        if !s.has_cap(agent_proto::CAP_VOLUME_IMAGE) {
+            bail!("volume images: this agent does not offer them (Windows agent with #19, 0.4.0 or newer)");
+        }
+        // before the file scan, with their own snapshot (released before the file snapshot is taken)
+        r.images = images(store, map, s, spec.job, newest, agent_id, log)?;
     }
     if s.has_cap(CAP_PREPARE2) {
         s.send(&Message::PrepareEx {
@@ -247,6 +258,77 @@ fn compare(store: &Store, m: &Manifest, prev: Option<u64>, tracker: &str) -> Res
     let mut d = Drift::new(tracker, Some(p));
     drift::tree(&mut d, &old, &tree_of(store, m)?, drift::metadata_differs);
     Ok(d)
+}
+
+/// #19: `ImgPrepare`, every partition read as an `Index::Fixed` (the previous snapshot's image of the same name
+/// as the dedup base), `ImgFinish`. Full reads: ponytail, no used-block map or change tracking yet, so every run
+/// reads the whole partitions (unchanged blocks are hashed, not sent).
+fn images(
+    store: &Store,
+    map: &mut MapDb,
+    s: &mut Session,
+    job: u64,
+    newest: Option<u64>,
+    agent_id: &str,
+    log: &mut dyn FnMut(&str),
+) -> Result<Vec<(String, Index)>> {
+    use agent_proto::{BLOCK_SIZE, MAX_BLOCK_TARGET};
+    s.send(&Message::ImgPrepare { job })?;
+    let json = match s.recv()? {
+        Message::ImgPrepared { job: j, json } if j == job => json,
+        Message::Error { message, .. } => bail!("volume images: {message}"),
+        m => bail!("unexpected answer to ImgPrepare: {}", name(&m)),
+    };
+    let prev = newest.and_then(|t| store.load_manifest(&source_name(agent_id), t).ok());
+    let read = (|| -> Result<Vec<(String, Index)>> {
+        let v: serde_json::Value = serde_json::from_str(&json).context("ImgPrepared")?;
+        let mut out: Vec<(String, Index)> = Vec::new();
+        for im in v["images"].as_array().into_iter().flatten() {
+            let nm = im["name"].as_str().unwrap_or_default().to_owned();
+            let target = im["target"].as_u64().unwrap_or(0) as u32;
+            let size = im["size"].as_u64().unwrap_or(0);
+            if !crate::blocks::valid_index_name(&nm) || nm == TREE_INDEX || out.iter().any(|(n, _)| *n == nm) {
+                bail!("agent: invalid image name {nm:?}");
+            }
+            if !(1..=MAX_BLOCK_TARGET).contains(&target) || size == 0 {
+                bail!("agent: image {nm} at target {target} with {size} bytes");
+            }
+            let base = prev.as_ref().and_then(|m| store.load_index(m, &nm).ok());
+            let (idx, rep) = crate::blocks::read_disk(
+                store,
+                map,
+                s,
+                job * 16 + u64::from(target),
+                target,
+                size,
+                &[(0, size.div_ceil(BLOCK_SIZE))],
+                base.as_ref(),
+                log,
+            )
+            .with_context(|| format!("image {nm}"))?;
+            log(&format!(
+                "image {nm}: {} bytes, {} blocks read, {} fetched ({} bytes on the wire){}",
+                size,
+                rep.blocks,
+                rep.wanted,
+                rep.wire_bytes,
+                if im["vss"] == true {
+                    ", from a VSS snapshot"
+                } else {
+                    ", read live"
+                }
+            ));
+            out.push((nm, idx));
+        }
+        Ok(out)
+    })();
+    s.send(&Message::ImgFinish { job })?;
+    match s.recv() {
+        Ok(Message::ImgFinished { job: j }) if j == job => {}
+        Ok(m) => log(&format!("warning: unexpected answer to ImgFinish: {}", name(&m))),
+        Err(e) => log(&format!("warning: ImgFinish: {e:#}")),
+    }
+    read
 }
 
 /// `GetLayout` (docs/bmr.md "Layout"). A layout that does not parse is logged and
@@ -569,5 +651,8 @@ fn collect_and_commit(
     if let Some(json) = &r.layout {
         add_layout(store, &mut tree, json, r.time)?;
     }
-    Ok(store.commit_snapshot(&r.source, r.time, &[(TREE_INDEX, Index::Tree { entries: tree })])?)
+    let (names, idxs): (Vec<String>, Vec<Index>) = std::mem::take(&mut r.images).into_iter().unzip();
+    let mut refs: Vec<(&str, Index)> = vec![(TREE_INDEX, Index::Tree { entries: tree })];
+    refs.extend(names.iter().map(String::as_str).zip(idxs));
+    Ok(store.commit_snapshot(&r.source, r.time, &refs)?)
 }
