@@ -182,3 +182,32 @@ on the way:
 
 UEFI boot of the rescue ISO, network, config disk and disk detection were checked separately (OVMF); a UEFI source
 machine and a real PVE cluster (P2V) are still to be run by the lead.
+
+## Windows: recovery media spike (#19, plan.md Phase 37c)
+
+Lab 2026-11-02 on pve-test, nothing written to VM 101: VM 293 (a full clone of the lab Windows Server 2022, VM 242:
+SeaBIOS, MBR with one NTFS partition, SATA disk, e1000), restored and booted as below. Nothing from Microsoft is in the
+repository (the ADK licence was accepted for the lab only, 2026-11-01).
+
+| Case | Result |
+|---|---|
+| **A, same hardware**: the Linux way of the rescue ISO, done by hand on the host: the MBR boot code (first 440 bytes), the partition table with the disk signature (`sfdisk -d` / `sfdisk`), the partition contents; VM 294 on SATA as the original | **boots**, the guest agent answers after 31 s |
+| A, then the disk on VirtIO SCSI (a controller the restored Windows has no driver for) | **does not boot**: INACCESSIBLE_BOOT_DEVICE, then Windows RE |
+| **A + offline driver injection from Linux**: a fresh copy converted by `virt-v2v` (AlmaLinux 10 packages, virtio-win 0.1.302 as the driver source; the RHEL build installs the VirtIO block driver, it has no `--block-driver virtio-scsi`), first boot on VirtIO block (VM 295) | **boots**: the guest agent answers after 332 s; virt-v2v's first-boot scripts then install the remaining drivers and restart Windows; that second boot stalled at the logo in this run (not examined yet) |
+| A disk that had already failed on VirtIO SCSI, converted afterwards | stays in Windows RE (a failed boot leaves Windows in the recovery path: convert before the first boot on new hardware) |
+| **B, WinPE** (customer-built with the ADK, DISM `/Add-Driver`, `bcdboot`) | not run yet |
+
+Findings for the design:
+
+- **The layout must record the MBR boot code** (and on GPT disks the disk and partition GUIDs): `sfdisk` restores the
+  table and the disk signature (the BCD refers to it) but not the boot code. Sector 0 differed only in the CHS fields
+  `sfdisk` computes, which Windows ignores.
+- **Same hardware and P2V need no WinPE** when the target controller is one the backed-up Windows has a driver for:
+  a P2V VM starts on SATA and e1000e, as the VMware restore already does for Windows guests (then the VirtIO drivers
+  are installed in the running system).
+- **Dissimilar hardware needs a driver injected before the first boot.** From Linux this works with libguestfs /
+  virt-v2v logic (offline registry and driver store changes, no Microsoft code); the first-boot restart needs a look.
+  WinPE with DISM is Microsoft's supported way and stays an option for physical hardware.
+- Proposed decision (for Phase 37c): **A** (the existing rescue ISO) for same hardware and P2V; dissimilar hardware
+  through offline injection from the rescue system once its first-boot restart is understood; **B** (WinPE) only if
+  that fails on real hardware.

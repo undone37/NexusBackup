@@ -1704,3 +1704,14 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   API login (maintainer allowed the lab login, 2026-11-01). The README pictures are not from the lab (lab data stays
   out of the repository): `integrations/pegaprox/tools/screenshots.mjs` renders the real `ui.html` against demo data.
   Open: submission to the PegaProx plugin catalogue (maintainer).
+
+## Windows recovery media spike (added 2026-11-02, #19)
+
+- [x] Lab (docs/bmr.md "Windows: recovery media spike"): VM 293 = clone of VM 242 (Server 2022, SeaBIOS, MBR, SATA);
+  restored the Linux way (boot code, sfdisk table with disk signature, partition contents) as VM 294 on SATA: boots
+  (guest agent after 31 s); the same disk on VirtIO SCSI: INACCESSIBLE_BOOT_DEVICE; a fresh copy converted with
+  virt-v2v (AlmaLinux 10 packages, virtio-win 0.1.302; building rhsrvany from its repository was not allowed, the
+  package mingw-srvany-redistributable brings it) booted on VirtIO block as VM 295 (agent after 332 s), its
+  first-boot driver restart then stalled at the logo; a disk converted after a failed boot stays in Windows RE.
+  WinPE (B) not run yet. VMs 293-295 stopped, kept for the next step.
+  - open: the first-boot restart after the injection, WinPE with DISM, UEFI/GPT and BitLocker cases.
