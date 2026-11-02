@@ -6,13 +6,13 @@
   import { jobLink } from '../lib/jobs';
   import { href } from '../lib/router.svelte';
   import { get, post, put, del, act, errText } from '../lib/api';
-  import { notify } from '../lib/notify.svelte';
   import { session } from '../lib/session.svelte';
   import { can } from '../lib/roles';
   import { fmtAgo, fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Job, ReplicationPeer, ReplicationSource, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
+  import CopyField from '../components/CopyField.svelte';
   import ErrorBanner from '../components/ErrorBanner.svelte';
   import BlackoutEditor from '../components/BlackoutEditor.svelte';
   import {
@@ -107,11 +107,11 @@
     load();
   }
   async function exportKeys(p: ReplicationPeer) {
-    if (!(await askConfirm(t.repl.exportConfirm(p.name)))) return;
+    if (!(await askConfirm(t.repl.exportConfirm(p.name), { ok: t.ux.do.export }))) return;
     if (await act(post(`/replication/peers/${encodeURIComponent(p.id)}/export-keys`, {}), t.saved)) load();
   }
   async function revoke(p: ReplicationPeer) {
-    if (!(await askConfirm(t.confirmDelete(t.repl.revokeWhat(p.name))))) return;
+    if (!(await askConfirm(t.confirmDelete(t.repl.revokeWhat(p.name)), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/replication/peers/${encodeURIComponent(p.id)}`), t.deleted)) load();
   }
 
@@ -185,7 +185,7 @@
     if (await act(post(`/replication/sources/${s.id}/enroll`, { code: c.trim() }), t.saved)) load();
   }
   async function removeSource(s: ReplicationSource) {
-    if (!(await askConfirm(t.confirmDelete(t.repl.deleteSourceWhat(s.name))))) return;
+    if (!(await askConfirm(t.confirmDelete(t.repl.deleteSourceWhat(s.name)), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/replication/sources/${s.id}`), t.deleted)) load();
   }
   async function setSchedule(s: ReplicationSource) {
@@ -240,11 +240,11 @@
   }
   const closed = (s: ReplicationSource) => isPaused(s.closed_until, now);
   async function closeVault(s: ReplicationSource) {
-    if (!(await askConfirm(t.repl.closeConfirm(s.name)))) return;
+    if (!(await askConfirm(t.repl.closeConfirm(s.name), { ok: t.ux.do.close, danger: true }))) return;
     if (await act(post(`/replication/sources/${s.id}/close`, {}), t.repl.closedDone)) load();
   }
   async function reopen(s: ReplicationSource) {
-    if (!(await askConfirm(t.repl.reopenConfirm(s.name)))) return;
+    if (!(await askConfirm(t.repl.reopenConfirm(s.name), { ok: t.ux.do.reopen }))) return;
     if (await act(post(`/replication/sources/${s.id}/reopen`, {}), t.repl.reopenDone)) load();
   }
 
@@ -265,15 +265,6 @@
       out.push({ label: t.delete, onselect: () => removeSource(s) });
     }
     return out;
-  }
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      notify('ok', t.users.copied);
-    } catch {
-      /* clipboard unavailable: the code is selectable */
-    }
   }
 </script>
 
@@ -475,20 +466,15 @@
   {#if code}
     <p class="banner warn" role="alert">{t.repl.codeOnce}</p>
     <p>{t.repl.codeSteps}</p>
-    <div class="field">
-      <span class="muted">{t.repl.code}</span>
-      <code class="secret">{code.code}</code>
-      <button type="button" class="small" onclick={() => copy(code!.code)}>{t.users.copy}</button>
-    </div>
-    <div class="field">
-      <span class="muted">{t.repl.primaryFingerprint}</span>
-      {#if code.fingerprint}
-        <code class="secret">{code.fingerprint}</code>
-        <button type="button" class="small" onclick={() => copy(code!.fingerprint!)}>{t.users.copy}</button>
-      {:else}
+    <CopyField value={code.code} label={t.repl.code} secret />
+    {#if code.fingerprint}
+      <CopyField value={code.fingerprint} label={t.repl.primaryFingerprint} />
+    {:else}
+      <div class="field">
+        <span class="muted">{t.repl.primaryFingerprint}</span>
         <span class="muted">{t.repl.primaryFingerprintUnknown}</span>
-      {/if}
-    </div>
+      </div>
+    {/if}
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (codeOpen = false)}>{t.close}</button>
     </div>

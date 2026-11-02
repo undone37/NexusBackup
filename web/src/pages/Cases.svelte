@@ -152,7 +152,7 @@
     }
   }
   async function close() {
-    if (!one || !(await askConfirm(t.cases.closeConfirm(one.name)))) return;
+    if (!one || !(await askConfirm(t.cases.closeConfirm(one.name), { ok: t.ux.do.closeCase }))) return;
     if (await act(post(`/cases/${one.id}/close`), t.cases.closed)) load();
   }
 </script>

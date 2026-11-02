@@ -6,13 +6,13 @@
   import { askConfirm } from '../../lib/confirm.svelte';
   import { session } from '../../lib/session.svelte';
   import { can } from '../../lib/roles';
-  import { copyText } from '../../lib/clipboard';
   import { notify } from '../../lib/notify.svelte';
   import { navigate } from '../../lib/router.svelte';
   import { fmtAgo, fmtTime } from '../../lib/format';
   import { t } from '../../lib/i18n';
   import type { Agent, Fleet, FleetCandidate, FleetCreated, Group, Source, Tenant } from '../../lib/types';
   import Modal from '../../components/Modal.svelte';
+  import CopyField from '../../components/CopyField.svelte';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
@@ -133,7 +133,7 @@
   });
 
   async function revoke(x: Fleet) {
-    if (!(await askConfirm(t.fleet.revokeConfirm(x.name)))) return;
+    if (!(await askConfirm(t.fleet.revokeConfirm(x.name), { ok: t.ux.do.revoke, danger: true }))) return;
     if (await act(del(`/fleets/${encodeURIComponent(x.id)}`), t.saved)) load();
   }
   async function scan(x: Fleet) {
@@ -145,7 +145,7 @@
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function accept(c: FleetCandidate) {
-    if (!(await askConfirm(t.fleet.acceptConfirm(c.hostname, c.host, c.tenant)))) return;
+    if (!(await askConfirm(t.fleet.acceptConfirm(c.hostname, c.host, c.tenant), { ok: t.ux.do.accept }))) return;
     if (
       await act(post<{ agent_id: string; job: number }>(`/fleet/candidates/${c.id}/accept`), (d) =>
         t.fleet.accepted(d.agent_id),
@@ -154,7 +154,7 @@
       load();
   }
   async function reject(c: FleetCandidate) {
-    if (!(await askConfirm(t.fleet.rejectConfirm(c.hostname)))) return;
+    if (!(await askConfirm(t.fleet.rejectConfirm(c.hostname), { ok: t.ux.do.reject, danger: true }))) return;
     if (await act(post(`/fleet/candidates/${c.id}/reject`), t.saved)) load();
   }
 
@@ -429,24 +429,10 @@
   {#if created}
     {@const win = created.install.windows.replace('<secret>', created.secret)}
     <p class="banner warn" role="alert">{t.fleet.secretOnce}</p>
-    <div class="field">
-      <span class="muted">{t.fleet.secret}</span>
-      <code class="secret">{created.secret}</code>
-      <button type="button" class="small" onclick={() => copyText(created!.secret)}>{t.users.copy}</button>
-    </div>
-    <div class="field">
-      <span class="muted">{t.fleet.installLinux}</span>
-      <code class="secret">{created.install.linux}</code>
-    </div>
-    <div class="field">
-      <span class="muted">{t.fleet.installFile}</span>
-      <code class="secret">{created.install.linux_file}</code>
-    </div>
-    <div class="field">
-      <span class="muted">{t.fleet.installWindows}</span>
-      <code class="secret">{win}</code>
-      <button type="button" class="small" onclick={() => copyText(win)}>{t.users.copy}</button>
-    </div>
+    <CopyField value={created.secret} label={t.fleet.secret} secret />
+    <CopyField value={created.install.linux} label={t.fleet.installLinux} secret />
+    <CopyField value={created.install.linux_file} label={t.fleet.installFile} secret />
+    <CopyField value={win} label={t.fleet.installWindows} secret />
     <p class="muted">{t.fleet.expires}: {fmtTime(created.expires)}</p>
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (secOpen = false)}>{t.close}</button>

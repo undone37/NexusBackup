@@ -5,12 +5,12 @@
   import { onMount } from 'svelte';
   import { get, post, del, act, errText } from '../../lib/api';
   import { askConfirm } from '../../lib/confirm.svelte';
-  import { copyText } from '../../lib/clipboard';
   import { navigate } from '../../lib/router.svelte';
   import { fmtAgo, fmtDuration, fmtTime } from '../../lib/format';
   import { t } from '../../lib/i18n';
   import type { Edge, EdgeToken } from '../../lib/types';
   import Modal from '../../components/Modal.svelte';
+  import CopyField from '../../components/CopyField.svelte';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
 
@@ -89,7 +89,7 @@
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
   }
   async function remove(x: Edge) {
-    if (!(await askConfirm(t.edges.removeConfirm(x.name, x.agents)))) return;
+    if (!(await askConfirm(t.edges.removeConfirm(x.name, x.agents), { ok: t.ux.do.remove, danger: true }))) return;
     if (await act(del(`/edges/${encodeURIComponent(x.id)}`), t.edges.removed)) load();
   }
 
@@ -217,15 +217,8 @@
 <Modal bind:open={tokOpen} title={t.edges.tokenTitle(token?.edgeName ?? '')} wide>
   {#if token}
     <p class="banner warn" role="alert">{t.edges.tokenOnce}</p>
-    <div class="field">
-      <span class="muted">{t.edges.token}</span>
-      <code class="secret">{token.token}</code>
-      <button type="button" class="small" onclick={() => copyText(token!.token)}>{t.users.copy}</button>
-    </div>
-    <div class="field">
-      <span class="muted">{t.edges.setup}</span>
-      <code class="secret">{token.setup}</code>
-    </div>
+    <CopyField value={token.token} label={t.edges.token} secret />
+    <CopyField value={token.setup} label={t.edges.setup} secret />
     <p class="muted">{t.edges.expires}: {fmtTime(token.expires)}</p>
     <div class="form-actions">
       <button type="button" class="primary" onclick={() => (tokOpen = false)}>{t.close}</button>

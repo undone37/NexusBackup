@@ -65,7 +65,7 @@
   }
 
   async function remove(x: Passkey) {
-    if (!(await askConfirm(t.passkeys.removeConfirm(x.name)))) return;
+    if (!(await askConfirm(t.passkeys.removeConfirm(x.name), { ok: t.ux.do.remove, danger: true }))) return;
     if (await act(del(`/auth/passkeys/${x.id}`), t.passkeys.removed)) load();
   }
 </script>

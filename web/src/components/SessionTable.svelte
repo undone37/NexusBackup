@@ -16,7 +16,7 @@
   }: { sessions: SessionInfo[]; showUser?: boolean; revokeAll?: boolean; onchange: () => void } = $props();
 
   async function revoke(s: SessionInfo) {
-    if (!(await askConfirm(t.access.revokeConfirm))) return;
+    if (!(await askConfirm(t.access.revokeConfirm, { ok: t.ux.do.signOut, danger: true }))) return;
     const path = showUser ? `/sessions/${s.id}` : `/auth/sessions/${s.id}`;
     if (await act(del(path), t.access.revoked)) onchange();
   }

@@ -122,7 +122,7 @@
   }
 
   async function remove(x: ScheduledReport) {
-    if (!(await askConfirm(t.reports.confirmDelete(x.name)))) return;
+    if (!(await askConfirm(t.reports.confirmDelete(x.name), { ok: t.delete, danger: true }))) return;
     await store((sched?.reports ?? []).filter((y) => y !== x).map(plain), t.deleted);
   }
 

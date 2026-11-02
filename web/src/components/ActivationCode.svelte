@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { notify } from '../lib/notify.svelte';
   import { fmtTime } from '../lib/format';
   import { t } from '../lib/i18n';
   import type { Activation } from '../lib/types';
   import Modal from './Modal.svelte';
+  import CopyField from './CopyField.svelte';
 
   // One-time activation code (or one half of it). Shown once; the server keeps only a hash.
   let {
@@ -18,15 +18,6 @@
       ? t.users.activationPartLabel(activation.part, activation.parts)
       : t.users.activationCode,
   );
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      notify('ok', t.users.copied);
-    } catch {
-      /* clipboard unavailable (non-secure context): the text is selectable */
-    }
-  }
 </script>
 
 <Modal bind:open title={t.users.activationTitle(name)}>
@@ -39,16 +30,8 @@
       <p>{t.users.activationHand}</p>
     {/if}
     <p class="muted">{t.users.activationOnce}</p>
-    <div class="field">
-      <span class="muted">{label}</span>
-      <code class="secret">{activation.code}</code>
-      <button type="button" class="small" onclick={() => copy(activation!.code)}>{t.users.copy}</button>
-    </div>
-    <div class="field">
-      <span class="muted">{t.users.activationLink}</span>
-      <code class="secret">{link}</code>
-      <button type="button" class="small" onclick={() => copy(link)}>{t.users.copy}</button>
-    </div>
+    <CopyField value={activation.code} {label} secret />
+    <CopyField value={link} label={t.users.activationLink} secret />
     {#if activation.expires}
       <p class="muted">{t.users.pendingUntil(fmtTime(activation.expires))}</p>
     {/if}

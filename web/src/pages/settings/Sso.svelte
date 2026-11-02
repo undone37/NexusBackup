@@ -1,17 +1,16 @@
 <script lang="ts">
+  import CopyField from '../../components/CopyField.svelte';
   import { onMount } from 'svelte';
   import { get, put, post, act, errText } from '../../lib/api';
   import { notify } from '../../lib/notify.svelte';
   import { session } from '../../lib/session.svelte';
   import { ROLES } from '../../lib/roles';
-  import { copyText } from '../../lib/clipboard';
   import { t } from '../../lib/i18n';
   import type { OidcSettings, Role, Tenant } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
   import TestResult from './TestResult.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
   import IconTrash from '@lucide/svelte/icons/trash';
-  import IconCopy from '@lucide/svelte/icons/copy';
   import IconSend from '@lucide/svelte/icons/plug-zap';
 
   // Phase 23a: with `tenant`, the tenant's own IdP (GET/PUT /tenants/{name}/oidc): tenant roles of
@@ -188,17 +187,7 @@
           </div>
         </div>
         <div class="field">
-          <span class="field-label" id="{id}-redir">{t.settings.oidc.redirect}</span>
-          <div class="copyline">
-            <code aria-labelledby="{id}-redir">{redirect}</code>
-            <button
-              type="button"
-              class="small"
-              onclick={() => copyText(redirect)}
-              aria-label="{t.users.copy}: {t.settings.oidc.redirect}"
-              ><IconCopy aria-hidden="true" />{t.users.copy}</button
-            >
-          </div>
+          <CopyField value={redirect} label={t.settings.oidc.redirect} />
         </div>
         <div class="form-grid">
           <div class="field">

@@ -102,9 +102,16 @@
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
     // approving executes an irreversible or weakening action: never on a single misclick;
     // a tenant's refusal is final, so it is confirmed as well
-    if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by))))
+    if (
+      verb === 'approve' &&
+      !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by), { ok: t.ux.do.approve }))
+    )
       return;
-    if (verb === 'reject' && myTenant(q) && !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action)))))
+    if (
+      verb === 'reject' &&
+      myTenant(q) &&
+      !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action)), { ok: t.ux.do.refuse, danger: true }))
+    )
       return;
     const ok = await act(
       post<{ activation?: Activation; state?: string; waiting_for?: string[] }>(`/quorum/${q.id}/${verb}`),
@@ -128,7 +135,7 @@
   let secondOpen = $state(false);
 
   async function runGc(g: GcPending) {
-    if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
+    if (!(await askConfirm(t.quorum.gcConfirm(g.tenant), { ok: t.ux.do.runGc, danger: true }))) return;
     const ok = await act(
       post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }),
       (d) => t.quorum.gcQueued(d.job_id),

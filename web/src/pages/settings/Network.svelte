@@ -156,7 +156,8 @@
     open = false;
   }
   async function remove(i: number) {
-    if (!cfg || !(await askConfirm(t.net.removeConfirm(cfg.interfaces[i].name)))) return;
+    if (!cfg || !(await askConfirm(t.net.removeConfirm(cfg.interfaces[i].name), { ok: t.ux.do.remove, danger: true })))
+      return;
     const next = structuredClone($state.snapshot(cfg)) as NetConfig;
     next.interfaces.splice(i, 1);
     draft = next;

@@ -152,7 +152,7 @@
   }
 
   async function remove(x: Policy) {
-    if (!(await askConfirm(t.confirmDelete(`${t.groups.policy} "${x.name}"`)))) return;
+    if (!(await askConfirm(t.confirmDelete(`${t.groups.policy} "${x.name}"`), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/policies/${x.id}`), t.deleted)) load();
   }
 </script>

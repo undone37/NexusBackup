@@ -517,7 +517,7 @@
   }
 
   async function remove(x: Group) {
-    if (!(await askConfirm(t.confirmDelete(`${t.dash.group} "${x.name}"`)))) return;
+    if (!(await askConfirm(t.confirmDelete(`${t.dash.group} "${x.name}"`), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/groups/${x.id}`), t.deleted)) load();
   }
   /** The other actions of a group row (Back up now and Edit are buttons of their own). */

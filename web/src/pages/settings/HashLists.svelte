@@ -61,7 +61,7 @@
   }
 
   async function remove(l: HashList) {
-    if (!(await askConfirm(t.threat.deleteConfirm(l.name)))) return;
+    if (!(await askConfirm(t.threat.deleteConfirm(l.name), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/hash-lists/${encodeURIComponent(l.name)}`), t.threat.deleted(l.name))) load();
   }
 </script>

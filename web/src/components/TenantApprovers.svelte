@@ -30,7 +30,13 @@
   });
 
   async function setEnabled(enabled: boolean) {
-    if (!(await askConfirm(enabled ? t.tappr.enableConfirm(tenant) : t.tappr.disableConfirm))) return;
+    if (
+      !(await askConfirm(enabled ? t.tappr.enableConfirm(tenant) : t.tappr.disableConfirm, {
+        ok: enabled ? t.ux.do.turnOn : t.ux.do.turnOff,
+        danger: !enabled,
+      }))
+    )
+      return;
     busy = true;
     const r = await act(
       put(`/tenants/${encodeURIComponent(tenant)}/approvers`, { enabled }),

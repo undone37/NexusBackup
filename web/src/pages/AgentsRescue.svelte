@@ -5,7 +5,6 @@
   import { onMount } from 'svelte';
   import { askConfirm } from '../lib/confirm.svelte';
   import { get, post, act, errText } from '../lib/api';
-  import { copyText } from '../lib/clipboard';
   import { fmtBytes, fmtTime, fmtAgo } from '../lib/format';
   import { href } from '../lib/router.svelte';
   import { can } from '../lib/roles';
@@ -13,6 +12,7 @@
   import { t } from '../lib/i18n';
   import type { Agent, PveSource, RescueSession, Snapshot, Source } from '../lib/types';
   import Modal from '../components/Modal.svelte';
+  import CopyField from '../components/CopyField.svelte';
 
   let { agents }: { agents: Agent[] } = $props();
 
@@ -122,7 +122,7 @@
 
   async function issue() {
     if (!agent) return;
-    if (!(await askConfirm(t.bmr.issueConfirm(agent.name)))) return;
+    if (!(await askConfirm(t.bmr.issueConfirm(agent.name), { ok: t.ux.do.issue }))) return;
     const r = await act(
       post<RescueSession & { token: string }>(`/agents/${encodeURIComponent(agent.id)}/rescue`, { reboot }),
       t.bmr.issued,
@@ -134,7 +134,13 @@
 
   async function start(s: RescueSession) {
     if (!pick) return;
-    if (!(await askConfirm(t.bmr.startConfirm(`${s.host}:${s.port}`, diskList(s) || '—')))) return;
+    if (
+      !(await askConfirm(t.bmr.startConfirm(`${s.host}:${s.port}`, diskList(s) || '—'), {
+        ok: t.ux.do.eraseRestore,
+        danger: true,
+      }))
+    )
+      return;
     const r = await act(
       post<{ id: number }>(`/rescue/${encodeURIComponent(s.id)}/start`, { time: Number(pick), reboot: s.reboot }),
       (d) => t.bmr.started(d.id),
@@ -144,14 +150,14 @@
   }
 
   async function cancel(s: RescueSession) {
-    if (!(await askConfirm(t.bmr.cancelConfirm))) return;
+    if (!(await askConfirm(t.bmr.cancelConfirm, { ok: t.ux.do.endSession, danger: true }))) return;
     if (await act(post(`/rescue/${encodeURIComponent(s.id)}/cancel`), t.bmr.cancelled)) load();
   }
 
   async function submitP2v(e: SubmitEvent) {
     e.preventDefault();
     if (!agent) return;
-    if (!(await askConfirm(t.bmr.p2vConfirm(agent.name, p2v.node)))) return;
+    if (!(await askConfirm(t.bmr.p2vConfirm(agent.name, p2v.node), { ok: t.ux.do.createVm }))) return;
     const body: Record<string, unknown> = {
       time: Number(p2v.time),
       source_id: Number(p2v.source_id),
@@ -247,11 +253,7 @@
     <h3>{t.bmr.issueTitle}</h3>
     {#if token}
       <p class="banner warn" role="alert">{t.bmr.tokenOnce}</p>
-      <div class="field">
-        <span class="muted">{t.bmr.token}</span>
-        <code class="secret">{token.token}</code>
-        <button type="button" class="small" onclick={() => copyText(token!.token)}>{t.users.copy}</button>
-      </div>
+      <CopyField value={token.token} label={t.bmr.token} secret />
       <p class="muted">{t.bmr.expires}: {fmtTime(token.expires)}</p>
     {:else if manage}
       <div class="form-actions">

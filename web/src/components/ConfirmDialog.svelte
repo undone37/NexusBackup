@@ -14,7 +14,7 @@
   });
 </script>
 
-<Modal bind:open title={pending.input === null ? t.confirmTitle : t.inputTitle}>
+<Modal bind:open title={pending.opts.title ?? (pending.input === null ? t.confirmTitle : t.inputTitle)}>
   <form
     onsubmit={(e) => {
       e.preventDefault();
@@ -22,7 +22,7 @@
     }}
   >
     {#if pending.input === null}
-      <p>{pending.text}</p>
+      <p class="confirm-text">{pending.text}</p>
     {:else}
       <div class="field">
         <label for="{id}-in">{pending.text}</label>
@@ -31,8 +31,19 @@
       </div>
     {/if}
     <div class="form-actions">
-      <button type="button" onclick={() => answer(false)}>{t.cancel}</button>
-      <button type="submit" class="primary">{pending.input === null ? t.confirmOk : t.ok}</button>
+      <!-- a destructive question starts on Cancel: Enter does not destroy anything -->
+      <!-- svelte-ignore a11y_autofocus -->
+      <button type="button" onclick={() => answer(false)} autofocus={!!pending.opts.danger}>{t.cancel}</button>
+      <button type="submit" class="primary" class:danger={pending.opts.danger}
+        >{pending.opts.ok ?? (pending.input === null ? t.confirmOk : t.ok)}</button
+      >
     </div>
   </form>
 </Modal>
+
+<style>
+  .confirm-text {
+    max-width: 60ch;
+    overflow-wrap: anywhere;
+  }
+</style>

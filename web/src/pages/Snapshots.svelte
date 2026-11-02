@@ -342,7 +342,7 @@
   let scanOpen = $state(false);
   let scanSnap: Snapshot | null = $state(null);
   async function startScan(s: Snapshot) {
-    if (!(await askConfirm(t.scan.scanConfirm(s.source, fmtTime(s.time))))) return;
+    if (!(await askConfirm(t.scan.scanConfirm(s.source, fmtTime(s.time)), { ok: t.ux.do.scan }))) return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/scan`;
     const r = await act(post<{ id: number }>(path, {}), (d) => t.scan.started(d.id), jobLink);
     if (r && !r.quorum) navigate(`/jobs/${r.data.id}`);
@@ -672,14 +672,15 @@
     holdOpen = true;
   }
   async function releaseHold(s: Snapshot) {
-    if (!(await askConfirm(t.snap.releaseConfirm(s.source, fmtTime(s.time))))) return;
+    if (!(await askConfirm(t.snap.releaseConfirm(s.source, fmtTime(s.time)), { ok: t.ux.do.release, danger: true })))
+      return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}/hold`;
     if (await act(del(path), t.snap.releaseQueued)) load();
   }
   const showActions = $derived(can.restore(session.user) || can.hold(session.user) || can.releaseHold(session.user));
   const holdSnap = $derived(holdTarget as Snapshot | null);
   async function remove(s: Snapshot) {
-    if (!(await askConfirm(t.snap.deleteConfirm(s.source, fmtTime(s.time))))) return;
+    if (!(await askConfirm(t.snap.deleteConfirm(s.source, fmtTime(s.time)), { ok: t.delete, danger: true }))) return;
     const path = `/snapshots/${encodeURIComponent(s.tenant)}/${encodeURIComponent(s.source)}/${s.time}`;
     await act(del(path), t.snap.deleteQueued);
   }
@@ -692,7 +693,7 @@
   ]);
 
   async function repair(tenant: string) {
-    if (!(await askConfirm(t.snap.repairConfirm(tenant)))) return;
+    if (!(await askConfirm(t.snap.repairConfirm(tenant), { ok: t.ux.do.repair }))) return;
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'chunk_repair', tenant, params: {} }),
       t.snap.repairQueued,

@@ -70,7 +70,11 @@
 
   // queued: cancelled at once; running: the scheduler stops it (Phase 13b)
   async function cancel(j: Job) {
-    if (j.state === 'running' && !(await askConfirm(t.runctl.cancelConfirm(j.id)))) return;
+    if (
+      j.state === 'running' &&
+      !(await askConfirm(t.runctl.cancelConfirm(j.id), { ok: t.ux.do.stopJob, danger: true }))
+    )
+      return;
     if (await act(post(`/jobs/${j.id}/cancel`), j.state === 'running' ? t.runctl.cancelling : t.jobs.cancelled)) load();
   }
 

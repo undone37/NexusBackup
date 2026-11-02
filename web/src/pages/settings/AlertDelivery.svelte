@@ -272,7 +272,8 @@
   }
 
   async function remove(i: number) {
-    if (!saved || !(await askConfirm(t.settings.al.deleteConfirm(saved.rules[i].name)))) return;
+    if (!saved || !(await askConfirm(t.settings.al.deleteConfirm(saved.rules[i].name), { ok: t.delete, danger: true })))
+      return;
     const rules = saved.rules.filter((_, j) => j !== i);
     await store({
       smtp: savedSmtp(),

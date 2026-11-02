@@ -33,7 +33,13 @@
   async function toggle() {
     if (!settings) return;
     const enable = !settings.enabled;
-    if (!(await askConfirm(enable ? t.quorum.enableConfirm : t.quorum.disableConfirm))) return;
+    if (
+      !(await askConfirm(enable ? t.quorum.enableConfirm : t.quorum.disableConfirm, {
+        ok: enable ? t.ux.do.turnOn : t.ux.do.turnOff,
+        danger: !enable,
+      }))
+    )
+      return;
     const ok = await act(put('/settings/approvals', { enabled: enable }), t.quorum.enabledDone);
     if (ok) load();
   }

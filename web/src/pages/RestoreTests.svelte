@@ -157,7 +157,7 @@
     }
   }
   async function removeSchedule(s: RtSchedule) {
-    if (!(await askConfirm(t.rtest.deleteSchedule(s.group)))) return;
+    if (!(await askConfirm(t.rtest.deleteSchedule(s.group), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/restore-tests/schedules/${s.group_id}`), t.rtest.removed)) load();
   }
 </script>

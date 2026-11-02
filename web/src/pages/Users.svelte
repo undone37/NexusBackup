@@ -166,7 +166,7 @@
   }
 
   async function endSessions(x: User) {
-    if (!(await askConfirm(t.access.revokeUserConfirm(x.name)))) return;
+    if (!(await askConfirm(t.access.revokeUserConfirm(x.name), { ok: t.ux.do.signOut, danger: true }))) return;
     await act(post<{ revoked: number }>(`/users/${x.id}/sessions/revoke`, {}), (d) => t.access.revokedN(d.revoked));
   }
 
