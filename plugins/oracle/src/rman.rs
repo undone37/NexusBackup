@@ -304,7 +304,7 @@ pub fn backup(ctx: &Ctx, sink: &mut Sink, ssh: &Ssh, cfg: &Config) -> Result<Rep
             &format!(
                 "select thread#||'|'||sequence#||'|'||status from v$archived_log \
                  where resetlogs_change# = {} and standby_dest = 'NO' and name is not null \
-                 and sequence# >= {} order by 1;",
+                 and name not in (select member from v$logfile) and sequence# >= {} order by 1;",
                 db.resetlogs,
                 p.next_seq.values().min().copied().unwrap_or(0)
             ),

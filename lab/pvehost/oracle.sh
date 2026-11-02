@@ -272,8 +272,10 @@ step_pitr() {
 
 step_breaklog() {
 	local f
-	f=$(printf 'set heading off feedback off\nalter system archive log current;\nselect name from v$archived_log where name is not null and deleted = %s order by sequence# desc fetch first 1 rows only;\n' "'NO'" | sysdba | grep '^/' | head -1)
+	f=$(printf 'set heading off feedback off\nalter system archive log current;\nselect name from v$archived_log where name is not null and deleted = %s and name not in (select member from v$logfile) and resetlogs_change# = (select resetlogs_change# from v$database) order by sequence# desc fetch first 1 rows only;\n' "'NO'" | sysdba | grep '^/' | head -1)
+	# after a restore v$archived_log also names online logs (v$logfile members): never those
 	[ -n "$f" ] || die "no archived log found"
+	case $f in *redo*.log) die "refusing to delete $f (an online log)" ;; esac
 	on "rm -f '$f'"
 	log "deleted $f"
 }
