@@ -39,7 +39,9 @@ for Phase 42 ("a short design note first") applies.
 scheduler's queueing (`mode` `full` / `log`, one run of a group at a time, the policy slot first) and `log_lag`. A
 `log` run makes the plugins skip the age-based new base (`full_every_days`); `full` keeps today's behaviour, so the
 connector still decides between base and incremental. `log_chain` (critical): the plugins put `chain_break` into the new
-base snapshot's meta, the scheduler raises it, the next snapshot that continues the chain resolves it. Not yet: the per-database timeline view; retention uses the existing `recent` class.
+base snapshot's meta, the scheduler raises it, the next snapshot that continues the chain resolves it. The point-in-time restore dialog shows the recoverable ranges of all snapshots of the database as one timeline
+(merged spans, gaps marked) and switches to the snapshot that covers a picked time. Retention uses the existing
+`recent` class.
 
 ## #41: SQL Server log chain and point-in-time restore
 

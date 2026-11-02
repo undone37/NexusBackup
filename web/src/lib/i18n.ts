@@ -382,6 +382,11 @@ export const en = {
     // Phase 18b: recoverable range of a cluster snapshot (PostgreSQL)
     recoverable: 'Recoverable:',
     recoverableRange: (a: string, b: string) => `any time from ${a} to ${b}`,
+    // #43: all snapshots of the database as one timeline
+    timelineTitle: 'Recoverable times of this database',
+    timelineSpan: (a: string, b: string) => `${a} – ${b}`,
+    timelineGap: (a: string, b: string) => `gap: nothing recoverable between ${a} and ${b}`,
+    timelineSwitched: (when: string) => `Switched to the snapshot of ${when}, which covers the picked time.`,
     recoverableBaseOnly: (a: string, pos: string, binlog = false) =>
       binlog
         ? `only the base backup (${a}, binlog ${pos}); later snapshots of this source add the binlog after it`
