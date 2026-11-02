@@ -1738,3 +1738,14 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   first-boot driver restart then stalled at the logo; a disk converted after a failed boot stays in Windows RE.
   WinPE (B) not run yet. VMs 293-295 stopped, kept for the next step.
   - open: the first-boot restart after the injection, WinPE with DISM, UEFI/GPT and BitLocker cases.
+
+## Database log schedules (added 2026-11-02, #43)
+
+- [x] Groups of a database plugin source (manifest `backup.logs`: PostgreSQL, MySQL 1.x) get a log schedule next to
+  the policy's (catalog V52, `PUT /groups/{id}/log-schedule`, Groups dialog field, chip, demo backend): the policy
+  slot queues `mode: full`, the log schedule `mode: log`; log runs skip the age-based new base; alert `log_lag`.
+  Tests: scheduler `log_schedule_queues_log_runs_beside_the_base_backups` (queueing, no duplicates, policy slot
+  first, log_lag raise and resolve), web-api plugins (validation, kind check, GET fields) and route matrix, PG and
+  MySQL testbox suites (a log run stays incremental on the newest base, CI `testbox`). No lab run: the testbox
+  suites run the real plugins against real servers.
+  - open (in #43): `log_chain` alert, per-database timeline view.

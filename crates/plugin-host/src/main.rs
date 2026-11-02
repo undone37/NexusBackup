@@ -119,6 +119,10 @@ struct JobConfig {
     /// Phase 28: SHA-256 per file of the plugin's file trees (group option `file_hashes`)
     #[serde(default)]
     file_hashes: bool,
+    /// #43: backup mode of a group with a log schedule: `full` (the policy's slot: a base backup) or `log` (a
+    /// log-only run); absent = the plugin decides as before
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 fn one() -> usize {
@@ -304,7 +308,7 @@ fn main() -> Result<()> {
                             job: run.cfg.job,
                             kind: &run.kind,
                             config: &run.config,
-                            params: json!({ "guest": g, "source_id": run.source_id }),
+                            params: json!({ "guest": g, "source_id": run.source_id, "mode": run.cfg.mode }),
                             source: &source,
                             bounds: backup::Bounds::default(),
                         },

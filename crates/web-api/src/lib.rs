@@ -53,6 +53,7 @@ pub mod inventory;
 pub mod jobs;
 pub mod keep;
 pub mod lockdown;
+pub mod logschedule;
 pub mod names;
 pub mod nasops;
 pub mod network;
@@ -779,6 +780,7 @@ pub fn router(st: St) -> Router {
         .merge(risk::routes())
         .merge(elevation::routes())
         .merge(fullread::routes())
+        .merge(logschedule::routes())
         .fallback(api_not_found);
     // peer API: only on replication TLS connections (see `connection_scope`)
     let peer = Router::new()

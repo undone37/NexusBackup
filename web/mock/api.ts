@@ -243,6 +243,8 @@ interface MockGroup {
   file_hashes?: boolean;
   /** Phase 29: days between full reads, null = the default, 0 = off */
   full_read_days?: number | null;
+  /** #43: schedule of log-only runs, null = off */
+  log_schedule?: string | null;
 }
 interface InvRow {
   guest: string;
@@ -2114,7 +2116,7 @@ function seed() {
     grp('acme', sNfs.id, silver.id, 'acme-filer', []),
     gSmb,
     gDbs,
-    grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []),
+    Object.assign(grp('acme', sPg.id, silver.id, 'acme-pg-cluster', []), { log_schedule: 'every 15m' }),
     grp('acme', sNas02.id, silver.id, 'acme-nas02', ['tank.media']),
     grp('acme', sMy.id, hourly.id, 'acme-erp-db', ['erp']),
     grp('acme', sNst.id, silver.id, 'acme-vstors', ['acme-files']),
@@ -3134,6 +3136,8 @@ function groupState(g: (typeof db.groups)[number]) {
     file_hashes: g.file_hashes ?? false,
     full_read_days: g.full_read_days ?? null,
     full_read_default: fullReadDefault(g),
+    log_schedule: g.log_schedule ?? null,
+    logs_supported: logsSupported(g),
     maintenance_until: src?.maintenance_until ?? null,
     blackout_active: blackoutActive(pol?.blackout ?? [], g.timezone ?? 'UTC', now()),
     resolved_guests: resolveGuests(g),
@@ -16016,6 +16020,25 @@ const p29 = {
   /** DELETE requests per account in the last hour (risk rule c) */
   deletes: new Map<number, number[]>(),
 };
+
+// ---- #43 log schedule (the database plugins declare backup.logs)
+function logsSupported(g: { source_id: number }) {
+  const k = db.sources.find((s) => s.id === g.source_id)?.kind;
+  return k === 'plugin:postgresql' || k === 'plugin:mysql';
+}
+on('PUT', '/groups/:id/log-schedule', async (c, [id]) => {
+  const u = need(c.user, 'admin', 'tenant_admin');
+  const g = find(byTenant(u, db.groups), (x) => x.id === Number(id), 'group');
+  const s = typeof c.body?.schedule === 'string' ? c.body.schedule.trim() || null : null;
+  if (s && !/^(every \d+[mh]|daily \d{2}:\d{2}|hourly)$/.test(s))
+    throw new HttpError(400, `schedule: cannot parse "${s}"`);
+  if (s && !logsSupported(g)) throw new HttpError(400, 'schedule: this source kind has no log backups');
+  lockdownRefuse(g.tenant, 'group changes');
+  g.log_schedule = s;
+  const out = { id: g.id, tenant: g.tenant, log_schedule: s };
+  await audit(u.name, 'group.log_schedule', `group/${g.id}`, out);
+  return [200, out];
+});
 
 // ---- full read
 const fullReadDefault = (g: { source_id: number }) =>

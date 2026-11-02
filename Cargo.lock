@@ -3840,7 +3840,7 @@ checksum = "a8afc6df942f4c022d70c5725e18df1a705773870e5b7f96fde94ca0334ce77a"
 
 [[package]]
 name = "mysql"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "plugin-sdk",
@@ -4973,7 +4973,7 @@ dependencies = [
 
 [[package]]
 name = "postgresql"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

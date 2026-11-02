@@ -848,6 +848,9 @@ export interface Group {
   full_read_days?: number | null;
   /** the default for this group's kind (90 PVE VMs, 30 agents / NAS / TrueNAS) */
   full_read_default?: number;
+  /** #43, GET /groups only: schedule of log-only runs (null = off), and whether the source kind has them */
+  log_schedule?: string | null;
+  logs_supported?: boolean;
 }
 
 /** Phase 29: GET /full-reads (one row per source). */
