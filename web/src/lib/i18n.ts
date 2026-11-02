@@ -2690,6 +2690,8 @@ export const en = {
       'restore.infected': 'restore of a flagged snapshot to production',
       'incident.freeze.lift': 'lift freezes',
       'tenant.approvers.disable': "stop requiring the tenant's approval",
+      'system.reboot': 'reboot the appliance',
+      'system.poweroff': 'shut down the appliance',
     } as Record<string, string>,
     states: {
       pending: 'Pending',
@@ -3983,6 +3985,47 @@ export const en = {
     viaCode: (id: number | null, by: string | null) => `one-time code #${id ?? '?'} of ${by ?? '?'}`,
     viaRecovery: 'opened with the recovery key',
     readOnly: 'Only administrators request console access; security officers can revoke codes.',
+  },
+  // issue #179: reboot and shut down the appliance (top bar > Power; the design of NexusStor #86)
+  power: {
+    menu: 'Power',
+    reboot: 'Reboot',
+    poweroff: 'Shut down',
+    rebootHint: 'Restart the appliance; backups, restores and the web interface are unavailable for a few minutes',
+    poweroffHint: 'Turn the appliance off; no backup runs until it is started again',
+    title: (a: string, name: string) => `${a} ${name}`,
+    intro: (name: string) =>
+      `This acts on the whole appliance ${name}: running backups, restores and replication stop, agents and the web interface lose their connection until it is back.`,
+    poweroffWarn:
+      'After a shutdown the appliance stays off until it is started again: from the hypervisor for a virtual appliance, with the power button or the management board for a hardware one. No backup runs meanwhile.',
+    running: (n: number) => `${n} ${n === 1 ? 'job is' : 'jobs are'} running now.`,
+    runningLink: 'Show running jobs',
+    runningHint:
+      'They end with the reboot and are marked failed (interrupted) when the appliance is back; the retry policy of their group applies. Queued jobs wait and run afterwards.',
+    reason: 'Reason',
+    reasonHint: 'Required; the approver sees it and it is written to the audit log.',
+    delay: 'When',
+    delays: { 0: 'Now', 30: 'In 30 seconds', 60: 'In 1 minute', 120: 'In 2 minutes', 300: 'In 5 minutes' } as Record<
+      number,
+      string
+    >,
+    delayHint:
+      'Counted from the approval. A delay gives you time to cancel; users signed in on the console get a warning.',
+    blocked: 'Not now:',
+    force: 'Do it anyway',
+    forceHint: 'Interrupting an update check or download means it has to be started again.',
+    approval: 'A second administrator or security officer has to approve this (Approvals); it starts then.',
+    waitingApproval: (id: number, by: string) => `Request #${id} by ${by} waits for approval already.`,
+    submit: (a: string) => a,
+    scheduled: (a: string) => `${a} scheduled.`,
+    cancel: 'Cancel',
+    cancelled: (a: string) => `${a} cancelled.`,
+    banner: (a: string, name: string, at: string, by: string) => `${a} of ${name} at ${at}, requested by ${by}`,
+    countdown: (s: number) => (s > 0 ? `in ${s} s` : 'now'),
+    requestedBanner: (a: string) => `${a} approved; the appliance schedules it.`,
+    goingDown: (a: string) => (a === 'poweroff' ? 'The appliance is shutting down.' : 'The appliance is restarting.'),
+    waiting: 'Waiting for it to answer again; this page reloads by itself.',
+    offText: 'It stays off until it is started again. You can close this page.',
   },
   // Phase 15a: restore options, replace original, several guests at once
   ropts: {

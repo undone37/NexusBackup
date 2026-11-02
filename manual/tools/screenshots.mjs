@@ -1320,6 +1320,31 @@ async function main() {
       await api('POST', `/quorum/${q.id}/approve`);
       await login('admin');
     }],
+    // #179: top bar > Power > Reboot, the dialog (running jobs, approval), then the countdown banner once approved
+    ['power', async () => {
+      await login('admin');
+      await go('/', 500);
+      await ev(`document.querySelector('button[aria-label="Power"]').click(); return true;`);
+      await sleep(300);
+      await shot('power-menu');
+      await ev(`[...document.querySelectorAll('[role=menuitem]')].find((b) => b.textContent.includes('Reboot')).click(); return true;`);
+      await until(`return !!document.querySelector('dialog[open] input[autocomplete=off]')`, 'power dialog');
+      await sleep(400);
+      await ev(`$fill('dialog[open] input[autocomplete=off]', 'Kernel update of the host'); return true;`);
+      await sleep(300);
+      await shot('power-dialog', { height: 1000 });
+      await ev(`document.querySelector('dialog[open] form').requestSubmit(); return true;`);
+      await until(`return !document.querySelector('dialog[open]')`, 'power request sent');
+      await login('so');
+      const q = (await api('GET', '/system/power')).body.request_pending;
+      await api('POST', `/quorum/${q.id}/approve`);
+      await login('admin');
+      await go('/', 500);
+      await until(`return document.body.innerText.includes('requested by admin')`, 'power banner');
+      await shot('power-banner');
+      await ev(`$click('Cancel', document.querySelector('.glass')); return true;`);
+      await sleep(500);
+    }],
     ['approvals-off', async () => {
       // switch approvals off (a request by admin, approved by a security officer) for the remaining pictures
       await login('admin');

@@ -2848,3 +2848,34 @@ export interface RecoveryRun {
   started: number;
   finished: number | null;
 }
+/** GET /system/power (issue #179): reboot and shutdown. */
+export type PowerAction = 'reboot' | 'poweroff';
+export interface PowerPending {
+  id: string;
+  action: PowerAction;
+  at: number;
+  reason: string;
+  requested_by: string;
+  approved_by: string | null;
+}
+export interface SystemPower {
+  appliance: string;
+  pending: PowerPending | null;
+  /** written after the approval, not yet taken by nexus-power (normally a second) */
+  requested: { action: PowerAction; delay_s: number; time: number; requested_by: string } | null;
+  last: {
+    action: string;
+    result: 'scheduled' | 'executing' | 'cancelled' | 'refused' | 'error';
+    detail: string;
+    time: number;
+    requested_by: string | null;
+  } | null;
+  blockers: string[];
+  /** jobs running now: a reboot or shutdown ends them (failed as interrupted, the retry policy applies) */
+  running_jobs: number;
+  running_by_kind: { kind: string; count: number }[];
+  /** a power request waiting for approval */
+  request_pending: { id: number; action: string; requested_by: string } | null;
+  approval_required: boolean;
+  max_delay_s: number;
+}
