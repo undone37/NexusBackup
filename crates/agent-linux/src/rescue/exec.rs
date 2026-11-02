@@ -124,6 +124,11 @@ pub fn apply(l: &Layout, targets: &[TargetDisk], log: &mut Log) -> Result<Plan, 
             .map_err(|e| format!("{disk}: boot code: {e}"))?;
         log.line(format!("{disk}: MBR boot code written (440 bytes)"));
     }
+    // #19 (CAP_IMAGE_ZEROED): every image partition reads as zeros before the images are written, so the
+    // appliance can skip the zero blocks (free space) instead of sending them
+    for (name, dev, _) in &plan.images {
+        zero(dev, log).map_err(|e| format!("{name}: zeroing {dev}: {e}"))?;
+    }
     if !plan.images.is_empty() {
         log.line(format!(
             "{} partition(s) ready for their images: {}",
@@ -138,6 +143,31 @@ pub fn apply(l: &Layout, targets: &[TargetDisk], log: &mut Log) -> Result<Plan, 
     }
     mount_all(&plan, log)?;
     Ok(plan)
+}
+
+/// `dev` zeroed: `blkdiscard -z` (BLKZEROOUT: cheap on thin and SSD targets), else zeros written here.
+fn zero(dev: &str, log: &mut Log) -> Result<(), String> {
+    if run(&c(&["blkdiscard", "-z", "-f", dev]), log).is_ok() {
+        log.line(format!("{dev}: zeroed (blkdiscard -z)"));
+        return Ok(());
+    }
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .open(dev)
+        .map_err(|e| e.to_string())?;
+    let size = f.seek(SeekFrom::End(0)).map_err(|e| e.to_string())?;
+    f.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let buf = vec![0u8; 4 << 20];
+    let mut left = size;
+    while left > 0 {
+        let n = left.min(buf.len() as u64) as usize;
+        f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        left -= n as u64;
+    }
+    f.sync_all().map_err(|e| e.to_string())?;
+    log.line(format!("{dev}: zeroed ({size} bytes written)"));
+    Ok(())
 }
 
 fn wait_nodes(script: &str) {

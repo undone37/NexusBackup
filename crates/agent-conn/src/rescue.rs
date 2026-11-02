@@ -75,8 +75,8 @@ fn answer(s: &mut Session, what: &str, job: u64, log: &mut dyn FnMut(&str)) -> R
 }
 
 /// #19: every image of the snapshot written to its partition on the rescue agent (`BlockWrite` to target n of
-/// [`Layout::image_order`]). Every block is sent, zero blocks too: the target partition may hold old data (a
-/// reused disk) and NTFS metadata areas can be zero in the image.
+/// [`Layout::image_order`]). Zero blocks are skipped only when the rescue agent zeroed the partitions first
+/// (CAP_IMAGE_ZEROED): otherwise a reused disk's old data would stay where the image has zeros.
 fn write_images(
     store: &Store,
     s: &mut Session,
@@ -87,6 +87,8 @@ fn write_images(
     use agent_proto::{BLOCK_SIZE, MAX_BLOCK_TARGET};
     use chunkstore::Index;
     let m = store.load_manifest(&source_name(&spec.agent), spec.time)?;
+    // a rescue agent that zeroed the partitions: the zero blocks (free space) need not travel
+    let skip_zero = s.has_cap(agent_proto::CAP_IMAGE_ZEROED);
     for (k, (_, p)) in l.image_order().into_iter().enumerate() {
         let target = u32::try_from(k + 1).unwrap_or(u32::MAX);
         if target > MAX_BLOCK_TARGET {
@@ -99,9 +101,13 @@ fn write_images(
             bail!("{} is not an image", p.image);
         };
         let bjob = spec.job * 16 + u64::from(target);
-        let mut sent = 0u64;
+        let (mut sent, mut skipped) = (0u64, 0u64);
         for (i, id) in chunks.iter().enumerate() {
             let mut block = store.read_chunk(id)?;
+            if skip_zero && block.iter().all(|b| *b == 0) {
+                skipped += 1;
+                continue;
+            }
             // the last block: no further than the image
             let end = size.saturating_sub(i as u64 * BLOCK_SIZE).min(BLOCK_SIZE) as usize;
             block.truncate(end);
@@ -117,7 +123,7 @@ fn write_images(
         match s.recv()? {
             Message::BlockWritten { job: j, bytes } if j == bjob => {
                 log(&format!(
-                    "image {}: {sent} blocks written ({bytes} bytes) to partition {}",
+                    "image {}: {sent} blocks written ({bytes} bytes), {skipped} zero blocks skipped, to partition {}",
                     p.image, p.number
                 ));
             }

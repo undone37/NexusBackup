@@ -797,6 +797,9 @@ pub const MAX_HV_JSON: usize = 256 << 10;
 /// code in its layout: bare-metal recovery of machines whose file systems the rescue system cannot recreate from
 /// files (Windows). A rescue agent with this capability writes the images back (`BlockWrite` after `RescueApply`).
 pub const CAP_VOLUME_IMAGE: &str = "volume-image";
+/// Capability (#19): a rescue agent that zeroes the image partitions before `BlockWrite` (blkdiscard -z, else zeros
+/// written locally): the appliance skips the all-zero blocks of an image instead of sending them.
+pub const CAP_IMAGE_ZEROED: &str = "image-zeroed";
 
 /// Capability (v1.9): the agent reads hot-added disks for the VMware connector (`BlockScan`).
 /// Announced only with `proxy = on` in `agent.conf`.

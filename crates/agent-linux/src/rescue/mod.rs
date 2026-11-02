@@ -70,10 +70,17 @@ impl Platform for Rescue {
             os: "NexusBackup rescue".into(),
             kernel,
             hostname: "nexus-rescue".into(),
-            caps: ["restore", "xattrs", "acl", "hardlinks", agent_proto::CAP_RESCUE]
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
+            caps: [
+                "restore",
+                "xattrs",
+                "acl",
+                "hardlinks",
+                agent_proto::CAP_RESCUE,
+                agent_proto::CAP_IMAGE_ZEROED,
+            ]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
             agent_version: env!("CARGO_PKG_VERSION").into(),
         }
     }
