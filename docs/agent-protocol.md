@@ -422,3 +422,19 @@ Rules the agent enforces:
 - `size` must equal the device size, every range must lie on the disk, at most `MAX_BATCH` ranges and hashes per
   message (`check`).
 - A block job lives in the session and ends with `Release` or the connection.
+
+## v1.10 — Hyper-V host backups (additive, #39, docs/hyperv-design.md)
+
+Capability **`hyperv`**, announced by agents on a Hyper-V host (Windows: `vmms.exe` present). The disks are read with
+the v1.9 block messages; the `proxy` setting is not needed for them.
+
+| Appliance → agent | Agent → appliance | Purpose |
+|---|---|---|
+| `HvList` | `HvVms { json }` | the host's VMs: `[{id, name, state, generation, disks: [{name, path}]}]` |
+| `HvPrepare { job, vm }` | `HvPrepared { job, json }` | recovery checkpoint of VM `vm` (application consistent, else crash consistent), the frozen parent of each disk opened read-only: `{vm, name, consistency, checkpoint, config, disks: [{name, target, size, file, device}]}` |
+| `BlockScan { job * 16 + target, target, … }`, `Want`, `Release` | as v1.9 | the disk at `target` (1 = the first of `disks`) of the prepared job |
+| `HvFinish { job, keep }` | `HvFinished { job, json }` | disks closed; `keep`: checkpoint converted into a reference point (`{reference_point, rct}`, the next run's RCT base), else removed (`{}`) |
+
+Rules: the JSON texts are at most `MAX_HV_JSON` (256 KiB), the VM id at most `MAX_TEXT`; a connection that ends
+between `HvPrepare` and `HvFinish` makes the agent remove the checkpoint. The appliance commits the snapshot before
+it sends `HvFinish { keep: true }`.
