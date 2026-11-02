@@ -77,8 +77,11 @@ base snapshot's meta, the scheduler raises it, the next snapshot that continues 
 
 ## #42: Oracle through RMAN
 
-- **Where**: a mode `oracle` of the Linux agent on the database host; RMAN runs as the Oracle software owner
-  (`rman target /`, OS authentication); the agent gets the `ORACLE_HOME` and SID from the group.
+- **Where** (changed 2026-11-02, maintainer: "oracle rman sources plugin"): a plugin `oracle` that logs in to the
+  database host over SSH as the Oracle software owner and runs `rman target /` there (OS authentication), instead of
+  a mode of the Linux agent. The plugin path already has the log schedule (#43), the recoverable range and the
+  restore dialog; no agent is needed on the database host. The staging directory, levels and chain below are the
+  same. Implementation: plugins/oracle/README.md.
 - **First step: RMAN to a staging directory** (`/var/lib/nexus-agent/rman/<sid>`), which the agent then streams to the
   appliance and empties: level 0 (base) and level 1 (with block change tracking) incremental backups, archived logs
   `BACKUP ARCHIVELOG … DELETE INPUT` for log runs, control file and spfile autobackup. No vendor library, standard
@@ -98,7 +101,7 @@ base snapshot's meta, the scheduler raises it, the next snapshot that continues 
 1. #43 for the existing PostgreSQL and MySQL plugins (scheduler, retention class, timeline view, alerts): no new
    database, testable in the existing testbox suites.
 2. #41 SQL Server (agent mode `mssql`, VDI), after the licence decision.
-3. #42 Oracle (agent mode `oracle`, staging), after the licence decision.
+3. #42 Oracle (plugin `oracle`, RMAN over SSH, staging), after the licence decision.
 
 ## Open questions
 

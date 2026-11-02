@@ -1,0 +1,84 @@
+{
+  "id": "oracle",
+  "name": "Oracle Database",
+  "version": "1.0.2",
+  "publisher": "nexusbackup",
+  "api": 1,
+  "kinds": [
+    {
+      "kind": "oracle",
+      "title": "Oracle Database (RMAN over SSH)",
+      "config_schema": {
+        "type": "object",
+        "required": ["host", "sid", "ssh_key", "ssh_host_key"],
+        "properties": {
+          "host": { "type": "string", "format": "hostname", "title": "Database host" },
+          "port": { "type": "integer", "format": "port", "title": "SSH port", "default": 22 },
+          "user": {
+            "type": "string",
+            "title": "SSH user (the Oracle software owner: RMAN and SQL*Plus connect as sysdba by OS authentication)",
+            "pattern": "^[a-z_][a-z0-9_-]{0,31}$",
+            "default": "oracle"
+          },
+          "ssh_key": { "type": "string", "format": "password", "title": "SSH private key (OpenSSH, unencrypted)", "maxLength": 16384 },
+          "ssh_host_key": { "type": "string", "title": "SSH host key (known_hosts line or public key)", "maxLength": 4096 },
+          "sid": { "type": "string", "title": "Instance (ORACLE_SID)", "pattern": "^[A-Za-z0-9_]{1,30}$" },
+          "oracle_home": {
+            "type": "string",
+            "title": "ORACLE_HOME (optional; default: the SID's line in /etc/oratab)",
+            "pattern": "^(/[A-Za-z0-9._/-]{1,1022})?$"
+          },
+          "staging": {
+            "type": "string",
+            "title": "Staging directory on the host (room for one backup; emptied after each run)",
+            "pattern": "^(/[A-Za-z0-9._/-]{1,1022})?$",
+            "default": "/opt/oracle/nexus-rman"
+          },
+          "full_every_days": {
+            "type": "integer",
+            "title": "New level 0 every … days",
+            "minimum": 1,
+            "maximum": 365,
+            "default": 7
+          },
+          "delete_archived_logs": {
+            "type": "boolean",
+            "title": "Delete archived logs on the host once backed up (RMAN DELETE INPUT)",
+            "default": false
+          }
+        }
+      },
+      "secret_fields": ["ssh_key"],
+      "endpoints": [{ "host": "/host", "port": "/port", "default_port": 22, "proto": "tcp" }],
+      "guests": null,
+      "backup": { "incremental": true, "consistent": "application", "logs": true },
+      "restores": [
+        { "id": "download", "title": "Download the RMAN pieces (tar/zip)" },
+        {
+          "id": "pitr",
+          "title": "Point-in-time restore on the database host (replaces the database, opens it with RESETLOGS)",
+          "app_specific": true,
+          "applies_to": "source",
+          "params_schema": {
+            "type": "object",
+            "required": ["confirm"],
+            "properties": {
+              "target_time": {
+                "type": "string",
+                "title": "Recover to time (e.g. 2026-11-02 14:30:00+00; empty = end of the backup)",
+                "pattern": "^([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?( ?(Z|[+-][0-9]{2}(:?[0-9]{2})?))?)?$"
+              },
+              "target_scn": { "type": "string", "title": "… or to SCN (recovery stops before it)", "pattern": "^[0-9]{0,20}$" },
+              "confirm": {
+                "type": "string",
+                "title": "Type the SID: the running database is replaced",
+                "pattern": "^[A-Za-z0-9_]{1,30}$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "sandbox": { "network": "endpoints", "tmp_mb": 64, "memory_mb": 512 }
+}
