@@ -1766,3 +1766,19 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     fixed disk; bootsect + robocopy did). VM 297 = a copy of VM 293 taken before, disk on VirtIO SCSI, booted WinPE:
     DISM added vioscsi, viostor, NetKVM (exit 0, 60 s); then Windows booted from VirtIO SCSI (guest agent after 34 s,
     vioscsi running) and again after a restart (35 s). VMs 293 and 297 stopped.
+
+## Hyper-V M1 lab run (2026-11-02, #39)
+
+- [x] Appliance VM 201 updated to 0.0.60-dev (lab image with the Hyper-V commits, offline-update.sh check + apply);
+  this tree's Windows agent on the nested Hyper-V host VM 296 (`lab/pvehost/hyperv-e2e.sh agent`), enrolled, caps
+  include `hyperv`. Backup job `{agent_id, hyperv_vm}` of the test VM nx-rct (Gen 2, 1 GiB VHDX, running Alpine):
+  recovery checkpoint (crash consistent: no integration services), the frozen parent mounted read-only and read
+  as `\\.\PhysicalDrive1`, 256 blocks (1 GiB) in 22 s, 18 fetched (67 MB on the wire), snapshot
+  `hv-<vm id>` committed (1 GiB in the catalog), reference point with its RCT id; no checkpoint and no mounted disk
+  left on the host. Found and fixed: the agent asked `metadata()` of the raw disk handle ("Incorrect function"),
+  now the disk IOCTL first. Found: VM 296 (a clone of VM 242) still had an older agent service at
+  `C:\nexus-agent.exe`, which `nexus-agent install` kept; the binary was replaced by hand.
+  - Nightly regression of the same night (VM 280, 01:30 UTC): tunnel, exact, reboot ok; patroni failed (the
+    Patroni VMs' etcd at 10.2.34.96-98 unreachable; VM 296 holds 10.2.34.97 by DHCP now), esxi8 failed (rc 1 after
+    197 s, not examined yet).
+  - open (in #39): M2 incrementals by RCT, M3 source kind / inventory / restore to PVE, M4 restore to Hyper-V.

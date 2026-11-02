@@ -79,15 +79,12 @@ pub fn finish(prepared: &str, keep: bool) -> Result<String, String> {
     run(&serde_json::json!({"action": "finish", "prepared": p, "keep": keep}))
 }
 
-/// Size of an opened disk (`\\.\PhysicalDriveN` has no end to seek to): IOCTL_DISK_GET_LENGTH_INFO.
+/// Size of an opened disk (`\\.\PhysicalDriveN` has no end to seek to): IOCTL_DISK_GET_LENGTH_INFO, else the end of a plain file.
 pub fn device_size(f: &std::fs::File) -> std::io::Result<u64> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::System::IO::DeviceIoControl;
     const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405C;
-    if f.metadata()?.is_file() {
-        return std::io::Seek::seek(&mut &*f, std::io::SeekFrom::End(0));
-    }
     let mut len = 0i64;
     let mut got = 0u32;
     // SAFETY: the handle is open for the call; the output buffer is one i64 (GET_LENGTH_INFORMATION).
@@ -103,6 +100,9 @@ pub fn device_size(f: &std::fs::File) -> std::io::Result<u64> {
             None,
         )
     }
-    .map_err(|e| std::io::Error::other(e.to_string()))?;
-    Ok(len as u64)
+    // a plain file has no disk length (and `metadata()` fails on a raw disk handle: "Incorrect function")
+    .map_or_else(
+        |_| std::io::Seek::seek(&mut &*f, std::io::SeekFrom::End(0)),
+        |()| Ok(len as u64),
+    )
 }

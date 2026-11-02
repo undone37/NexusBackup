@@ -69,7 +69,14 @@ step_backup() {
 	j=$(wait_job admin "$(jq -r .id <<<"$r")" 3600)
 	jq -r .log <<<"$j" | tail -n 15 >&2
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "backup: $(jq -r .state <<<"$j")"
-	log "snapshots: $(api admin GET "/snapshots?tenant=lab" | jq -c --arg s "hv-${vm,,}" '[.[] | select(.source == $s) | {time, size}]')"
+	# the catalog lists the new snapshot after the scheduler's next refresh
+	local snaps='[]'
+	for _ in $(seq 1 30); do
+		snaps=$(api admin GET "/snapshots?tenant=lab" | jq -c --arg s "hv-${vm,,}" '[.[] | select(.source == $s) | {time, size}]')
+		[ "$snaps" != '[]' ] && break
+		sleep 5
+	done
+	log "snapshots: $snaps"
 	log "checkpoints left on the host: $(win "@(Get-VMSnapshot $VM).Count; @(Get-Disk).Count" | tr -d '\r' | paste -sd' ')"
 }
 
