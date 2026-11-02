@@ -161,13 +161,16 @@ The built-in TrueNAS source still uses the key pair you enter in its form (see [
 | Source type (UI) | Kind | Appliance connects to | Restores |
 |---|---|---|---|
 | **Proxmox VE cluster** | `pve` | PVE API (TCP 8006) and SSH (TCP 22) on every node | full VM/CT, instant recovery, file download, files to a host with an agent |
-| **Linux or Windows host (agent)** | `linux` | the agent on the host (TCP 7444) | restore to path (this or another host), tar/zip download; the agent is also the target for files from every other source |
+| **Linux or Windows host (agent)** | `linux` | the agent on the host (TCP 7444) | restore to path (this or another host), tar/zip download, bare-metal recovery and P2V (Linux; Windows as a preview, with volume images); the agent is also the target for files from every other source |
+| **Microsoft Hyper-V host (Windows agent)** | `hyperv` | the Windows agent on the host (TCP 7444) | as a new Proxmox VE VM, as a new VM on a Hyper-V host, files ([Hyper-V](#microsoft-hyper-v-hosts)) |
+| **VMware ESXi / vCenter** | `vmware` | vCenter or ESXi API (TCP 443), every ESXi host on TCP 902 (NFC) | as a new Proxmox VE VM, files ([VMware](#vmware-esxi-and-vcenter)) |
+| **XCP-ng / XenServer pool** | `xcpng` | the pool master (TCP 443), every host on TCP 10809 (NBD) | into the pool, as a new Proxmox VE VM, files ([XCP-ng](#xcp-ng-and-xenserver)) |
 | **TrueNAS (ZFS datasets)** | `truenas` | TrueNAS API (TCP 443) and SSH (TCP 22) | tar/zip download, files to a host with an agent |
 | **NFS share** | `nfs` | NFS (TCP 2049; NFSv3 also mountd, default 20048) | tar/zip download, files to a host with an agent |
 | **SMB share** | `smb` | SMB (TCP 445) | tar/zip download, files to a host with an agent |
 | plugin kinds (e.g. **PostgreSQL server (14 or newer)**) | `plugin:<kind>` | the endpoints the plugin declares (PostgreSQL: 5432; optional restore server and SSH host) | per plugin |
 | **Microsoft 365 tenant (Exchange, OneDrive, SharePoint, Teams)** (plugin) | `plugin:m365` | `graph.microsoft.com`, `login.microsoftonline.com` and your two SharePoint hosts (TCP 443) | download; restore to the original or another user/site/team (new folder) |
-| **NexusStor vStors (paired appliance)** (plugin) | `plugin:nexusstor` | the NexusStor's management address (TCP 8443) | download ([19 NexusStor](19-nexusstor.md)) |
+| **NexusStor vStors (paired appliance)** (plugin) | `plugin:nexusstor` | the NexusStor's management address (TCP 8443) | files back into the vStor, download ([19 NexusStor](19-nexusstor.md)) |
 
 Restores are described in [06 Restores](06-restores.md).
 

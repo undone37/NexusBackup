@@ -220,6 +220,7 @@ Auth: `POST /auth/login {name, password, totp}` → `Set-Cookie: nx_session=…;
 | `GET/PUT /settings/alerts`, `POST /settings/alerts/test` | read: admin, security_officer / admin | §3, 13f: `{smtp, rules: [{name, min_severity, kinds, tenants, channels: {email, webhook: {url, headers, template}}}], reminder_hours, retention_days}` (settings `alerts`, `alert_rules`, `alert_reminder_hours`, `alert_retention_days`); the pre-13f body `{webhook_url, smtp.to, min_severity}` is still accepted as one rule `default`; SMTP password and header values write-only, sealed to the scheduler; templates must render to JSON; Phase 33 `channels.psa` (see "PSA ticketing"); test `{rule?}` → `{webhook?, email?, psa?}` for one rule, `{"<rule>/<channel>": …}` for all (scheduler job `alert_test`; 202 `{job_id}` if it takes over 45 s) |
 | `GET /ssh-keys`, `POST /ssh-keys/{name}/rotate`, `POST /ssh-keys/{name}/retire` | admin, operator, security_officer read / admin (rotate → quorum `ssh_key.rotate`) | §4; only key files below `/etc/nexus/ssh` that PVE node or SFTP offsite configurations use; after a rotation the entry shows the new key and the old one as `previous` (still in use) until retire → 202 `{job_id}` (`ssh_key_retire`); 409 without a rotation |
 | `GET /updates`, `POST /updates/check`, `POST /updates/apply` | admin, security_officer, operator read / admin (apply → quorum `update.apply`) | §5; check/apply write the request file for `nexus-update.path` (apply = install now: stage if needed, reboot outside the window); status `checking` while a request waits, `blocked` (+ `blocked: [check]`) when failed pre-update checks refused the last stage/apply (docs/release.md) |
+| `GET/POST/DELETE /system/power` | admin, security_officer, operator read / admin, a person (POST → quorum `system.reboot` / `system.poweroff`) | reboot or shut down the appliance after a delay, cancel; request file for `nexus-power.path` after the approval (section "Reboot and shutdown" below) |
 | `GET/PUT/DELETE /updates/registry` | admin, security_officer, operator read / admin write | pull credential for a private image repository: `{username, token}` stored as `<update dir>/pull-auth.json` (0600); GET returns only `{configured, username}`; `nexus-update` writes `/run/ostree/auth.json` only during a fetch and removes it; audited `update.registry_auth` / `update.registry_auth_removed` |
 | `GET /diagnostics`, `GET /diagnostics/{id}`, `POST /diagnostics/checks`, `POST /diagnostics/bundle {since?, until?}`, `GET /diagnostics/{id}/download` | admin, security_officer (not tenant-scoped); bundle + download: admin | 14b: POST writes `request.json` `{id, kind, by, since, until}` into `/var/lib/nexus/diag` for `nexus-diag.path` (one at a time: 409 while a request younger than 10 min waits), 202 `{id, state: "queued"}`, audited `diag.checks` / `diag.bundle`; results `{id, kind, by, state queued\|running\|done\|error, since, until, created, finished, error, expires, checks: [{id, title, status pass\|warn\|fail\|skip, severity 1–4, detail, manual}], bundle: {bytes, url}}`; a bundle is visible to and downloadable by its requester only, for 24 h (`download.get`, target `diag/<id>`); range ≤ 31 days, default the last 24 h |
 | `GET /hardware`, `POST /hardware/scan`, `POST /hardware/selftest {disk, type}`, `POST /hardware/arrays {role, level, disks, confirm}`, `POST /hardware/arrays/{md}/spare\|replace\|grow {disk, failed?, confirm}` | GET: admin, security_officer, operator, viewer (not tenant-scoped; API tokens with read scope); scan: admin, operator; the rest: admin | Phase 16 (docs/hardware.md): the status of `nexus-disks` with issues and a summary, recent operations (queued requests included); scan / self-test write `req-<id>.json` into `/var/lib/nexus/disks` (202 `{id, state: "queued"}`, audited `hardware.scan` / `hardware.selftest`); layout requests need the typed serial numbers (`confirm`) and go through approval (`disks.create_array`, `disks.add_spare`, `disks.replace`, `disks.grow`), checked against the status (empty disks, size, no system arrays, store empty for create); the request file is written on approval |
@@ -649,6 +650,27 @@ plain NTP.
   runtime dir, `nexus_time_var_run_t`, only nexus-time writes it) when they change; nft-sync adds them (at most 64)
   as UDP endpoints to `allowed_out_v4/v6`, and the path unit watches that file too. chronyd learned them over the authenticated exchange with a configured server.
 - **Diagnostics**: `time.sync` (tracking) and `time.nts` (authdata: warns about unauthenticated sources).
+
+## Reboot and shutdown (#179, `web-api/src/power.rs`, `os/greenboot/usr/libexec/nexus/nexus-power`)
+The design of NexusStor #86, with both actions gated.
+- **API**: `GET /system/power` (admin, operator, security officer; never tenant-scoped) → `{appliance, pending:
+  {id, action, at, reason, requested_by, approved_by} | null (only for this boot, not overdue by 2 min), requested
+  (written, not yet taken), last: {id, action, result: scheduled|executing|cancelled|refused|error, detail, time,
+  requested_by} | null, blockers: [text], running_jobs, running_by_kind: [{kind, count}], request_pending: {id,
+  action, requested_by} | null, approval_required, max_delay_s: 300}`. `POST /system/power {action: reboot|poweroff,
+  reason (3-500, one line), delay_s (0-300), force}` (admin, a person: never an API token) → quorum
+  `system.reboot` / `system.poweroff` (params with `running_jobs`); the request file is written after the approval,
+  the delay counts from there. 409 while an action is scheduled or, unless `force`, an update request waits or an
+  update is being checked; checked again at the approval. `DELETE /system/power` (admin, a person) cancels
+  (audited `system.power_cancel`).
+- **Helper** `nexus-power` (root, `unconfined_service_t`, `CAP_SYS_BOOT` only, ProtectSystem=strict, no network):
+  `nexus-power.path` on `/var/lib/nexus/power/request.json` (2770 root:nexus-webapi, `nexus_power_var_lib_t`,
+  consumed). Schedules through logind (`systemctl <action> --when=@<at>`, at once for a delay of 0), cancels with
+  `--when=cancel`, refuses while `/run/nexus-update.lock` is held for more than 15 s (unless `force`), writes
+  `status.json` (0640) with `boot_id`.
+- **CLI**: `nexusctl system status|reboot|poweroff|cancel --user NAME` signs in as that person (as `update upload`).
+- Running jobs end with the reboot; the scheduler fails them as interrupted at its start (`Scheduler::recover`),
+  the group's retry policy applies.
 
 ## Inbound firewall (Phase 16c, `web-api/src/firewall.rs`, `catalog::firewall`, `nftsync`)
 Outbound stays automatic (scheduler allow-list, `scheduler/src/firewall.rs`); inbound is configured per service.

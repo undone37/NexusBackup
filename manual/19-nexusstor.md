@@ -8,9 +8,9 @@ the backup protocol; it cannot use the NexusStor web interface or its REST API.
 
 > **Status:** Backups (full and incremental) pass their integration tests against a simulated NexusStor, also as
 > the plugin binary in the real sandbox, and ran in the lab against a NexusStor appliance (2026-11-01). NexusStor's
-> change-rate finding reaches NexusBackup (see below). Restores into a NexusStor (files into an export, a LUN, a whole
-> vStor), the backup status on the NexusStor side and NexusBackup's findings sent to NexusStor come in a later
-> version; until then, restore by download (see below).
+> change-rate finding reaches NexusBackup, the backup reports and NexusBackup's findings go to NexusStor, and files
+> can be restored back into the vStor (see below). Not yet: restoring over the original paths, a LUN or a whole
+> vStor; restore those by download.
 
 ## How it works
 
@@ -114,7 +114,8 @@ finding, locks its newest snapshot from before that backup for 14 days, so the s
 on the storage too. At most 10 findings per hour and vStor are accepted; a failed delivery is in that job's log.
 
 The pairing's **permissions** on NexusStor (Settings, NexusBackup, Edit) decide what else NexusBackup may do there
-(restores into vStors, a vStor from a backup, an S3 target); until those restores arrive here, backup-only is enough.
+(restores into vStors, a vStor from a backup, an S3 target). **Restore into the vStor** (below) needs the
+**restore** permission; for backups only, backup-only is enough.
 
 ## Limits
 

@@ -39,14 +39,14 @@ recovery key.
 | **Microsoft Hyper-V** (standalone hosts) | the Windows agent on the host: recovery checkpoints, Resilient Change Tracking for incrementals | as a new Proxmox VE VM, as a new VM on a Hyper-V host, single files |
 | **XCP-ng** 8.3 | connector `nexus-xcpng`: XAPI snapshots, changed block tracking, NBD over TLS | into the pool, as a new Proxmox VE VM, single files |
 | Linux hosts | `nexus-agent` (static binary, .deb/.rpm, x86_64 and aarch64): LVM, ZFS or btrfs snapshots; source-side dedup | restore to a path or another host, tar/zip download, bare-metal recovery and P2V through a rescue ISO |
-| Windows Server and Windows 11 | `nexus-agent` MSI: VSS snapshots, USN journal for incrementals, security descriptors, alternate data streams; tray app | restore to a path or another host, tar/zip download |
+| Windows Server and Windows 11 | `nexus-agent` MSI: VSS snapshots, USN journal for incrementals, security descriptors, alternate data streams; tray app; optionally volume images of the boot and system disks | restore to a path or another host, tar/zip download; bare-metal recovery and P2V from the volume images (preview) |
 | NFS / SMB shares | read-only mounts on the appliance, parallel scan | tar/zip download, clean-file restore |
 | TrueNAS (SCALE) | ZFS snapshots plus `zfs diff` over the API and a restricted SSH user | tar/zip download |
 | PostgreSQL 14+ (plugin) | logical dumps per database; base backup plus WAL | restore to the source or another server, point in time |
 | MySQL / MariaDB (plugin) | dumps; physical backup plus binlog | restore, point in time |
 | Microsoft SQL Server (plugin), on Windows or Linux / Docker | full, differential and log backups (log runs on their own schedule), over SSH | point in time into a new or the existing database, restore tests, download of the `.bak` / `.trn` files |
 | Oracle Database (plugin) | RMAN over SSH on the database host: level 0/1, archived logs on their own schedule | point in time on the source host, download of the RMAN pieces |
-| NexusStor vStors (plugin) | ZFS snapshots, `zfs diff` incrementals | tar/zip download |
+| NexusStor vStors (plugin) | ZFS snapshots, `zfs diff` incrementals; ransomware findings in both directions, backup reports to NexusStor | files back into the vStor (a new folder), tar/zip download |
 | Microsoft 365 (plugin) | Microsoft Graph: mailboxes, OneDrive, SharePoint libraries, Teams, Entra ID export | download; restore to the original or another user, site or team; export as eml/mbox/PST |
 
 ### Planned sources
@@ -56,7 +56,7 @@ None of these work yet unless the row says so.
 
 | Source | Planned approach | Planned restores | Issue |
 |---|---|---|---|
-| **Windows bare metal** | volume images with the disk layout of every backup (WinPE-based restore; spike done) | rebuild on empty disks, new hardware or as a Proxmox VE VM (P2V) | #19 |
+| **Windows bare metal** beyond the preview | the preview works today (volume images, P2V to Proxmox VE, rescue ISO on the same hardware); planned: UEFI/GPT and multi-partition machines tested, driver injection for other hardware, dynamic disks, BitLocker | rebuild on new hardware | #19 |
 | **Hyper-V failover clusters** | cluster-aware inventory and backups through the agent on every node | as standalone Hyper-V | #39 |
 | **Restore back to vSphere** | VM restore into ESXi / vCenter | full VM | #23 |
 | **Standalone agents** (no appliance) | working today: files and volumes into a local, USB, NFS, SMB repository with copies to SFTP or S3; planned: whole-machine images, application-aware processing, restores from the desktop UI, attaching a repository to an appliance | | #20 follow-ups |
@@ -90,6 +90,7 @@ and an alert when the log chain breaks.
 - **Appliance OS:**
   - bootc image on AlmaLinux 10, updated with signed A/B updates (cosign) that roll back automatically when the
     health check fails;
+  - reboot and shutdown from the web UI or `nexusctl`, with approval;
   - every service in its own user, systemd sandbox and SELinux domain (enforcing);
   - default-deny firewall in both directions, with one inbound port (8443).
 - **Sign-in:**
@@ -152,12 +153,14 @@ and an alert when the log chain breaks.
   yet; SQL Server: download the files). On Windows, VSS takes copy-only snapshots and never truncates logs.
 - **Windows:**
   - file-level backups only, no block-level change tracking (Hyper-V VM disks excepted: RCT);
-  - no bare-metal recovery (Linux only; Windows is planned);
+  - bare-metal recovery from volume images is a preview: tested as a P2V restore of a BIOS/MBR machine with one
+    partition; no dynamic disks, Storage Spaces, BitLocker volumes (restore them unlocked) or other hardware yet;
   - EFS-encrypted files are not backed up.
 - **Clustering:** no scale-out cluster and no high availability. One appliance, plus optional replication to a
   second one; replicated tenants cannot be promoted automatically.
 - **Disk encryption:** a TPM 2.0 is required. The key-encryption key is sealed to it, and new data arrays are LUKS2
-  volumes unlocked through the TPM. The system disk (with the catalog) is not encrypted yet.
+  volumes unlocked through the TPM. The installer ISO encrypts the system disk (with the catalog) the same way;
+  installs from the OVA or with `bootc install` keep it unencrypted, and existing data arrays are not converted.
 - **Archiving:** not a long-term archive for legal retention (GoBD, SEC 17a-4).
 - **Vendor-hosted services:** no SaaS and no vendor-hosted vault. You bring your own offsite storage.
 - **AI and machine learning:** none in detection or the data path. The anomaly checks are deterministic.
@@ -187,8 +190,8 @@ In this list, "lab" means a run end to end against real software in VMs. The lab
 |---|---|
 | Proxmox VE VM / container backup, full restore, instant recovery, in-place rollback (ZFS, LVM-thin, NFS, Ceph RBD), restore tests, file index and search | lab, including a two-node cluster with a live migration between backups (nested) |
 | VMware vSphere (NFC and hot-add, VMs moved between hosts, restore to Proxmox VE), XCP-ng (backup, restore into the pool and to Proxmox VE), Hyper-V (RCT incrementals, restore to Proxmox VE and to Hyper-V) | lab (nested hypervisors, small Linux guests) |
-| Linux agent (14 distribution releases, packages), Windows agent (Server 2022, Windows 11, domain controller with NTDS), bare-metal recovery (Linux) | lab |
-| NFS/SMB, TrueNAS, NexusStor, PostgreSQL (with Patroni failovers and restore tests), replication between two appliances, configuration restore, signed and offline updates, installer ISO, TPM-sealed keys and encrypted data arrays, instant rollback, clean-file restore, threat scans and IOC hunt, `nexusctl fleet` | lab |
+| Linux agent (14 distribution releases, packages), Windows agent (Server 2022, Windows 11, domain controller with NTDS), bare-metal recovery (Linux; Windows Server 2022 as a P2V VM) | lab |
+| NFS/SMB, TrueNAS, NexusStor, PostgreSQL (with Patroni failovers and restore tests), replication between two appliances, configuration restore, signed and offline updates, installer ISO with an encrypted system disk, TPM-sealed keys and encrypted data arrays, instant rollback, clean-file restore, threat scans and IOC hunt, `nexusctl fleet` | lab |
 | SFTP and S3 offsite | lab against a local SFTP test server and MinIO only; never against a real Hetzner Storage Box or S3 provider |
 | Microsoft 365 | Graph mock only; **never run against a real tenant** |
 | MySQL/MariaDB (container test suites against real servers), PSA ticketing, second offsite target, compliance cases | unit and integration tests or mocks only |
@@ -219,8 +222,8 @@ any cell. Detailed reviews: [Veeam](docs/veeam-comparison.md), [Cohesity](docs/c
 | **Proxmox VE VMs** | native (backup provider API, dirty bitmaps) | native | as a storage target for PVE's own backups | no native support documented | KVM agentless (11.1+), no PVE-specific integration | native | native (reference implementation) |
 | **Proxmox VE containers** | yes | no | through PVE's own backups | not documented | not documented | not documented | yes |
 | **VMware, Hyper-V, Nutanix** | VMware (restore to Proxmox VE), Hyper-V standalone, XCP-ng; no Nutanix | yes | yes | yes | yes | yes | no |
-| **Physical Windows / Linux** | agents (file level on Windows) | agents | agents | agents | clients | agents | Linux client only |
-| **Bare-metal recovery** | Linux only | yes | yes | yes | yes | yes | no |
+| **Physical Windows / Linux** | agents (files on Windows; volume images as a preview) | agents | agents | agents | clients | agents | Linux client only |
+| **Bare-metal recovery** | Linux; Windows as a preview | yes | yes | yes | yes | yes | no |
 | **Microsoft 365** | plugin, untested against a real tenant | separate product | yes | yes | separate SaaS | yes | no |
 | **Databases** | PostgreSQL, MySQL/MariaDB, SQL Server (Windows, Linux, Docker), Oracle | broad | broad | broad | broad | broad | no (file level only) |
 | **Dedup + encryption** | per tenant, always encrypted | yes | yes | yes | yes | yes | yes (client-side encryption optional) |
@@ -249,8 +252,8 @@ of October 2026, not installed or tested here. Details, versions and sources:
 | **License** | AGPL-3.0 | BSD-2 / GPL-3.0 | BSD-3 / AGPL-3.0 | MIT, proprietary M365 and disk image modules | AGPL-3.0 |
 | **Maturity** | vibe-coded alpha | mature | 1.4 mature, 2.0 beta | stable releases | mature |
 | **Proxmox VE VMs** | native | no | no | no | no |
-| **Windows** | agent: VSS with all writers (copy-only), USN incrementals; files, no image yet | yes (VSS) | no | yes (VSS) | yes, file and image |
-| **Image / bare metal** | Linux BMR and P2V; whole PVE VMs | no | no | yes (proprietary module) | Windows, Linux with limits |
+| **Windows** | agent: VSS with all writers (copy-only), USN incrementals; files, volume images (preview) | yes (VSS) | no | yes (VSS) | yes, file and image |
+| **Image / bare metal** | Linux BMR and P2V, Windows volume images (preview); whole PVE VMs | no | no | yes (proprietary module) | Windows, Linux with limits |
 | **Encryption** | always, keys on the appliance | always, client key | optional, client key | optional | transport only (Internet mode) |
 | **Immutability** | extend-only locks, S3 Object Lock | rest-server append-only | append-only (1.4) | S3/Azure/B2/GCS locks | none |
 | **Offsite targets** | SFTP, S3, second appliance | many (S3, SFTP, B2, Azure, GCS, rclone) | SSH (1.4); S3/B2 in 2.0 beta | many | none of its own |
