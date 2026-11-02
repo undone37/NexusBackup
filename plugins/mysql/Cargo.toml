@@ -10,7 +10,7 @@ description = "NexusBackup plugin: MySQL / MariaDB logical dumps, mariadb-backup
 [dependencies]
 anyhow = "1"
 plugin-sdk = { path = "../../crates/plugin-sdk" }
-russh = { version = "0.64", default-features = false, features = ["ring"] }
+russh = { version = "0.65", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
