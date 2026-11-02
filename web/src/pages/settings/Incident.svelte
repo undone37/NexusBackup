@@ -65,7 +65,7 @@
   const ts = (v: string) => Math.floor(new Date(v).getTime() / 1000);
   async function enter(e: SubmitEvent) {
     e.preventDefault();
-    if (!(await askConfirm(t.incident.enterConfirm))) return;
+    if (!(await askConfirm(t.incident.enterConfirm, { ok: t.ux.do.enterIncident, danger: true }))) return;
     const body = {
       reason,
       hold: doHold
@@ -90,11 +90,11 @@
     }
   }
   async function liftFreeze() {
-    if (!(await askConfirm(t.p29.freeze.liftConfirm))) return;
+    if (!(await askConfirm(t.p29.freeze.liftConfirm, { ok: t.ux.do.lift, danger: true }))) return;
     if (await act(post('/incident/freeze/lift'), t.p29.freeze.liftRequested)) load();
   }
   async function leave() {
-    if (!(await askConfirm(t.incident.leaveConfirm))) return;
+    if (!(await askConfirm(t.incident.leaveConfirm, { ok: t.ux.do.leaveIncident }))) return;
     if (await act(post('/incident/leave'), t.incident.leaveRequested)) load();
   }
 </script>

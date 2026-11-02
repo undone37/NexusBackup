@@ -73,7 +73,7 @@
   }
 
   async function show(id: number) {
-    if (!(await askConfirm(t.tkey.showConfirm))) return;
+    if (!(await askConfirm(t.tkey.showConfirm, { ok: t.ux.do.show }))) return;
     try {
       const o = await post<TenantKeyShown>(`${path()}/${id}/show`);
       shown = o.data as TenantKeyShown;

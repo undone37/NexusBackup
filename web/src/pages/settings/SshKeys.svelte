@@ -1,14 +1,13 @@
 <script lang="ts">
+  import CopyField from '../../components/CopyField.svelte';
   import { onMount } from 'svelte';
   import { get, post, act, errText } from '../../lib/api';
   import { askConfirm } from '../../lib/confirm.svelte';
   import { session } from '../../lib/session.svelte';
-  import { copyText } from '../../lib/clipboard';
   import { fmtTime } from '../../lib/format';
   import { t } from '../../lib/i18n';
   import type { SshKey } from '../../lib/types';
   import ErrorBanner from '../../components/ErrorBanner.svelte';
-  import IconCopy from '@lucide/svelte/icons/copy';
   import IconRotate from '@lucide/svelte/icons/rotate-cw';
   import IconKey from '@lucide/svelte/icons/key-round';
 
@@ -41,11 +40,11 @@
   });
 
   async function rotate(k: SshKey) {
-    if (!(await askConfirm(t.settings.ssh.rotateConfirm(k.name)))) return;
+    if (!(await askConfirm(t.settings.ssh.rotateConfirm(k.name), { ok: t.ux.do.rotate }))) return;
     if (await act(post(`/ssh-keys/${encodeURIComponent(k.name)}/rotate`), t.settings.ssh.rotated)) load();
   }
   async function retire(k: SshKey) {
-    if (!(await askConfirm(t.settings.ssh.retireConfirm(k.name)))) return;
+    if (!(await askConfirm(t.settings.ssh.retireConfirm(k.name), { ok: t.ux.do.retire, danger: true }))) return;
     if (await act(post(`/ssh-keys/${encodeURIComponent(k.name)}/retire`), t.settings.ssh.retired)) load();
   }
 </script>
@@ -85,15 +84,7 @@
               <dt>{t.settings.ssh.created}</dt>
               <dd>{fmtTime(k.created)}</dd>
             </dl>
-            <div class="copyline">
-              <code>{k.public_key}</code>
-              <button
-                type="button"
-                class="small"
-                onclick={() => copyText(k.public_key)}
-                aria-label="{t.users.copy}: {title} {cur.name}"><IconCopy aria-hidden="true" />{t.users.copy}</button
-              >
-            </div>
+            <CopyField value={k.public_key} label="{title} {cur.name}" />
           </div>
         {/snippet}
         {#if prev}<h3>{t.settings.ssh.current}</h3>{/if}

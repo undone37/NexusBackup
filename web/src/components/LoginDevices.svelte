@@ -49,7 +49,7 @@
     <p class="empty">{t.devices.none}</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             <th scope="col">{t.devices.family}</th>
@@ -62,10 +62,10 @@
         <tbody>
           {#each devices as d (d.fingerprint)}
             <tr>
-              <td>{d.family}</td>
-              <td class="mono">{d.prefix}</td>
-              <td class="nowrap">{fmtTime(d.first_seen)}</td>
-              <td class="nowrap">{fmtTime(d.last_seen)}</td>
+              <td data-label={t.devices.family}>{d.family}</td>
+              <td class="mono" data-label={t.devices.network}>{d.prefix}</td>
+              <td class="nowrap" data-label={t.devices.firstSeen}>{fmtTime(d.first_seen)}</td>
+              <td class="nowrap" data-label={t.devices.lastSeen}>{fmtTime(d.last_seen)}</td>
               <td class="actions">
                 <button
                   type="button"

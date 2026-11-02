@@ -162,7 +162,7 @@
     }
   }
   async function remove(p: RecoveryPlan) {
-    if (!(await askConfirm(t.rplan.deletePlan(p.name)))) return;
+    if (!(await askConfirm(t.rplan.deletePlan(p.name), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/recovery-plans/${p.id}`), t.deleted)) load();
   }
 

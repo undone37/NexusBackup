@@ -697,7 +697,7 @@
       : '';
 
   async function remove(x: Source) {
-    if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`)))) return;
+    if (!(await askConfirm(t.confirmDelete(`${t.groups.source} "${x.name}"`), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/sources/${x.id}`), t.deleted)) load();
   }
   /** The other actions of a source row (Edit is a button of its own). */

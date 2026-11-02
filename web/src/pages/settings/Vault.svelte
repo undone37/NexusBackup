@@ -28,7 +28,13 @@
   onMount(load);
 
   async function request(enabled: boolean) {
-    if (!(await askConfirm(enabled ? t.vault.enableConfirm : t.vault.disableConfirm))) return;
+    if (
+      !(await askConfirm(enabled ? t.vault.enableConfirm : t.vault.disableConfirm, {
+        ok: enabled ? t.ux.do.turnOn : t.ux.do.turnOff,
+        danger: !enabled,
+      }))
+    )
+      return;
     if (await act(put('/vault', { enabled }), t.saved)) load();
   }
 

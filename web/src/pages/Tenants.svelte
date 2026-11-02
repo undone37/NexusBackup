@@ -124,7 +124,7 @@
     dirBusy = false;
   }
   async function removeDirectory() {
-    if (!dirOf || !(await askConfirm(t.tdir.removeConfirm(dirOf)))) return;
+    if (!dirOf || !(await askConfirm(t.tdir.removeConfirm(dirOf), { ok: t.ux.do.remove, danger: true }))) return;
     dirBusy = true;
     const r = await act(put(`/tenants/${encodeURIComponent(dirOf)}/directory`, { directory: null }), t.tdir.removed);
     dirBusy = false;
@@ -189,12 +189,12 @@
     }
   }
   async function liftFreeze(x: Tenant) {
-    if (!(await askConfirm(t.p29.freeze.liftConfirm))) return;
+    if (!(await askConfirm(t.p29.freeze.liftConfirm, { ok: t.ux.do.lift, danger: true }))) return;
     if (await act(post(`/tenants/${encodeURIComponent(x.name)}/lockdown/freeze/lift`), t.p29.freeze.liftRequested))
       loadLockdowns();
   }
   async function liftLockdown(x: Tenant) {
-    if (!(await askConfirm(t.lockdown.liftConfirm(x.name)))) return;
+    if (!(await askConfirm(t.lockdown.liftConfirm(x.name), { ok: t.ux.do.lift, danger: true }))) return;
     if (await act(post(`/tenants/${encodeURIComponent(x.name)}/lockdown/lift`), t.lockdown.liftRequested))
       loadLockdowns();
   }
@@ -228,7 +228,7 @@
   // "View as tenant" (read-only, immediately) / "Act as tenant admin" (approval)
   async function impersonate(x: Tenant, elevated: boolean) {
     const q = elevated ? t.impersonate.actConfirm(x.name) : t.impersonate.viewConfirm(x.name);
-    if (!(await askConfirm(q))) return;
+    if (!(await askConfirm(q, { ok: t.ux.do.continue }))) return;
     const o = await act(
       post(`/tenants/${encodeURIComponent(x.name)}/impersonate`, { elevated }),
       t.impersonate.started(x.name),
@@ -550,12 +550,12 @@
       load();
   }
   async function reactivate(x: Tenant) {
-    if (!(await askConfirm(t.tdis.reactivateConfirm(x.name)))) return;
+    if (!(await askConfirm(t.tdis.reactivateConfirm(x.name), { ok: t.ux.do.reactivate }))) return;
     if (await act(post(`/tenants/${encodeURIComponent(x.name)}/reactivate`), t.tdis.reactivated)) load();
   }
 
   async function remove(x: Tenant) {
-    if (!(await askConfirm(t.confirmDelete(`${t.tenant} "${x.name}"`)))) return;
+    if (!(await askConfirm(t.confirmDelete(`${t.tenant} "${x.name}"`), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/tenants/${encodeURIComponent(x.name)}`), t.deleted)) load();
   }
   /** The other actions of a tenant row (Edit and View as tenant are buttons of their own). */

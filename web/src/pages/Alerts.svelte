@@ -134,30 +134,45 @@
 
 <div class="page-head">
   <h1>{t.alerts.title}</h1>
-  <div class="seg" role="group" aria-label={t.alerts.filter}>
-    {#each ['open', 'resolved', 'all'] as const as f (f)}
-      <button type="button" aria-pressed={filter === f} onclick={() => setFilter(f)}>{t.alerts.filters[f]}</button>
-    {/each}
+  <div class="tools">
+    <div class="seg" role="group" aria-label={t.alerts.filter}>
+      {#each ['open', 'resolved', 'all'] as const as f (f)}
+        <button type="button" aria-pressed={filter === f} onclick={() => setFilter(f)}>{t.alerts.filters[f]}</button>
+      {/each}
+    </div>
+    <select class="cat-filter" bind:value={category} onchange={load} aria-label={t.alerts.category}>
+      <option value="">{t.alerts.allCategories}</option>
+      {#each CATEGORIES as c (c)}
+        <option value={c}>{t.alerts.categories[c]}</option>
+      {/each}
+    </select>
   </div>
-  <select class="cat-filter" bind:value={category} onchange={load} aria-label={t.alerts.category}>
-    <option value="">{t.alerts.allCategories}</option>
-    {#each CATEGORIES as c (c)}
-      <option value={c}>{t.alerts.categories[c]}</option>
-    {/each}
-  </select>
   <p class="lede">{t.alerts.lede}</p>
 </div>
 
 <ErrorBanner {error} />
 
-<div class="card">
+<div class="card" aria-busy={!loaded}>
   {#if !loaded}
-    <p class="muted" aria-busy="true">{t.loading}</p>
+    <div class="skeleton-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+    <span class="visually-hidden">{t.loading}</span>
   {:else if shown.length === 0}
-    <p class="empty">{t.none}</p>
+    <div class="empty">
+      <p>{filter === 'open' && !category ? t.ux.noAlerts : t.ux.noAlertsFiltered}</p>
+      {#if filter !== 'all' || category}
+        <button
+          type="button"
+          class="small"
+          onclick={() => {
+            category = '';
+            setFilter('all');
+          }}>{t.ux.showAll}</button
+        >
+      {/if}
+    </div>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             <th scope="col">{t.alerts.severity}</th>
@@ -170,18 +185,24 @@
         <tbody>
           {#each shown as a (a.id)}
             <tr class:resolved={a.resolved_at}>
-              <td><span class="chip {a.resolved_at ? 'muted-chip' : sev(a.severity)}">{a.severity}</span></td>
-              <td class="nowrap" title={t.alerts.firstLast(fmtTime(a.first_ts), fmtTime(a.last_ts))}>
+              <td data-label={t.alerts.severity}
+                ><span class="chip {a.resolved_at ? 'muted-chip' : sev(a.severity)}">{a.severity}</span></td
+              >
+              <td
+                class="nowrap"
+                data-label={t.alerts.seen}
+                title={t.alerts.firstLast(fmtTime(a.first_ts), fmtTime(a.last_ts))}
+              >
                 {fmtAgo(a.last_ts)}
                 <div class="muted small">{t.alerts.count(a.count)}{a.count > 1 ? ` · ${fmtAgo(a.first_ts)}` : ''}</div>
               </td>
-              <td>
+              <td data-label={t.kind}>
                 <strong>{kindTitle(a.kind)}</strong>
                 <div class="muted small mono">{a.kind}</div>
                 <div class="muted small">{t.alerts.categories[a.category] ?? a.category}</div>
                 {#if a.tenant}<div class="muted small">{t.alerts.tenant}: {a.tenant}</div>{/if}
               </td>
-              <td>
+              <td data-label={t.alerts.message}>
                 <!-- "job 220" in a message opens that job -->
                 {#each linkParts(a.message) as part, i (i)}{#if part.job}<a href={href(`/jobs/${part.job}`)}
                       >{part.text}</a

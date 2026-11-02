@@ -9,6 +9,7 @@
   import { t } from '../lib/i18n';
   import type { Agent, AgentToken, Tenant } from '../lib/types';
   import Modal from '../components/Modal.svelte';
+  import CopyField from '../components/CopyField.svelte';
   import AgentsRescue from './AgentsRescue.svelte';
   import { can } from '../lib/roles';
   import { session } from '../lib/session.svelte';
@@ -127,7 +128,12 @@
 
   async function newToken(a: Agent) {
     const enrolled = agentStatus(a, now) === 'enrolled';
-    if (!(await askConfirm(enrolled ? t.agents.reenrollConfirm(a.name) : t.agents.newTokenConfirm(a.name)))) return;
+    if (
+      !(await askConfirm(enrolled ? t.agents.reenrollConfirm(a.name) : t.agents.newTokenConfirm(a.name), {
+        ok: t.ux.do.issue,
+      }))
+    )
+      return;
     const r = await act(post<AgentToken>(`/agents/${encodeURIComponent(a.id)}/token`), t.saved);
     if (!r) return;
     if (!r.quorum && r.data.token) showToken(a.name, r.data);
@@ -144,7 +150,7 @@
   }
 
   async function update(a: Agent) {
-    if (!(await askConfirm(t.agents.updateConfirm(a.name)))) return;
+    if (!(await askConfirm(t.agents.updateConfirm(a.name), { ok: t.ux.do.update }))) return;
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'agent_update', tenant: a.tenant, params: { agent_id: a.id } }),
       (d) => t.snap.jobStarted(d.id),
@@ -154,7 +160,7 @@
 
   // Phase 15f: certificate renewal over the session, appliance-side limits
   async function renew(a: Agent) {
-    if (!(await askConfirm(t.agents.renewConfirm(a.name)))) return;
+    if (!(await askConfirm(t.agents.renewConfirm(a.name), { ok: t.ux.do.renew }))) return;
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'agent_renew', tenant: a.tenant, params: { agent_id: a.id } }),
       (d) => t.snap.jobStarted(d.id),
@@ -225,17 +231,8 @@
     a.last_request && !a.last_request.refused && now - a.last_request.received < 3600 ? a.last_request : null;
 
   async function remove(a: Agent) {
-    if (!(await askConfirm(t.confirmDelete(t.agents.deleteWhat(a.name))))) return;
+    if (!(await askConfirm(t.confirmDelete(t.agents.deleteWhat(a.name)), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/agents/${encodeURIComponent(a.id)}`), t.deleted)) load();
-  }
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      notify('ok', t.users.copied);
-    } catch {
-      /* clipboard unavailable (non-secure context): the text is selectable */
-    }
   }
 </script>
 
@@ -411,16 +408,8 @@
   {#if tok}
     <p class="banner warn" role="alert">{t.agents.tokenOnce}</p>
     <p>{t.agents.tokenSteps}</p>
-    <div class="field">
-      <span class="muted">{t.agents.installCommand}</span>
-      <code class="secret">{tok.install_command}</code>
-      <button type="button" class="small" onclick={() => copy(tok!.install_command)}>{t.users.copy}</button>
-    </div>
-    <div class="field">
-      <span class="muted">{t.agents.token}</span>
-      <code class="secret">{tok.token}</code>
-      <button type="button" class="small" onclick={() => copy(tok!.token)}>{t.users.copy}</button>
-    </div>
+    <CopyField value={tok.install_command} label={t.agents.installCommand} secret />
+    <CopyField value={tok.token} label={t.agents.token} secret />
     {#if tok.token_expires}<p class="muted">{t.agents.expires}: {fmtTime(tok.token_expires)}</p>{/if}
     {#if can.download(session.user)}
       <h3>{t.agentUpd.installers}</h3>

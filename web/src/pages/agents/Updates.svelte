@@ -105,7 +105,8 @@
     if (r) load();
   }
   async function removeRelease(r: AgentRelease) {
-    if (!(await askConfirm(t.confirmDelete(t.agentUpd.deleteRelease(r.version))))) return;
+    if (!(await askConfirm(t.confirmDelete(t.agentUpd.deleteRelease(r.version)), { ok: t.delete, danger: true })))
+      return;
     if (await act(del(`/agent-releases/${encodeURIComponent(r.version)}`), t.deleted)) load();
   }
   let artOpen = $state(false);
@@ -139,7 +140,7 @@
 
   async function updateOne(a: Agent) {
     const v = rel.recommended;
-    if (!v || !(await askConfirm(t.agentUpd.updateConfirm(a.name, v)))) return;
+    if (!v || !(await askConfirm(t.agentUpd.updateConfirm(a.name, v), { ok: t.ux.do.update }))) return;
     const r = await act(
       post<{ id: number }>('/jobs', { kind: 'agent_update', tenant: a.tenant, params: { agent_id: a.id, version: v } }),
       (d) => t.snap.jobStarted(d.id),
@@ -210,8 +211,12 @@
     });
 
   async function control(r: Rollout, verb: 'pause' | 'resume' | 'cancel') {
-    if (verb === 'cancel' && !(await askConfirm(t.agentUpd.cancelConfirm(r.version)))) return;
-    if (verb === 'pause' && !(await askConfirm(t.agentUpd.pauseConfirm(r.version)))) return;
+    if (
+      verb === 'cancel' &&
+      !(await askConfirm(t.agentUpd.cancelConfirm(r.version), { ok: t.ux.do.cancelRollout, danger: true }))
+    )
+      return;
+    if (verb === 'pause' && !(await askConfirm(t.agentUpd.pauseConfirm(r.version), { ok: t.ux.do.pause }))) return;
     const ok = { pause: t.agentUpd.paused, resume: t.agentUpd.resumed, cancel: t.agentUpd.cancelled }[verb];
     if (await act(post(`/agent-rollouts/${r.id}/${verb}`), ok)) {
       await load();

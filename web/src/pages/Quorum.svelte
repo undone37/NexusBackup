@@ -102,9 +102,16 @@
   async function decide(q: QuorumRequest, verb: 'approve' | 'reject') {
     // approving executes an irreversible or weakening action: never on a single misclick;
     // a tenant's refusal is final, so it is confirmed as well
-    if (verb === 'approve' && !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by))))
+    if (
+      verb === 'approve' &&
+      !(await askConfirm(t.quorum.approveConfirm(q.id, humanize(q.action), q.requested_by), { ok: t.ux.do.approve }))
+    )
       return;
-    if (verb === 'reject' && myTenant(q) && !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action)))))
+    if (
+      verb === 'reject' &&
+      myTenant(q) &&
+      !(await askConfirm(t.quorum.refuseConfirm(q.id, humanize(q.action)), { ok: t.ux.do.refuse, danger: true }))
+    )
       return;
     const ok = await act(
       post<{ activation?: Activation; state?: string; waiting_for?: string[] }>(`/quorum/${q.id}/${verb}`),
@@ -128,7 +135,7 @@
   let secondOpen = $state(false);
 
   async function runGc(g: GcPending) {
-    if (!(await askConfirm(t.quorum.gcConfirm(g.tenant)))) return;
+    if (!(await askConfirm(t.quorum.gcConfirm(g.tenant), { ok: t.ux.do.runGc, danger: true }))) return;
     const ok = await act(
       post<{ job_id: number }>('/gc/approve-large', { tenant: g.tenant }),
       (d) => t.quorum.gcQueued(d.job_id),
@@ -190,10 +197,24 @@
 {/if}
 
 {#if !loaded}
-  <p class="muted" aria-busy="true">{t.loading}</p>
+  <div class="card" aria-busy="true">
+    <div class="skeleton-lines" aria-hidden="true"><span></span><span></span><span></span></div>
+    <span class="visually-hidden">{t.loading}</span>
+  </div>
 {:else if shown.length === 0}
   <div class="card">
-    <p class="empty">{onlyPending && items.length ? t.quorum.nonePending : t.none}</p>
+    <div class="empty">
+      {#if !onlyPending || items.length === 0}
+        <p>{t.ux.noRequests}</p>
+      {:else}
+        <p>{settings && !settings.enabled ? t.ux.noPendingOff : t.ux.noPending}</p>
+      {/if}
+      {#if settings && !settings.enabled && can.configure(session.user)}
+        <a class="button small" href={href('/settings?tab=approvals')}>{t.ux.enableApprovals}</a>
+      {:else if onlyPending && items.length}
+        <button type="button" class="small" onclick={() => (onlyPending = false)}>{t.ux.showHistory}</button>
+      {/if}
+    </div>
   </div>
 {:else}
   {#each shown as q (q.id)}

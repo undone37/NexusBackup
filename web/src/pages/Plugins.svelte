@@ -121,15 +121,15 @@
     if (await act(post<Plugin>(`/plugins/${encodeURIComponent(p.id)}/enable`), t.plugins.enabledOk)) load();
   }
   async function disable(p: Plugin) {
-    if (!(await askConfirm(t.plugins.disableConfirm(p.name)))) return;
+    if (!(await askConfirm(t.plugins.disableConfirm(p.name), { ok: t.ux.do.disable, danger: true }))) return;
     if (await act(post(`/plugins/${encodeURIComponent(p.id)}/disable`), t.saved)) load();
   }
   async function activate(p: Plugin) {
-    if (!(await askConfirm(t.plugins.activateConfirm(p.name, p.version)))) return;
+    if (!(await askConfirm(t.plugins.activateConfirm(p.name, p.version), { ok: t.ux.do.activate }))) return;
     if (await act(post(`/plugins/${encodeURIComponent(p.id)}/activate`, { version: p.version }), t.saved)) load();
   }
   async function remove(id: string, name: string) {
-    if (!(await askConfirm(t.confirmDelete(t.plugins.removeWhat(name))))) return;
+    if (!(await askConfirm(t.confirmDelete(t.plugins.removeWhat(name)), { ok: t.delete, danger: true }))) return;
     if (await act(del(`/plugins/${encodeURIComponent(id)}`), t.deleted)) load();
   }
 
@@ -149,7 +149,13 @@
     }
   }
   async function removeKey(k: PluginKey) {
-    if (!(await askConfirm(t.confirmDelete(t.plugins.removeKeyWhat(k.publisher, short(k.fingerprint)))))) return;
+    if (
+      !(await askConfirm(t.confirmDelete(t.plugins.removeKeyWhat(k.publisher, short(k.fingerprint))), {
+        ok: t.delete,
+        danger: true,
+      }))
+    )
+      return;
     if (await act(del(`/plugin-keys/${encodeURIComponent(k.fingerprint)}`), t.deleted)) load();
   }
 </script>

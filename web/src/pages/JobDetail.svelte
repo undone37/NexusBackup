@@ -66,7 +66,8 @@
 
   async function cancel() {
     const running = job?.state === 'running';
-    if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id))))) return;
+    if (running && !(await askConfirm(t.runctl.cancelConfirm(Number(id)), { ok: t.ux.do.stopJob, danger: true })))
+      return;
     if (await act(post(`/jobs/${encodeURIComponent(id)}/cancel`), running ? t.runctl.cancelling : t.jobs.cancelled))
       load();
   }

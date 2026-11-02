@@ -41,7 +41,7 @@
 
   async function csr(e: SubmitEvent) {
     e.preventDefault();
-    if (s?.pending && !(await askConfirm(t.cert.replacePending))) return;
+    if (s?.pending && !(await askConfirm(t.cert.replacePending, { ok: t.ux.do.replace, danger: true }))) return;
     busy = true;
     const sans = f.sans
       .split(/[\s,]+/)
@@ -63,7 +63,13 @@
   }
 
   async function revert() {
-    if (!(await askConfirm(s?.previous ? t.cert.revertPrevConfirm : t.cert.revertSelfConfirm))) return;
+    if (
+      !(await askConfirm(s?.previous ? t.cert.revertPrevConfirm : t.cert.revertSelfConfirm, {
+        ok: t.ux.do.revert,
+        danger: true,
+      }))
+    )
+      return;
     if (await act(post('/certificate/revert'), t.cert.reverted)) {
       warnings = [];
       await load();

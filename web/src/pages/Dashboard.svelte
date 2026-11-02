@@ -23,6 +23,7 @@
     Job,
     Plugin,
     Policy,
+    QuorumRequest,
     Snapshot,
     Source,
   } from '../lib/types';
@@ -49,6 +50,10 @@
   import IconRestoreTest from '@lucide/svelte/icons/flask-conical';
   import IconPlay from '@lucide/svelte/icons/play';
   import IconHardware from '@lucide/svelte/icons/server-cog';
+  import IconBad from '@lucide/svelte/icons/circle-alert';
+  import IconWarn from '@lucide/svelte/icons/triangle-alert';
+  import IconInfo from '@lucide/svelte/icons/info';
+  import IconOk from '@lucide/svelte/icons/circle-check';
 
   // ---- key figures (GET /dashboard, docs/phase12-contract.md §1)
   const DAYS = 'nexus.dashDays';
@@ -103,6 +108,7 @@
   let agents: Agent[] = $state([]);
   let sources: Source[] = $state([]);
   let approvals: ApprovalsState | null = $state(null);
+  let requests: QuorumRequest[] = $state([]);
   // The "enable approvals" recommendation can be dismissed for this browser session.
   const DISMISS = 'nexus.approvalsBannerDismissed';
   let dismissed = $state(sessionStorage.getItem(DISMISS) === '1');
@@ -150,6 +156,8 @@
         approvals = null;
       }
     }
+    if (can.viewQuorum(session.user) || can.viewOwnQuorum(session.user))
+      requests = await get<QuorumRequest[]>('/quorum').catch(() => requests);
     loaded = true;
   }
 
@@ -288,6 +296,138 @@
   }
   const statusCls = { ok: 'ok', stale: 'bad', missing: 'bad', paused: 'plain', deactivated: 'plain' };
 
+  // ---- "Needs attention" (ported from NexusStor): one line per thing to look at, most urgent first,
+  // each with the page that fixes it. The cards below keep the details.
+  type Tone = 'bad' | 'warn' | 'info';
+  interface Item {
+    key: string;
+    tone: Tone;
+    text: string;
+    detail?: string;
+    link?: { path: string; label: string };
+  }
+  const RANK: Record<Tone, number> = { bad: 0, warn: 1, info: 2 };
+  const ICON = { bad: IconBad, warn: IconWarn, info: IconInfo };
+  const ux = t.ux;
+  const attentionReady = $derived(loaded && (!!kpi || !!kpiError));
+  const items = $derived.by(() => {
+    const out: Item[] = [];
+    const tenantScoped = !!session.user?.tenant;
+    if (hwSum && (hwSum.state === 'critical' || hwSum.state === 'warning'))
+      out.push({
+        key: 'hw',
+        tone: hwSum.state === 'critical' ? 'bad' : 'warn',
+        text: `${t.hw.tile}: ${hwSum.critical ? t.hw.summary.critical(hwSum.critical) : t.hw.summary.warning(hwSum.warnings)}`,
+        detail: ux.hwHint,
+        link: { path: '/hardware', label: t.hw.tile },
+      });
+    if (cap && usedShare !== null && usedShare >= 0.75)
+      out.push({
+        key: 'storage',
+        tone: usedShare >= 0.9 ? 'bad' : 'warn',
+        text: ux.storageFull(fmtPct(usedShare, 0)),
+        detail: ux.storageHint,
+        link: { path: '/storage', label: t.nav.storage },
+      });
+    else if (cap?.forecast_full_days != null && cap.forecast_full_days < 30)
+      out.push({
+        key: 'forecast',
+        tone: 'warn',
+        text: t.dash.capFullIn(t.dash.kForecastDays(cap.forecast_full_days)),
+        detail: ux.storageHint,
+        link: { path: '/storage', label: t.nav.storage },
+      });
+    if (pr && pr.sla_breach > 0)
+      out.push({
+        key: 'sla',
+        tone: 'bad',
+        text: ux.slaBreach(pr.sla_breach),
+        detail: ux.slaHint,
+        link: { path: '/jobs?state=failed', label: ux.failedJobs },
+      });
+    if (pr && pr.never > 0)
+      out.push({
+        key: 'never',
+        tone: 'warn',
+        text: ux.neverBacked(pr.never),
+        detail: ux.neverHint,
+        link: { path: '/groups', label: t.nav.groups },
+      });
+    if (failed.length)
+      out.push({
+        key: 'failed',
+        tone: 'bad',
+        text: ux.jobsFailed(failed.length),
+        detail: failed.length === 1 ? `#${failed[0].id} ${kindLabel(failed[0].kind)}` : undefined,
+        link:
+          failed.length === 1
+            ? { path: `/jobs/${failed[0].id}`, label: ux.openJob }
+            : { path: '/jobs?state=failed', label: ux.failedJobs },
+      });
+    if (rtk && rtk.failed > 0)
+      out.push({
+        key: 'rtest',
+        tone: 'warn',
+        text: ux.restoreTestsFailed(rtk.failed),
+        link: { path: '/restore-tests?state=failed', label: t.nav.restoreTests },
+      });
+    if (os && os.verify_failed > 0)
+      out.push({
+        key: 'verify',
+        tone: 'bad',
+        text: ux.verifyFailed(os.verify_failed),
+        detail: ux.verifyHint,
+        link: { path: '/jobs?state=failed&kind=verify', label: ux.failedJobs },
+      });
+    if (os && os.lagging > 0)
+      out.push({ key: 'offsite', tone: 'warn', text: ux.offsiteLag(os.lagging, os.tenants), detail: ux.offsiteHint });
+    // alerts: critical first, the three newest named, the rest counted
+    const open = [...alerts].sort(
+      (a, b) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1) || b.last_ts - a.last_ts,
+    );
+    if (showAlerts) {
+      for (const a of open.slice(0, 3))
+        out.push({
+          key: `alert-${a.id}`,
+          tone: a.severity === 'critical' ? 'bad' : a.severity === 'warning' ? 'warn' : 'info',
+          text: a.message,
+          link: { path: `/alerts?id=${a.id}`, label: ux.open },
+        });
+      if (open.length > 3)
+        out.push({
+          key: 'alerts-more',
+          tone: 'info',
+          text: ux.alertsMore(open.length - 3),
+          link: { path: '/alerts', label: t.nav.alerts },
+        });
+    }
+    const pending = requests.filter((q) => q.state === 'pending');
+    if (pending.length) {
+      const mine = pending.every((q) => q.requested_by === session.user?.name);
+      out.push({
+        key: 'approvals',
+        tone: can.decideQuorum(session.user) && !mine ? 'warn' : 'info',
+        text: ux.approvals(pending.length),
+        detail: mine ? ux.approvalsMine : ux.approvalsYou,
+        link: { path: pending.length === 1 ? `/quorum?id=${pending[0].id}` : '/quorum', label: ux.review },
+      });
+    }
+    if (pr && pr.unprotected > 0 && !tenantScoped && can.configure(session.user))
+      out.push({
+        key: 'unprotected',
+        tone: 'info',
+        text: t.dash.notInGroup(pr.unprotected),
+        detail: t.dash.notInGroupSub,
+        link: { path: '/groups', label: t.dash.openGroups },
+      });
+    return out.sort((a, b) => RANK[a.tone] - RANK[b.tone]);
+  });
+
+  // the most urgent first; the rest behind "Show more" so the key figures stay near the top
+  const ATTENTION_SHOWN = 6;
+  let attentionAll = $state(false);
+  const shownItems = $derived(attentionAll ? items : items.slice(0, ATTENTION_SHOWN));
+
   let bnOpen = $state(false);
   let bnGroup: Group | null = $state(null);
   function backupNow(g: Group) {
@@ -352,6 +492,39 @@
 {#if kpiError}<p class="banner warn" role="status">{kpiError}</p>{/if}
 
 <RunningJobs groups={new Map(groups.map((g) => [g.id, g.name]))} />
+<section class="card attention" aria-labelledby="c-attention" aria-busy={!attentionReady}>
+  <div class="card-head">
+    <div>
+      <h2 id="c-attention">{ux.attention}</h2>
+      <div class="sub">{ux.attentionSub}</div>
+    </div>
+  </div>
+  {#if !attentionReady}
+    <div class="skeleton-lines" aria-hidden="true"><span></span><span></span></div>
+    <span class="visually-hidden">{t.loading}</span>
+  {:else if items.length === 0}
+    <p class="all-clear"><IconOk aria-hidden="true" />{ux.allClear}</p>
+  {:else}
+    <ul class="att-list">
+      {#each shownItems as it (it.key)}
+        {@const I = ICON[it.tone]}
+        <li class={it.tone}>
+          <I aria-hidden="true" />
+          <div class="att-text">
+            <span>{it.text}</span>
+            {#if it.detail}<small>{it.detail}</small>{/if}
+          </div>
+          {#if it.link}<a class="button small" href={href(it.link.path)}>{it.link.label}</a>{/if}
+        </li>
+      {/each}
+    </ul>
+    {#if items.length > ATTENTION_SHOWN}
+      <button type="button" class="link att-more" onclick={() => (attentionAll = !attentionAll)}
+        >{attentionAll ? ux.showLess : ux.showMore(items.length - ATTENTION_SHOWN)}</button
+      >
+    {/if}
+  {/if}
+</section>
 
 {#if kpi && pr && jb && cap && os}
   <section class="kpis" class:nine={!!rtk !== !!hwSum} class:ten={!!rtk && !!hwSum} aria-label={t.dash.title}>
@@ -561,7 +734,7 @@
         <p class="empty">{t.dash.allGood}</p>
       {:else}
         <div class="table-wrap">
-          <table>
+          <table class="stack">
             <thead>
               <tr>
                 <th scope="col">{t.dash.object}</th>
@@ -575,17 +748,17 @@
             <tbody>
               {#each attention as w (`${w.tenant}/${w.source}`)}
                 <tr>
-                  <td
+                  <th scope="row"
                     >{w.name}
-                    <div class="muted mono">{w.source}</div></td
+                    <div class="muted mono">{w.source}</div></th
                   >
-                  {#if !session.user?.tenant}<td>{w.tenant}</td>{/if}
-                  <td>{worstKind(w.kind)}</td>
-                  <td class="nowrap" title={fmtTime(w.last_ok)}>
+                  {#if !session.user?.tenant}<td data-label={t.tenant}>{w.tenant}</td>{/if}
+                  <td data-label={t.dash.sourceKind}>{worstKind(w.kind)}</td>
+                  <td class="nowrap" data-label={t.dash.lastOk} title={fmtTime(w.last_ok)}>
                     <span class="age" class:bad={w.sla !== 'ok'}>{fmtAgo(w.last_ok)}</span>
                   </td>
-                  <td class="num">{fmtDuration(w.rpo_s)}</td>
-                  <td><span class="chip {slaCls[w.sla]}">{t.dash.slaChip[w.sla]}</span></td>
+                  <td class="num" data-label={t.dash.rpo}>{fmtDuration(w.rpo_s)}</td>
+                  <td data-label={t.dash.sla}><span class="chip {slaCls[w.sla]}">{t.dash.slaChip[w.sla]}</span></td>
                 </tr>
               {/each}
             </tbody>
@@ -634,7 +807,11 @@
     {#if kpi.full_reads?.sources}<ChangeTracking summary={kpi.full_reads} />{/if}
   </div>
 {:else if !kpiError}
-  <p class="muted" aria-busy="true">{t.loading}</p>
+  <section class="kpis" aria-busy="true" aria-label={t.loading}>
+    {#each [1, 2, 3, 4] as i (i)}<div class="kpi">
+        <div class="skeleton-lines"><span></span><span></span></div>
+      </div>{/each}
+  </section>
 {/if}
 
 {#if loaded}
@@ -760,6 +937,74 @@
 <BackupNow bind:open={bnOpen} group={bnGroup} label={(v) => (bnGroup ? guestLabel(bnGroup, v) : String(v))} />
 
 <style>
+  .attention {
+    margin-bottom: 1rem;
+  }
+  .att-list {
+    list-style: none;
+    margin: 0 -1.2rem -0.45rem;
+    padding: 0;
+  }
+  .att-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.55rem 1.2rem;
+    border-top: 1px solid var(--border);
+    border-left: 3px solid transparent;
+  }
+  .att-list li.bad {
+    border-left-color: var(--bad);
+  }
+  .att-list li.warn {
+    border-left-color: var(--warn);
+  }
+  .att-list li.info {
+    border-left-color: var(--info);
+  }
+  .att-list li > :global(svg) {
+    flex: none;
+    width: 18px;
+    height: 18px;
+  }
+  .att-list li.bad > :global(svg) {
+    color: var(--bad);
+  }
+  .att-list li.warn > :global(svg) {
+    color: var(--warn);
+  }
+  .att-list li.info > :global(svg) {
+    color: var(--info);
+  }
+  .att-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-wrap: anywhere;
+  }
+  .att-text small {
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  .att-list .button {
+    flex: none;
+  }
+  .att-more {
+    margin-top: 0.9rem;
+  }
+  .all-clear {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    color: var(--ok);
+  }
+  .all-clear :global(svg) {
+    flex: none;
+    width: 18px;
+    height: 18px;
+  }
   .incident-card {
     border-color: var(--bad);
     margin-bottom: 1rem;

@@ -15,7 +15,8 @@ export async function fetchFromOffsite(
   time: number,
   target = 1,
 ): Promise<number | null> {
-  if (!(await askConfirm(t.offsite.fetchConfirm(source, fmtTime(time), FETCH_KEEP_DAYS)))) return null;
+  if (!(await askConfirm(t.offsite.fetchConfirm(source, fmtTime(time), FETCH_KEEP_DAYS), { ok: t.ux.do.fetch })))
+    return null;
   // Phase 30: target 2 = from the second offsite target
   const params = target === 2 ? { source, time, target } : { source, time };
   const r = await act(post<{ id: number }>('/jobs', { kind: 'offsite_restore', tenant, params }), (d) =>

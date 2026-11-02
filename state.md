@@ -1917,3 +1917,13 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   type for its control dir, policy built in the selinux stage); `nexusctl system`. Tests: web-api `tests/power.rs` (3),
   unit tests, `test_nexus_power.py` (7), nexusctl unit and integration tests. No lab run: no image of the branch was
   built, VM 201 was not rebooted; open: the reboot through logind from the sandboxed unit on an enforcing appliance.
+
+## Web UI: NexusStor UX passes ported (added 2026-11-03, #180)
+- [x] Ported from NexusStor PRs #17, #41, #18 (generic parts) and #38: named and red confirmations (askConfirm
+  options, 70 call sites), shared CopyField (11 dialogs), table.stack phone cards (alerts, users, audit, account
+  tables, dashboard, hardware), grouped Settings (5 groups, side list from 1100 px, select below), dashboard
+  "Needs attention" card and skeletons, empty states with a next step, Users "More" menu, checks while typing
+  (network interface, alert rule, time servers), router leave guard (Settings > Network draft), account breadcrumb.
+  No API change. Screenshots: full run against the mock (220 scenes, 0 failures); 123 PNGs differ from a
+  baseline run of main's code on the same machine by 350 px or more and were kept, the rest is rendering noise.
+  Not checked by eye at phone width (the screenshot tool renders 1440 px only).

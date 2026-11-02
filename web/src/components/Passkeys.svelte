@@ -65,7 +65,7 @@
   }
 
   async function remove(x: Passkey) {
-    if (!(await askConfirm(t.passkeys.removeConfirm(x.name)))) return;
+    if (!(await askConfirm(t.passkeys.removeConfirm(x.name), { ok: t.ux.do.remove, danger: true }))) return;
     if (await act(del(`/auth/passkeys/${x.id}`), t.passkeys.removed)) load();
   }
 </script>
@@ -85,7 +85,7 @@
     <p class="empty">{t.passkeys.none}</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             <th scope="col">{t.name}</th>
@@ -99,11 +99,11 @@
         <tbody>
           {#each items as x (x.id)}
             <tr>
-              <td><strong>{x.name}</strong></td>
-              <td><span class="chip">{x.alg}</span></td>
-              <td><code>{x.rp_id}</code></td>
-              <td class="nowrap">{fmtTime(x.created)}</td>
-              <td class="nowrap">{fmtAgo(x.last_used)}</td>
+              <th scope="row">{x.name}</th>
+              <td data-label={t.passkeys.alg}><span class="chip">{x.alg}</span></td>
+              <td data-label={t.passkeys.host}><code>{x.rp_id}</code></td>
+              <td class="nowrap" data-label={t.passkeys.added_at}>{fmtTime(x.created)}</td>
+              <td class="nowrap" data-label={t.passkeys.lastUsed}>{fmtAgo(x.last_used)}</td>
               <td class="actions">
                 <button type="button" class="small" onclick={() => rename(x)}>{t.passkeys.rename}</button>
                 <button type="button" class="small danger" onclick={() => remove(x)}>{t.passkeys.remove}</button>

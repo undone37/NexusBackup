@@ -260,7 +260,8 @@
       <p class="empty">{t.none}</p>
     {:else}
       <div class="table-wrap">
-        <table>
+        <!-- phones: device, size, role, health and temperature; model, serial and SMART details are one tap away -->
+        <table class="stack disks">
           <thead>
             <tr>
               <th scope="col">{t.hw.device}</th>
@@ -279,16 +280,16 @@
             {#each hw.disks as d (d.name)}
               {@const h = health(d)}
               <tr use:rowClick={() => openDetail(d)}>
-                <td class="nowrap"
+                <th scope="row" class="nowrap"
                   ><span class="mono">{d.name}</span>
                   <div class="muted small">
                     {t.hw.types[d.type] ?? d.type}{d.transport ? ` · ${d.transport}` : ''}
-                  </div></td
+                  </div></th
                 >
-                <td>{d.model ?? '—'}</td>
-                <td class="mono">{d.serial ?? '—'}</td>
-                <td class="num nowrap">{fmtBytes(d.size)}</td>
-                <td>
+                <td class="wide-only" data-label={t.hw.model}>{d.model ?? '—'}</td>
+                <td class="mono wide-only" data-label={t.hw.serial}>{d.serial ?? '—'}</td>
+                <td class="num nowrap" data-label={t.hw.size}>{fmtBytes(d.size)}</td>
+                <td data-label={t.hw.role}>
                   <span class="chip {roleCls[d.role] ?? 'plain'}" title={t.hw.roleHints[d.role]}
                     >{t.hw.roles[d.role] ?? d.role}</span
                   >
@@ -297,10 +298,12 @@
                     </div>{/if}
                   {#if d.why}<div class="muted small">{d.why}</div>{/if}
                 </td>
-                <td><span class="chip {h.cls}">{h.text}</span></td>
-                <td class="num nowrap">{d.smart?.temperature != null ? t.hw.celsius(d.smart.temperature) : '—'}</td>
-                <td class="small nowrap">{keyAttrs(d)}</td>
-                <td class="small">{lastTest(d)}</td>
+                <td data-label={t.hw.health}><span class="chip {h.cls}">{h.text}</span></td>
+                <td class="num nowrap" data-label={t.hw.temp}
+                  >{d.smart?.temperature != null ? t.hw.celsius(d.smart.temperature) : '—'}</td
+                >
+                <td class="small nowrap wide-only" data-label={t.hw.keyAttrs}>{keyAttrs(d)}</td>
+                <td class="small wide-only" data-label={t.hw.selfTest}>{lastTest(d)}</td>
                 <td class="actions">
                   <button
                     type="button"
@@ -432,7 +435,7 @@
       <p class="empty">{t.hw.noOps}</p>
     {:else}
       <div class="table-wrap">
-        <table>
+        <table class="stack">
           <thead>
             <tr>
               <th scope="col">{t.hw.op}</th>
@@ -445,13 +448,17 @@
           <tbody>
             {#each hw.ops as o (o.id)}
               <tr>
-                <td class="nowrap">{t.hw.opNames[o.op] ?? o.op}</td>
-                <td><span class="chip {opCls[o.state] ?? 'plain'}">{t.hw.opStates[o.state] ?? o.state}</span></td>
-                <td class="nowrap"
+                <th scope="row" class="nowrap">{t.hw.opNames[o.op] ?? o.op}</th>
+                <td data-label={t.state}
+                  ><span class="chip {opCls[o.state] ?? 'plain'}">{t.hw.opStates[o.state] ?? o.state}</span></td
+                >
+                <td class="nowrap" data-label={t.hw.by}
                   >{o.by}{#if o.quorum_id}<div class="muted small">{t.hw.quorumRef(o.quorum_id)}</div>{/if}</td
                 >
-                <td class="nowrap" title={fmtTime(o.finished ?? o.created)}>{fmtAgo(o.finished ?? o.created)}</td>
-                <td class="detail">{o.error ?? o.detail ?? '—'}</td>
+                <td class="nowrap" data-label={t.time} title={fmtTime(o.finished ?? o.created)}
+                  >{fmtAgo(o.finished ?? o.created)}</td
+                >
+                <td class="detail" data-label={t.hw.result}>{o.error ?? o.detail ?? '—'}</td>
               </tr>
             {/each}
           </tbody>
@@ -675,6 +682,11 @@
 </Modal>
 
 <style>
+  @media (max-width: 640px) {
+    .disks .wide-only {
+      display: none;
+    }
+  }
   .issues-row td {
     padding-top: 0;
     border-top: none;
@@ -690,6 +702,8 @@
     gap: 1rem;
   }
   .array {
+    /* a grid item: without this a wide member table widens it past a phone screen instead of scrolling */
+    min-width: 0;
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 0.85rem 1rem;

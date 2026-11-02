@@ -20,7 +20,7 @@
   onMount(load);
 
   async function clear(m: RiskMark) {
-    if (!(await askConfirm(t.p29.risk.clearConfirm(m.user)))) return;
+    if (!(await askConfirm(t.p29.risk.clearConfirm(m.user), { ok: t.ux.do.clear }))) return;
     if (await act(post(`/users/${m.user_id}/risk/clear`), t.p29.risk.cleared(m.user))) load();
   }
 </script>

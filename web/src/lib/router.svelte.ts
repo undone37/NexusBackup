@@ -9,8 +9,38 @@ function parse() {
 
 export const route = $state(parse());
 
-window.addEventListener('hashchange', () => {
+/**
+ * A page with unsaved edits registers a guard: given the address being opened (path and query, so
+ * switching a Settings section counts too), it returns a question (leave and lose the edits?) or null.
+ * A refused navigation puts the old address back without a page change; closing or reloading the tab
+ * asks through the browser's own dialog. Ported from NexusStor.
+ */
+type LeaveGuard = { ask: (to: string) => string | null; confirm: (q: string) => Promise<boolean> };
+let guard: LeaveGuard | null = null;
+let shown = location.hash;
+export function setLeaveGuard(g: LeaveGuard): () => void {
+  guard = g;
+  return () => {
+    if (guard === g) guard = null;
+  };
+}
+window.addEventListener('beforeunload', (e) => {
+  if (guard?.ask('')) e.preventDefault();
+});
+
+window.addEventListener('hashchange', async () => {
   const r = parse();
+  const to = location.hash.replace(/^#/, '') || '/';
+  const q = location.hash === shown ? null : (guard?.ask(to) ?? null);
+  if (q) {
+    const target = location.hash;
+    history.replaceState(history.state, '', shown || '#/');
+    if (!(await guard!.confirm(q))) return;
+    guard = null;
+    location.hash = target;
+    return;
+  }
+  shown = location.hash;
   route.path = r.path;
   route.query = r.query;
   // Move focus to the main landmark so keyboard/screen-reader users land on the new page.

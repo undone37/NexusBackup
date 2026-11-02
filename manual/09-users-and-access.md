@@ -222,14 +222,15 @@ new rights); **End all sessions** ends them without changing anything.
 
 - To change your own password, **Edit** your own account, enter the **New password for your own account**, then
   confirm with **Your current password** and **Your authenticator code**.
-- **Reset authenticator** (shown on your own row) issues a new TOTP secret for your account, after the same
+- **Reset authenticator** (under **More** on your own row) issues a new TOTP secret for your account, after the same
   re-authentication. Scan the new QR code; the old one stops working immediately.
 
 Wrong re-authentication attempts count toward the sign-in lockout and are audited.
 
 ### Lost password or authenticator
 
-Another administrator clicks **Issue new activation code** on your row and confirms with their own password and
+Another administrator chooses **More → Issue new activation code** on your row (an account that has not been
+activated yet shows the button directly) and confirms with their own password and
 authenticator code. Your old password and authenticator stop working at once, your sessions end, and you activate
 the account again with the new code as described above.
 

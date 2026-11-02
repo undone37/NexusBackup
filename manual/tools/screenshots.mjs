@@ -260,6 +260,9 @@ async function main() {
         if (!pop) throw new Error('no open menu in row ' + rowText);
         window.$click(text, pop);
       };
+      // the confirming button of the open question (components/ConfirmDialog.svelte names it after the action)
+      window.$confirmBtn = () =>
+        [...document.querySelectorAll('dialog[open] form.confirm-form button[type=submit]')].find((e) => vis(e) && !e.disabled);
       window.$idle = () => !document.querySelector('[aria-busy="true"]');
     })();`,
   });
@@ -323,8 +326,8 @@ async function main() {
     return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0');
   }
   const confirmOk = async () => {
-    await until(`return !!$button('Confirm')`, 'confirmation dialog');
-    await ev(`$click('Confirm'); return true;`);
+    await until(`return !!$confirmBtn()`, 'confirmation dialog');
+    await ev(`$confirmBtn().click(); return true;`);
     await sleep(500);
   };
 
@@ -473,7 +476,7 @@ async function main() {
       // an unlocked snapshot of a guest in no group (Phase 13a): Delete asks first
       await go('/snapshots?source=vm-103');
       await ev(`$rowMenu('vm-103', 'Delete'); return true;`);
-      await until(`return !!$button('Confirm')`, 'confirmation dialog');
+      await until(`return !!$confirmBtn()`, 'confirmation dialog');
       await shot('snapshot-delete');
       await closeDialogs();
     }],
@@ -483,7 +486,7 @@ async function main() {
       await until(`return !!$button('Repair')`, 'damaged banner');
       await shot('snapshots-damaged');
       await ev(`$click('Repair'); return true;`);
-      await until(`return !!$button('Confirm')`, 'repair confirmation');
+      await until(`return !!$confirmBtn()`, 'repair confirmation');
       await shot('snapshot-repair');
       await closeDialogs();
     }],

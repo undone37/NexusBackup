@@ -871,6 +871,148 @@ td.actions > * + * {
   margin-bottom: 0.3rem;
 }
 
+/* an empty state's next step (a link or button under the text) */
+.empty > p {
+  margin: 0;
+  max-width: 60ch;
+}
+.empty .button,
+.empty button {
+  margin-top: 0.4rem;
+}
+
+/* Narrow screens: `table.stack` turns each row into a card, a cell's `data-label` names it (no sideways
+   scrolling to reach the row's actions). A `th scope="row"` is the card's title; `td.actions` its footer. */
+@media (max-width: 640px) {
+  table.stack,
+  table.stack tbody,
+  table.stack tr,
+  table.stack :is(th, td) {
+    display: block;
+    width: auto;
+  }
+  table.stack thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  table.stack tbody tr {
+    padding: 0.55rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  table.stack tbody tr:last-child {
+    border-bottom: 0;
+  }
+  table.stack tbody :is(th, td) {
+    border: 0;
+    padding: 0.15rem 1.2rem;
+  }
+  table.stack tbody tr:hover > td {
+    background: none;
+  }
+  /* (specific enough to beat the edge-to-edge padding of `.card > .table-wrap` first/last cells) */
+  table.stack tbody tr > td[data-label]:nth-child(n) {
+    position: relative;
+    text-align: left;
+    padding-left: calc(min(34%, 9rem) + 1.2rem);
+    white-space: normal;
+  }
+  table.stack td[data-label]::before {
+    content: attr(data-label);
+    position: absolute;
+    left: 1.2rem;
+    width: min(34%, 9rem);
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 500;
+    font-family: var(--sans);
+    padding-top: 0.1rem;
+  }
+  table.stack td.mono {
+    overflow-wrap: anywhere;
+  }
+  table.stack .chip {
+    white-space: normal;
+  }
+  table.stack td.actions {
+    text-align: left;
+    white-space: normal;
+    padding-top: 0.4rem;
+  }
+  table.stack td:empty {
+    display: none;
+  }
+}
+
+/* narrow: an edited row becomes a small form (label above each field) instead of a squeezed table row.
+   `table.edit-table` has inputs in its cells; `table.stack` is for read-only rows. */
+@media (max-width: 640px) {
+  .edit-table thead {
+    display: none;
+  }
+  .edit-table,
+  .edit-table tbody,
+  .edit-table tr {
+    display: block;
+  }
+  .edit-table tr {
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .edit-table tr > td {
+    display: block;
+    padding: 0.2rem 0;
+    border: 0;
+  }
+  .edit-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .edit-table td.actions,
+  .edit-table td.num {
+    text-align: left;
+  }
+}
+
+/* loading placeholders in the shape of what comes (instead of a jump from "Loading..." to content) */
+.skeleton-lines {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+}
+.skeleton-lines > span {
+  display: block;
+  height: 0.9rem;
+  border-radius: var(--radius-s);
+  background: linear-gradient(90deg, var(--surface-3), var(--surface-2), var(--surface-3));
+  background-size: 200% 100%;
+  animation: skeleton 1.4s ease-in-out infinite;
+}
+.skeleton-lines > span:nth-child(2n) {
+  width: 82%;
+}
+.skeleton-lines > span:nth-child(3n) {
+  width: 64%;
+}
+@keyframes skeleton {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-lines > span {
+    animation: none;
+  }
+}
+
 /* ================================================================ status chips */
 
 .chip {
@@ -940,12 +1082,15 @@ label {
 .field {
   margin-bottom: 0.9rem;
 }
-.field .hint {
+/* a hint is small and muted wherever it stands (inside a field, under a card head, below a table) */
+.hint {
   font-size: 0.8rem;
   color: var(--muted);
+}
+.field .hint {
   margin-top: 0.25rem;
 }
-.field .hint.bad {
+.hint.bad {
   color: var(--bad);
 }
 .inline-check {
@@ -1111,6 +1256,17 @@ button.danger:hover {
   background: var(--bad-soft);
   border-color: var(--bad);
 }
+/* the confirming button of a destructive dialog */
+button.primary.danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: light-dark(#ffffff, #2a0b0b);
+}
+button.primary.danger:hover {
+  background: color-mix(in srgb, var(--bad) 85%, #000);
+  border-color: color-mix(in srgb, var(--bad) 85%, #000);
+  color: light-dark(#ffffff, #2a0b0b);
+}
 button.small,
 .button.small {
   min-height: 28px;
@@ -1145,6 +1301,7 @@ button.ghost:hover {
 }
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.75rem;
@@ -1637,7 +1794,7 @@ button.icon svg {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@media (max-width: 560px) {
+@media (max-width: 340px) {
   .kpis {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1712,6 +1869,21 @@ a.kpi:hover {
 }
 .kpi.warn .k-value {
   color: var(--warn);
+}
+/* phones: still two per row (full-width tiles push the content below the fold), smaller figures */
+@media (max-width: 560px) {
+  .kpis {
+    gap: 0.6rem;
+  }
+  .kpi {
+    padding: 0.75rem 0.85rem 0.8rem;
+  }
+  .kpi .k-value {
+    font-size: 1.45rem;
+  }
+  .kpi .k-sub {
+    white-space: normal;
+  }
 }
 
 .dash-grid {

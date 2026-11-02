@@ -5,15 +5,14 @@
   import { get, post, del, act, errText } from '../lib/api';
   import { askConfirm } from '../lib/confirm.svelte';
   import { session } from '../lib/session.svelte';
-  import { copyText } from '../lib/clipboard';
   import { fmtTime, fmtAgo } from '../lib/format';
   import { t } from '../lib/i18n';
   import { secondFactor } from '../lib/passkey';
   import type { ApiToken } from '../lib/types';
   import Modal from './Modal.svelte';
+  import CopyField from './CopyField.svelte';
   import ErrorBanner from './ErrorBanner.svelte';
   import IconPlus from '@lucide/svelte/icons/plus';
-  import IconCopy from '@lucide/svelte/icons/copy';
 
   let { all = false }: { all?: boolean } = $props();
   const id = $props.id();
@@ -67,7 +66,7 @@
   }
 
   async function revoke(x: ApiToken) {
-    if (!(await askConfirm(t.tokens.revokeConfirm(x.name, x.user)))) return;
+    if (!(await askConfirm(t.tokens.revokeConfirm(x.name, x.user), { ok: t.ux.do.revoke, danger: true }))) return;
     if (await act(del(`/auth/tokens/${x.id}`), t.tokens.revoked)) load();
   }
 
@@ -94,7 +93,7 @@
     <p class="empty">{t.tokens.none}</p>
   {:else}
     <div class="table-wrap">
-      <table>
+      <table class="stack">
         <thead>
           <tr>
             {#if all}<th scope="col">{t.tokens.user}</th>{/if}
@@ -109,11 +108,15 @@
           {#each items as x (x.id)}
             {@const ex = expiry(x)}
             <tr>
-              {#if all}<td>{x.user}</td>{/if}
-              <td><strong>{x.name}</strong> <code class="muted">nxt_{x.prefix}_…</code></td>
-              <td><span class="chip {x.scope === 'operator' ? 'accent' : ''}">{t.tokens.scopes[x.scope]}</span></td>
-              <td class="nowrap"><span class={ex.cls ? `chip ${ex.cls}` : ''}>{ex.text}</span></td>
-              <td class="nowrap"
+              {#if all}<td data-label={t.tokens.user}>{x.user}</td>{/if}
+              <td data-label={t.name}><strong>{x.name}</strong> <code class="muted">nxt_{x.prefix}_…</code></td>
+              <td data-label={t.tokens.scope}
+                ><span class="chip {x.scope === 'operator' ? 'accent' : ''}">{t.tokens.scopes[x.scope]}</span></td
+              >
+              <td class="nowrap" data-label={t.tokens.expires}
+                ><span class={ex.cls ? `chip ${ex.cls}` : ''}>{ex.text}</span></td
+              >
+              <td class="nowrap" data-label={t.tokens.lastUsed}
                 >{fmtAgo(x.last_used)}{#if x.last_ip}<span class="muted">{` · ${x.last_ip}`}</span>{/if}</td
               >
               <td class="actions"
@@ -198,15 +201,7 @@
 <Modal bind:open={shownOpen} title="{t.tokens.shownTitle}: {created?.name ?? ''}">
   {#if created?.token}
     <p class="banner warn">{t.tokens.shownOnce}</p>
-    <div class="copyline">
-      <code class="secret">{created.token}</code>
-      <button
-        type="button"
-        class="small"
-        onclick={() => copyText(created!.token!)}
-        aria-label="{t.users.copy}: {created.name}"><IconCopy aria-hidden="true" />{t.users.copy}</button
-      >
-    </div>
+    <CopyField value={created.token} label={created.name} secret />
     <p class="muted">{t.tokens.usage}</p>
     <pre class="mono usage">curl -H "Authorization: Bearer {created.token.slice(
         0,

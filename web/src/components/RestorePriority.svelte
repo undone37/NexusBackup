@@ -20,7 +20,7 @@
 
   async function turnOn(e: SubmitEvent) {
     e.preventDefault();
-    if (!p?.active && !(await askConfirm(t.priority.confirm(hours)))) return;
+    if (!p?.active && !(await askConfirm(t.priority.confirm(hours), { ok: t.ux.do.turnOn }))) return;
     busy = true;
     const r = await act(
       put<RestorePriority>('/restore-priority', { hours: Number(hours), reason: reason.trim() }),

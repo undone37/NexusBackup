@@ -129,6 +129,13 @@ work on (group, guest), the current item and part, a progress bar with the perce
 for a file index) and the time left; jobs that report no figures show how long they run. A click on a row opens the
 job, **queued** opens the jobs waiting for their turn. Every key-figure tile opens the page its figure comes from.
 
+**Needs attention** (below **Running now**) lists what to look at first, most urgent on top, each with a button to
+the page that fixes it: hardware findings, backup storage above 75 % (red above 90 %) or full within 30 days,
+protected objects past their RPO or never backed up, jobs that failed in the last 7 days, failed restore tests and
+verify jobs, a lagging offsite copy, the three most urgent open alerts (critical first; the rest are counted),
+requests waiting for approval and guests in no protection group. The six most urgent lines are shown, **Show n more**
+opens the rest. When nothing needs a look it says **All clear**. The cards further down keep the details.
+
 ### Terms used on the dashboard
 
 - **Object**: one protected unit: a Proxmox VE VM or container, an agent host, a TrueNAS dataset, an NFS/SMB share,
@@ -481,7 +488,8 @@ and more. A problem that repeats while its alert is open is counted on that aler
 **What to do** under each message gives a short hint. **Acknowledge** says someone is on it (recorded with your name
 and an optional note); the alert stays open. **Resolve** closes it with an optional note. Most alerts resolve
 themselves when the next run succeeds (badge **auto-resolved**). The switch at the top shows **Open**, **Resolved** or
-**All** alerts. The bell in the top bar counts the open alerts nobody has acknowledged. Where alerts are sent
+**All** alerts, the list next to it narrows them to one category; when a filter hides every alert, **Show all alerts**
+clears it. The bell in the top bar counts the open alerts nobody has acknowledged. Where alerts are sent
 (notification rules for e-mail and webhooks) is set under **Settings → Alert delivery**. See
 [11 Alerts and monitoring](11-alerts-and-monitoring.md).
 
@@ -507,7 +515,9 @@ again. See [13 Updates](13-updates.md#reboot-and-shut-down).
 
 All requests waiting for a second person, and (with **Pending only** cleared) the history. The chip at the top right
 shows whether approvals are **Enabled** or **Disabled**; **Approval settings** leads to **Settings → Approvals**,
-where they are switched on and off. See [10 Approvals and audit](10-approvals-and-audit.md).
+where they are switched on and off. When nothing waits, the page says why: no request yet, nothing pending
+(**Show decided requests** opens the history) or approvals are off (administrators get **Turn approvals on**). See
+[10 Approvals and audit](10-approvals-and-audit.md).
 
 ## Audit log
 
@@ -518,7 +528,9 @@ back in time. The filter bar narrows the list by **Actor** (exact), **Action** (
 (contains) and a **From** / **To** day range; **Export CSV** downloads the matching entries with their hashes
 (recorded as `audit.export`). The **Forwarding** box shows each configured syslog / HTTPS sink: destination, state
 (up to date, entries behind, failing, disabled), the last delivered entry against the newest, the last delivery and
-the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log).
+the last error. When the filters match nothing, **Clear filters** resets them; on a phone the filter bar folds
+away under **Filters** (with the number of active filters). See
+[10 Approvals and audit](10-approvals-and-audit.md#audit-log).
 
 ## Configuration pages
 
@@ -532,7 +544,7 @@ the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log
 | **Protection groups** | which guests of a source are backed up with which policy | [05 Policies and protection groups](05-policies-and-groups.md) |
 | **Users** | accounts, roles, activation codes; single sign-on accounts are marked **Single sign-on** | [09 Users and access](09-users-and-access.md) |
 | **Plugins** | install, upgrade and remove plugins; publisher keys | [12 Plugins](12-plugins.md) |
-| **Settings** | appliance-wide settings in six tabs (below) | see below |
+| **Settings** | appliance-wide settings in sections (below) | see below |
 
 ![Tenants](images/tenants.png)
 
@@ -556,6 +568,13 @@ the last error. See [10 Approvals and audit](10-approvals-and-audit.md#audit-log
 see every tab read-only ("Read-only: only administrators change these settings.") and can run the self-checks under
 **Diagnostics**, operators see **Approvals**, **Appliance SSH keys** and **Updates**; viewers and tenant users see no settings. Changes that weaken protection or change who can sign in need a second person
 when approvals are enabled.
+
+The sections are grouped: **System** (Network, Time, Certificate, Updates, Edges), **Access and security**
+(Approvals, Security, Firewall, Single sign-on, Appliance SSH keys, Console access, Vault), **Monitoring** (Alert
+delivery, Forwarding), **Threat detection** (Anomaly detection, Malware scan, IOC hash lists, Incident mode) and
+**Maintenance** (Diagnostics, Backup of this appliance). On wide screens they are a list beside the page (arrow keys
+move through it), on narrower screens a **Section** selection. **Settings** opens the first section you may see
+(**Network**). Leaving **Network** with changes that have not been requested yet asks **Leave without saving?** first.
 
 | Tab | What it is for | Chapter |
 |---|---|---|
@@ -603,8 +622,15 @@ when approvals are enabled.
 
 - Results of actions appear as short messages at the bottom right. "Pending approval: request #N …" means the action
   was turned into an approval request and has **not** taken effect yet.
-- Destructive actions ask for confirmation in a dialog first. Secrets you enter (passwords, API keys, tokens, client
+- Destructive actions ask for confirmation in a dialog first. The confirming button names the action (**Delete**,
+  **Revoke**, **Stop job**, ...); for what cannot be undone it is red and **Cancel** has the focus, so pressing Enter
+  does not delete anything. Secrets you enter (passwords, API keys, tokens, client
   secrets) are **write-only**: the appliance never shows them again. When you edit a source or a setting, leave a
   secret field empty to keep the stored value ("Stored — leave empty to keep the current value.").
-- One-time values (enrollment tokens, activation codes, replication codes) are shown once in a dialog. Copy them
-  before you close it.
+- One-time values (enrollment tokens, activation codes, replication codes, install commands) are shown once in a
+  dialog, each with a copy button (framed amber). Copy them before you close it.
+- Dialogs check their fields while you type (for example addresses, MTU, VLAN id, gateway and routes in
+  **Settings → Network**, rule names, e-mail recipients and webhook URLs in **Settings → Alert delivery**) and show
+  the problem under the field; the button stays disabled until they pass. The appliance checks again when it saves.
+- On a phone, tables such as alerts, users, the audit log, sessions, passkeys, API tokens and disks show each row as
+  a card with the column names, so the row's buttons stay in reach.

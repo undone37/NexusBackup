@@ -68,7 +68,7 @@
     if (!codeOpen) code = null;
   });
   async function show(u: ConsoleUnlock) {
-    if (!(await askConfirm(t.console.showConfirm))) return;
+    if (!(await askConfirm(t.console.showConfirm, { ok: t.ux.do.show }))) return;
     try {
       const o = await post<ConsoleCode>(`/console/unlock/${u.id}/code`);
       code = o.data as ConsoleCode;
@@ -80,7 +80,7 @@
   }
 
   async function revoke(u: ConsoleUnlock) {
-    if (!(await askConfirm(t.console.revokeConfirm(u.id)))) return;
+    if (!(await askConfirm(t.console.revokeConfirm(u.id), { ok: t.ux.do.revoke, danger: true }))) return;
     if (await act(del(`/console/unlock/${u.id}`), t.console.revoked)) load();
   }
 </script>

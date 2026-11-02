@@ -116,7 +116,8 @@
     }
   }
   async function remove() {
-    if (!tenant || !(await askConfirm(t.p30.second.removeConfirm(tenant.name)))) return;
+    if (!tenant || !(await askConfirm(t.p30.second.removeConfirm(tenant.name), { ok: t.ux.do.remove, danger: true })))
+      return;
     if (await act(put(`/tenants/${encodeURIComponent(tenant.name)}/offsite2`, { target: null }), t.saved)) {
       open = false;
       ondone();
