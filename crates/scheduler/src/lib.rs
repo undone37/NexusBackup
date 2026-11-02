@@ -429,6 +429,8 @@ struct GroupRow {
     file_hashes: bool,
     /// Phase 29: days between full reads (effective, 0 = off; catalog::fullread)
     full_read_days: i64,
+    /// #43: log-only runs on their own schedule (the policy's schedule then takes the base backups)
+    pub(crate) log_schedule: Option<String>,
 }
 
 pub struct Scheduler {
@@ -935,6 +937,7 @@ impl Scheduler {
             }
         }
         self.log_err(|s| s.check_offsite_lag(now));
+        self.log_err(|s| s.check_log_lag(now));
         self.log_err(|s| s.check_replication_lag(now));
         self.log_err(|s| s.check_forwarding(now));
         self.log_err(|s| s.check_psa(now));
@@ -1003,7 +1006,7 @@ impl Scheduler {
         let mut st = c.prepare(
             "SELECT g.id, g.tenant, g.source_id, g.guests, p.schedule, p.gfs, p.offsite, s.kind, \
              g.mode, g.selector, g.exclude, g.exclude_disks, g.exclude_disks_mode, g.parallel_guests, p.file_filters, \
-             g.file_hashes, g.full_read_days \
+             g.file_hashes, g.full_read_days, g.log_schedule \
              FROM groups g JOIN policies p ON p.id = g.policy_id JOIN sources s ON s.id = g.source_id ORDER BY g.id",
         )?;
         let rows = st.query_map([], |r| {
@@ -1094,6 +1097,7 @@ impl Scheduler {
                 file_filters: serde_json::from_str(&r.get::<_, String>(14)?).unwrap_or_default(),
                 file_hashes: r.get(15)?,
                 full_read_days: catalog::fullread::days(r.get(16)?, &kind),
+                log_schedule: r.get(17)?,
             })
         })?;
         let mut rows: Vec<GroupRow> = rows.collect::<std::result::Result<_, _>>()?;
@@ -1144,13 +1148,40 @@ impl Scheduler {
             let last = self.last_run(
                 &format!("group/{}", g.id),
                 "SELECT MAX(created) FROM jobs WHERE kind='backup' AND requested_by='scheduler' \
-                 AND json_extract(params,'$.group_id')=?1",
+                 AND json_extract(params,'$.group_id')=?1 AND COALESCE(json_extract(params,'$.mode'),'') != 'log'",
                 &[&g.id],
                 now,
             )?;
             // paused, source in maintenance, blackout: a slot that passed meanwhile runs afterwards
-            if sched.due(last, now) && ctl.hold(now).is_none() {
-                self.queue_group_backup(&g, now)?; // laptop policies (endpoint.rs)
+            let held = ctl.hold(now).is_some();
+            if sched.due(last, now) && !held {
+                match &g.log_schedule {
+                    // #43: with a log schedule the policy's slots take the base backups
+                    Some(_) if g.agents.is_empty() => {
+                        self.insert_job("backup", &g.tenant, &json!({"group_id": g.id, "mode": "full"}))?;
+                    }
+                    _ => self.queue_group_backup(&g, now)?, // laptop policies (endpoint.rs)
+                }
+                continue;
+            }
+            if let Some(ls) = g.log_schedule.as_deref() {
+                let lsched = match Schedule::parse(ls).and_then(|s| s.in_tz(&ctl.tz)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.alert("warning", "config", &format!("group {} log schedule: {e}", g.id), None)?;
+                        continue;
+                    }
+                };
+                let last_log = self.last_run(
+                    &format!("group-log/{}", g.id),
+                    "SELECT MAX(created) FROM jobs WHERE kind='backup' AND requested_by='scheduler' \
+                     AND json_extract(params,'$.group_id')=?1 AND json_extract(params,'$.mode') = 'log'",
+                    &[&g.id],
+                    now,
+                )?;
+                if lsched.due(last_log, now) && !held {
+                    self.insert_job("backup", &g.tenant, &json!({"group_id": g.id, "mode": "log"}))?;
+                }
             }
         }
         Ok(())
@@ -4170,6 +4201,44 @@ impl Scheduler {
                 } else {
                     self.resolve(&key)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// #43: `log_lag` (warning) per group with a log schedule whose last good log run is older than three log
+    /// slots. Groups without a good log run yet stay quiet (failed runs raise `job_failed` anyway).
+    fn check_log_lag(&mut self, now: i64) -> Result<()> {
+        for g in self.groups()? {
+            let key = format!("log_lag:{}", g.id);
+            let Some(ls) = g.log_schedule.as_deref() else {
+                self.resolve(&key)?;
+                continue;
+            };
+            let tz = self.control(g.id)?.tz;
+            let Ok(sched) = Schedule::parse(ls).and_then(|s| s.in_tz(&tz)) else {
+                continue; // queue_scheduled raises the config alert
+            };
+            let last_ok: Option<i64> = self.db.conn().query_row(
+                "SELECT MAX(created) FROM jobs WHERE kind='backup' AND state='ok' \
+                 AND json_extract(params,'$.group_id')=?1 AND json_extract(params,'$.mode')='log'",
+                [g.id],
+                |r| r.get(0),
+            )?;
+            let third = (0..2).fold(sched.last_slot(now), |t, _| sched.last_slot(t - 1));
+            match last_ok {
+                Some(t) if t < third => self.raise(
+                    "warning",
+                    "log_lag",
+                    &key,
+                    &format!(
+                        "group {}: last good log backup {} min ago, schedule {ls}",
+                        g.id,
+                        (now - t) / 60
+                    ),
+                    Some(&g.tenant),
+                )?,
+                _ => self.resolve(&key)?,
             }
         }
         Ok(())

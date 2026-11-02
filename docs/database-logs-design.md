@@ -34,6 +34,13 @@ for Phase 42 ("a short design note first") applies.
   connector reports it: another tool took a log backup, a failover, a gap) raises `log_chain` (critical) and makes the
   next run a base.
 
+**Implemented (#43, PostgreSQL 1.6.0 and MySQL 1.4.0):** catalog `groups.log_schedule` (SCHEMA_V52), `PUT
+/groups/{id}/log-schedule` (crates/web-api/src/logschedule.rs, only for kinds whose manifest says `backup.logs`), the
+scheduler's queueing (`mode` `full` / `log`, one run of a group at a time, the policy slot first) and `log_lag`. A
+`log` run makes the plugins skip the age-based new base (`full_every_days`); `full` keeps today's behaviour, so the
+connector still decides between base and incremental. Not yet: `log_chain` as its own alert (the plugins take a new
+base on a broken chain and log it), the per-database timeline view; retention uses the existing `recent` class.
+
 ## #41: SQL Server log chain and point-in-time restore
 
 - **Where**: a mode `mssql` of the Windows agent on each SQL Server host (the agent is there for VSS anyway). No

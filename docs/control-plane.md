@@ -1285,6 +1285,17 @@ At most 50 devices per account are kept.
   recommended, truncated}`. Each scan is booked like any scan (verdict, flags, alerts); `snapshots.clean_point` is set
   on the recommended snapshot and cleared on the source's others.
 
+## Log schedule (#43)
+- `groups.log_schedule` (NULL = off; policy schedule syntax). `PUT /groups/{id}/log-schedule {"schedule": null |
+  "<schedule>"}` (admins, tenant admins of the group's tenant; refused unless the source is a plugin kind whose
+  manifest has `backup.logs: true`), audited `group.log_schedule`; `GET /groups` rows carry `log_schedule` and
+  `logs_supported`.
+- With a log schedule the policy's due slot queues `backup {group_id, mode: "full"}` and the log schedule's due slot
+  `backup {group_id, mode: "log"}` (period bookkeeping per mode; no slot while another backup of the group is queued
+  or running; the policy slot first; holds apply to both). The plugin job gets `mode`; the database plugins skip the
+  age-based new base on `log` runs. `log_lag` (warning, key `log_lag:<group>`) when the newest ok log run is older
+  than the third-last log slot; resolved otherwise or when the schedule is removed.
+
 ## Full read (Phase 29)
 - `groups.full_read_days` (NULL = default: 90 for PVE VM groups, 30 for agents / NAS / TrueNAS; 0 = off). `PUT
   /groups/{id}/full-read {"days": null | 0..=365}` (admins, tenant admins of the group's tenant), audited

@@ -259,7 +259,12 @@ impl Plugin for Mysql {
 
     fn backup(&mut self, ctx: &Ctx, sink: &mut Sink) -> Result<BackupResult> {
         let Some(db) = ctx.guest() else {
-            let days = ctx.config["full_every_days"].as_u64().unwrap_or(7).max(1);
+            // #43: a log run of a group with a log schedule only pulls the log (a new base only when one is
+            // needed: none yet, failover, a broken chain); the policy's runs follow full_every_days as before
+            let days = match ctx.params["mode"].as_str() {
+                Some("log") => u64::MAX / 86_400,
+                _ => ctx.config["full_every_days"].as_u64().unwrap_or(7).max(1),
+            };
             let r = physical::backup(ctx, sink, &opts(ctx, "", "")?, || ssh_of(ctx), days)?;
             sink.snapshot_meta(&r.meta)?;
             return Ok(BackupResult {

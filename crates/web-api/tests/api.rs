@@ -3779,6 +3779,7 @@ fn registered_routes() -> std::collections::BTreeSet<(String, String)> {
         include_str!("../src/passkeys.rs"),
         include_str!("../src/tenant_idp.rs"),
         include_str!("../src/fullread.rs"),
+        include_str!("../src/logschedule.rs"),
         include_str!("../src/risk.rs"),
         include_str!("../src/elevation.rs"),
         include_str!("../src/approvers.rs"),
@@ -4119,6 +4120,7 @@ async fn tenant_admin_routes_classified() {
         // Phase 28: threat scans and file hashes of own groups, hunts in own tenant, own devices;
         // IOC lists and lockdowns are the provider's
         ("PUT", "/groups/{id}/threat-scan", format!("/api/v1/groups/{grp}/threat-scan"), Some(json!({"schedule": "daily 02:00"})), 'Y'),
+        ("PUT", "/groups/{id}/log-schedule", format!("/api/v1/groups/{grp}/log-schedule"), Some(json!({"schedule": null})), 'Y'),
         ("PUT", "/groups/{id}/file-hashes", format!("/api/v1/groups/{grp}/file-hashes"), Some(json!({"enabled": false})), 'Y'),
         ("GET", "/hash-lists", "/api/v1/hash-lists".into(), none(), 'N'),
         ("PUT", "/hash-lists/{name}", "/api/v1/hash-lists/feed".into(), Some(json!({"text": "x"})), 'N'),

@@ -527,6 +527,16 @@ fn server_backup_and_point_in_time_restore() {
             json!({"directory": "/home/mysql/r5", "target_time": "2001-01-01 00:00:00"}),
         );
         assert!(format!("{:#}", e.unwrap_err()).contains("outside"));
+        // #43: a log run of a group with a log schedule pulls binlog onto the newest base
+        b.sql("pitr", "INSERT INTO t VALUES (6, 'D')");
+        let log = h.backup_mode(&cfg, None, Some("log")).unwrap();
+        assert!(
+            log.summary.starts_with("incremental:"),
+            "{flavor} {} {:?}",
+            log.summary,
+            h.log()
+        );
+        assert_eq!(log.base, Some(full.time));
         b.sh("rm -rf /home/mysql/r1 /home/mysql/r2 /home/mysql/r3 /home/mysql/r4");
         b.sql("", "DROP DATABASE pitr");
     }

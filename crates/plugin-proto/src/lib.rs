@@ -618,7 +618,8 @@ pub struct KindSpec {
     /// come from `ListGuests`); `None` = the source is backed up as a whole.
     #[serde(default)]
     pub guests: Option<serde_json::Value>,
-    /// Backup properties shown in the UI, e.g. `{"incremental": true, "consistent": "application"}`.
+    /// Backup properties shown in the UI, e.g. `{"incremental": true, "consistent": "application"}`;
+    /// `"logs": true` = the kind takes log-only runs on a group's own log schedule (#43, job param `mode`).
     #[serde(default)]
     pub backup: Option<serde_json::Value>,
     /// Restore actions offered for snapshots of this kind; must contain `download`.

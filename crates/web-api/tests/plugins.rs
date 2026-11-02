@@ -56,6 +56,7 @@ fn manifest(version: &str) -> Vec<u8> {
             "secret_fields": ["password"],
             "endpoints": [{"host": "/host", "port": "/port", "default_port": 5432, "proto": "tcp"}],
             "guests": {"title": "Databases", "list": true},
+            "backup": {"logs": true},
             "restores": [{"id": "download", "title": "Download", "params_schema": {"type": "object",
                             "properties": {"mail_format": {"type": "string", "enum": ["eml", "mbox", "pst"]}}}},
                          {"id": "to_target", "title": "Restore", "applies_to": "guest", "params_schema": {"type": "object", "required": ["database"],
@@ -366,6 +367,33 @@ async fn plugin_lifecycle_sources_and_jobs() {
         .await;
     assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.body);
     assert_eq!(r.body["guests"], json!(["db1", "db2"]));
+
+    // #43: log schedule for kinds with backup.logs
+    let gid = r.body["id"].as_i64().unwrap();
+    let ls = format!("/api/v1/groups/{gid}/log-schedule");
+    let r = t
+        .call(Method::PUT, &ls, &admin, Some(json!({"schedule": "sometimes"})))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.body);
+    let r = t
+        .call(Method::PUT, &ls, &admin, Some(json!({"schedule": "every 15m"})))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let l = t.call(Method::GET, "/api/v1/groups", &admin, None).await;
+    let row = l
+        .body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["id"] == gid)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (row["log_schedule"].as_str(), row["logs_supported"].as_bool()),
+        (Some("every 15m"), Some(true))
+    );
+    let r = t.call(Method::PUT, &ls, &admin, Some(json!({"schedule": null}))).await;
+    assert_eq!(r.body["log_schedule"], Value::Null);
 
     // jobs
     let job = |kind: &str, params: Value| json!({"kind": kind, "tenant": "acme", "params": params});

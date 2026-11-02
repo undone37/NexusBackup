@@ -215,6 +215,11 @@ impl Host {
 
     /// One backup → `plugin-<id>-<source_id>[-<guest>]` snapshot.
     pub fn backup(&self, config: &Value, guest: Option<&str>) -> Result<backup::Report> {
+        self.backup_mode(config, guest, None)
+    }
+
+    /// [`Host::backup`] of a group with a log schedule (#43): `mode` `full` (the policy's slot) or `log`.
+    pub fn backup_mode(&self, config: &Value, guest: Option<&str>, mode: Option<&str>) -> Result<backup::Report> {
         let cfg = config.to_string();
         let source = source_name(&self.manifest.id, self.source_id, guest);
         let mut p = self.peer(self.timeout, config)?;
@@ -225,7 +230,7 @@ impl Host {
                 job: *self.job.borrow(),
                 kind: &self.kind,
                 config: &cfg,
-                params: json!({ "guest": guest, "source_id": self.source_id }),
+                params: json!({ "guest": guest, "source_id": self.source_id, "mode": mode }),
                 source: &source,
                 bounds: Bounds::default(),
             },
