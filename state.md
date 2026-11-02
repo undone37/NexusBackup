@@ -1727,3 +1727,14 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     by hand to the vTPM (status tpm2, PCR 7, firmware false), keyd restarted, a backup through the TPM-sealed key ok.
   - open: a clean pass with the next image (helper and policy from the image, the local module removed), a fresh
     install with and without a vTPM, a reseal after a PCR 7 change, a UEFI + Secure Boot appliance.
+
+## Windows recovery media spike (added 2026-11-02, #19)
+
+- [x] Lab (docs/bmr.md "Windows: recovery media spike"): VM 293 = clone of VM 242 (Server 2022, SeaBIOS, MBR, SATA);
+  restored the Linux way (boot code, sfdisk table with disk signature, partition contents) as VM 294 on SATA: boots
+  (guest agent after 31 s); the same disk on VirtIO SCSI: INACCESSIBLE_BOOT_DEVICE; a fresh copy converted with
+  virt-v2v (AlmaLinux 10 packages, virtio-win 0.1.302; building rhsrvany from its repository was not allowed, the
+  package mingw-srvany-redistributable brings it) booted on VirtIO block as VM 295 (agent after 332 s), its
+  first-boot driver restart then stalled at the logo; a disk converted after a failed boot stays in Windows RE.
+  WinPE (B) not run yet. VMs 293-295 stopped, kept for the next step.
+  - open: the first-boot restart after the injection, WinPE with DISM, UEFI/GPT and BitLocker cases.
