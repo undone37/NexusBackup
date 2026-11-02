@@ -131,6 +131,16 @@ NexusStor's address only.
 
 ## Restores
 
-Until the NexusStor restores are available, restore by **download** (tar or zip) from the snapshot, like other
-file backups: the folders `data/…` and `s3/…`, the LUN images under `.nexus-streams/luns/` and `vstor.json` under
-`.nexus-streams/` ([06 Restores](06-restores.md)).
+**Restore into the vStor** (plugin 1.3.0, a NexusStor that serves restores, and the pairing's **restore**
+permission on NexusStor: Settings, NexusBackup, Edit): pick a vStor snapshot, choose the **path** of the backup to
+restore (`data` = everything of the data root, or a folder such as `data/projects`) and optionally the name of the
+new folder. NexusStor creates **nexusbackup-restore-<name>** next to that folder (`data/projects` lands in
+`data/nexusbackup-restore-<name>/projects`, `data` in `data/nexusbackup-restore-<name>`), owned by the vStor's
+user, and writes the files with the vStor's identity: never over existing files, symlinks as links, the quota
+applies. Files, folders and symlinks with their modes, times, user attributes and NFSv4 ACLs come back; hard links
+and devices are left out (named in the job log). Restoring over the original paths is not offered yet: move what
+you need from the restore folder.
+
+Otherwise restore by **download** (tar or zip) from the snapshot, like other file backups: the folders `data/…` and
+`s3/…`, the LUN images under `.nexus-streams/luns/` and `vstor.json` under `.nexus-streams/`
+([06 Restores](06-restores.md)).

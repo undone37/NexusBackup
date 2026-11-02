@@ -606,6 +606,45 @@ impl Nst {
         Ok(true)
     }
 
+    /// Contract step 4 (#137): a new restore directory `into` below `dir` of vStor `v`: (restore id, its path).
+    pub fn restore_start(&self, v: &str, dir: &str, into: &str) -> Result<(String, String)> {
+        let r: serde_json::Value = self
+            .client
+            .request(
+                "POST",
+                &format!("/vstors/{v}/restores"),
+                Some(&serde_json::json!({"dir": dir, "into": into})),
+            )?
+            .json(64 << 10)?;
+        let id = r["restore"].as_str().context("restores: no id")?;
+        ensure!(
+            !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "restores: bad id"
+        );
+        Ok((id.to_owned(), r["path"].as_str().unwrap_or_default().to_owned()))
+    }
+
+    /// One batch of records (the framing of `files`) for restore `id`; NexusStor's answer.
+    pub fn restore_records(&self, id: &str, body: &[u8]) -> Result<serde_json::Value> {
+        self.client
+            .request_raw("PUT", &format!("/restores/{id}/records"), body)?
+            .json(1 << 20)
+    }
+
+    pub fn restore_finish(&self, id: &str) -> Result<serde_json::Value> {
+        self.client
+            .request("POST", &format!("/restores/{id}/finish"), None)?
+            .json(64 << 10)
+    }
+
+    pub fn restore_abort(&self, id: &str) -> Result<()> {
+        self.client
+            .request("DELETE", &format!("/restores/{id}"), None)?
+            .ok()?
+            .bytes(64 << 10)?;
+        Ok(())
+    }
+
     pub fn release(&self, v: &str, s: &str) -> Result<()> {
         ensure!(valid_snap(s), "not a nexusbackup snapshot");
         self.client
