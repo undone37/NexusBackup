@@ -657,7 +657,52 @@ pub enum Message {
         /// bytes read
         bytes: u64,
     },
+    // --- v1.10, appended: Hyper-V host backups (CAP_HYPERV, docs/hyperv-design.md; only agents announcing the
+    // capability are sent these) ---
+    /// Appliance → agent: the virtual machines of this Hyper-V host. Answer `HvVms`.
+    HvList,
+    /// `json` = `[{id, name, state, generation, disks: [{path, size}]}]` (at most [`MAX_HV_JSON`] bytes).
+    HvVms {
+        /// JSON text
+        json: String,
+    },
+    /// Appliance → agent: take a recovery checkpoint of VM `vm` (its id) and open the frozen disks read-only.
+    /// Answer `HvPrepared`; the disks are then read with `BlockScan` (job `job * 16 + target`, target = the
+    /// disk's position + 1), and `HvFinish` ends the job.
+    HvPrepare {
+        /// job id chosen by the appliance
+        job: u64,
+        /// the VM's id (GUID)
+        vm: String,
+    },
+    /// `json` = `{vm, name, consistency, checkpoint, config, disks: [{name, target, size, file}]}`.
+    HvPrepared {
+        /// job id
+        job: u64,
+        /// JSON text
+        json: String,
+    },
+    /// Appliance → agent: close the disks; `keep` = convert the checkpoint into a reference point (the backup
+    /// is committed), else remove it. Answer `HvFinished`.
+    HvFinish {
+        /// job id
+        job: u64,
+        /// the backup was committed
+        keep: bool,
+    },
+    /// `json` = `{reference_point, rct: [..]}` (`{}` when the checkpoint was removed).
+    HvFinished {
+        /// job id
+        job: u64,
+        /// JSON text
+        json: String,
+    },
 }
+
+/// Capability (v1.10): the agent backs up the VMs of its Hyper-V host (`HvList`, `HvPrepare`, `HvFinish`).
+pub const CAP_HYPERV: &str = "hyperv";
+/// Largest JSON text in the Hyper-V messages, bytes.
+pub const MAX_HV_JSON: usize = 256 << 10;
 
 /// Capability (v1.9): the agent reads hot-added disks for the VMware connector (`BlockScan`).
 /// Announced only with `proxy = on` in `agent.conf`.
@@ -925,6 +970,12 @@ pub fn check(m: &Message) -> io::Result<()> {
         Message::Layout { json } | Message::RescueApply { layout: json, .. } if json.len() > MAX_LAYOUT => {
             return Err(bad("layout too large"))
         }
+        Message::HvVms { json } | Message::HvPrepared { json, .. } | Message::HvFinished { json, .. }
+            if json.len() > MAX_HV_JSON =>
+        {
+            return Err(bad("Hyper-V answer too large"))
+        }
+        Message::HvPrepare { vm, .. } if vm.len() > MAX_TEXT => return Err(bad("VM id too long")),
         Message::SetEdge { addr, cert_sha256 } if addr.len() > MAX_TEXT || cert_sha256.len() > 64 => {
             return Err(bad("edge setting exceeds limits"))
         }
@@ -1264,6 +1315,53 @@ mod tests {
         )
         .unwrap();
         assert!(read_msg(&mut &buf[..]).is_err());
+    }
+
+    /// v1.10 (CAP_HYPERV): appended after the block reads, bounded.
+    #[test]
+    fn hyperv_messages_are_appended() {
+        let first = postcard::to_stdvec(&Message::BlockScanDone {
+            job: 0,
+            blocks: 0,
+            bytes: 0,
+        })
+        .unwrap()[0];
+        let ms = [
+            Message::HvList,
+            Message::HvVms { json: "[]".into() },
+            Message::HvPrepare {
+                job: 1,
+                vm: "A-B".into(),
+            },
+            Message::HvPrepared {
+                job: 1,
+                json: "{}".into(),
+            },
+            Message::HvFinish { job: 1, keep: true },
+            Message::HvFinished {
+                job: 1,
+                json: "{}".into(),
+            },
+        ];
+        for (i, m) in ms.into_iter().enumerate() {
+            assert_eq!(postcard::to_stdvec(&m).unwrap()[0], first + 1 + i as u8);
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert_eq!(read_msg(&mut &buf[..]).unwrap(), m);
+        }
+        for m in [
+            Message::HvVms {
+                json: "x".repeat(MAX_HV_JSON + 1),
+            },
+            Message::HvPrepare {
+                job: 1,
+                vm: "x".repeat(MAX_TEXT + 1),
+            },
+        ] {
+            let mut buf = Vec::new();
+            write_msg(&mut buf, &m).unwrap();
+            assert!(read_msg(&mut &buf[..]).is_err());
+        }
     }
 
     /// Phase 28 (CAP_FILE_HASH): appended after the v1.8 update messages (56, 57), bounded like a batch.

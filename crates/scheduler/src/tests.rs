@@ -2890,6 +2890,40 @@ fn capacity_is_checked_every_tick() {
 }
 
 #[test]
+fn hyperv_vm_backup_plan() {
+    // #39 M1: backup {agent_id, hyperv_vm} is one hv-backup step on the host's agent, no linux source needed
+    let e = env(4);
+    e.db.conn()
+        .execute_batch(
+            "INSERT INTO agents (id, tenant, name, host, port, cert_sha256) VALUES ('0123456789abcdef','t1','hv1','10.0.0.7',7444,'ab');
+             INSERT INTO agents (id, tenant, name, host, port) VALUES ('fedcba9876543210','t1','hv2','10.0.0.8',7444);",
+        )
+        .unwrap();
+    let s = sched(&e);
+    let vm = "5A1C2F0E-7B3D-4E6F-9A8B-0C1D2E3F4A5B";
+    let job = |agent: &str| Job {
+        id: 40,
+        kind: "backup".into(),
+        tenant: "t1".into(),
+        params: json!({"agent_id": agent, "hyperv_vm": vm}),
+    };
+    let p = s.plan(&job("0123456789abcdef")).unwrap();
+    assert_eq!(p.key, "agent:0123456789abcdef");
+    let cfg: Value = serde_json::from_slice(&p.files[0].1).unwrap();
+    assert_eq!(p.files[0].0, "agent-0123456789abcdef.json");
+    assert_eq!(
+        (cfg["hyperv"]["vm"].as_str(), cfg["agent"]["host"].as_str()),
+        (Some(vm), Some("10.0.0.7"))
+    );
+    match &p.steps[..] {
+        [Step::Cli { bin, args, .. }] => assert_eq!((bin, args[1].as_str()), (&e.cfg.agentctl_bin, "hv-backup")),
+        st => panic!("{st:?}"),
+    }
+    let err = s.plan(&job("fedcba9876543210")).unwrap_err();
+    assert!(format!("{err:#}").contains("not enrolled"), "{err:#}");
+}
+
+#[test]
 fn log_schedule_queues_log_runs_beside_the_base_backups() {
     // #43: the policy's slot takes the base backup (mode full), the group's log schedule the log runs
     let e = env(4);

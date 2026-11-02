@@ -5,7 +5,7 @@
 use crate::map::MapDb;
 use crate::tls::Session;
 use crate::{hex, name};
-use agent_proto::{Hash, Message, BLOCK_SIZE, CAP_BLOCK_READ, CAP_LZ4, MAX_BATCH};
+use agent_proto::{Hash, Message, BLOCK_SIZE, CAP_BLOCK_READ, CAP_HYPERV, CAP_LZ4, MAX_BATCH};
 use anyhow::{bail, Context, Result};
 use chunkstore::{ChunkId, Index, Store};
 use serde::{Deserialize, Serialize};
@@ -164,7 +164,8 @@ pub fn read_disk(
     prev: Option<&Index>,
     log: &mut dyn FnMut(&str),
 ) -> Result<(Index, BlockReport)> {
-    if !s.has_cap(CAP_BLOCK_READ) {
+    // Hyper-V hosts (v1.10) read the disks of their own checkpoints with the same messages
+    if !s.has_cap(CAP_BLOCK_READ) && !s.has_cap(CAP_HYPERV) {
         bail!("the proxy does not offer block reads (proxy = on in its agent.conf, agent 1.9 or newer)");
     }
     let blocks = size.div_ceil(BLOCK_SIZE) as usize;
@@ -197,13 +198,16 @@ pub fn read_disk(
         ranges: ranges.to_vec(),
     })?;
     let r = scan_and_fetch(store, map, s, job, ranges, &mut chunks, &len_of, log);
-    let released = s.send(&Message::Release {
-        job,
-        success: r.is_ok(),
-    });
+    // the answer to Release is read also after a failed scan (an agent error for an unknown job), so the next
+    // request on this session does not get it as its answer
+    let released = s
+        .send(&Message::Release {
+            job,
+            success: r.is_ok(),
+        })
+        .and_then(|()| s.recv());
     let report = r?;
-    released?;
-    match s.recv()? {
+    match released? {
         Message::Released { job: j, .. } if j == job => {}
         m => bail!("unexpected answer to Release: {}", name(&m)),
     }

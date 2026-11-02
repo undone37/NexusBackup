@@ -2955,6 +2955,20 @@ impl Scheduler {
         Ok(((name, serde_json::to_vec_pretty(&cfg)?), step))
     }
 
+    /// #39 M1: one VM of the Hyper-V host behind agent `agent_id` (`nexus-agentctl hv-backup`, snapshot
+    /// `hv-<vm id>`). ponytail: a manual job only; source kind, groups and inventory come with M3.
+    fn plan_hyperv_backup(&self, job: &Job, mut plan: Plan, agent_id: &str, vm: &str) -> Result<Plan> {
+        let a = self.agent(&job.tenant, agent_id)?;
+        if a.cert_sha256.is_none() {
+            bail!("agent {} ({}) is not enrolled", a.name, a.id);
+        }
+        plan.key = format!("agent:{}", a.id);
+        let (f, step) = self.agentctl(&plan.dir, job, &a, "hv-backup", json!({"hyperv": {"vm": vm}}))?;
+        plan.files.push(f);
+        plan.steps.push(step);
+        Ok(plan)
+    }
+
     /// Backups of Linux agents (one step per agent; the source says what to back up).
     fn plan_agent_backups(
         &self,
@@ -3178,6 +3192,9 @@ impl Scheduler {
                             return self.plan_agent_backups(job, plan, g.source_id, &g.agents, &g.file_filters);
                         }
                         (g.source_id, g.guests.clone(), Some(g))
+                    }
+                    (None, Some(a)) if p["hyperv_vm"].is_string() => {
+                        return self.plan_hyperv_backup(job, plan, a, p["hyperv_vm"].as_str().unwrap_or_default());
                     }
                     (None, Some(a)) => {
                         let (sid, _) = self.agent_source(tenant, a)?;

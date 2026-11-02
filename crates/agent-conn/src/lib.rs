@@ -13,6 +13,7 @@ pub mod edge;
 pub mod enroll;
 pub mod files;
 pub mod fleet;
+pub mod hyperv;
 pub mod map;
 pub mod poll;
 pub mod renew;
@@ -101,6 +102,12 @@ pub fn name(m: &Message) -> &'static str {
         Message::BlockScan { .. } => "BlockScan",
         Message::BlockHashes { .. } => "BlockHashes",
         Message::BlockScanDone { .. } => "BlockScanDone",
+        Message::HvList => "HvList",
+        Message::HvVms { .. } => "HvVms",
+        Message::HvPrepare { .. } => "HvPrepare",
+        Message::HvPrepared { .. } => "HvPrepared",
+        Message::HvFinish { .. } => "HvFinish",
+        Message::HvFinished { .. } => "HvFinished",
     }
 }
 

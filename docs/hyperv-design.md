@@ -62,6 +62,21 @@ checked the same day on a nested Hyper-V host (Windows Server 2022 in a KVM VM o
 - Lab tooling: `Msvm_Keyboard.TypeText` does not reach a Linux guest's synthetic keyboard; `TypeKey` with virtual-key
   codes does (`lab/windows/hyperv/keys.ps1`); the VM's screen comes from `GetVirtualSystemThumbnailImage` (RGB565).
 
+## Implementation (M1, #39)
+
+- Agent protocol v1.10 (docs/agent-protocol.md): `HvList`, `HvPrepare`, `HvFinish`; the disks go over the v1.9
+  block reads. agent-core keeps the prepared jobs per session and removes the checkpoint when the connection drops.
+- Windows agent (`crates/agent-windows/src/win/hyperv.rs`, `hyperv.ps1`): the WMI steps of the lab in embedded
+  Windows PowerShell (needs the Hyper-V PowerShell module, installed with the role's management tools): recovery
+  checkpoint with consistency level 1, else 2; the frozen parent VHDX of each disk mounted read-only
+  (`Mount-VHD -ReadOnly`), read as `\\.\PhysicalDriveN` (size from `IOCTL_DISK_GET_LENGTH_INFO`); then
+  `ConvertToReferencePoint` or `DestroySnapshot`. Disks without a parent (pass-through, excluded from checkpoints)
+  are skipped. Earlier reference points stay (M2 replaces only the one it used, never those of other tools).
+- Appliance: `nexus-agentctl hv-list` / `hv-backup` (`crates/agent-conn/src/hyperv.rs`): every block read (no RCT
+  yet), snapshot `hv-<vm id>` with one fixed index per disk (`scsi0-0`, `ide0-1`, ...) and `config/hyperv.json`.
+  A manual backup job `{agent_id, hyperv_vm}` runs it (scheduler `plan_hyperv_backup`); source kind, groups,
+  inventory and restore follow in M3.
+
 ## Open questions
 
 - The cost of the change query on large disks, and RCT after a live migration within a cluster.

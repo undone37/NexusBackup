@@ -19,6 +19,8 @@ agent-core = { path = "../agent-core" }
 agent-proto = { path = "../agent-proto" }
 agent-ui-proto = { path = "../agent-ui-proto" }
 blake3 = "1"
+base64 = "0.22"
+serde_json = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-core = "0.62"

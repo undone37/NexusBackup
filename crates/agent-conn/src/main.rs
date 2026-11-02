@@ -76,6 +76,15 @@ struct Config {
     /// Phase 41: block reads of disks hot-added to a VMware proxy (`agent` is the proxy's agent)
     #[serde(default)]
     block_read: Option<BlockReadCfg>,
+    /// #39: `hv-backup` of this VM (its id) on the Hyper-V host `agent`
+    #[serde(default)]
+    hyperv: Option<HyperVCfg>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HyperVCfg {
+    vm: String,
 }
 
 /// `block-read`: the plan nexus-vmware wrote, and where the disk indexes go.
@@ -564,6 +573,31 @@ fn main() -> Result<()> {
             }
         }
         ("synthetic", []) => synthetic(&cfg)?,
+        ("hv-list", []) => {
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let vms = agent_conn::hyperv::list(&mut s)?;
+            s.close();
+            println!("vms {vms}");
+        }
+        ("hv-backup", []) => {
+            // #39 M1: checkpoint, full read of every disk, snapshot hv-<vm>, reference point
+            let h = cfg.hyperv.as_ref().context("config: hyperv missing")?;
+            let ca = Ca::load_or_create(&cfg.ca_dir)?;
+            let store = cfg.store()?;
+            let mut map = MapDb::open(cfg.store.as_deref().context("config: store missing")?)?;
+            let (mut s, _) = cfg.session(&ca)?;
+            let t = Instant::now();
+            let r = agent_conn::hyperv::backup(&store, &mut map, &mut s, cfg.job, &h.vm, &mut |l| println!("{l}"))?;
+            s.close();
+            let bytes: u64 = r.disks.iter().map(|(_, d)| d.bytes).sum();
+            let wire: u64 = r.disks.iter().map(|(_, d)| d.wire_bytes).sum();
+            println!(
+                "result {}",
+                json!({"source": r.source, "time": r.time, "disks": r.disks.len(), "bytes": bytes,
+                       "wire_bytes": wire, "secs": t.elapsed().as_secs(), "reference_point": r.finished})
+            );
+        }
         ("block-read", []) => {
             // the disks the VMware connector hot-added to this proxy agent (#80): failed disks are written as
             // `<name>.err` and the command still succeeds, so the connector's finish step always runs
@@ -923,6 +957,7 @@ fn rescue(cfg: &Config) -> Result<()> {
         edge: None,
         synthetic: None,
         block_read: None,
+        hyperv: None,
         timeout_secs: cfg.timeout_secs,
     };
     let end = Instant::now() + Duration::from_secs(60);
