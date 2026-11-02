@@ -1534,6 +1534,14 @@ allow nexus_setup_t iptables_t:process2 { nnp_transition nosuid_transition };
 allow iptables_t nexus_setup_t:fd use;
 allow iptables_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
 allow iptables_t nexus_setup_t:process sigchld;
+# #22: `systemd-analyze has-tpm2` (the TPM check of the first boot) looks at the cgroup file system and the
+# namespaces of PID 1 for its verdict lines; the TPM lines it needs come from sysfs
+gen_require(`
+	type cgroup_t;
+	type nsfs_t;
+')
+dontaudit nexus_setup_t cgroup_t:filesystem getattr;
+dontaudit nexus_setup_t nsfs_t:file getattr;
 
 ########################################
 # Phase 31: guest file index without the restore micro-VM (docs/file-index-v2-plan.md)
