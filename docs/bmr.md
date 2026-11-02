@@ -195,7 +195,7 @@ repository (the ADK licence was accepted for the lab only, 2026-11-01).
 | A, then the disk on VirtIO SCSI (a controller the restored Windows has no driver for) | **does not boot**: INACCESSIBLE_BOOT_DEVICE, then Windows RE |
 | **A + offline driver injection from Linux**: a fresh copy converted by `virt-v2v` (AlmaLinux 10 packages, virtio-win 0.1.302 as the driver source; the RHEL build installs the VirtIO block driver, it has no `--block-driver virtio-scsi`), first boot on VirtIO block (VM 295) | **boots**: the guest agent answers after 332 s; virt-v2v's first-boot scripts then install the remaining drivers and restart Windows; that second boot stalled at the logo in this run (not examined yet) |
 | A disk that had already failed on VirtIO SCSI, converted afterwards | stays in Windows RE (a failed boot leaves Windows in the recovery path: convert before the first boot on new hardware) |
-| **B, WinPE** (customer-built with the ADK, DISM `/Add-Driver`, `bcdboot`) | not run yet |
+| **B, WinPE**: a WinPE built with the ADK 10.1.26100.9457 and its add-on, the VirtIO drivers in `boot.wim`, `startnet.cmd` = `lab/windows/winpe/inject.cmd`; a fresh copy of the source (VM 297, never booted on the new hardware) with its disk on VirtIO SCSI, WinPE booted from a second disk: `dism /Add-Driver` vioscsi, viostor, NetKVM into the offline Windows, shut down (60 s) | **boots on VirtIO SCSI**: the guest agent answers after 34 s, `vioscsi` running; a restart comes back after 35 s |
 
 Findings for the design:
 
@@ -208,6 +208,9 @@ Findings for the design:
 - **Dissimilar hardware needs a driver injected before the first boot.** From Linux this works with libguestfs /
   virt-v2v logic (offline registry and driver store changes, no Microsoft code); the first-boot restart needs a look.
   WinPE with DISM is Microsoft's supported way and stays an option for physical hardware.
+- **WinPE with DISM works where the virt-v2v way stalled**: driver injection before the first boot, no first-boot
+  scripts, two clean boots. WinPE itself needs the VirtIO storage driver in `boot.wim` to see the disk. Nothing of it
+  can ship with the appliance (Microsoft's licence): the customer builds the medium with the ADK and our scripts.
 - Proposed decision (for Phase 37c): **A** (the existing rescue ISO) for same hardware and P2V; dissimilar hardware
   through offline injection from the rescue system once its first-boot restart is understood; **B** (WinPE) only if
   that fails on real hardware.

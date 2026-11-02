@@ -1759,3 +1759,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   fake NexusStor, NexusStor `backup_reports_and_overdue`. No lab run yet (NexusStor PR not merged).
   - open (in #137): pairing scopes, findings, restores, LUN, whole vStor, S3 target (proposal in NexusStor PR 32,
     waiting for review).
+  - [x] Case B, WinPE (2026-11-02, lab only, nothing from Microsoft in the repository): ADK 10.1.26100.9457 and the
+    WinPE add-on installed on VM 293 (silent setup), WinPE with the virtio-win 0.1.302 storage and network drivers
+    and `lab/windows/winpe/inject.cmd` written to a 2 GB disk (MakeWinPEMedia /UFD could not set the boot code on a
+    fixed disk; bootsect + robocopy did). VM 297 = a copy of VM 293 taken before, disk on VirtIO SCSI, booted WinPE:
+    DISM added vioscsi, viostor, NetKVM (exit 0, 60 s); then Windows booted from VirtIO SCSI (guest agent after 34 s,
+    vioscsi running) and again after a restart (35 s). VMs 293 and 297 stopped.
