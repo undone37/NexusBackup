@@ -231,6 +231,12 @@ Case A as above, through the existing rescue ISO and P2V:
   GUIDs kept), then the boot code, then each image through `BlockWrite` to its partition (every block: the target may
   hold old data); no mkfs, mounts or boot loader changes (the BCD refers to the kept signature). P2V creates Windows
   VMs on SATA with e1000e and a Windows ostype.
-- **Not yet**: used-block maps (`FSCTL_GET_VOLUME_BITMAP`) or change tracking, NTFS resize onto larger disks,
+- **Free space**: VSS keeps only allocated clusters of a shadow copy, free ones can read differently between the
+  scan and the fetch; the agent reads the NTFS cluster bitmap (`FSCTL_GET_VOLUME_BITMAP`) and free clusters read as
+  zeros (also in the store). A volume that ends before its partition reads as zeros past its end.
+- **Lab 2026-11-02** (state.md): Windows Server 2022 (SeaBIOS, MBR, one 40 GiB C:), backup 537 s, P2V as a PVE VM on
+  SATA, recovery 4114 s, Windows boots, guest agent after 31 s.
+- **Not yet**: change tracking (every image run reads the partitions), zero-block skipping on a discarded target
+  (the restore sends every block), NTFS resize onto larger disks,
   dissimilar hardware (offline driver injection), BitLocker, dynamic disks / Storage Spaces, a group option.
 

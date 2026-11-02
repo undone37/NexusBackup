@@ -1872,3 +1872,22 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   now (`plugin-ssh` Ssh::upload, russh-sftp already in the tree); the SSEI bootstrapper hangs as SYSTEM through the
   guest agent (the lab installs from the ISO); a mark after the newest snapshot's range is refused by the API
   (the e2e's pitr step backs up first).
+- [x] #19 M1 Windows bare-metal recovery lab (2026-11-02, branch 19-windows-images, VM 201 on 0.0.67-dev then
+  0.0.68-dev, the Windows agent 0.4.0 of the branch on VM 293: a clone of VM 242, SeaBIOS, MBR, one 40 GiB NTFS
+  partition C:, `lab/pvehost/winbmr-e2e.sh`). Backup with images (job parameter `images: true`): layout (1 disk,
+  bios), the C: image from a VSS snapshot, 10240 blocks of 4 MiB read, 3870 fetched (11.5 GB on the wire), the
+  file tree of C:\Users in the same snapshot, 537 s. Found and fixed on the way: an NTFS volume (its shadow copy)
+  ends 4 MiB before its partition while both report the partition's length (the tail reads as zeros, spooled); VSS
+  keeps only allocated clusters, free ones read differently at the fetch ("block changed or is gone"): the free
+  clusters from FSCTL_GET_VOLUME_BITMAP of the shadow copy read as zeros (Locator masks); SELinux denied
+  `nexus-agentctl layout` writing the job dir (no P2V restore could run on an enforcing appliance: type
+  nexus_p2v_work_t); the rescue token file collided with the PVE source's `token` in the P2V recovery plan ("File
+  exists"). P2V on 0.0.68-dev: VM 272 created on SATA with e1000e and ostype win11, the rescue ISO booted and
+  checked in, the recovery job failed on the file collision. **0.0.69-dev: P2V passed.** VM 272 created, the
+  rescue ISO checked in and the recovery started by itself: partition table with the disk signature on /dev/sda,
+  the 440-byte MBR boot code, the C: image (10240 blocks, 42.9 GB written) in 4114 s (slow: every block is sent,
+  zero blocks too, about 10 MB/s), the config disk removed. Booted from the disk: Windows Server 2022 at the logon
+  screen; with the guest agent channel enabled the agent answered after 31 s (host name WINSRV-2022, C: with 24.5 GB
+  free, the disk on SATA). The P2V VM had no guest agent channel: P2V VMs get `agent: enabled=1` now. Not covered:
+  UEFI/GPT, more than one partition (System Reserved + C:), a reused disk on bare metal, the speed (skip zero blocks
+  on a discarded target).

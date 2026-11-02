@@ -135,17 +135,26 @@ step_recover() {
 	snap=$(api admin GET '/snapshots?tenant=lab' | jq -r --arg s "host-$id" '[.[] | select(.source == $s)] | sort_by(.time) | .[-1].time')
 	log "waiting for the rescue check-in"
 	end=$(($(date +%s) + 900))
-	until sess=$(api admin GET /rescue | jq -r --arg a "$id" '[.[] | select(.agent_id == $a and .state == "waiting")] | .[-1].id // empty') && [ -n "$sess" ]; do
+	# a P2V session starts its recovery by itself after the check-in (the rescue config confirms); a plain one waits
+	local row=""
+	until row=$(api admin GET /rescue | jq -c --arg a "$id" '[.[] | select(.agent_id == $a and (.state == "waiting" or .state == "running"))] | .[0] // empty') && [ -n "$row" ]; do
 		[ "$(date +%s)" -lt "$end" ] || die "no rescue check-in within 15 minutes"
-		sleep 15
+		sleep 30
 	done
-	log "rescue session $sess; starting the recovery of snapshot $snap"
-	r=$(api admin POST "/rescue/$sess/start" "$(jq -nc --argjson t "$snap" '{time:$t, reboot:true}')")
-	expect 202 "rescue start"
-	j=$(wait_job admin "$(jq -r .id <<<"$r")" 7200)
+	sess=$(jq -r .id <<<"$row")
+	if [ "$(jq -r .state <<<"$row")" = waiting ]; then
+		log "rescue session $sess; starting the recovery of snapshot $snap"
+		r=$(api admin POST "/rescue/$sess/start" "$(jq -nc --argjson t "$snap" '{time:$t, reboot:true}')")
+		expect 202 "rescue start"
+		j=$(wait_job admin "$(jq -r .id <<<"$r")" 7200)
+	else
+		log "rescue session $sess: recovery job $(jq -r .job_id <<<"$row") already running"
+		j=$(wait_job admin "$(jq -r .job_id <<<"$row")" 7200)
+	fi
 	jq -r .log <<<"$j" | grep -E 'image|boot code|partition|warning|error|finished' | head -20 | sed 's/^/    /' >&2
 	[ "$(jq -r .state <<<"$j")" = ok ] || die "recovery: $(jq -r .log <<<"$j" | tail -n 30)"
 	log "recovery job $(jq -r .id <<<"$j") in $(jq '.finished - .started' <<<"$j") s; booting from the disk"
+	# the rescue system rebooted into the disk already; restart from it without the ISO
 	pve "qm set $TARGET --boot order=sata0 >/dev/null; qm set $TARGET --delete ide2 >/dev/null 2>&1 || true; qm stop $TARGET >/dev/null 2>&1; qm start $TARGET"
 	end=$(($(date +%s) + 900))
 	local t0

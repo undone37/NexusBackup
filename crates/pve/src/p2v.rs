@@ -97,6 +97,8 @@ pub fn vm_params(req: &Req, l: &Layout, vmid: u32, config_volid: &str) -> Result
         ("ide2".into(), format!("{},media=cdrom", req.iso)),
         ("ide3".into(), format!("{config_volid},media=cdrom")),
         ("boot".into(), format!("order={bus}0;ide2")),
+        // the restored system's QEMU guest agent (lab 2026-11-02: the restored Windows had one, the VM no channel)
+        ("agent".into(), "enabled=1".into()),
         (
             "description".into(),
             format!("NexusBackup P2V of {} (rescue session {})", l.hostname, req.session),
@@ -365,6 +367,7 @@ mod tests {
         assert_eq!(p["net0"], "e1000e,bridge=vmbr0");
         assert_eq!(p["boot"], "order=sata0;ide2");
         assert!(!p.contains_key("bios"), "SeaBIOS for an MBR machine");
+        assert_eq!(p["agent"], "enabled=1");
     }
 
     #[test]
