@@ -1843,3 +1843,16 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   source`, PostgreSQL 17, autobase 2.11.0; deploy 863 s, all three nodes ok), the slot on every node, the new
   source validated. Found: the session to the old address never ends after the switch (ssh now with keepalives,
   the address check decides); after recreating the nodes, `control` must run again (it puts pg-ctl's key on them).
+- [x] #42 Oracle plugin lab (2026-11-02, VM 201 on 0.0.66-dev, plugin oracle 1.0.0-1.0.3 signed with the test key,
+  `lab/pvehost/oracle.sh` on VM 267: Oracle AI Database Free 26ai 23.26.3 on AlmaLinux 9, archive log mode, a
+  table with one row per second): level 0 2.7 GB in 182 s; level 1 20 MB in 34 s; log runs from the group's log
+  schedule (`every 5m`) about 24 s each, the recoverable range growing per run; point-in-time restore to a mark
+  (10:46:04 UTC) from the newest snapshot in 251 s (10.9 GB of pieces uploaded, control file restored, cataloged,
+  RECOVER UNTIL TIME, OPEN RESETLOGS): 1825 rows up to the mark, 1825 in all (none after it). The backup after the
+  restore: level 0 of the new incarnation, no chain break. An archived log deleted on disk: the next log run
+  became a level 0 with `chain_break` in the meta and the critical `log_chain` alert. Found and fixed: RMAN's
+  `from scn` cannot be combined with `until sequence` (archived logs now by sequence range); deleting the pieces'
+  records after streaming (crosscheck + delete expired) left no parent for level 1, RMAN silently took a level 0
+  (records now kept); after a restore `v$archived_log` also names online redo logs, which the chain check now
+  ignores (the lab's delete step had removed an online log of the lab database: repaired from LGWR's open file
+  handle, group dropped and recreated). Not covered: restores to another host, restore tests, RAC.

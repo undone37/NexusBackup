@@ -1200,7 +1200,7 @@ formulas.
 
 ![Job with the skipped-files download](images/job-skipped-files.png)
 
-## Plugin sources (PostgreSQL, MySQL/MariaDB, Microsoft 365)
+## Plugin sources (PostgreSQL, MySQL/MariaDB, Oracle, Microsoft 365)
 
 NexusStor sources (vStors of a paired NexusStor) have their own pairing form and chapter: [19 NexusStor](19-nexusstor.md).
 
@@ -1356,6 +1356,41 @@ What the group selects decides the backup type:
 > position, the end and the base backup only. Galera / Group Replication clusters (the plugin backs up the one
 > server it is given; no automatic primary selection as for PostgreSQL) and a run on the appliance image (signed
 > bundle, VM lab) are not tested yet.
+
+### Oracle Database (RMAN over SSH)
+
+The **Oracle Database** plugin (`oracle`, #42) backs up a whole database (a CDB with its PDBs, or a non-CDB) with
+RMAN. The appliance logs in to the database host over SSH as the Oracle software owner and runs `rman target /`
+there: no database password is stored, no agent is installed. Tested with Oracle AI Database Free 26ai on
+AlmaLinux 9.
+
+Prepare the host once:
+
+```sql
+-- as sysdba
+SHUTDOWN IMMEDIATE; STARTUP MOUNT; ALTER DATABASE ARCHIVELOG; ALTER DATABASE OPEN;
+ALTER DATABASE ENABLE BLOCK CHANGE TRACKING;   -- level 1 backups read only changed blocks
+```
+
+Put the appliance's public key into `~oracle/.ssh/authorized_keys` and paste the private key and the host's key
+(`/etc/ssh/ssh_host_ed25519_key.pub`) into the source. **Staging directory**: RMAN writes each run's pieces there
+before the appliance streams and deletes them; it needs room for one level 0 (about the used size of the data
+files).
+
+- **Policy runs**: a level 0 every **New level 0 every … days** (default 7), level 1 in between. Each run also
+  switches the log and backs up the archived logs since the last run, the control file and the spfile.
+- **Log runs**: set a log schedule on the group (**Groups**, *Log backups*, for example `every 15m`); a log run backs
+  up only the archived logs, in seconds.
+- Every snapshot holds the level 0, the level 1s and all archived logs since it: it restores on its own. The restore
+  dialog shows the recoverable time range.
+- An archived log deleted outside the backup (or a database recreated under the same source) makes the next run a
+  level 0 and raises the critical **log chain** alert. **Delete archived logs once backed up** (off by default) lets
+  the backup remove them on the host; leave it off when a standby or another tool needs them.
+
+**Restores**: **Point-in-time restore** replaces the running database on the source host with its state at a time or
+an SCN (empty: the end of the snapshot); type the SID to confirm. The database is opened with RESETLOGS; the next
+backup is a new level 0. **Download** gives the RMAN pieces for a DBA. A restore to another host is not available
+yet.
 
 ### Microsoft 365 (Exchange, OneDrive, SharePoint, Teams)
 
