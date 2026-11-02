@@ -70,7 +70,7 @@ step_source() {
 			'{platform:"linux", host:$h, port:22, user:"nexus", ssh_key:$key, ssh_host_key:$hk, container:"mssql1", container_cli:"docker", sql_user:"sa", sql_password:$pw}')
 		;;
 	win)
-		cfg=$(jq -nc --arg h "${WIN_HOST:?WIN_HOST: the address of VM 268}" --arg key "$(cat "$LAB/nexus_ed25519")" --arg hk "$(cut -d' ' -f1-2 "$LAB/host_key")" \
+		cfg=$(jq -nc --arg h "$(cat "$LAB/host")" --arg key "$(cat "$LAB/nexus_ed25519")" --arg hk "$(cut -d' ' -f1-2 "$LAB/host_key")" \
 			'{platform:"windows", host:$h, port:22, user:"nexus", ssh_key:$key, ssh_host_key:$hk}')
 		;;
 	esac

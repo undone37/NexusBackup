@@ -10,10 +10,11 @@
 #   mssql.sh sshd     OpenSSH server (Windows capability), local administrator nexus with the key
 #                     $LAB/nexus_ed25519 (administrators_authorized_keys), a sysadmin login for it, the staging
 #                     folder C:\NexusBackup\staging writable by the SQL Server service; prints the host key line
+#   mssql.sh static   fixed address $ADDR (gateway .254, DNS .253 of the lab network), kept in $LAB/host
 #   mssql.sh sql SQL  runs SQL (prints the first column of every row)
 #   mssql.sh destroy  stop and remove the VM
 #
-# env: VMID (268), LAB (~/nexus-lab/mssql-win)
+# env: VMID (268), LAB (~/nexus-lab/mssql-win), ADDR (10.2.34.247)
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 VMID=${VMID:-268}
@@ -21,6 +22,7 @@ PVE_HOST=${PVE_HOST:-10.2.34.200}
 SSH_KEY=${SSH_KEY:-$HOME/nexus-lab/pve-lab-key}
 LAB=${LAB:-$HOME/nexus-lab/mssql-win}
 mkdir -p "$LAB" && chmod 700 "$LAB"
+ADDR=${ADDR:-10.2.34.247}
 ISO=${ISO:-https://download.microsoft.com/download/3/8/d/38de7036-2433-4207-8eae-06e247e17b25/SQLServer2022-x64-ENU-Dev.iso}
 [ "$VMID" -ge 200 ] || { echo "VMID $VMID: only VMs from 200 are ours" >&2; exit 1; }
 win() { "$here/gexec.py" "$VMID" "$1"; }
@@ -94,6 +96,16 @@ PS
 	)" | tee "$LAB/sshd.out"
 	grep '^ssh-ed25519' "$LAB/sshd.out" | tr -d '\r' >"$LAB/host_key"
 	sed -n 's/^address: //p' "$LAB/sshd.out" | tr -d '\r' >"$LAB/host"
+	;;
+static)
+	# through the guest agent, which does not depend on the network
+	win 'Set-NetIPInterface -InterfaceAlias Ethernet -Dhcp Disabled
+		Remove-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
+		Remove-NetRoute -InterfaceAlias Ethernet -DestinationPrefix 0.0.0.0/0 -Confirm:$false -ErrorAction SilentlyContinue
+		New-NetIPAddress -InterfaceAlias Ethernet -IPAddress '"$ADDR"' -PrefixLength 24 -DefaultGateway 10.2.34.254 | Out-Null
+		Set-DnsClientServerAddress -InterfaceAlias Ethernet -ServerAddresses 10.2.34.253
+		(Get-NetIPAddress -InterfaceAlias Ethernet -AddressFamily IPv4).IPAddress'
+	echo "$ADDR" >"$LAB/host"
 	;;
 sql)
 	win "$SQLPS
