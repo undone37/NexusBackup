@@ -108,6 +108,7 @@ pub fn name(m: &Message) -> &'static str {
         Message::HvPrepared { .. } => "HvPrepared",
         Message::HvFinish { .. } => "HvFinish",
         Message::HvFinished { .. } => "HvFinished",
+        Message::HvPrepareBase { .. } => "HvPrepareBase",
     }
 }
 

@@ -206,9 +206,10 @@ pub trait Platform: Send + Sync + 'static {
     fn hv_list(&self) -> Result<String, String> {
         Err("this agent has no Hyper-V support".into())
     }
-    /// `HvPrepare`: recovery checkpoint of VM `vm`, frozen disks opened read-only. Returns the `HvPrepared` JSON and
-    /// the device of each disk in target order (target 1 = the first).
-    fn hv_prepare(&self, _vm: &str) -> Result<(String, Vec<PathBuf>), String> {
+    /// `HvPrepare` / `HvPrepareBase`: recovery checkpoint of VM `vm`, frozen disks opened read-only; with `base`
+    /// (`{rct: [..]}`, #39 M2) each disk's changed ranges since its id. Returns the `HvPrepared` JSON and the device
+    /// of each disk in target order (target 1 = the first).
+    fn hv_prepare(&self, _vm: &str, _base: Option<&serde_json::Value>) -> Result<(String, Vec<PathBuf>), String> {
         Err("this agent has no Hyper-V support".into())
     }
     /// `HvFinish`: close the disks of the prepared job (`prepared` = its `HvPrepared` JSON), then convert the
@@ -721,6 +722,7 @@ impl<P: Platform> Session<'_, P> {
                     // v1.10: Hyper-V hosts
                     if self.agent.platform.hyperv() {
                         c.push(agent_proto::CAP_HYPERV.into());
+                        c.push(agent_proto::CAP_HYPERV_RCT.into());
                     }
                     // v1.8: chunked updates with the install's own package type
                     if let Some(f) = self.agent.platform.host_facts() {
@@ -805,13 +807,29 @@ impl<P: Platform> Session<'_, P> {
                     Ok(json) => write_msg(s, &Message::HvVms { json })?,
                     Err(e) => error(s, E_INTERNAL, e)?,
                 },
-                Message::HvPrepare { job, vm } if self.agent.platform.hyperv() => {
+                Message::HvPrepare { .. } | Message::HvPrepareBase { .. } if self.agent.platform.hyperv() => {
+                    let (job, vm, base) = match m {
+                        Message::HvPrepare { job, vm } => (job, vm, None),
+                        Message::HvPrepareBase { job, json } => {
+                            let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
+                            let vm = v["vm"].as_str().unwrap_or_default().to_owned();
+                            (job, vm, Some(v["base"].clone()))
+                        }
+                        _ => unreachable!(),
+                    };
                     if self.hv.contains_key(&job) || self.jobs.contains_key(&job) {
                         error(s, E_BUSY, format!("job {job} is already running"))?;
                         continue;
                     }
-                    log(format!("job {job}: Hyper-V checkpoint of VM {vm}"));
-                    match self.agent.platform.hv_prepare(&vm) {
+                    log(format!(
+                        "job {job}: Hyper-V checkpoint of VM {vm}{}",
+                        if base.is_some() {
+                            " (changes since the last backup)"
+                        } else {
+                            ""
+                        }
+                    ));
+                    match self.agent.platform.hv_prepare(&vm, base.as_ref()) {
                         Ok((json, disks)) => {
                             self.hv.insert(job, (json.clone(), disks));
                             write_msg(s, &Message::HvPrepared { job, json })?;
@@ -829,7 +847,7 @@ impl<P: Platform> Session<'_, P> {
                     }
                     None => error(s, E_UNKNOWN_JOB, format!("unknown job {job}"))?,
                 },
-                Message::HvList | Message::HvPrepare { .. } => {
+                Message::HvList | Message::HvPrepare { .. } | Message::HvPrepareBase { .. } => {
                     error(
                         s,
                         E_REFUSED,

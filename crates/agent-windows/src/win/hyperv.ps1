@@ -2,9 +2,12 @@
 # powershell.exe -EncodedCommand. Input: $env:NEXUS_HV = {"action": "list" | "prepare" | "finish", ...}. Output: one
 # line of JSON on stdout; a failure throws (exit code 1, the message on stderr).
 #   list                          [{id, name, state, generation, disks: [{name, path}]}]
-#   prepare {vm}                  recovery checkpoint (application consistent, else crash consistent), the frozen
+#   prepare {vm, rct}             recovery checkpoint (application consistent, else crash consistent), the frozen
 #                                 parent of each disk mounted read-only: {vm, name, consistency, checkpoint, config,
-#                                 disks: [{name, target, size, file, device}]}
+#                                 disks: [{name, target, size, file, device, changed}]}; with `rct` (the previous
+#                                 reference point's ids, one per disk in order, #39 M2) `changed` lists the byte
+#                                 ranges written since (virtdisk QueryChangesVirtualDisk on the frozen parent, as in
+#                                 the lab), null when there is no valid base for the disk (then it is read in full)
 #   finish {prepared, keep}       disks dismounted; keep: the checkpoint becomes a reference point: {reference_point,
 #                                 rct}; else the checkpoint is removed: {}
 # The WMI sequence is the one of the lab (lab/windows/hyperv/rct.ps1): asynchronous jobs leave the out references
@@ -30,6 +33,41 @@ function RefPoints($id) {
 }
 function DiskName($d) { ("$($d.ControllerType)$($d.ControllerNumber)-$($d.ControllerLocation)").ToLower() }
 function Out($o) { ConvertTo-Json -InputObject $o -Depth 6 -Compress }
+# RCT change query (#39 M2): open the frozen parent VHDX read-only with virtdisk.dll and page through
+# QueryChangesVirtualDisk; null when the id is not valid for the disk (reset, changed outside Hyper-V) or too many ranges
+function Changes($path, $id, $size) {
+  if (-not ('NxVd' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class NxVd {
+  [StructLayout(LayoutKind.Sequential)] public struct VST { public uint DeviceId; public Guid VendorId; }
+  [StructLayout(LayoutKind.Sequential)] public struct OpenV2 { public uint Version; public int GetInfoOnly; public int ReadOnly; public Guid ResiliencyGuid; }
+  [StructLayout(LayoutKind.Sequential)] public struct Range { public ulong ByteOffset; public ulong ByteLength; public ulong Reserved; }
+  [DllImport("virtdisk.dll", CharSet = CharSet.Unicode)] public static extern int OpenVirtualDisk(ref VST t, string path, uint access, uint flags, ref OpenV2 p, out IntPtr h);
+  [DllImport("virtdisk.dll", CharSet = CharSet.Unicode)] public static extern int QueryChangesVirtualDisk(IntPtr h, string id, ulong off, ulong len, uint flags, [Out] Range[] ranges, ref uint count, out ulong processed);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+}
+"@
+  }
+  if (-not $id -or $id -notmatch '^[A-Za-z0-9:-]{1,200}$') { return $null }
+  $t = New-Object NxVd+VST; $t.DeviceId = 3; $t.VendorId = [Guid]'EC984AEC-A0F9-47e9-901F-71415A66345B'
+  $p = New-Object NxVd+OpenV2; $p.Version = 2; $p.ReadOnly = 1
+  $h = [IntPtr]::Zero
+  if ([NxVd]::OpenVirtualDisk([ref]$t, $path, 0, 0, [ref]$p, [ref]$h) -ne 0) { return $null }
+  try {
+    $out = New-Object System.Collections.Generic.List[object]
+    $off = [uint64]0
+    while ($off -lt [uint64]$size) {
+      $buf = New-Object NxVd+Range[] 4096; $n = [uint32]4096; $done = [uint64]0
+      if ([NxVd]::QueryChangesVirtualDisk($h, $id, $off, [uint64]$size - $off, 0, $buf, [ref]$n, [ref]$done) -ne 0) { return $null }
+      for ($i = 0; $i -lt $n; $i++) { $out.Add(@([uint64]$buf[$i].ByteOffset, [uint64]$buf[$i].ByteLength)) }
+      if ($out.Count -gt 8192) { return $null }   # the answer stays small; a disk changed this much is read in full
+      if ($done -eq 0) { break }
+      $off += $done
+    }
+    return ,$out.ToArray()
+  } finally { [void][NxVd]::CloseHandle($h) }
+}
 
 switch ($a.action) {
   'list' {
@@ -69,8 +107,10 @@ switch ($a.action) {
         if (-not $parent) { continue } # not covered by the checkpoint (pass-through, excluded)
         $n++
         $size = (Get-VHD -Path $parent).Size
+        $changed = $null
+        if ($a.rct -and @($a.rct).Count -ge $n) { $changed = Changes $parent @($a.rct)[$n - 1] $size }
         $disk = Mount-VHD -Path $parent -ReadOnly -NoDriveLetter -Passthru | Get-Disk
-        $disks += [ordered]@{ name = (DiskName $d); target = $n; size = $size; file = $parent; device = "\\.\PhysicalDrive$($disk.Number)" }
+        $disks += [ordered]@{ name = (DiskName $d); target = $n; size = $size; file = $parent; device = "\\.\PhysicalDrive$($disk.Number)"; changed = $changed }
       }
     } catch {
       foreach ($d in $disks) { Dismount-VHD -Path $d.file -ErrorAction SilentlyContinue }
