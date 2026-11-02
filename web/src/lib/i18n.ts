@@ -3042,7 +3042,7 @@ export const en = {
   },
   hw: {
     title: 'Hardware',
-    lede: 'The disks and RAID arrays of the appliance: SMART health, self-tests, and the data array (mdadm + XFS) that holds the store. System disks are shown only; changes to the data array need approval and the typed serial numbers of the disks.',
+    lede: 'The disks and RAID arrays of the appliance: SMART health, self-tests, and the data array (mdadm, LUKS2 encryption, XFS) that holds the store. System disks are shown only; changes to the data array need approval and the typed serial numbers of the disks.',
     loadFailed: 'The hardware status could not be loaded',
     unavailable:
       'No disk status yet: nexus-disks has not reported (it runs every 5 minutes, and at once after Rescan).',
@@ -3149,6 +3149,11 @@ export const en = {
     mount: 'Mounted at',
     fs: 'File system',
     fsUsage: (used: string, size: string) => `${used} of ${size} used`,
+    encrypted: 'Encrypted',
+    encryptedHint:
+      'LUKS2: the TPM unlocks the array at boot; on new hardware the recovery key opens it (nexus-setup keys-reseal, then nexus-disks reenroll).',
+    notEncrypted: 'Not encrypted',
+    notEncryptedHint: 'Created before encrypted data arrays (an existing store is never re-encrypted in place).',
     states: {
       clean: 'Clean',
       degraded: 'Degraded',

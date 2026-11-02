@@ -11470,7 +11470,13 @@ function seedHardware(t: number) {
         used_dev_size: 4000587055104,
         bitmap: 'Internal',
         mounts: ['/var/lib/nexus/chunkstore'],
-        fs: { type: 'xfs', uuid: '0e7d8c9b-aaaa-4bbb-8ccc-1234567890ab', size: 8000500318208, used: 3871043584000 },
+        fs: {
+          type: 'xfs',
+          uuid: '0e7d8c9b-aaaa-4bbb-8ccc-1234567890ab',
+          size: 8000500318208,
+          used: 3871043584000,
+          encrypted: true,
+        },
         members: [
           { disk: 'sdc', dev: 'sdc', serial: 'WD-WX12D3456701', state: 'active', slot: 0 },
           { disk: 'sdd', dev: 'sdd', serial: 'WD-WX12D3456702', state: 'active', slot: 1 },
@@ -11898,6 +11904,7 @@ function hwExecute(action: string, p: Json, by: string, qid: number) {
         uuid: rand(16).replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
         size: min * dataDisks - 1073741824,
         used: 0,
+        encrypted: true,
       },
       members: ds.map((d: Json, i: number) => ({
         disk: d.name,

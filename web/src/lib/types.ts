@@ -2564,7 +2564,8 @@ export interface HwArray {
     slot: number | null;
   }[];
   mounts: string[];
-  fs: { type: string; uuid: string; size: number | null; used: number | null } | null;
+  /** `encrypted`: the file system sits on LUKS2 inside the array (#22 M2; TPM2 token + KEK-derived key) */
+  fs: { type: string; uuid: string; size: number | null; used: number | null; encrypted?: boolean } | null;
   issues: HwIssue[];
 }
 export interface HwOp {

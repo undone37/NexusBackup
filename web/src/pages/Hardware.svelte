@@ -356,6 +356,11 @@
               </h3>
               <span class="chip plain">{(a.level ?? '?').toUpperCase()}</span>
               {#if a.role}<span class="chip {roleCls[a.role] ?? 'plain'}">{t.hw.roles[a.role] ?? a.role}</span>{/if}
+              {#if a.role === 'data' && a.fs}<span
+                  class="chip {a.fs.encrypted ? 'ok' : 'plain'}"
+                  title={a.fs.encrypted ? t.hw.encryptedHint : t.hw.notEncryptedHint}
+                  >{a.fs.encrypted ? t.hw.encrypted : t.hw.notEncrypted}</span
+                >{/if}
               <span class="chip {stateCls[a.state] ?? 'plain'}" title={a.state_detail ?? undefined}
                 >{t.hw.states[a.state] ?? a.state}</span
               >
