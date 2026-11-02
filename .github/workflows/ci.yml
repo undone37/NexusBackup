@@ -34,6 +34,7 @@ jobs:
       os: ${{ steps.diff.outputs.os }}
       windows: ${{ steps.diff.outputs.windows }}
       testbox: ${{ steps.diff.outputs.testbox }}
+      sdk: ${{ steps.diff.outputs.sdk }}
       deps: ${{ steps.diff.outputs.deps }}
     steps:
       - uses: actions/checkout@v7
@@ -63,6 +64,7 @@ jobs:
           out os "^(os|release|integrations)/|$wf"
           out windows "^crates/agent-(core|proto|windows|gui)/|^Cargo\.lock$|$wf"
           out deps "^Cargo\.(toml|lock)$|^deny\.toml$|$wf"
+          out sdk "^sdk/|^crates/web-api/openapi\.json$|$wf"
           # the container-based suites: their plugins, the plugin runtime and store under them, OIDC
           out testbox "^plugins/(mysql|postgresql)/|^crates/(plugin-[a-z]+|chunkstore)/|^crates/web-api/(src/oidc\.rs|tests/oidc_keycloak\.rs)$|^Cargo\.lock$|$wf"
   lint:
@@ -191,6 +193,21 @@ jobs:
       - run: python3 integrations/pegaprox/test_core.py
       - run: python3 integrations/wazuh/test_rules.py
       - run: release/check-trust.sh
+  sdk:
+    # Python and PowerShell SDKs (sdk/README.md): sync with openapi.json, pytest on the runner's Python and on
+    # Python 3.10 with ruff and mypy (podman), Pester and PSScriptAnalyzer (the runner's pwsh, else podman)
+    needs: changes
+    if: needs.changes.outputs.sdk == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: pytest in a venv (the runner's Python is externally managed)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q --disable-pip-version-check pytest==8.3.5
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - run: sdk/check.sh --container
   web:
     # the SPA embedded in nexus-web-api (same Node major as os/Containerfile)
     needs: changes

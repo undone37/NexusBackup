@@ -40,6 +40,7 @@ product is, [`plan.md`](plan.md) why it is built this way, [`state.md`](state.md
 | `docs/` | contracts and designs (`docs/pve-connector.md`, `docs/adr.md`, ...); comparisons are background reading |
 | `manual/` | user manual; screenshots from `manual/tools/screenshots.mjs` against the mock backend |
 | `lab/` | reproducible labs (`lab/README.md`); `lab/pvehost/` drives the real PVE lab host |
+| `sdk/` | Python and PowerShell SDKs of the REST API (`sdk/README.md`); their operation tables are generated from `crates/web-api/openapi.json` (every operation needs a unique `operationId`) |
 
 Where to start for a change: the user-facing behaviour is described in `manual/`, the wire contracts in `docs/`, the
 job kinds in `crates/scheduler` and `crates/web-api/src/jobs.rs`.
@@ -61,6 +62,7 @@ git config blame.ignoreRevsFile .git-blame-ignore-revs
 | `pve-plugin/` | `perlcritic --profile .perlcriticrc pve-plugin/PVE pve-plugin/helper pve-plugin/rollback` (severity 4), `prove pve-plugin/t` (about 30 s, taint mode like PVE's workers) |
 | `os/`, `release/` | `python3 -m unittest discover -s os/greenboot/tests`, `python3 -m unittest discover -s release/tests`, `release/check-trust.sh` |
 | `integrations/` | `python3 integrations/pegaprox/test_core.py`, `python3 integrations/wazuh/test_rules.py` |
+| `sdk/` or `crates/web-api/openapi.json` | `python3 sdk/codegen.py` (regenerates the SDK operation tables), `sdk/check.sh` (`--container`: also Python 3.10 with ruff and mypy, Pester and PSScriptAnalyzer in podman; CI runs this) |
 | UI visible change | regenerate the affected manual screenshots (`node manual/tools/screenshots.mjs`, see the script header) |
 
 The hooks run the fast part automatically; `--no-verify` skips them only for a deliberate exception (for example a

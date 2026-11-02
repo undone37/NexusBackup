@@ -570,8 +570,10 @@ No CSRF header is needed with a token. The Prometheus `/metrics` endpoint keeps 
 ([11 Alerts](11-alerts-and-monitoring.md#metrics-prometheus)).
 
 **API description.** `https://<appliance>/api/openapi.json` is the OpenAPI 3.1 description of the endpoints tokens
-can use (plus the billing export); it needs no sign-in and describes the API only, nothing about your appliance.
-Import it into Postman or generate a client from it. `GET /api/v1/usage` (monthly usage per tenant, also as CSV with
+can use, plus the billing export and the few operations scripts need as a person (sign-in, deciding approvals, the
+audit log as CSV, the restore point simulator; marked `x-token: false`, tokens get 403 there). It needs no sign-in and
+describes the API only, nothing about your appliance. Every operation has an `operationId`. Import it into Postman
+or generate a client from it. `GET /api/v1/usage` (monthly usage per tenant, also as CSV with
 `format=csv`) is open to read tokens.
 
 **`nexusctl`.** A small command-line client for scripts and administrators' workstations (Linux, from the source
@@ -595,6 +597,10 @@ creates an approval request and says so.
 Two commands act as a person instead of a token and ask for an administrator's password and TOTP code (`--user
 NAME`): `nexusctl update upload` (offline update bundle, [13 Updates](13-updates.md#offline-update-appliances-without-internet-access))
 and `nexusctl system status|reboot|poweroff|cancel` ([13 Updates](13-updates.md#reboot-and-shut-down)).
+
+**SDKs.** For scripts in Python or PowerShell use the SDKs instead of raw HTTP calls: they cover every operation of
+the API description, wait for jobs and sign in as a person where tokens may not act
+([20 SDKs](20-sdks.md)).
 
 **Several appliances: `nexusctl fleet`.** A service provider that runs one appliance per customer gets a read-only
 overview of all of them on the workstation: for each appliance whether it answers, incident mode, protected objects,

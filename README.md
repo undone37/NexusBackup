@@ -142,6 +142,9 @@ and an alert when the log chain breaks.
 - **Plugin system:** signed, sandboxed plugins (Landlock and seccomp) on a Rust SDK.
 - **Tools:** `nexusctl` CLI, an OpenAPI description, `nexusctl fleet` (read-only overview of several appliances),
   diagnostics bundle and self-checks.
+- **SDKs:** Python (`sdk/python`) and PowerShell (`sdk/powershell`) clients of the REST API, every documented
+  operation plus jobs, approvals, the audit log and the file search, with fingerprint pinning for self-signed
+  appliances; not published yet ([sdk/README.md](sdk/README.md), [manual chapter 20](manual/20-sdks.md)).
 
 ## What it does not do
 - **Hypervisors:** no Nutanix, OpenStack or Hyper-V failover clusters; no restore back into vSphere (VMware backups

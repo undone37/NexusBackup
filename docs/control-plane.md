@@ -293,6 +293,12 @@ Headers on every response: `Content-Security-Policy: default-src 'self'; script-
   `/api/v1/openapi.json`; `openapi.rs`'s test fails when a route on the allow-list is missing from it or the document
   shows a route tokens cannot reach. The `nexusctl` crate is a client on top of it (blocking reqwest, token from
   `NEXUS_TOKEN`).
+- SDKs (`sdk/`, Python and PowerShell): their operation tables are generated from the description
+  (`sdk/codegen.py`), so every operation has a unique `operationId`. The description also carries the few
+  session-only operations a script needs as a person (`POST /auth/login` and `/auth/logout`,
+  `POST /quorum/{id}/approve` and `/reject`, `GET /audit.csv`, beside `POST /policies/simulate` and the index
+  rules), marked `x-token: false`; the test checks that none of them is on the allow-list, so the SDKs may refuse
+  them for tokens before sending.
 
 ## Web certificate (Phase 14d, crate `webtls`, `crates/web-api/src/certs.rs`)
 - `/etc/nexus/tls/cert.pem` + `key.pem`: the self-signed **identity** from nexus-setup. Replication secondaries pin
