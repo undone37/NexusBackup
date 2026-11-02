@@ -652,3 +652,59 @@ fn usage_errors() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("reading /nonexistent/answers.json"));
 }
+
+/// #22 M3: on an encrypted system disk (the installer's /etc/crypttab) the confirmed recovery key goes to
+/// nexus-luks-recovery as a keyslot (before the confirmation is recorded), and `keys-reseal` re-enrols the disk's
+/// TPM2 token the same way; the words are never in a logged command line, and without crypttab nothing happens.
+#[test]
+fn system_disk_recovery_slot_and_reenroll() {
+    let plain = env();
+    let (out, stdout, stderr) = plain.run(&plain.answers("192.0.2.10"), &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(!stdout.contains("nexus-luks-recovery"), "{stdout}");
+
+    let e = env();
+    fs::create_dir_all(e.p("etc")).unwrap();
+    fs::write(e.p("etc/crypttab"), "luks-1 UUID=1a2b-3c none discard\n").unwrap();
+    let (out, stdout, stderr) = e.run(&e.answers("192.0.2.10"), &[]);
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    let key = recovery_key(&stdout);
+    assert!(
+        stdout.contains("+ (dry-run) systemctl start nexus-luks-recovery.service"),
+        "{stdout}"
+    );
+    let logged: Vec<&str> = stdout.lines().filter(|l| l.starts_with("+ ")).collect();
+    assert!(logged.iter().all(|l| !l.contains(&key)));
+    assert!(!e.p("run/nexus-luks-recovery").exists());
+    let c = e.catalog();
+    let a: Vec<String> = audit_actions(&c).into_iter().map(|(_, act, _)| act).collect();
+    let pos = |w: &str| {
+        a.iter()
+            .position(|x| x == w)
+            .unwrap_or_else(|| panic!("{w} missing in {a:?}"))
+    };
+    assert!(pos("setup.system_disk.slot") < pos("setup.keyd.confirmed"));
+
+    let mut c = Command::new(env!("CARGO_BIN_EXE_nexus-setup"))
+        .args(["keys-reseal", "--root", e.root.to_str().unwrap(), "--dry-run"])
+        .env_remove("NEXUS_SETUP_ROOT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    writeln!(c.stdin.take().unwrap(), "{key}").unwrap();
+    let r = c.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&r.stderr);
+    assert!(r.status.success(), "{err}");
+    assert!(
+        err.contains("+ (dry-run) systemctl start nexus-luks-recovery.service"),
+        "{err}"
+    );
+    assert!(!err.contains(&key));
+    let c = e.catalog();
+    assert!(audit_actions(&c)
+        .iter()
+        .any(|(_, act, _)| act == "setup.system_disk.reenroll"));
+}

@@ -1,0 +1,21 @@
+[Unit]
+Description=NexusBackup system disk recovery keyslot and TPM2 token (LUKS2)
+# Started by nexus-setup (first boot: the recovery key as a keyslot; keys-reseal: the TPM2 token again) after it
+# wrote /run/nexus-luks-recovery; docs/disk-encryption-design.md. No [Install]: never runs on its own.
+ConditionPathExists=/run/nexus-luks-recovery
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/nexus/nexus-luks-recovery
+# Root, writes the LUKS2 headers of the system disk and uses the TPM. Its script is bin_t, so it runs as
+# unconfined_service_t (like nexus-grub-password); the request file is readable only by root.
+UMask=0077
+NoNewPrivileges=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+LimitCORE=0
+TimeoutStartSec=5min

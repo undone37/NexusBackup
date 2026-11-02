@@ -75,6 +75,10 @@ pub struct Paths {
     pub lock: PathBuf,
     /// OS update control directory (nexus-update)
     pub update_dir: PathBuf,
+    /// LUKS2 devices of the system disk (written by the installer, #22 M3)
+    pub crypttab: PathBuf,
+    /// one-shot request for nexus-luks-recovery (tmpfs, removed by the helper)
+    pub luks_request: PathBuf,
     /// Read-only NIC enumeration; not prefixed by `--root`.
     pub sys_class_net: PathBuf,
 }
@@ -93,6 +97,8 @@ impl Paths {
             setup_done: p("var/lib/nexus/setup-done"),
             lock: p("var/lib/nexus/.setup.lock"),
             update_dir: p("var/lib/nexus/update"),
+            crypttab: p("etc/crypttab"),
+            luks_request: p("run/nexus-luks-recovery"),
             sys_class_net: PathBuf::from("/sys/class/net"),
         }
     }
@@ -1141,7 +1147,39 @@ impl Setup {
             &["restart", "nexus-keyd-seal.service", "nexus-keyd.service"],
         )
         .context("restarting the key service (journalctl -u nexus-keyd-seal -u nexus-keyd)")?;
+        self.system_disk("reenroll", recovery_key)?;
         self.audit("setup.keys_reseal", "keyd", json!({"pcrs": [7]}))
+    }
+
+    /// #22 M3: the system disk's LUKS2 keyslots through nexus-luks-recovery (root; setup itself has no access to
+    /// the disks or the TPM). `slot`: a keyslot whose passphrase is the recovery key in its written form (24 words,
+    /// single spaces), the installer's generated passphrase wiped; with a cleared or replaced TPM, or after a PCR 7
+    /// change, the boot prompt takes the words. `reenroll`: the TPM2 token for the TPM's current state, opened
+    /// with the words (`keys-reseal`). The request lives in tmpfs (0600 root) only until the helper reads it.
+    /// Nothing to do without /etc/crypttab (`bootc install to-disk`, an ISO before M3).
+    fn system_disk(&mut self, op: &str, recovery_key: &str) -> Result<()> {
+        if !self.paths.crypttab.exists() {
+            return Ok(());
+        }
+        let words = Zeroizing::new(keyd::format_recovery_key(&*keyd::parse_recovery_key(recovery_key)?));
+        if !self.dry_run {
+            let req = Zeroizing::new(json!({"op": op, "words": words.as_str()}).to_string());
+            let p = &self.paths.luks_request;
+            let _ = fs::remove_file(p);
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(p)
+                .with_context(|| format!("writing {}", p.display()))?;
+            f.write_all(req.as_bytes())?;
+        }
+        let r = self
+            .cmd("systemctl", &["start", "nexus-luks-recovery.service"])
+            .context("the system disk's recovery keyslot (journalctl -u nexus-luks-recovery)");
+        let _ = fs::remove_file(&self.paths.luks_request); // normally the helper removed it already
+        r?;
+        self.audit(&format!("setup.system_disk.{op}"), "system disk", json!({"pcrs": [7]}))
     }
 
     pub fn keyd_init(&mut self) -> Result<RecoveryKey> {
@@ -1181,6 +1219,8 @@ impl Setup {
             return Ok(false);
         }
         keyd::check_recovery_key(&self.paths.keyd_dir, key.expose())?;
+        // before the confirmation: if it fails, the wizard asks for the words again
+        self.system_disk("slot", key.expose())?;
         self.audit(
             "setup.keyd.confirmed",
             "keyd",
