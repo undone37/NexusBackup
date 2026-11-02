@@ -117,8 +117,12 @@ follows that risk.
   one), `bootloader --append`, `%post` enrols the TPM2 token. Disk selection stays interactive: without `clearpart`
   the destination spoke reads "Kickstart insufficient" until the user picks the disk; **Encrypt my data** arrives
   checked and the passphrase dialog pre-filled with the generated passphrase; **Reclaim space** works as usual.
-  Lab on VM 204 (state.md). Not done: the KEK keyslot at first boot (the generated passphrase is gone after the
-  install, so the TPM is the only unlock; recovery is a reinstall plus the configuration backup).
+  Lab on VM 204 (state.md).
+- Second keyslot (instead of one derived from the KEK: the KEK escrow lives on the encrypted disk itself, so it
+  cannot open the disk when the TPM fails): the recovery key's 24 words, added by `nexus-luks-recovery` when the
+  first-boot wizard confirms the recovery key; the install passphrase is wiped then. `keys-reseal` re-enrols the TPM2
+  token with the words (wipe, then enrol: in one call systemd-cryptenroll reports "already enrolled"). Lab-checked on
+  a LUKS2 test file with a vTPM (VM 201, 2026-11-02).
 
 ## Open questions
 

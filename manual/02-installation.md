@@ -79,10 +79,11 @@ it. It contains the signed appliance image, so installation needs no network.
    (Anaconda) asks only for the **installation destination**: pick the system disk; on a used disk choose **Reclaim
    space**, **Delete all**. **Everything on that disk is erased.** **Encrypt my data** is preset: the next dialog
    shows a generated passphrase, keep it and choose **Save Passphrase**. The installer enrols the TPM for it (PCR 7),
-   so the appliance starts without a passphrase prompt; the generated passphrase is not stored anywhere. If the TPM
-   is cleared or the board replaced, the system disk cannot be opened: reinstall and restore the configuration backup
-   ([14 Disaster recovery](14-disaster-recovery.md)). A passphrase you type instead is used as given, without the
-   TPM: you type it at every start. Language, keyboard, time zone (UTC) and the locked root account are preset;
+   so the appliance starts without a passphrase prompt. The generated passphrase is not stored anywhere: when you
+   confirm the recovery key in the first-boot wizard, the recovery key becomes the disk's second key and the
+   generated one is removed. If the TPM is cleared, the board replaced or the firmware updated, the boot asks for
+   it: type the recovery key ([14 Disaster recovery](14-disaster-recovery.md#the-master-key-and-the-tpm)). A
+   passphrase you type in the installer instead is used as given, without the TPM: you type it at every start. Language, keyboard, time zone (UTC) and the locked root account are preset;
    accounts and the network are set up later by the first-boot wizard.
 4. Start the installation (about 1–5 minutes), then reboot and remove the medium. The console shows the setup
    wizard (next section).

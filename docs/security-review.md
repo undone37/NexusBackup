@@ -442,8 +442,13 @@ Reviewed with the implementation (2026-10-10):
   installer's RAM; `%post` enrols a TPM2 token (PCR 7) and the initrd tries it (`rd.luks.options=tpm2-device=auto`).
   So /var (catalog, credentials, `kek.cred`) is encrypted at rest. Test `release/tests/test_iso_kickstart.py`; lab
   on pve-test VM 204 through the ISO's own shim/GRUB (state.md).
-- Remaining: installs from `bootc install to-disk` and the OVA stay clear; no keyslot besides the TPM's (a cleared
-  TPM means a reinstall plus the configuration backup); a passphrase typed in the installer replaces the TPM unlock.
+- Second keyslot: the first-boot setup hands the confirmed recovery key to `nexus-luks-recovery` (root oneshot; setup
+  has no disk or TPM access) through a tmpfs request of its own type (only setup may write it, removed before use;
+  the words reach systemd-cryptenroll only in its environment), which adds it as a keyslot and wipes the generated
+  install passphrase; `keys-reseal` re-enrols the TPM2 token with it. Tests `system_disk_recovery_slot_and_reenroll`
+  (crates/setup) and `test_nexus_luks_recovery.py`.
+- Remaining: installs from `bootc install to-disk` and the OVA stay clear; a passphrase typed in the installer
+  replaces the TPM unlock; the recovery key typed at the initrd prompt is as exposed as any console input.
 
 ## 4. Findings
 

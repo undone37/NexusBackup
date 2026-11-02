@@ -58,6 +58,14 @@ It asks for the recovery key, seals the key to the TPM's current state and resta
 `setup.keys_reseal`). Plan firmware updates with the recovery key at hand. A system disk moved to new hardware works
 the same way.
 
+A **system disk installed from the installer ISO** (from the release after 0.2.0-alpha.3 on) is encrypted as well
+(LUKS2) and opened by the TPM at boot. After such a change the boot stops at **Please enter passphrase for disk**:
+type the **recovery key**, the 24 words in lowercase, separated by single spaces (US keyboard layout). Then run
+`nexus-setup keys-reseal` as above: it also gives the system disk a TPM entry for the TPM's current state (audited:
+`setup.system_disk.reenroll`), so the next boots are unattended again. The first-boot setup adds this recovery key
+entry to the disk when you confirm the recovery key (`setup.system_disk.slot`) and removes the passphrase the
+installer generated.
+
 The **data array** created on the appliance is encrypted (LUKS2) with two keys: the TPM unlocks it at boot (bound
 to the same Secure Boot state), and a second key derived from the master key opens it on new hardware once the
 master key is resealed. Data disks taken out of the appliance reveal nothing. Arrays created before this release

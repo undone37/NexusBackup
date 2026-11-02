@@ -1823,6 +1823,13 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   ISO's own shim/GRUB (edited entry, `inst.ks=hd:LABEL=OEMDRV:/ks.cfg`), the appliance boots unattended to the
   first-boot wizard. A direct-kernel install boot (no shim measurement) leaves PCR 7 different: passphrase prompt.
   Details in docs/disk-encryption-design.md "M3 spike". VM 204 stopped.
+- [x] #22 M3 recovery keyslot (2026-11-02, VM 201 on 0.0.71-dev from branch 22-root-recovery-slot, d8112ed2):
+  a LUKS2 test file on a loop device with a TPM2 token (vTPM) and an install passphrase, listed in a temporary
+  /etc/crypttab (`noauto`); a request written as root and `systemctl start nexus-luks-recovery.service`: `slot`
+  wiped the install passphrase (no longer opens it, tokens disabled) and the 24 words open it; `reenroll` replaced
+  the TPM2 token (new token unlocks); request removed both times, 0 AVCs; test file and crypttab removed. Not run:
+  the first-boot wizard on an encrypted install (needs an ISO with this image) and `keys-reseal` (no lab recovery key
+  stored for VM 201).
 - [x] M3 installer kickstart (2026-11-02, VM 204, OVMF + vTPM, the 0.2.0-alpha.3 ISO with the new
   `release/iso/config.toml` contents on an OEMDRV CD, booted through the ISO's own shim/GRUB): without a vTPM
   `%pre` stops the installer (message on tty1 and in the script log); with the vTPM the interactive path: destination
