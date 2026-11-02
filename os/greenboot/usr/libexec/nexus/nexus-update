@@ -17,6 +17,8 @@
 # tmpfiles.d/nexus-update.conf) is the interface for web-api and scheduler:
 #   request      written by the control plane: one word, "stage" | "apply" | "rollback"
 #                ("apply" = install now: stage first if nothing is staged, then reboot into it);
+#                "reboot" | "poweroff": restart or shut down the appliance (the web UI's Power card; a staged
+#                update stays staged: a plain reboot does not install it);
 #                consumed (deleted) by the next tick, which nexus-update.path starts at once
 #   window       optional override of NEXUS_UPDATE_WINDOW, e.g. "Sun 03:00 120" or "off"
 #   inhibit      present and younger than 6 h: automatic (window) apply is postponed;
@@ -72,7 +74,7 @@ CONF_DEFAULTS = {
     "NEXUS_UPDATE_OFFLINE_DIR": "/var/lib/nexus/update-offline",
     "NEXUS_UPDATE_POLICY": "/etc/containers/policy.json",
 }
-REQUESTS = ("stage", "apply", "rollback", "import")
+REQUESTS = ("stage", "apply", "rollback", "import", "reboot", "poweroff")
 # the uploaded bundle (web-api writes it into the control directory, then the request "import")
 BUNDLE = "bundle.tar"
 # what the release signs: the cosign "simple signing" payload of the image (docs/release.md)
@@ -620,6 +622,13 @@ def apply(c, status=None, force=False):
     return f"rebooting into {st['digest']}"
 
 
+def power(word):
+    """reboot | poweroff, requested through the web UI (quorum appliance.power)."""
+    log(f"{word} requested")
+    run("systemctl", word)
+    return "rebooting" if word == "reboot" else "shutting down"
+
+
 def rollback(c):
     log("rollback requested, rebooting into the previous deployment")
     run("bootc", "rollback")
@@ -746,7 +755,9 @@ def tick(c, now=None):
                 st["applying"] = None
             # else: running it, but greenboot has not judged this boot yet (a red boot reboots and may roll
             # back): keep watching, so the first tick can come soon after boot without missing a rollback
-        if req == "rollback":
+        if req in ("reboot", "poweroff"):
+            result = power(req)
+        elif req == "rollback":
             result = rollback(c)
         elif req == "import":
             try:
