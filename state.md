@@ -1805,3 +1805,6 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   `nexus-disks reenroll` first did nothing (systemd-cryptenroll skips "PCR set already enrolled" when wipe and
   enrol share one call), split into wipe + enrol it re-enrolled the token, the store came back, and the next boot
   unlocked everything unattended (0 failed units).
+- [x] Member failure on the encrypted array (VM 203, 2026-11-02): `disks.sh fail` (mdadm --fail NXLAB-D3: degraded,
+  critical `disk` alert) and `replace` with NXLAB-D5 (approval; rebuild below LUKS in about 100 s, alerts
+  resolved, the store stayed mounted on /dev/mapper/nexus-data); 0 AVCs of the disk helper.
