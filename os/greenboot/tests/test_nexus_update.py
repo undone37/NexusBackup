@@ -322,17 +322,6 @@ class Agent(unittest.TestCase):
         self.tick(utc(2026, 10, 9, 12, 30))
         self.assertEqual(self.calls(), ["bootc rollback", "systemctl reboot"])
 
-    def test_request_reboot_and_poweroff(self):
-        self.tick()
-        self.calls()
-        (self.d / "ctl/request").write_text("reboot\n")
-        self.tick(utc(2026, 10, 9, 12, 15))
-        self.assertEqual(self.calls(), ["systemctl reboot"])
-        (self.d / "ctl/request").write_text("poweroff\n")
-        self.tick(utc(2026, 10, 9, 12, 30))
-        self.assertEqual(self.calls(), ["systemctl poweroff"])
-        self.assertFalse((self.d / "ctl/request").exists())
-
     def test_unknown_or_symlinked_request_ignored(self):
         self.tick()
         self.calls()

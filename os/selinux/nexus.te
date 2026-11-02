@@ -178,6 +178,8 @@ type nexus_nft_var_run_t;	# outbound allow-list (scheduler -> nft-sync)
 files_pid_file(nexus_nft_var_run_t)
 type nexus_update_t;		# OS update control dir (nexus-update reads it as root)
 files_type(nexus_update_t)
+type nexus_power_var_lib_t;	# reboot and shutdown requests (#179): nexus-power reads them as root (unconfined)
+files_type(nexus_power_var_lib_t)
 type nexus_nftsync_var_run_t;	# nft-sync: elements it added last time
 files_pid_file(nexus_nftsync_var_run_t)
 type nexus_nftstatus_var_run_t;	# nft-sync status for the web UI: effective sets, blocked attempts (web-api reads)
@@ -314,6 +316,8 @@ allow nexus_webapi_t nexus_catalog_t:file map;
 read_files_pattern(nexus_webapi_t, nexus_downloads_t, nexus_downloads_t)
 # OS update control: request (stage/apply), window, inhibit; reads status.json
 manage_files_pattern(nexus_webapi_t, nexus_update_t, nexus_update_t)
+# reboot and shutdown (#179): request.json for nexus-power after approval (tmp + rename), status.json read back
+manage_files_pattern(nexus_webapi_t, nexus_power_var_lib_t, nexus_power_var_lib_t)
 # setup-done (ConditionPathExists and the binary's own check)
 read_files_pattern(nexus_webapi_t, nexus_var_lib_t, nexus_var_lib_t)
 # OIDC sign-in (docs/phase12-contract.md §2): discovery, JWKS and token requests to
@@ -946,7 +950,9 @@ manage_files_pattern(nexus_webapi_t, nexus_plugin_staging_t, nexus_plugin_stagin
 allow init_t nexus_plugin_staging_t:file { getattr read watch };
 # the same for the PathExists units of nexus-tls and nexus-diag: systemd (init_t) reads
 # and watches the request file it waits for (found in the VM: helpers never started)
-allow init_t { nexus_tls_req_t nexus_diag_var_lib_t nexus_update_t }:file { getattr read watch };
+allow init_t { nexus_tls_req_t nexus_diag_var_lib_t nexus_update_t nexus_power_var_lib_t }:file { getattr read watch };
+# and the directory nexus-power.path watches until request.json appears
+allow init_t nexus_power_var_lib_t:dir { getattr search read watch };
 miscfiles_read_generic_certs(nexus_webapi_t)
 # agent releases (Phase 27): signed uploads extracted, verified and kept below
 # /var/lib/nexus/agent-releases; the image's releases (/usr/share/nexus/agent) are read
@@ -1696,6 +1702,8 @@ neverallow nexus_time_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t ne
 # only nexus-time writes the sources chronyd trusts and the addresses the firewall opens for them
 neverallow { nexus_domain -nexus_time_t } { nexus_time_conf_t nexus_time_var_run_t }:file { write append create unlink rename };
 neverallow { nexus_domain -nexus_time_t -nexus_webapi_t } nexus_time_var_lib_t:file { write append create unlink rename };
+# a reboot or shutdown is requested by the web-api only, after its approval (#179)
+neverallow { nexus_domain -nexus_webapi_t } nexus_power_var_lib_t:file { write append create unlink rename };
 
 ########################################
 # OS updates: nexus-update (unconfined_service_t) runs bootc, which must run as

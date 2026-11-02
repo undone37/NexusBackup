@@ -10,6 +10,8 @@ enable nexus-update.path
 enable nexus-grub-password.service
 # Diagnostics requests from the web UI (self-checks, support bundle; also the pre-update checks' tool).
 enable nexus-diag.path
+# Reboot and shutdown requests from the web UI (top bar > Power, after approval; #179).
+enable nexus-power.path
 # Disks: inventory, SMART, RAID state (timer) and requests from the web UI (Phase 16a/b).
 enable nexus-disks.timer
 enable nexus-disks.path
