@@ -27,14 +27,18 @@
 # metadata (member of the array nexus-data / nexus-metadata), in_use (partitions, signatures, LVM,
 # another array), empty (usable for a new array, a spare or a replacement).
 #
-# The data array: mdadm (metadata 1.2, internal bitmap), XFS with the store's owner and mode set
-# by mkfs (protofile), mounted at /var/lib/nexus/chunkstore by a mount unit in /etc/systemd/system
-# (bootc keeps /etc; the label comes from the context= mount option). Created only while the store
+# The data array: mdadm (metadata 1.2, internal bitmap), LUKS2 on it (#22 M2, docs/disk-encryption-design.md:
+# keyslot 0 a TPM2 token bound to PCR 7, keyslot 1 the passphrase keyd derives from the KEK and hands to root
+# only, `luks-data`; the unit nexus-data-unlock.service opens it as nexus-data at boot with the TPM2 token, as a
+# crypttab line would, without this helper writing /etc), XFS on /dev/mapper/nexus-data with the
+# store's owner and mode set by mkfs (protofile), mounted at /var/lib/nexus/chunkstore by a mount unit in
+# /etc/systemd/system (bootc keeps /etc; the label comes from the context= mount option). Created only while the store
 # holds no files; the scheduler and replicad are stopped around the mount. The metadata role is a
 # follow-up (docs/hardware.md): it would move the live catalog, which this helper may not write.
 #
-# Runs as root in its own SELinux domain (nexus_disks_t): block devices, mdadm, mkfs/xfs_growfs,
-# the store's mount unit; no network, never reads keys, the catalog or store contents. Every path
+# Runs as root in its own SELinux domain (nexus_disks_t): block devices, mdadm, cryptsetup, mkfs/xfs_growfs,
+# the store's mount unit; no network, never the catalog or store contents; of the keys only the data array's
+# passphrase, asked from keyd while creating, growing or re-enrolling the array, never written to disk. Every path
 # and tool can be overridden through NEXUS_DISKS_* environment variables (tests). Stdlib only.
 
 import json
@@ -67,7 +71,13 @@ DEFAULTS = {
     "MKFS_XFS": "mkfs.xfs",
     "XFS_GROWFS": "xfs_growfs",
     "SYSTEMCTL": "systemctl",
+    "CRYPTSETUP": "cryptsetup",
+    "SYSTEMD_CRYPTENROLL": "systemd-cryptenroll",
+    "KEYD_SOCKET": "/run/nexus-keyd/keyd.sock",
+    "TPM": "/dev/tpmrm0",
 }
+CRYPT_NAME = "nexus-data"
+UNLOCK_UNIT = "nexus-data-unlock.service"
 MOUNT_UNIT = "var-lib-nexus-chunkstore.mount"  # systemd-escape --path of STORE
 ARRAY_NAMES = {"nexus-data": "data", "nexus-metadata": "metadata"}
 LEVELS = {"data": ("raid1", "raid5", "raid6", "raid10"), "metadata": ("raid1", "raid10")}
@@ -119,6 +129,14 @@ def must(*argv, timeout=None):
     rc, out, err = run(*argv, timeout=timeout)
     if rc != 0:
         raise RuntimeError(f"{' '.join(argv[:3])} failed (exit {rc}): {(err or out).strip()[:400]}")
+    return out
+
+
+def must_in(*argv, stdin, timeout=None):
+    """must() with `stdin` (a key: never in argv or the error text)."""
+    rc, out, err = run(*argv, timeout=timeout, stdin=stdin)
+    if rc != 0:
+        raise RuntimeError(f"{' '.join(argv[:3])} failed (exit {rc}): {(err or out).replace(stdin, '<key>').strip()[:400]}")
     return out
 
 
@@ -415,10 +433,15 @@ def build_arrays(mdstat, details, tree, store):
         progress = st.get("progress") if st.get("progress") is not None else det.get("progress")
         action = {"recovery": "recover"}.get(st.get("action"), st.get("action"))
         fs = None
-        if node.get("fstype"):
-            fs = {"type": node.get("fstype"), "uuid": node.get("uuid"),
-                  "size": int(node["fssize"]) if node.get("fssize") else None,
-                  "used": int(node["fsused"]) if node.get("fsused") else None}
+        # #22 M2: the file system sits on the LUKS2 mapping inside the array
+        inner = node
+        if node.get("fstype") == "crypto_LUKS":
+            inner = next((c for c in node.get("children") or [] if c.get("fstype")), {})
+        if inner.get("fstype"):
+            fs = {"type": inner.get("fstype"), "uuid": inner.get("uuid"),
+                  "size": int(inner["fssize"]) if inner.get("fssize") else None,
+                  "used": int(inner["fsused"]) if inner.get("fsused") else None,
+                  "encrypted": inner is not node}
         arrays.append({
             "name": md, "path": f"/dev/{md}", "md_name": md_name, "uuid": det.get("uuid"), "role": role,
             "level": det.get("level") or st.get("level"), "state": state, "degraded": degraded,
@@ -608,7 +631,65 @@ def stop_store_services():
     return active
 
 
-def mount_unit(fs_uuid):
+def luks_key():
+    """The data array's LUKS passphrase from keyd (`luks-data`, root only; derived from the KEK, never stored)."""
+    import socket
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)
+    try:
+        s.connect(cfg("KEYD_SOCKET"))
+        s.sendall(b"luks-data\n")
+        key = b""
+        while len(key) < 32:
+            b = s.recv(32 - len(key))
+            if not b:
+                break
+            key += b
+    except OSError as e:
+        raise RuntimeError(f"the key service did not answer ({e}): is nexus-keyd running?") from e
+    finally:
+        s.close()
+    if len(key) != 32:
+        raise RuntimeError("the key service refused the data array's key")
+    return key.hex()  # cryptsetup reads the key file as text: the hex form, 64 characters
+
+
+def unlock_unit(luks_uuid):
+    """What systemd-cryptsetup-generator makes of `nexus-data UUID=<luks> none tpm2-device=auto,discard,headless`:
+    the TPM2 token opens the array at boot (headless: no password prompt on the console when the TPM refuses; then
+    `nexus-disks` re-enrols with the recovery key's KEK, docs/disk-encryption-design.md)."""
+    dev = f"/dev/disk/by-uuid/{luks_uuid}"
+    device_unit = dev.lstrip("/").replace("-", "\\x2d").replace("/", "-") + ".device"
+    return (
+        "# Written by nexus-disks (#22 M2): opens the encrypted data array before the store is mounted.\n"
+        "[Unit]\n"
+        "Description=NexusBackup data array (LUKS2, TPM2 token)\n"
+        "DefaultDependencies=no\n"
+        "IgnoreOnIsolate=yes\n"
+        f"BindsTo={device_unit}\n"
+        f"After={device_unit} cryptsetup-pre.target systemd-udevd-kernel.socket\n"
+        f"Before=cryptsetup.target {MOUNT_UNIT}\n"
+        "Conflicts=umount.target\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "RemainAfterExit=yes\n"
+        "TimeoutSec=300\n"
+        f"ExecStart=/usr/lib/systemd/systemd-cryptsetup attach {CRYPT_NAME} {dev} none tpm2-device=auto,discard,headless=true\n"
+        f"ExecStop=/usr/lib/systemd/systemd-cryptsetup detach {CRYPT_NAME}\n\n"
+        "[Install]\n"
+        "WantedBy=cryptsetup.target\n"
+    )
+
+
+def write_unit(name, text):
+    unit = os.path.join(cfg("UNIT_DIR"), name)
+    with open(unit + ".tmp", "w") as f:
+        f.write(text)
+    os.chmod(unit + ".tmp", 0o644)
+    os.replace(unit + ".tmp", unit)
+
+
+def mount_unit(fs_uuid, encrypted=False):
     opts = "noatime,nodev,nosuid,noexec"
     if cfg("STORE_CONTEXT"):
         opts += f",context={cfg('STORE_CONTEXT')}"
@@ -617,7 +698,9 @@ def mount_unit(fs_uuid):
         "# Written by nexus-disks (docs/hardware.md): the NexusBackup data array.\n"
         "[Unit]\n"
         "Description=NexusBackup store on the data array\n"
-        f"Before={services}\n\n"
+        f"Before={services}\n"
+        + (f"Requires={UNLOCK_UNIT}\nAfter={UNLOCK_UNIT}\n" if encrypted else "")
+        + "\n"
         "[Mount]\n"
         f"What=/dev/disk/by-uuid/{fs_uuid}\n"
         f"Where={cfg('STORE')}\n"
@@ -660,10 +743,24 @@ def op_create_array(req, status):
         raise Refused("raid10 needs an even number of disks")
     paths = [usable(find_disk(status, s)) for s in serials]
     user = pwd.getpwnam(cfg("STORE_USER"))
+    # #22: the array is encrypted with a key the TPM unseals at boot; without a TPM it could not open unattended
+    if not os.path.exists(cfg("TPM")):
+        raise Refused("a TPM 2.0 is required for the encrypted data array (manual chapter 2)")
+    key = luks_key()
     md = f"{cfg('DEV')}/md/nexus-data"
     must("mdadm", "--create", md, "--run", "--name=nexus-data", "--metadata=1.2", f"--level={level}",
          f"--raid-devices={len(paths)}", "--bitmap=internal", *paths, timeout=600)
-    dev = wait_for(md)
+    raw = wait_for(md)
+    must_in("cryptsetup", "luksFormat", "--batch-mode", "--type", "luks2", "--label", CRYPT_NAME,
+            "--key-file=-", raw, stdin=key, timeout=600)
+    luks_uuid = must("cryptsetup", "luksUUID", raw).strip()
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", luks_uuid):
+        raise RuntimeError(f"no LUKS UUID on {raw}: {luks_uuid!r}")
+    must_in("systemd-cryptenroll", "--tpm2-device=auto", "--tpm2-pcrs=7", "--unlock-key-file=/dev/stdin", raw,
+            stdin=key, timeout=300)
+    must_in("cryptsetup", "open", "--allow-discards", "--key-file=-", raw, CRYPT_NAME, stdin=key, timeout=300)
+    write_unit(UNLOCK_UNIT, unlock_unit(luks_uuid))
+    dev = wait_for(f"{cfg('DEV')}/mapper/{CRYPT_NAME}")
     # the store's root directory: owner and mode as tmpfiles.d sets them (0750 nexus-chunkstore: the index reads through the group, #51)
     proto = os.path.join(cfg("DIR"), ".mkfs-proto")
     with open(proto, "w") as f:
@@ -679,12 +776,9 @@ def op_create_array(req, status):
     try:
         if store_empty(cfg("STORE")) is not True:
             raise Refused("the store received files meanwhile; the array is created but not mounted")
-        unit = os.path.join(cfg("UNIT_DIR"), MOUNT_UNIT)
-        with open(unit + ".tmp", "w") as f:
-            f.write(mount_unit(fs_uuid))
-        os.chmod(unit + ".tmp", 0o644)
-        os.replace(unit + ".tmp", unit)
+        write_unit(MOUNT_UNIT, mount_unit(fs_uuid, encrypted=True))
         must("systemctl", "--no-ask-password", "daemon-reload")
+        must("systemctl", "--no-ask-password", "enable", UNLOCK_UNIT)
         must("systemctl", "--no-ask-password", "enable", "--now", MOUNT_UNIT, timeout=300)
         if run("systemctl", "is-active", "--quiet", MOUNT_UNIT)[0] != 0:
             raise RuntimeError(f"{MOUNT_UNIT} is not active: see journalctl -u {MOUNT_UNIT}")
@@ -693,7 +787,8 @@ def op_create_array(req, status):
             rc, out, err = run("systemctl", "--no-ask-password", "start", *stopped, timeout=600)
             if rc:
                 log(f"restarting {' '.join(stopped)} failed: {(err or out).strip()}")
-    return f"{level} {os.path.basename(dev)} from {len(paths)} disks, XFS {fs_uuid}, mounted at {cfg('STORE')}; the initial sync runs in the background"
+    return (f"{level} {os.path.basename(raw)} from {len(paths)} disks, LUKS2 {luks_uuid} (TPM2 token, PCR 7), XFS "
+            f"{fs_uuid}, mounted at {cfg('STORE')}; the initial sync runs in the background")
 
 
 def op_add_spare(req, status):
@@ -766,6 +861,8 @@ def finish_grows(status, state, record):
         try:
             if g.get("bitmap"):
                 must("mdadm", "--grow", f"{cfg('DEV')}/{a['name']}", "--bitmap=internal")
+            if (a.get("fs") or {}).get("encrypted"):
+                must_in("cryptsetup", "resize", "--key-file=-", CRYPT_NAME, stdin=luks_key(), timeout=300)
             must("xfs_growfs", g["mount"], timeout=1800)
             rec["state"], rec["detail"] = "done", f"file system on {a['name']} grown to the new array size"
         except Exception as e:

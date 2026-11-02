@@ -410,6 +410,18 @@ Reviewed with the implementation (2026-10-10):
   recovery key during the first-boot wizard (seconds to minutes); `nexus-keyd-seal` has no own SELinux domain yet;
   a copy of a whole VM includes its vTPM state. LUKS2 on the data array and /var follow (M2, M3).
 
+### 3.15 LUKS2 on the data array (#22 M2)
+
+- New data arrays are LUKS2 (`nexus-disks create_array`): keyslot 0 a TPM2 token (PCR 7), keyslot 1 a passphrase
+  keyd derives from the KEK and gives to root only (`luks-data`; any other request from root and this request from
+  any other uid get no answer, test `luks_passphrase_from_the_kek_only_for_root`); the key travels on stdin, never
+  in an argument or an error text (test `test_create_array`). Without a TPM the array is refused.
+- Policy changes: `nexus_disks_t` may connect to keyd, run cryptsetup and use the TPM (the TPM `neverallow` now
+  exempts it); `nexus-disks.service` sees the keyd socket (not the key files) and shares the host's IPC namespace
+  (device-mapper's udev semaphores).
+- Remaining: arrays created before stay clear; /var (catalog, credentials) is M3; re-enrolment of the TPM2 token
+  on new hardware is manual until the `nexus-disks` op exists.
+
 ---
 
 ## 4. Findings
@@ -444,7 +456,7 @@ Reviewed with the implementation (2026-10-10):
 
 | ID | Sev | Finding | Recommendation |
 |---|---|---|---|
-| H-1 | high | KEK stored as a plain 0600 file (`keyd::seal`); no LUKS. Disk theft = all data. *Accepted deferral (user decision 2026-10-08/09).* **Partly closed (#22 M1, §3.14): the KEK is sealed to the TPM (required since 2026-11-01).** | LUKS2 on the data array and /var (M2, M3). Appliances installed before the TPM requirement without a TPM keep the old exposure until a TPM is added. |
+| H-1 | high | KEK stored as a plain 0600 file (`keyd::seal`); no LUKS. Disk theft = all data. *Accepted deferral (user decision 2026-10-08/09).* **Partly closed (#22 M1, §3.14): the KEK is sealed to the TPM (required since 2026-11-01).** | LUKS2 on the data array (M2, §3.15) for new arrays; /var (M3). Appliances installed before the TPM requirement without a TPM keep the old exposure until a TPM is added. |
 | H-3 | high | scheduler, nexus-pve, nexus-offsite and restore-VM QEMU share uid `nexus-chunkstore` and have no SELinux domain. keyd hands DEKs to that uid. Narrowed 2026-10-21 (Phase 39 S4): nexus-index only fetches keyrings; since 2026-10-25 (#51) it runs as its own uid `nexus-index` (reads the stores through the group `nexus-chunkstore`, 0750/0640), and keyd refuses that uid everything that creates, exports, imports or changes keys (test `read_only_uid_only_fetches_keyrings`). | Separate users (`nexus-scheduler`, `nexus-pve`, `nexus-offsite`, `nexus-restorevm`). QEMU in a transient unit (PrivateNetwork, DeviceAllow=/dev/kvm) with its own domain. keyd ACL per uid. Domain transitions in `os/selinux`. |
 | M-1 | medium | Audit chain unkeyed and not anchored off-box. The journal echo lacks details. No log forwarding config. | HMAC chain with a keyd key or signed checkpoints. Journal/rsyslog TLS forwarding in the image. Single audit writer. Include the head hash in each offsite upload. |
 | M-2 | medium | nftables egress sets are never populated (no code writes them). The firewall blocks DNS/NTS/PVE/SFTP, which invites flushing it. | Root helper or setup generates the sets from the catalog and chrony config (Phase 6 "nftables automation"). |

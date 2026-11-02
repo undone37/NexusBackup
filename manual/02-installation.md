@@ -478,7 +478,9 @@ To create the data array (administrator):
 3. Submit. The request needs **approval** by a second person (another administrator or a security officer), like
    every other destructive change ([10 Approvals and audit](10-approvals-and-audit.md)).
 4. After approval the appliance checks again that the disks are empty and the store holds no files, then creates
-   the array (mdadm, metadata 1.2, internal write-intent bitmap), formats it with XFS, stops the scheduler and the
+   the array (mdadm, metadata 1.2, internal write-intent bitmap), **encrypts it** (LUKS2: the TPM 2.0 unlocks it at
+   boot, a second key comes from the master key, so on new hardware the recovery key opens it; see
+   [14 Disaster recovery](14-disaster-recovery.md#the-master-key-and-the-tpm)), formats it with XFS, stops the scheduler and the
    replication service, mounts the array as the store with a mount unit that survives OS updates, and starts them
    again. The initial synchronisation runs in the background (the array shows **resyncing** with its progress);
    backups can start at once. **Recent operations** on the page shows the outcome; it is recorded in the audit log

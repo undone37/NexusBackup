@@ -1782,3 +1782,20 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
     Patroni VMs' etcd at 10.2.34.96-98 unreachable; VM 296 holds 10.2.34.97 by DHCP now), esxi8 failed (rc 1 after
     197 s, not examined yet).
   - open (in #39): M2 incrementals by RCT, M3 source kind / inventory / restore to PVE, M4 restore to Hyper-V.
+
+## Disk encryption M2 lab and the fresh install (2026-11-02, #22)
+
+- [x] Fresh appliance VM 203 (lab image 0.0.61-dev from the M2 branch, `lab/pvehost/deploy.sh` with a vTPM and
+  five blank 16 GB data disks, own lab directory, not VM 201's): first-boot setup sealed the KEK to the vTPM
+  (`keyd-seal.json` mode tpm2, PCR 7, firmware false on SeaBIOS; no `kek.local`) - the fresh-install item of M1.
+- [x] `lab/appliance/disks.sh create` through the API (approval by the security officer): RAID6 from NXLAB-D1..4 ->
+  LUKS2 (keyslot 0 the keyd passphrase, keyslot 1 the TPM2 token on PCR 7) -> XFS on `/dev/mapper/nexus-data`,
+  mounted as the store. Found and fixed on the way: a neverallow kept the disk helper off the keyd socket; the
+  helper lacked the `nexus-keyd` group (socket 0660 in a 0750 dir); cryptsetup needs `/dev/random`, `/etc/pki`
+  and the SysV IPC limits, systemd-cryptenroll `/var/lib/systemd` (found with the domain permissive in a lab-only
+  module, removed afterwards). With 0.0.62-dev and enforcing: the array recreated (one denial left: cryptenroll
+  writing to /dev/urandom, now dontaudit), reboots unlock it through `nexus-data-unlock.service` with the TPM2
+  token, the store and the services come up, 0 AVCs at boot.
+  - open (in #22): TPM2 re-enrolment on new hardware as a `nexus-disks` op, the dashboard state, member failure
+    and grow on the encrypted array in the lab, M3 (/var). `disks.sh`'s console checks garble long lines on this
+    VM (tab completion in the serial shell); the API part works.

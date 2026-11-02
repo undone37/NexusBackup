@@ -75,6 +75,21 @@ follows that risk.
   `os/greenboot/tests/test_nexus_disks.py`.
 - greenboot check, dashboard state, manual chapters 2, 13 and 14.
 
+## Implementation (M2)
+
+- keyd: `luks-data` from uid 0 only (and nothing else from it) → `blake3::derive_key("nexus luks data v1", KEK)`
+  instead of HKDF-SHA256 (BLAKE3's key derivation mode, already a keyd dependency; no new crate). Tests
+  `luks_passphrase_from_the_kek_only_for_root`.
+- `nexus-disks create_array`: refused without `/dev/tpmrm0`; the passphrase from keyd (hex, on stdin only), then
+  `mdadm` -> `cryptsetup luksFormat --type luks2` -> `systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7` ->
+  `cryptsetup open --allow-discards` -> XFS on `/dev/mapper/nexus-data`. Instead of a crypttab line (which would
+  need write access to `/etc` for the helper's SELinux domain) it writes `nexus-data-unlock.service`, the unit
+  systemd-cryptsetup-generator would make of `nexus-data UUID=... none tpm2-device=auto,discard,headless=true`; the
+  mount unit requires it. A grow resizes the mapping before `xfs_growfs`.
+- Image: `cryptsetup` stays (os/slim.sh); systemd-cryptenroll and the generator come with systemd-udev.
+- Not yet: re-enrolling the TPM2 token on new hardware from the KEK-derived keyslot (`nexus-disks` op, then the
+  manual), the dashboard state.
+
 ## Open questions
 
 - Whether AlmaLinux 10's systemd builds `systemd-creds` with TPM2 support and which `tpm2-tss` packages that needs.

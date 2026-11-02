@@ -683,6 +683,7 @@ impl Peers {
 /// - `attach-escrow <tenant> <len>\n` + `len` bytes (recovery key line, then escrow files
 ///   encoded like the `escrow` answer) → N x u32 LE versions now present ([`attach_escrow`])
 /// - `dek-age <tenant>\n` → `<version> <unix time written>` of the current DEK ([`dek_age`])
+/// - from uid 0 only, and nothing else from it: `luks-data\n` → the data array's 32-byte passphrase ([`luks_data`])
 ///
 /// Any error closes the connection without an answer.
 // ponytail: sequential accept loop; requests only happen at chunkstore start.
@@ -697,6 +698,17 @@ pub fn serve(listener: UnixListener, dir: &Path, peers: Peers) -> io::Result<()>
 
 fn handle(mut s: UnixStream, dir: &Path, peers: Peers) -> io::Result<()> {
     let uid = peer_uid(&s)?;
+    if uid == 0 {
+        // #22 M2: the root disk helper (nexus-disks, SELinux confines who may connect) gets the data array's
+        // passphrase and nothing else
+        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut line = String::new();
+        BufReader::new(&s).take(64).read_line(&mut line)?;
+        if line != "luks-data\n" {
+            return Err(err(io::ErrorKind::PermissionDenied, "root may only ask for luks-data"));
+        }
+        return s.write_all(&luks_data(dir)?[..]);
+    }
     let read_only = peers.read_only_uid == Some(uid);
     if uid != peers.uid && !read_only {
         return Err(err(
@@ -754,6 +766,14 @@ fn body_len(line: &str) -> io::Result<Option<usize>> {
         }
         None => Ok(None),
     }
+}
+
+/// #22 M2 (docs/disk-encryption-design.md): the LUKS2 passphrase of the data array, derived from the KEK (BLAKE3
+/// key derivation, context `nexus luks data v1`), never stored. On new hardware the recovery key opens the KEK and
+/// the KEK this passphrase, so the array opens without its old TPM. Only root asks (`luks-data`, [`serve`]).
+pub fn luks_data(dir: &Path) -> io::Result<Key> {
+    let kek = unseal(dir)?;
+    Ok(Zeroizing::new(blake3::derive_key("nexus luks data v1", &kek[..])))
 }
 
 /// The answer to one request line without a body (see `serve`); errors mean "no answer".
@@ -1081,6 +1101,37 @@ mod tests {
         fs::remove_file(d.path().join("kek.local")).unwrap();
         check_recovery_key(d.path(), &rk).unwrap();
         assert!(check_recovery_key(d.path(), &format_recovery_key(&[3; 32])).is_err());
+    }
+
+    /// #22 M2: the data array's passphrase comes from the KEK (stable, not the KEK itself, another per KEK) and only
+    /// root gets it: the scheduler's uid is refused, on the request path and over the socket.
+    #[test]
+    fn luks_passphrase_from_the_kek_only_for_root() {
+        let d = tempfile::tempdir().unwrap();
+        init(d.path()).unwrap();
+        let a = luks_data(d.path()).unwrap();
+        assert_eq!(a, luks_data(d.path()).unwrap());
+        assert_ne!(&a[..], &unseal(d.path()).unwrap()[..], "not the KEK itself");
+        let e = tempfile::tempdir().unwrap();
+        init(e.path()).unwrap();
+        assert_ne!(a, luks_data(e.path()).unwrap());
+        assert!(
+            answer(d.path(), "luks-data\n").is_err(),
+            "not on the chunkstore peer's path"
+        );
+        // over the socket as the allowed (non-root) peer: no answer
+        let sock = d.path().join("keyd.sock");
+        let l = UnixListener::bind(&sock).unwrap();
+        // SAFETY: getuid takes no arguments and cannot fail
+        let me = unsafe { libc::getuid() };
+        assert_ne!(me, 0, "run the tests as a normal user");
+        let dir = d.path().to_owned();
+        std::thread::spawn(move || serve(l, &dir, Peers::only(me)));
+        let mut c = UnixStream::connect(&sock).unwrap();
+        c.write_all(b"luks-data\n").unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        assert!(got.is_empty(), "{} bytes answered", got.len());
     }
 
     #[test]

@@ -233,8 +233,9 @@ files_search_var_lib(nexus_domain)
 files_search_pids(nexus_domain)
 allow nexus_domain nexus_var_lib_t:dir search_dir_perms;
 
-# Only keyd may ever touch the TPM (TPM sealing is deferred, the rule stays).
-neverallow { nexus_domain -nexus_keyd_t } tpm_device_t:chr_file *;
+# The TPM: keyd's credential is unsealed by PID 1 (#22 M1), so no Nexus domain needs it, except the disk helper
+# that enrols the data array's TPM2 token (systemd-cryptenroll, #22 M2); it cannot read the sealed KEK (below).
+neverallow { nexus_domain -nexus_keyd_t -nexus_disks_t } tpm_device_t:chr_file *;
 # Key material: only keyd (and setup, which runs `keyd init` once) see it; the
 # console gate reads it to check the recovery key (as recover-admin does).
 neverallow { nexus_domain -nexus_keyd_t -nexus_setup_t -nexus_consolegate_t } nexus_keyd_var_lib_t:file { read open };
@@ -1190,6 +1191,13 @@ gen_require(`
 	type systemd_unit_file_t;
 	type mount_t;
 	type fs_t;
+	type lvm_exec_t;
+	type lvm_var_run_t;
+	type var_run_t;
+	type kernel_t;
+	type init_var_lib_t;
+	type systemd_userdbd_t;
+	type container_runtime_tmpfs_t;
 ')
 
 # python3 with the standard library; lsblk (bin_t), smartctl, wipefs / blkid / mkfs.xfs /
@@ -1262,6 +1270,45 @@ allow nexus_disks_t systemd_unit_file_t:dir rw_dir_perms;
 allow nexus_disks_t nexus_unit_file_t:file { create_file_perms write_file_perms rename unlink setattr };
 filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount")
 filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "var-lib-nexus-chunkstore.mount.tmp")
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "nexus-data-unlock.service")
+filetrans_pattern(nexus_disks_t, systemd_unit_file_t, nexus_unit_file_t, file, "nexus-data-unlock.service.tmp")
+
+# #22 M2: LUKS2 on the data array. The array's passphrase from keyd (`luks-data`, root only, derived from the KEK);
+# cryptsetup (lvm_exec_t) in this domain: device-mapper control, the kernel keyring (LUKS2 keeps the volume key
+# there), udev synchronisation (semaphores, uevent socket), its lock directory /run/cryptsetup; mlock'd key
+# buffers. systemd-cryptenroll (bin_t) talks to the TPM to enrol the TPM2 token.
+stream_connect_pattern(nexus_disks_t, nexus_keyd_var_run_t, nexus_keyd_var_run_t, nexus_keyd_t)
+can_exec(nexus_disks_t, lvm_exec_t)
+dev_rw_lvm_control(nexus_disks_t)
+dev_rw_tpm(nexus_disks_t)
+allow nexus_disks_t self:key { create write search read view link setattr };
+allow nexus_disks_t self:capability ipc_lock;
+allow nexus_disks_t self:sem create_sem_perms;
+allow nexus_disks_t self:netlink_kobject_uevent_socket create_socket_perms;
+allow nexus_disks_t var_run_t:dir { add_name write };
+filetrans_pattern(nexus_disks_t, var_run_t, lvm_var_run_t, dir, "cryptsetup")
+manage_dirs_pattern(nexus_disks_t, lvm_var_run_t, lvm_var_run_t)
+manage_files_pattern(nexus_disks_t, lvm_var_run_t, lvm_var_run_t)
+# seen in the lab (2026-11-02, a fresh appliance VM with a vTPM): cryptsetup reads /dev/random for the LUKS2 salts
+# and the crypto configuration under /etc/pki, asks for SysV IPC limits (udev semaphores); systemd-cryptenroll
+# looks into /var/lib/systemd
+dev_read_rand(nexus_disks_t)
+miscfiles_read_generic_certs(nexus_disks_t)
+allow nexus_disks_t kernel_t:system ipc_info;
+allow nexus_disks_t init_var_lib_t:dir { getattr search };
+# probes of lsblk (userdb lookups for the owner columns), mdadm and mkfs.xfs that change nothing
+dontaudit nexus_disks_t systemd_userdbd_runtime_t:dir { getattr open };
+dontaudit nexus_disks_t systemd_userdbd_runtime_t:lnk_file read;
+dontaudit nexus_disks_t systemd_userdbd_runtime_t:sock_file write;
+dontaudit nexus_disks_t systemd_userdbd_t:unix_stream_socket connectto;
+dontaudit nexus_disks_t hugetlbfs_t:dir { open read };
+dontaudit nexus_disks_t container_runtime_tmpfs_t:file getattr;
+dontaudit nexus_disks_t sysctl_vm_t:file getattr;
+# systemd-cryptenroll offers entropy back to /dev/urandom; reading it is enough
+gen_require(`
+	type urandom_device_t;
+')
+dontaudit nexus_disks_t urandom_device_t:chr_file write;
 # systemctl: daemon-reload, enable --now the mount unit, stop/start the scheduler and
 # replicad around the mount, is-active (private socket of PID 1, as root)
 systemd_exec_systemctl(nexus_disks_t)
@@ -1294,7 +1341,9 @@ allow init_t nexus_disks_var_lib_t:file { getattr read watch };
 # (and the web-api, for requests) writes its dir
 neverallow nexus_disks_t self:{ tcp_socket udp_socket rawip_socket sctp_socket } create;
 neverallow nexus_disks_t { nexus_keyd_var_lib_t nexus_catalog_t nexus_escrow_t nexus_sshkey_t nexus_scheduler_secret_t nexus_webapi_secret_t nexus_webapi_var_lib_t nexus_agent_ca_t nexus_replicad_var_lib_t nexus_replica_key_t nexus_downloads_t nexus_etc_t nexus_store_t }:file { read write append open create unlink link rename setattr };
-neverallow nexus_disks_t { nexus_keyd_var_run_t nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
+# #22 M2: the keyd socket is allowed (keyd answers root only `luks-data`, the array's passphrase); the key files
+# stay out of reach (above)
+neverallow nexus_disks_t { nexus_scheduler_var_run_t nexus_replicad_var_run_t }:sock_file { write open };
 neverallow { nexus_domain -nexus_disks_t -nexus_webapi_t } nexus_disks_var_lib_t:file { write append create unlink rename };
 
 ########################################
@@ -1490,6 +1539,14 @@ allow nexus_setup_t iptables_t:process2 { nnp_transition nosuid_transition };
 allow iptables_t nexus_setup_t:fd use;
 allow iptables_t nexus_setup_t:fifo_file rw_inherited_fifo_file_perms;
 allow iptables_t nexus_setup_t:process sigchld;
+# #22: `systemd-analyze has-tpm2` (the TPM check of the first boot) looks at the cgroup file system and the
+# namespaces of PID 1 for its verdict lines; the TPM lines it needs come from sysfs
+gen_require(`
+	type cgroup_t;
+	type nsfs_t;
+')
+dontaudit nexus_setup_t cgroup_t:filesystem getattr;
+dontaudit nexus_setup_t nsfs_t:file getattr;
 
 ########################################
 # Phase 31: guest file index without the restore micro-VM (docs/file-index-v2-plan.md)
