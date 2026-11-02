@@ -308,6 +308,7 @@
     scanBudget = x?.scan_budget_min ? String(x.scan_budget_min) : '';
     fileHashes = !!x?.file_hashes;
     fullRead = x?.full_read_days === null || x?.full_read_days === undefined ? '' : String(x.full_read_days);
+    logSchedule = x?.log_schedule ?? '';
     tagInput = '';
     lastSource = f.source_id;
     guestList = null;
@@ -390,6 +391,8 @@
   let fileHashes = $state(false);
   // Phase 29: full read (change-tracking check), PUT /groups/{id}/full-read; '' = the default
   let fullRead = $state('');
+  // #43: log runs on their own schedule, PUT /groups/{id}/log-schedule; shown once the group exists
+  let logSchedule = $state('');
   const fullReadDefault = $derived((editing as Group | null)?.full_read_default ?? (pveSource ? 90 : 30));
   const scanSchedule = () =>
     scanMode === 'off' ? null : scanMode === 'daily' ? `daily ${scanAt}` : scanCustom.trim() || null;
@@ -487,6 +490,9 @@
       const days = String(fullRead ?? '').trim() === '' ? null : Number(fullRead);
       if (id && !pluginSource && days !== (editing?.full_read_days ?? null))
         await act(put(`/groups/${id}/full-read`, { days }), t.p29.fullRead.saved);
+      const ls = logSchedule.trim() || null;
+      if (id && editing?.logs_supported && ls !== (editing?.log_schedule ?? null))
+        await act(put(`/groups/${id}/log-schedule`, { schedule: ls }), t.logSchedule.saved);
       open = false;
       load();
     }
@@ -571,6 +577,7 @@
                 {#if x.file_hashes}<span class="chip plain">{t.groups.fileHashesShort}</span>{/if}
                 {#if x.full_read_days === 0}<span class="chip plain">{t.p29.fullRead.chipOff}</span>
                 {:else if x.full_read_days}<span class="chip plain">{t.p29.fullRead.chip(x.full_read_days)}</span>{/if}
+                {#if x.log_schedule}<span class="chip plain">{t.logSchedule.chip(x.log_schedule)}</span>{/if}
                 {#if x.timezone && x.timezone !== 'UTC'}<div class="muted">{x.timezone}</div>{/if}
                 {#if diskCount(x) || (x.parallel_guests ?? 1) > 1}<div class="muted">
                     {[
@@ -829,6 +836,22 @@
         <p class="hint" id="g-hash-hint">{t.groups.fileHashesHint}</p>
       </div>
     </fieldset>
+    {#if editing?.logs_supported}
+      <fieldset class="field">
+        <legend>{t.logSchedule.legend}</legend>
+        <div class="field">
+          <label for="g-log-schedule">{t.logSchedule.label}</label>
+          <input
+            id="g-log-schedule"
+            bind:value={logSchedule}
+            placeholder="every 15m"
+            maxlength="200"
+            aria-describedby="g-log-schedule-hint"
+          />
+          <p class="hint" id="g-log-schedule-hint">{t.logSchedule.hint}</p>
+        </div>
+      </fieldset>
+    {/if}
     {#if !pluginSource}
       <fieldset class="field">
         <legend>{t.p29.fullRead.legend}</legend>

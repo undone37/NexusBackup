@@ -2888,3 +2888,80 @@ fn capacity_is_checked_every_tick() {
             .unwrap();
     assert_eq!(n, 1);
 }
+
+#[test]
+fn log_schedule_queues_log_runs_beside_the_base_backups() {
+    // #43: the policy's slot takes the base backup (mode full), the group's log schedule the log runs
+    let e = env(4);
+    let mut s = sched(&e);
+    s.db.conn()
+        .execute("UPDATE groups SET log_schedule='every 15m' WHERE id=1", [])
+        .unwrap();
+    let day = 20_000 * 86400;
+    let modes = |s: &Scheduler| -> Vec<String> {
+        let c = s.db.conn();
+        let mut q = c
+            .prepare("SELECT COALESCE(json_extract(params,'$.mode'),'-') FROM jobs WHERE json_extract(params,'$.group_id')=1 ORDER BY id")
+            .unwrap();
+        let rows = q.query_map([], |r| r.get(0)).unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+    s.now = day + 12 * 3600;
+    s.queue_scheduled(s.now).unwrap();
+    assert!(modes(&s).is_empty(), "first sight: wait for the next slots");
+    s.now += 16 * 60;
+    s.queue_scheduled(s.now).unwrap();
+    assert_eq!(modes(&s), ["log"]);
+    s.now += 60;
+    s.queue_scheduled(s.now).unwrap();
+    assert_eq!(modes(&s), ["log"], "a queued run of the group is not duplicated");
+    s.db.conn().execute("UPDATE jobs SET state='ok'", []).unwrap();
+    s.now += 15 * 60;
+    s.queue_scheduled(s.now).unwrap();
+    assert_eq!(modes(&s), ["log", "log"]);
+    s.db.conn().execute("UPDATE jobs SET state='ok'", []).unwrap();
+    s.now = day + 22 * 3600 + 5;
+    s.queue_scheduled(s.now).unwrap();
+    assert_eq!(
+        modes(&s),
+        ["log", "log", "full"],
+        "the policy slot wins over a due log run"
+    );
+    s.db.conn().execute("UPDATE jobs SET state='ok'", []).unwrap();
+    s.queue_scheduled(s.now).unwrap();
+    assert_eq!(
+        modes(&s),
+        ["log", "log", "full", "log"],
+        "log runs continue after the base"
+    );
+    // groups without a log schedule keep the plain job params
+    let plain: String =
+        s.db.conn()
+            .query_row(
+                "SELECT params FROM jobs WHERE json_extract(params,'$.group_id')=3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_eq!(plain, r#"{"group_id":3}"#);
+    // log_lag: quiet within three log slots of the last good log run, a warning after, resolved by the next
+    s.db.conn().execute("UPDATE jobs SET state='ok'", []).unwrap();
+    let open = |s: &Scheduler| -> i64 {
+        s.db.conn()
+            .query_row(
+                "SELECT COUNT(*) FROM alerts WHERE kind='log_lag' AND resolved_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    s.check_log_lag(s.now + 30 * 60).unwrap();
+    assert_eq!(open(&s), 0);
+    s.check_log_lag(s.now + 50 * 60).unwrap();
+    assert_eq!(open(&s), 1, "{:?}", alerts_of(&s, "log_lag"));
+    s.now += 50 * 60;
+    s.queue_scheduled(s.now).unwrap();
+    s.db.conn().execute("UPDATE jobs SET state='ok'", []).unwrap();
+    s.check_log_lag(s.now).unwrap();
+    assert_eq!(open(&s), 0);
+}

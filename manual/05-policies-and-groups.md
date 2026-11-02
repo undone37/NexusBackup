@@ -329,6 +329,31 @@ approval) and is audited (`group.full_read`); administrators and tenant administ
 > real PVE dirty bitmap: the comparison is not possible on Proxmox VE (see above); a lab run with the Windows
 > agent's USN journal is pending.
 
+### Log backups on their own schedule (PostgreSQL, MySQL)
+
+A group that backs up a whole PostgreSQL cluster or MySQL/MariaDB server (no database selected) can get a second
+schedule for log-only runs: edit the group and fill in **Log backups → Log schedule** (the schedule syntax of
+policies, for example `every 15m`; empty = off). The field appears once the group exists and only for source kinds
+whose plugin declares log backups.
+
+- The **policy's schedule** then takes the base runs: the plugin takes a new base backup when the last one is older
+  than **New base backup every … days** of the source, otherwise an incremental run as before.
+- The **log schedule** queues log runs in between: they only send the new WAL or binary log onto the newest base.
+  A log run takes a new base only when it has to (no base yet, a failover, a broken chain such as a dropped
+  replication slot or a purged binary log).
+- Each run is a snapshot restorable on its own, with its recoverable range. Keep the log snapshots with **Keep all
+  snapshots of the last N hours** in the policy ([Frequent runs](#frequent-runs-keep-all-recent-snapshots)).
+- A run never starts while another run of the same group is queued or running; a policy slot that falls due wins
+  over a due log run. Pauses, maintenance and blackout windows hold log runs too.
+- Alert `log_lag` (warning) when the last good log run is older than three log intervals
+  ([11 Alerts](11-alerts-and-monitoring.md)); it resolves with the next good log run.
+
+The change is audited (`group.log_schedule`); administrators and tenant administrators set it, also through the API
+`PUT /api/v1/groups/{id}/log-schedule {"schedule": null | "every 15m"}`.
+
+> **Status:** Implemented for the PostgreSQL (1.6.0) and MySQL (1.4.0) plugins (#43: scheduler, API and testbox tests, demo
+> backend). SQL Server and Oracle follow with #41 and #42 (docs/database-logs-design.md).
+
 ### Excluded disks and parallel guests (Proxmox VE)
 
 A Proxmox VE group has two more settings in its dialog:

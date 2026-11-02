@@ -2894,6 +2894,7 @@ export const en = {
       cert_expiry: 'Certificate expires',
       vmid_reused: 'VM ID reused by another VM',
       offsite_lag: 'Offsite copy behind',
+      log_lag: 'Log backups behind',
       fleecing_space: 'Fleecing storage low',
       inventory: 'Guest inventory changed',
       inventory_refresh: 'Guest inventory not refreshed',
@@ -2957,6 +2958,8 @@ export const en = {
         'Snapshots disappeared or differ from the catalog. Check the store and the offsite target for manual deletion or tampering and review the audit log. Resolves after a clean offsite check.',
       capacity:
         'The store is filling up. Shorten retention, run GC or add disks. Resolves when usage drops below the threshold.',
+      log_lag:
+        "Log backups of a database group are behind their log schedule. Check the group's recent log runs (job log), the database's reachability and its log settings (replication slot, binary log). Resolves with the next good log run.",
       offsite_lag:
         'Offsite copies are behind. Check the offsite target (reachable, credentials, quota) and the offsite job logs. Resolves when the copy has caught up.',
       gc_quorum:
@@ -4628,6 +4631,14 @@ export const en = {
     emailHint:
       'Used only for the new-device notice. Single sign-on accounts take the address from the identity provider at each sign-in.',
     emailSaved: 'E-mail address saved.',
+  },
+  // #43: database log runs on their own schedule
+  logSchedule: {
+    legend: 'Log backups',
+    label: 'Log schedule',
+    hint: 'Log-only runs between the base backups (WAL, binary log), for example "every 15m". Empty = off: the policy schedule takes every run. With a log schedule the policy schedule takes the base backups.',
+    saved: 'Log schedule saved.',
+    chip: (s: string) => `logs ${s}`,
   },
   // Phase 29 (NetBackup Tier 1): full read, flagged-snapshot restores, scan back, freezes, risk signals
   p29: {

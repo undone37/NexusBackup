@@ -1,7 +1,7 @@
 {
   "id": "mysql",
   "name": "MySQL / MariaDB",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "nexusbackup",
   "api": 1,
   "kinds": [
@@ -84,7 +84,7 @@
         { "host": "/ssh_host", "port": "/ssh_port", "default_port": 22, "proto": "tcp" }
       ],
       "guests": { "title": "Databases (logical dumps; none selected = whole server: base backup + binlog)", "list": true },
-      "backup": { "incremental": true, "consistent": "application" },
+      "backup": { "incremental": true, "consistent": "application", "logs": true },
       "restores": [
         { "id": "download", "title": "Download (tar/zip)" },
         {

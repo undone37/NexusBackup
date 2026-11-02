@@ -110,7 +110,8 @@ impl Scheduler {
             &kind,
             sid,
             config,
-            json!({"guests": guests, "parallel": parallel}),
+            // #43: a group with a log schedule: `full` (policy slot) or `log`; the plugin decides without
+            json!({"guests": guests, "parallel": parallel, "mode": job.params["mode"].as_str().filter(|m| *m == "full" || *m == "log")}),
         )?;
         plan.steps.push(self.host_step(&plan, &["backup".into()], false));
         Ok(plan)
