@@ -1799,3 +1799,9 @@ lab scripts as scheduled regression runs, fault injection, WAL kept across a Pat
   - open (in #22): TPM2 re-enrolment on new hardware as a `nexus-disks` op, the dashboard state, member failure
     and grow on the encrypted array in the lab, M3 (/var). `disks.sh`'s console checks garble long lines on this
     VM (tab completion in the serial shell); the API part works.
+- [x] New-hardware drill on VM 203 (2026-11-02): the vTPM replaced by a blank one; boot: `nexus-keyd` and
+  `nexus-data-unlock` failed, store not mounted (as expected). `nexus-setup keys-reseal` with the recovery key
+  (read on the VM from the setup journal, never copied off it, shredded afterwards) resealed the KEK; the new
+  `nexus-disks reenroll` first did nothing (systemd-cryptenroll skips "PCR set already enrolled" when wipe and
+  enrol share one call), split into wipe + enrol it re-enrolled the token, the store came back, and the next boot
+  unlocked everything unattended (0 failed units).

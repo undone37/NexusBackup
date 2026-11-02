@@ -63,6 +63,17 @@ to the same Secure Boot state), and a second key derived from the master key ope
 master key is resealed. Data disks taken out of the appliance reveal nothing. Arrays created before this release
 stay unencrypted (an existing store is never re-encrypted in place).
 
+After a firmware update, a Secure Boot change or a new mainboard the TPM no longer unlocks the array either: the
+store is not mounted and backups stop (**Diagnostics**, `systemctl --failed` shows `nexus-data-unlock.service`).
+Right after `nexus-setup keys-reseal`, enrol the array for the TPM's current state:
+
+```
+nexus-disks reenroll
+```
+
+It opens the array with the key derived from the master key, replaces its TPM entry and mounts the store; the next
+boots unlock it unattended again.
+
 ### Boot menu password
 
 The boot menu (GRUB) boots the appliance without any input. Changing a boot entry (key `e`) or opening the GRUB

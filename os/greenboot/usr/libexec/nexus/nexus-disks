@@ -6,6 +6,10 @@
 #                      nexus-disks.path when the web-api queues a request): handle the queued
 #                      requests, finish pending grows, write status.json
 #   nexus-disks scan   print the status as JSON (console; changes nothing)
+#   nexus-disks reenroll
+#                      new hardware or a changed PCR 7 (console, after `nexus-setup keys-reseal`): open the
+#                      encrypted data array with the KEK-derived passphrase from keyd, replace its TPM2 token
+#                      with one for this TPM, then start the unlock unit and the store (#22 M2)
 #
 # Control directory (default /var/lib/nexus/disks, 2771 root:nexus-webapi, tmpfiles.d/nexus-disks.conf):
 #   req-<id>.json  written by the web-api (tmp + rename), at most 4 KiB, consumed (deleted) here:
@@ -1016,13 +1020,41 @@ def tick():
     return 0
 
 
+def reenroll():
+    """The TPM2 token of the data array for this TPM (the old one no longer unseals: new mainboard, firmware or
+    Secure Boot change). The KEK must be unsealed already (`nexus-setup keys-reseal` with the recovery key)."""
+    md = f"{cfg('DEV')}/md/nexus-data"
+    if not os.path.exists(md):
+        raise Refused(f"no data array ({md})")
+    if run("cryptsetup", "isLuks", md)[0] != 0:
+        raise Refused("the data array is not encrypted: nothing to re-enrol")
+    if not os.path.exists(cfg("TPM")):
+        raise Refused("no TPM 2.0 on this machine")
+    key = luks_key()
+    # two steps: with both in one call systemd-cryptenroll sees "this PCR set is already enrolled" and does
+    # nothing, although the old token belongs to another TPM (lab 2026-11-02)
+    must_in("systemd-cryptenroll", "--wipe-slot=tpm2", "--unlock-key-file=/dev/stdin", md, stdin=key, timeout=300)
+    must_in("systemd-cryptenroll", "--tpm2-device=auto", "--tpm2-pcrs=7", "--unlock-key-file=/dev/stdin", md,
+            stdin=key, timeout=300)
+    must("systemctl", "--no-ask-password", "restart", UNLOCK_UNIT, timeout=300)
+    must("systemctl", "--no-ask-password", "start", MOUNT_UNIT, *cfg("STORE_SERVICES").split(), timeout=600)
+    return f"the data array's TPM2 token is enrolled for this TPM (PCR 7); {cfg('STORE')} is mounted"
+
+
 def main(argv):
+    if argv[1:] == ["reenroll"]:
+        try:
+            print(reenroll())
+            return 0
+        except (Refused, RuntimeError) as e:
+            print(f"nexus-disks: {e}", file=sys.stderr)
+            return 1
     if argv[1:] == ["scan"]:
         print(json.dumps(scan(read_json(os.path.join(cfg("DIR"), "status.json"), {}), signatures=False), indent=1))
         return 0
     if argv[1:] == ["tick"]:
         return tick()
-    print("usage: nexus-disks tick|scan", file=sys.stderr)
+    print("usage: nexus-disks tick|scan|reenroll", file=sys.stderr)
     return 2
 
 
