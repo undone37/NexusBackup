@@ -843,7 +843,7 @@ async fn nexusstor_source_from_pairing_token() {
     let sig = bundle::sign(&b, &t.project_key).unwrap();
     let r = t.upload(&admin, &b, Some(&sig), "application/octet-stream").await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert_eq!(t.installer(), ["installed nexusstor 1.0.0"]);
+    assert_eq!(t.installer(), ["installed nexusstor 1.1.0"]);
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
