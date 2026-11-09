@@ -5010,7 +5010,7 @@ version = "1.6.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hmac 0.12.1",
  "md-5",
  "plugin-sdk",
