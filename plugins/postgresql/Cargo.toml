@@ -10,7 +10,7 @@ description = "NexusBackup reference plugin: PostgreSQL logical dumps, base back
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
-getrandom = "0.2"
+getrandom = "0.4"
 hmac = "0.12"
 md5 = { package = "md-5", version = "0.10" }
 plugin-sdk = { path = "../../crates/plugin-sdk" }
